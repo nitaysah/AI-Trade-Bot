@@ -3,12 +3,8 @@
 // Auto-refreshing, multi-panel, real-time dashboard
 // ═══════════════════════════════════════════════════
 
-// 6. Smart API Configuration
-// Auto-switches between Localhost (laptop) and Google Cloud (production)
-const CLOUD_API_URL = 'https://ai-trade-bot-backend-1077198186521.us-central1.run.app'; // Update this if your URL changed
-const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') 
-    ? 'http://localhost:8000' 
-    : CLOUD_API_URL;
+// 6. Production API Configuration
+const API_BASE = 'https://ai-trade-bot-backend-1077198186521.us-central1.run.app';
 const REFRESH_INTERVAL = 15000; // 15 seconds
 let selectedTicker = null; // Start null to force sync with Active Bots
 let tvWidget = null;
@@ -651,7 +647,7 @@ async function fetchDashboard() {
     } catch (error) {
         console.error('[dashboard] Fetch error:', error);
         document.getElementById('lastScanTime').textContent = 'Connection error';
-        showGlobalError('Cannot connect to the trading backend. Ensure "python backend/main.py" is running.');
+        showGlobalError('Cannot connect to the trading backend.');
     }
 }
 
