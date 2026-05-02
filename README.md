@@ -38,6 +38,34 @@ An automated quantitative trading system featuring a high-performance **Elite V2
 3. **Launch Dashboard**:
    Open `frontend/index.html` in your browser.
 
+## 🐳 Containerization & Cloud Deployment
+
+### Local Docker Testing
+You can run the backend in a containerized environment locally using Docker Compose:
+```bash
+docker-compose up --build
+```
+The backend will be available at `http://localhost:8080`.
+
+### Google Cloud Run Deployment
+1. **Build the image**:
+   ```bash
+   docker build -t gcr.io/[PROJECT_ID]/ai-trade-bot-backend ./backend
+   ```
+2. **Push to Google Container Registry**:
+   ```bash
+   docker push gcr.io/[PROJECT_ID]/ai-trade-bot-backend
+   ```
+3. **Deploy to Cloud Run**:
+   ```bash
+   gcloud run deploy ai-trade-bot-backend \
+     --image gcr.io/[PROJECT_ID]/ai-trade-bot-backend \
+     --platform managed \
+     --allow-unauthenticated \
+     --port 8080
+   ```
+   *Note: Ensure you set your environment variables (API keys) in the Cloud Run service settings.*
+
 ## 🛡️ Risk Disclosure
 Algorithmic trading involves significant risk of loss. This software is provided for educational and research purposes only. Always test your strategies in simulation mode before committing real capital.
 

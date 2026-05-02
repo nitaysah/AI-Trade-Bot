@@ -1,0 +1,15 @@
+# Docker ignore file
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+.git
+.gitignore
+.vscode/
+stdout.log
+trades.json
+settings.json
+data/
+*.db
+.DS_Store
