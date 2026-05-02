@@ -9,9 +9,12 @@ ENV PORT=8080
 # Set the working directory in the container
 WORKDIR /app
 
-# Install system dependencies (needed for some technical analysis libs)
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    python3-dev \
+    libcurl4-openssl-dev \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the requirements file into the container

@@ -19,8 +19,8 @@ httpx==0.28.1
 idna==3.13
 msgpack==1.1.2
 multitasking==0.0.13
-numpy>=2.1.0
-pandas==2.3.3
+numpy>=1.24.0
+pandas>=2.0.0
 pandas-ta>=0.3.14b0   # Changed from classic for better 3.13 support
 peewee==4.0.5
 platformdirs==4.4.0
