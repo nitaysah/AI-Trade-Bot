@@ -33,9 +33,8 @@
         const auth = getAuth(app);
 
         onAuthStateChanged(auth, (user) => {
-            const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-            if (!user && !isLocal) {
-                // If no user and NOT local, boot them to the login page
+            if (!user) {
+                // Now requiring auth everywhere for a consistent experience
                 window.location.href = "main.html";
             }
         });
