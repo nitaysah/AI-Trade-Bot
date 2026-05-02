@@ -33,8 +33,9 @@
         const auth = getAuth(app);
 
         onAuthStateChanged(auth, (user) => {
-            if (!user) {
-                // If no user, boot them to the login page
+            const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            if (!user && !isLocal) {
+                // If no user and NOT local, boot them to the login page
                 window.location.href = "main.html";
             }
         });

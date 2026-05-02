@@ -185,6 +185,12 @@
             </button>
 
             <div class="status-msg" id="status">Syncing with satellite...</div>
+            
+            <div id="dev-access" style="display: none; margin-top: 2rem;">
+                <a href="index.html" style="color: rgba(255,255,255,0.4); text-decoration: none; font-size: 0.7rem; border: 1px solid rgba(255,255,255,0.1); padding: 4px 10px; border-radius: 4px;">
+                    🔓 DEVELOPER ENTRANCE
+                </a>
+            </div>
         </div>
     </div>
 
@@ -209,6 +215,12 @@
         const loginBtn = document.getElementById('loginBtn');
         const status = document.getElementById('status');
         const loader = document.getElementById('loader');
+        const devAccess = document.getElementById('dev-access');
+
+        // Show dev access only on localhost
+        if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+            devAccess.style.display = 'block';
+        }
 
         // Stars Generation
         const starsContainer = document.getElementById('stars-container');
