@@ -3,8 +3,9 @@
 // Auto-refreshing, multi-panel, real-time dashboard
 // ═══════════════════════════════════════════════════
 
-// Try to auto-detect API base, fallback to localhost:8000
-const API_BASE = window.location.port === '8000' ? '' : 'http://localhost:8000';
+// 6. API Configuration
+// Point to your live Google Cloud Backend
+const API_BASE = 'https://ai-trade-bot-backend-1077198186521.us-central1.run.app';
 const REFRESH_INTERVAL = 15000; // 15 seconds
 let selectedTicker = null; // Start null to force sync with Active Bots
 let tvWidget = null;
