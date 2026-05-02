@@ -1,0 +1,185 @@
+    <!-- ═══════════════ BACKTEST MODAL ═══════════════ -->
+    <div id="backtestModal" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-indigo-950/60 backdrop-blur-md" onclick="closeBacktestModal()"></div>
+        <div class="panel-glass relative max-w-5xl w-full h-[85vh] overflow-hidden flex flex-col z-10 shadow-2xl border-indigo-200/50">
+            <div class="panel-top-bar bg-gradient-to-r from-indigo-500 to-purple-600"></div>
+            
+            <!-- Header -->
+            <div class="flex justify-between items-center p-5 border-b border-indigo-100 bg-white/50">
+                <div>
+                    <h2 class="text-xl font-black text-indigo-900 uppercase tracking-tight">Strategy Backtest Engine</h2>
+                    <p class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Historical Performance Simulator</p>
+                </div>
+                <button onclick="closeBacktestModal()" class="w-8 h-8 flex items-center justify-center rounded-full bg-indigo-50 text-indigo-400 hover:bg-red-500 hover:text-white transition-all">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
+            </div>
+
+            <!-- Modal Content (Scrollable Area) -->
+            <div class="flex-1 overflow-y-auto p-6 space-y-8 custom-scrollbar">
+                
+                <!-- ── Settings Container ── -->
+                <div id="btSettingsContainer" class="space-y-6">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 p-5 bg-indigo-50/50 rounded-2xl border border-indigo-100">
+                        <div class="space-y-1">
+                            <label class="block text-[0.65rem] font-bold text-indigo-500 uppercase tracking-wider">Ticker</label>
+                            <div class="flex gap-1">
+                                <input type="text" id="btTicker" class="flex-1 bg-white border border-indigo-200 rounded-xl px-3 py-2.5 text-sm uppercase font-black text-indigo-900 focus:ring-2 focus:ring-indigo-500 outline-none" value="TSLA">
+                                <button onclick="bulkDownloadTicker()" class="px-3 bg-white border border-indigo-200 rounded-xl text-indigo-600 hover:bg-indigo-600 hover:text-white transition-all shadow-sm" title="Download Full History">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10" /></svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="space-y-1">
+                            <label class="block text-[0.65rem] font-bold text-indigo-500 uppercase tracking-wider">Interval</label>
+                            <select id="btTimeframe" class="w-full bg-white border border-indigo-200 rounded-xl px-3 py-2.5 text-sm font-bold text-indigo-900 focus:ring-2 focus:ring-indigo-500 outline-none">
+                                <option value="1Day">1 Day (Max 5Y)</option>
+                                <option value="4Hour">4 Hours (Max 2Y)</option>
+                                <option value="1Hour">1 Hour (Max 1Y)</option>
+                                <option value="30Min">30 Minutes (60D)</option>
+                                <option value="15Min">15 Minutes (60D)</option>
+                                <option value="5Min">5 Minutes (60D)</option>
+                                <option value="1Min">1 Minute (7D)</option>
+                            </select>
+                        </div>
+                        <div class="space-y-1">
+                            <label class="block text-[0.65rem] font-bold text-indigo-500 uppercase tracking-wider">Lookback (Days)</label>
+                            <input type="number" id="btDays" class="w-full bg-white border border-indigo-200 rounded-xl px-3 py-2.5 text-sm font-bold text-indigo-900" value="30">
+                        </div>
+                        <div class="space-y-1">
+                            <label class="block text-[0.65rem] font-bold text-indigo-500 uppercase tracking-wider">Buy Threshold</label>
+                            <input type="number" id="btThreshold" class="w-full bg-white border border-indigo-200 rounded-xl px-3 py-2.5 text-sm font-bold text-indigo-900" value="5" min="1" max="7">
+                        </div>
+                        <div class="space-y-1">
+                            <label class="block text-[0.65rem] font-bold text-indigo-500 uppercase tracking-wider">Sell Threshold</label>
+                            <input type="number" id="btSellThreshold" class="w-full bg-white border border-indigo-200 rounded-xl px-3 py-2.5 text-sm font-bold text-indigo-900" value="3" min="1" max="7">
+                        </div>
+                    </div>
+
+                    <div class="space-y-3">
+                        <label class="block text-[0.65rem] font-bold text-indigo-900 uppercase tracking-[0.2em]">Strategy Indicator Matrix</label>
+                        <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+                            <label class="flex items-center p-3 bg-white rounded-xl border border-indigo-100 cursor-pointer hover:border-indigo-400 transition-all group shadow-sm">
+                                <input type="checkbox" class="bt-indicator-check w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500" value="RSI" checked>
+                                <span class="ml-2 text-xs font-bold text-indigo-900 group-hover:text-indigo-600">RSI</span>
+                            </label>
+                            <label class="flex items-center p-3 bg-white rounded-xl border border-indigo-100 cursor-pointer hover:border-indigo-400 transition-all group shadow-sm">
+                                <input type="checkbox" class="bt-indicator-check w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500" value="MACD" checked>
+                                <span class="ml-2 text-xs font-bold text-indigo-900 group-hover:text-indigo-600">MACD</span>
+                            </label>
+                            <label class="flex items-center p-3 bg-white rounded-xl border border-indigo-100 cursor-pointer hover:border-indigo-400 transition-all group shadow-sm">
+                                <input type="checkbox" class="bt-indicator-check w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500" value="EMA Cross" checked>
+                                <span class="ml-2 text-xs font-bold text-indigo-900 group-hover:text-indigo-600">EMA</span>
+                            </label>
+                            <label class="flex items-center p-3 bg-white rounded-xl border border-indigo-100 cursor-pointer hover:border-indigo-400 transition-all group shadow-sm">
+                                <input type="checkbox" class="bt-indicator-check w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500" value="Supertrend" checked>
+                                <span class="ml-2 text-xs font-bold text-indigo-900 group-hover:text-indigo-600">Trend</span>
+                            </label>
+                            <label class="flex items-center p-3 bg-white rounded-xl border border-indigo-100 cursor-pointer hover:border-indigo-400 transition-all group shadow-sm">
+                                <input type="checkbox" class="bt-indicator-check w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500" value="Bollinger" checked>
+                                <span class="ml-2 text-xs font-bold text-indigo-900 group-hover:text-indigo-600">Bands</span>
+                            </label>
+                            <label class="flex items-center p-3 bg-white rounded-xl border border-indigo-100 cursor-pointer hover:border-indigo-400 transition-all group shadow-sm">
+                                <input type="checkbox" class="bt-indicator-check w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500" value="VWAP" checked>
+                                <span class="ml-2 text-xs font-bold text-indigo-900 group-hover:text-indigo-600">VWAP</span>
+                            </label>
+                            <label class="flex items-center p-3 bg-white rounded-xl border border-indigo-100 cursor-pointer hover:border-indigo-400 transition-all group shadow-sm">
+                                <input type="checkbox" class="bt-indicator-check w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500" value="Mystic Pulse" checked>
+                                <span class="ml-2 text-xs font-bold text-indigo-900 group-hover:text-indigo-600">Mystic</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <button id="runBtBtn" onclick="runBacktest()" class="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-black py-4 rounded-2xl hover:shadow-indigo-500/40 hover:shadow-2xl transition-all active:scale-[0.98] uppercase tracking-[0.3em] text-sm shadow-xl">
+                        🚀 EXECUTE HISTORICAL ANALYSIS
+                    </button>
+                </div>
+
+                <!-- ── Loading State ── -->
+                <div id="btLoading" class="hidden py-20 text-center space-y-6">
+                    <div class="relative inline-block h-20 w-20">
+                        <div class="absolute inset-0 border-4 border-indigo-100 rounded-full"></div>
+                        <div class="absolute inset-0 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+                    </div>
+                    <div class="space-y-1">
+                        <p class="text-xl font-black text-indigo-900 uppercase tracking-tighter animate-pulse">Computing Strategy Alpha...</p>
+                        <p class="text-indigo-400 text-xs font-bold uppercase tracking-widest">Simulating thousands of historical bar scenarios</p>
+                    </div>
+                </div>
+
+                <!-- ── Results Container ── -->
+                <div id="btResults" class="hidden space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                    
+                    <!-- Stats Grid -->
+                    <div class="grid grid-cols-2 lg:grid-cols-5 gap-4">
+                        <div class="p-4 bg-white rounded-2xl border border-indigo-100 shadow-sm">
+                            <span class="text-[0.6rem] font-bold text-indigo-400 uppercase tracking-widest">ROI</span>
+                            <p class="text-2xl font-black text-indigo-900" id="resRoi">0%</p>
+                        </div>
+                        <div class="p-4 bg-white rounded-2xl border border-indigo-100 shadow-sm">
+                            <span class="text-[0.6rem] font-bold text-indigo-400 uppercase tracking-widest">Win Rate</span>
+                            <p class="text-2xl font-black text-emerald-600" id="resWinRate">0%</p>
+                        </div>
+                        <div class="p-4 bg-white rounded-2xl border border-indigo-100 shadow-sm">
+                            <span class="text-[0.6rem] font-bold text-indigo-400 uppercase tracking-widest">Total Trades</span>
+                            <p class="text-2xl font-black text-indigo-900" id="resTrades">0</p>
+                        </div>
+                        <div class="p-4 bg-indigo-600 rounded-2xl border border-indigo-400 shadow-lg col-span-1 lg:col-span-1">
+                            <span class="text-[0.6rem] font-bold text-indigo-200 uppercase tracking-widest">Final Equity</span>
+                            <p class="text-2xl font-black text-white" id="resEquity">$0</p>
+                        </div>
+                        <div class="p-4 bg-indigo-950 rounded-2xl border border-indigo-800 shadow-xl col-span-1 lg:col-span-1">
+                            <span class="text-[0.6rem] font-bold text-indigo-400 uppercase tracking-widest">Market HODL</span>
+                            <p class="text-2xl font-black text-white" id="resHoldEquity">$0</p>
+                            <span class="text-[0.6rem] font-bold text-emerald-400" id="resHoldRoi">0% Return</span>
+                        </div>
+                    </div>
+
+                    <div class="flex justify-center">
+                        <button onclick="resetBacktestUI()" class="px-8 py-2.5 bg-indigo-50 text-indigo-600 font-black text-[0.65rem] rounded-full border border-indigo-100 hover:bg-indigo-600 hover:text-white transition-all shadow-sm uppercase tracking-widest">
+                            ↺ Reset & Configure New Test
+                        </button>
+                    </div>
+
+                    <!-- Trade List -->
+                    <div class="space-y-4">
+                        <div class="flex justify-between items-end px-1">
+                            <h3 class="text-sm font-black text-indigo-900 uppercase tracking-tight">Strategy Execution Log</h3>
+                            <span class="text-[0.65rem] font-bold text-indigo-400 uppercase" id="btPageInfoTop">Page 1 of 1</span>
+                        </div>
+                        <div class="bg-white rounded-2xl border border-indigo-100 shadow-sm overflow-hidden">
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-left text-xs border-collapse">
+                                    <thead class="bg-indigo-50/80 text-indigo-700 font-black uppercase tracking-wider text-[0.6rem]">
+                                        <tr>
+                                            <th class="p-4">Entry Timestamp</th>
+                                            <th class="p-4">Exit Timestamp</th>
+                                            <th class="p-4">Price Action</th>
+                                            <th class="p-4 text-center">P/L %</th>
+                                            <th class="p-4">Exit Logic</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="btTradeLog" class="divide-y divide-indigo-50">
+                                        <!-- Trades injected by JS -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        
+                        <!-- Pagination Controls -->
+                        <div id="btPagination" class="flex justify-between items-center py-2 px-2 bg-indigo-50/30 rounded-xl border border-indigo-50 hidden">
+                            <span class="text-[0.6rem] font-bold text-indigo-400 uppercase tracking-widest" id="btPageInfo">Page 1 of 1</span>
+                            <div class="flex gap-2">
+                                <button onclick="changeBtPage(-1)" class="w-10 h-10 flex items-center justify-center bg-white text-indigo-600 rounded-xl border border-indigo-100 hover:bg-indigo-600 hover:text-white transition-all shadow-sm">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" /></svg>
+                                </button>
+                                <button onclick="changeBtPage(1)" class="w-10 h-10 flex items-center justify-center bg-white text-indigo-600 rounded-xl border border-indigo-100 hover:bg-indigo-600 hover:text-white transition-all shadow-sm">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
