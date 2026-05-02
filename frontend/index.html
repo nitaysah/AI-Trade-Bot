@@ -1,25 +1,196 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Trader BOT — Dashboard</title>
-    <meta name="description"
-        content="AI-powered quantitative trading dashboard with multi-indicator confluence and sentiment analysis.">
-    <link rel="icon"
-        href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔮</text></svg>">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+    <title>Elite Command Center | Secure Link</title>
+    <link rel="stylesheet" href="styles.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
-        rel="stylesheet">
-    <link rel="stylesheet" href="styles.css">
-    <!-- Firebase Sentinel (Auth Guard) -->
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            overflow: hidden;
+            background: radial-gradient(circle at center, #1a0b2e 0%, #050208 100%);
+            font-family: 'Inter', sans-serif;
+        }
+
+        /* Animated Stars Background */
+        #stars-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 0;
+        }
+
+        .star {
+            position: absolute;
+            background: white;
+            border-radius: 50%;
+            opacity: 0.5;
+            animation: twinkle var(--duration) infinite ease-in-out;
+        }
+
+        @keyframes twinkle {
+            0%, 100% { opacity: 0.3; transform: scale(1); }
+            50% { opacity: 1; transform: scale(1.2); }
+        }
+
+        .login-container {
+            position: relative;
+            z-index: 10;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .glass-card {
+            background: rgba(255, 255, 255, 0.03);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 3rem;
+            border-radius: 2rem;
+            width: 100%;
+            max-width: 400px;
+            text-align: center;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            animation: card-entry 1s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        @keyframes card-entry {
+            from { opacity: 0; transform: translateY(30px) scale(0.95); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        .logo-ring {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 2rem;
+            border: 2px solid #a855f7;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            box-shadow: 0 0 30px rgba(168, 85, 247, 0.3);
+        }
+
+        .logo-ring::after {
+            content: '';
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border: 2px solid transparent;
+            border-top: 2px solid #3b82f6;
+            border-radius: 50%;
+            animation: spin 3s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .bot-icon {
+            font-size: 2.5rem;
+            filter: drop-shadow(0 0 10px #a855f7);
+        }
+
+        h1 {
+            font-family: 'Orbitron', sans-serif;
+            color: white;
+            font-size: 1.5rem;
+            letter-spacing: 2px;
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+        }
+
+        p {
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 0.9rem;
+            margin-bottom: 2.5rem;
+        }
+
+        .google-btn {
+            background: white;
+            color: #1f2937;
+            border: none;
+            padding: 1rem 2rem;
+            border-radius: 12px;
+            font-weight: 600;
+            font-size: 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            cursor: pointer;
+            width: 100%;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        .google-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2), 0 0 20px rgba(168, 85, 247, 0.4);
+            background: #f9fafb;
+        }
+
+        .google-btn img {
+            width: 24px;
+            height: 24px;
+        }
+
+        .status-msg {
+            margin-top: 1.5rem;
+            font-size: 0.8rem;
+            color: #a855f7;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .loading-shimmer {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: black;
+            z-index: 100;
+            display: none;
+            opacity: 0;
+            transition: opacity 0.5s ease;
+        }
+    </style>
+</head>
+<body>
+    <div id="stars-container"></div>
+    <div class="loading-shimmer" id="loader"></div>
+
+    <div class="login-container">
+        <div class="glass-card">
+            <div class="logo-ring">
+                <span class="bot-icon">🛸</span>
+            </div>
+            <h1>Command Center</h1>
+            <p>Initialize secure neural link</p>
+            
+            <button class="google-btn" id="loginBtn">
+                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/action/google.svg" alt="Google">
+                Initialize with Google
+            </button>
+            <div class="status-msg" id="status">Syncing with satellite...</div>
+        </div>
+    </div>
+
+    <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-        import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+        import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 
         const firebaseConfig = {
             authDomain: "celestial-fortune-7d9b4.firebaseapp.com",
@@ -31,706 +202,53 @@
 
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
+        const provider = new GoogleAuthProvider();
 
+        const loginBtn = document.getElementById('loginBtn');
+        const status = document.getElementById('status');
+        const loader = document.getElementById('loader');
+
+        // Stars Generation
+        const starsContainer = document.getElementById('stars-container');
+        for(let i=0; i<150; i++) {
+            const star = document.createElement('div');
+            star.className = 'star';
+            star.style.left = `${Math.random() * 100}%`;
+            star.style.top = `${Math.random() * 100}%`;
+            const size = Math.random() * 3;
+            star.style.width = `${size}px`;
+            star.style.height = `${size}px`;
+            star.style.setProperty('--duration', `${2 + Math.random() * 4}s`);
+            starsContainer.appendChild(star);
+        }
+
+        // Handle Auth State
         onAuthStateChanged(auth, (user) => {
-            if (!user) {
-                // Now requiring auth everywhere for a consistent experience
-                window.location.href = "main.html";
+            if (user) {
+                status.innerText = "Access Granted. Initializing Dashboard...";
+                status.style.opacity = "1";
+                loader.style.display = "block";
+                setTimeout(() => {
+                    loader.style.opacity = "1";
+                    window.location.href = "dashboard.html";
+                }, 1000);
             }
         });
 
-        window.logoutCommander = async () => {
-            await signOut(auth);
-            window.location.href = "main.html";
-        };
+        // Handle Login Click
+        loginBtn.addEventListener('click', async () => {
+            try {
+                loginBtn.disabled = true;
+                loginBtn.innerText = "Requesting Link...";
+                await signInWithPopup(auth, provider);
+            } catch (error) {
+                console.error("Auth Error:", error);
+                status.innerText = "Link Interrupted. Try again.";
+                status.style.opacity = "1";
+                loginBtn.disabled = false;
+                loginBtn.innerHTML = `<img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/action/google.svg" alt="Google"> Initialize with Google`;
+            }
+        });
     </script>
-</head>
-
-<body
-    class="bg-gradient-to-br from-fuchsia-50 via-purple-100 to-indigo-100 text-indigo-950 min-h-screen font-sans relative overflow-x-hidden"
-    style="font-family: 'Inter', sans-serif;">
-    <!-- Ethereal background overlay -->
-    <div
-        class="fixed inset-0 z-[-1] bg-[radial-gradient(ellipse_at_top_left,_var(--tw-gradient-stops))] from-white/80 via-purple-200/20 to-transparent">
-    </div>
-    <div
-        class="fixed inset-0 z-[-1] bg-[radial-gradient(ellipse_at_bottom_right,_var(--tw-gradient-stops))] from-indigo-200/30 via-transparent to-transparent">
-    </div>
-
-    <div class="max-w-[1440px] mx-auto px-4 py-6">
-
-        <!-- ═══════════════ HEADER ═══════════════ -->
-        <header
-            class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 border-b border-purple-200/80 pb-4">
-            <div>
-                <h1
-                    class="text-3xl md:text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 leading-tight">
-                    ✦ AI Trader BOT
-                </h1>
-                <p class="text-purple-500 text-sm mt-1 font-medium">Automated Quantitative Trading System</p>
-            </div>
-            <div class="flex flex-wrap items-center gap-3 mt-3 md:mt-0">
-                <span
-                    class="flex items-center text-xs font-medium bg-white/60 rounded-full px-3 py-1.5 border border-purple-200"
-                    id="modeIndicator">
-                    <span class="h-2.5 w-2.5 bg-amber-500 rounded-full mr-2 animate-pulse"></span> Simulation Mode
-                </span>
-                <span
-                    class="flex items-center text-xs font-medium bg-white/60 rounded-full px-3 py-1.5 border border-purple-200">
-                    <span class="h-2.5 w-2.5 bg-green-500 rounded-full mr-2 animate-pulse"></span> Gemini AI Active
-                </span>
-                <span
-                    class="flex items-center text-xs font-medium bg-white/60 rounded-full px-3 py-1.5 border border-purple-200"
-                    id="lastScanBadge">
-                    <span class="h-2.5 w-2.5 bg-purple-400 rounded-full mr-2"></span>
-                    Last Scan: <span id="lastScanTime" class="ml-1">—</span>
-                </span>
-                <button onclick="openBacktestModal()"
-                    class="flex items-center text-xs font-bold bg-indigo-600 text-white rounded-full px-4 py-1.5 hover:bg-indigo-700 transition-all shadow-md">
-                    📊 Run Backtest
-                </button>
-                <button onclick="logoutCommander()"
-                    class="flex items-center text-xs font-bold bg-gray-200 text-gray-600 rounded-full px-4 py-1.5 hover:bg-gray-300 transition-all border border-gray-300">
-                    📡 De-initialize Link
-                </button>
-            </div>
-        </header>
-
-        <!-- Global Error Notification -->
-        <div id="globalError"
-            class="hidden mb-6 p-4 bg-red-100 border border-red-200 text-red-700 rounded-lg flex items-center justify-between">
-            <span id="errorMessage">Connection to AI Backend failed. Please ensure the server is running on port
-                8000.</span>
-            <button onclick="this.parentElement.classList.add('hidden')"
-                class="text-red-500 hover:text-red-700">✕</button>
-        </div>
-
-        <!-- ═══════════════ PORTFOLIO CARDS ═══════════════ -->
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-            <!-- Total Equity -->
-            <div class="card-glass group" id="cardEquity">
-                <div class="card-glow"></div>
-                <h3 class="card-label">Total Equity</h3>
-                <p class="card-value text-indigo-900 animate-pulse" id="totalCapital">---</p>
-                <span class="card-sub" id="cashDisplay">Cash: ---</span>
-            </div>
-            <!-- Open Positions -->
-            <div class="card-glass group" id="cardPositions">
-                <div class="card-glow"></div>
-                <h3 class="card-label">Open Positions</h3>
-                <p class="card-value text-indigo-600 animate-pulse" id="openPositions">---</p>
-                <span class="card-sub" id="positionsList">No positions</span>
-            </div>
-            <!-- Today's P/L -->
-            <div class="card-glass group" id="cardPL">
-                <div class="card-glow"></div>
-                <h3 class="card-label">Today's P/L</h3>
-                <p class="card-value animate-pulse" id="dailyPL">---</p>
-                <span class="card-sub">Daily performance</span>
-            </div>
-            <!-- AI Sentiment -->
-            <div class="card-glass group" id="cardSentiment">
-                <div class="card-glow"></div>
-                <h3 class="card-label">AI Sentiment</h3>
-                <p class="card-value text-fuchsia-600 animate-pulse" id="aiSentiment">---</p>
-                <div class="mt-1">
-                    <div class="w-full bg-purple-100 rounded-full h-1.5">
-                        <div class="h-1.5 rounded-full bg-gradient-to-r from-red-400 via-amber-400 to-emerald-400 transition-all duration-500"
-                            id="sentimentBar" style="width: 50%"></div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- ═══════════════ MAIN GRID ═══════════════ -->
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-
-            <!-- LEFT: Chart + Signals (2 cols) -->
-            <div class="lg:col-span-2 space-y-6">
-
-                <!-- Price Chart -->
-                <div class="panel-glass relative">
-                    <div class="panel-top-bar bg-gradient-to-r from-indigo-400 to-purple-500"></div>
-                    <div class="flex justify-between items-center mb-4">
-                        <h2 class="text-lg font-bold text-indigo-900">Price Chart — <span
-                                id="chartTickerLabel">Syncing...</span></h2>
-                        <div class="flex items-center gap-2">
-
-                            <div class="relative flex items-center">
-                                <input type="text" id="tickerSearch" list="watchlistData" placeholder="Search..."
-                                    class="bg-white/80 text-indigo-900 border border-purple-300 rounded-l-lg px-3 py-1.5 w-32 text-sm uppercase focus:outline-none focus:ring-2 focus:ring-purple-400 transition-all font-medium">
-                                <button id="favoriteBtn"
-                                    class="bg-white/80 text-gray-400 border border-l-0 border-purple-300 rounded-r-lg px-2 py-1.5 hover:text-yellow-500 transition-colors"
-                                    title="Toggle Favorite">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none"
-                                        viewBox="0 0 24 24" stroke="currentColor" id="favIcon">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-                                            d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
-                                    </svg>
-                                </button>
-                                <datalist id="watchlistData"></datalist>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="h-[450px] w-full" id="tradingChart"></div>
-                </div>
-
-                <!-- Signal Confluence Panel -->
-                <div class="panel-glass relative">
-                    <div class="panel-top-bar bg-gradient-to-r from-fuchsia-400 to-pink-400"></div>
-                    <div class="flex justify-between items-center mb-4">
-                        <div class="flex items-center gap-3">
-                            <h2 class="text-lg font-bold text-indigo-900">Signal Confluence</h2>
-                            <select id="strategyTf" onchange="updateStrategyTf(this.value)"
-                                class="bg-indigo-50 text-indigo-600 text-[0.65rem] font-black uppercase px-2 py-0.5 rounded border border-indigo-100 focus:outline-none cursor-pointer hover:bg-indigo-100 transition-colors">
-                                <option value="1Min">1m</option>
-                                <option value="5Min" selected>5m</option>
-                                <option value="15Min">15m</option>
-                                <option value="30Min">30m</option>
-                                <option value="1Hour">1h</option>
-                                <option value="4Hour">4h</option>
-                                <option value="1Day">1d</option>
-                            </select>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700"
-                                id="bullCount">0 Bullish</span>
-                            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700"
-                                id="bearCount">0 Bearish</span>
-                        </div>
-                    </div>
-                    <div class="relative min-h-[120px]">
-                        <div id="gridLoading"
-                            class="hidden absolute inset-0 z-10 flex flex-col items-center justify-center bg-white/40 backdrop-blur-[2px] rounded-xl transition-all duration-300">
-                            <div
-                                class="w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mb-2">
-                            </div>
-                            <span class="text-[0.65rem] font-bold text-indigo-600 uppercase tracking-widest">Fetching
-                                Signals</span>
-                        </div>
-                        <div id="signalGrid" class="grid grid-cols-2 md:grid-cols-3 gap-3">
-                            <!-- Signals injected by JS -->
-                        </div>
-                    </div>
-                    <!-- Verdict Bar -->
-                    <div class="mt-4 p-3 rounded-lg border" id="verdictBar">
-                        <div class="flex items-center justify-between">
-                            <span class="font-bold text-sm" id="verdictLabel">HOLD</span>
-                            <span class="text-xs text-purple-500" id="verdictReason">Waiting for scan...</span>
-                        </div>
-                    </div>
-                </div>
-
-            </div>
-
-            <!-- RIGHT: Sidebar (1 col) -->
-            <div class="space-y-6">
-
-                <!-- Active Trading Bots -->
-                <div class="panel-glass relative">
-                    <div class="panel-top-bar bg-gradient-to-r from-emerald-400 to-teal-400"></div>
-                    <div class="flex justify-between items-center mb-3">
-                        <h2 class="text-lg font-bold text-indigo-900">Active Trading Bots</h2>
-                        <span
-                            class="text-[0.65rem] font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 uppercase">Live
-                            Execution</span>
-                    </div>
-                    <div id="tradelistContainer" class="space-y-2">
-                        <!-- Active trade items injected by JS -->
-                        <p class="text-center text-purple-400 text-[0.65rem] py-4">No active bots. Add from watchlist
-                            below.</p>
-                    </div>
-                </div>
-
-                <!-- Watchlist -->
-                <div class="panel-glass relative">
-                    <div class="panel-top-bar bg-gradient-to-r from-cyan-400 to-blue-400"></div>
-                    <h2 class="text-lg font-bold text-indigo-900 mb-3">Watchlist (Scan Only)</h2>
-                    <div id="watchlistContainer" class="space-y-2">
-                        <!-- Watchlist items injected by JS -->
-                    </div>
-                </div>
-
-                <!-- Position Sizing (shows when a signal is active) -->
-                <div class="panel-glass relative" id="sizingPanel" style="display: none;">
-                    <div class="panel-top-bar bg-gradient-to-r from-emerald-400 to-teal-400"></div>
-                    <h2 class="text-lg font-bold text-indigo-900 mb-3">Position Sizing</h2>
-                    <div class="space-y-2 text-sm">
-                        <div class="flex justify-between">
-                            <span class="text-purple-600">Notional</span>
-                            <span class="font-bold" id="sizingNotional">$0.00</span>
-                        </div>
-                        <div class="flex justify-between">
-                            <span class="text-purple-600">Shares</span>
-                            <span class="font-bold" id="sizingShares">0</span>
-                        </div>
-                        <div class="flex justify-between">
-                            <span class="text-purple-600">Stop Loss</span>
-                            <span class="font-bold text-red-600" id="sizingStop">$0.00</span>
-                        </div>
-                        <div class="flex justify-between">
-                            <span class="text-purple-600">Take Profit</span>
-                            <span class="font-bold text-emerald-600" id="sizingTarget">$0.00</span>
-                        </div>
-                        <div class="flex justify-between">
-                            <span class="text-purple-600">Risk:Reward</span>
-                            <span class="font-bold" id="sizingRR">1:1.5</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- AI Analysis Summary -->
-                <div class="panel-glass relative">
-                    <div class="panel-top-bar bg-gradient-to-r from-fuchsia-400 to-purple-500"></div>
-                    <h2 class="text-lg font-bold text-indigo-900 mb-3">AI Analysis</h2>
-                    <div class="p-3 bg-white/40 rounded-lg border border-purple-100 text-xs text-indigo-800 italic leading-relaxed"
-                        id="aiSummary">
-                        Waiting for scan analysis...
-                    </div>
-                </div>
-
-            </div>
-        </div>
-
-        <!-- ═══════════════ EXECUTION LOG ═══════════════ -->
-        <div class="panel-glass relative">
-            <div class="panel-top-bar bg-gradient-to-r from-purple-400 to-violet-400"></div>
-            <div class="flex justify-between items-center mb-4">
-                <h2 class="text-lg font-bold text-indigo-900">Execution Log</h2>
-                <div class="flex bg-indigo-50/50 p-1 rounded-xl border border-indigo-100">
-                    <button id="tabLogAll" onclick="setLogTab('all')"
-                        class="px-4 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all bg-white text-indigo-600 shadow-sm border border-indigo-100">
-                        Scan History
-                    </button>
-                    <button id="tabLogTrades" onclick="setLogTab('trades')"
-                        class="px-4 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600">
-                        Executed Trades
-                    </button>
-                </div>
-            </div>
-            <div class="overflow-x-auto">
-                <table class="w-full text-left border-collapse">
-                    <thead>
-                        <tr class="border-b border-purple-200 text-purple-700 text-xs uppercase tracking-wider">
-                            <th class="pb-3 pr-4">Time</th>
-                            <th class="pb-3 pr-4">Action</th>
-                            <th class="pb-3 pr-4">Ticker</th>
-                            <th class="pb-3 pr-4">Price</th>
-                            <th class="pb-3 pr-4">Signals</th>
-                            <th class="pb-3 pr-4">AI Reason</th>
-                        </tr>
-                    </thead>
-                    <tbody id="tradeLogBody" class="text-sm">
-                    </tbody>
-                </table>
-                <p id="noTradesMsg" class="text-center text-purple-400 text-sm py-6">Waiting for first scan...</p>
-            </div>
-        </div>
-
-        <!-- Footer -->
-        <footer class="mt-8 text-center text-xs text-purple-400 pb-4">
-            <p>⚠️ Algorithmic trading involves significant risk. This is for educational purposes only.</p>
-            <p class="mt-1">AI Trader BOT v2.0 — Built with FastAPI, Gemini AI & Alpaca</p>
-        </footer>
-
-    </div>
-
-    <!-- ═══════════════ BACKTEST MODAL ═══════════════ -->
-    <div id="backtestModal" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4">
-        <div class="absolute inset-0 bg-indigo-950/60 backdrop-blur-md" onclick="closeBacktestModal()"></div>
-        <div
-            class="panel-glass relative max-w-5xl w-full h-[85vh] overflow-hidden flex flex-col z-10 shadow-2xl border-indigo-200/50">
-            <div class="panel-top-bar bg-gradient-to-r from-indigo-500 to-purple-600"></div>
-
-            <!-- Header -->
-            <div class="flex justify-between items-center p-5 border-b border-indigo-100 bg-white/50">
-                <div>
-                    <h2 class="text-xl font-black text-indigo-900 uppercase tracking-tight">Strategy Backtest Engine
-                    </h2>
-                    <p class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Historical Performance
-                        Simulator</p>
-                </div>
-                <button onclick="closeBacktestModal()"
-                    class="w-8 h-8 flex items-center justify-center rounded-full bg-indigo-50 text-indigo-400 hover:bg-red-500 hover:text-white transition-all">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
-                        stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                </button>
-            </div>
-
-            <!-- Modal Content (Scrollable Area) -->
-            <div class="flex-1 overflow-y-auto p-6 space-y-8 custom-scrollbar">
-
-                <!-- ── Settings Container ── -->
-                <div id="btSettingsContainer" class="space-y-6">
-                    <div
-                        class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4 p-5 bg-indigo-50/50 rounded-2xl border border-indigo-100">
-                        <div class="space-y-1">
-                            <label
-                                class="block text-[0.65rem] font-bold text-indigo-500 uppercase tracking-wider">Ticker</label>
-                            <div class="flex gap-1">
-                                <input type="text" id="btTicker"
-                                    class="flex-1 bg-white border border-indigo-200 rounded-xl px-3 py-2.5 text-sm uppercase font-black text-indigo-900 focus:ring-2 focus:ring-indigo-500 outline-none"
-                                    value="TSLA">
-                                <button onclick="bulkDownloadTicker()"
-                                    class="px-3 bg-white border border-indigo-200 rounded-xl text-indigo-600 hover:bg-indigo-600 hover:text-white transition-all shadow-sm"
-                                    title="Download Full History">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none"
-                                        viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10" />
-                                    </svg>
-                                </button>
-                            </div>
-                        </div>
-                        <div class="space-y-1">
-                            <label
-                                class="block text-[0.65rem] font-bold text-indigo-500 uppercase tracking-wider">Interval</label>
-                            <select id="btTimeframe"
-                                class="w-full bg-white border border-indigo-200 rounded-xl px-3 py-2.5 text-sm font-bold text-indigo-900 focus:ring-2 focus:ring-indigo-500 outline-none">
-                                <option value="1Day">1 Day (Max 5Y)</option>
-                                <option value="4Hour">4 Hours (Max 2Y)</option>
-                                <option value="1Hour">1 Hour (Max 1Y)</option>
-                                <option value="30Min">30 Minutes (60D)</option>
-                                <option value="15Min">15 Minutes (60D)</option>
-                                <option value="5Min">5 Minutes (60D)</option>
-                                <option value="1Min">1 Minute (7D)</option>
-                            </select>
-                        </div>
-                        <div class="space-y-1">
-                            <label
-                                class="block text-[0.65rem] font-bold text-indigo-500 uppercase tracking-wider">Lookback
-                                (Days)</label>
-                            <input type="number" id="btDays"
-                                class="w-full bg-white border border-indigo-200 rounded-xl px-3 py-2.5 text-sm font-bold text-indigo-900"
-                                value="30">
-                        </div>
-                        <div class="space-y-1">
-                            <label
-                                class="block text-[0.65rem] font-bold text-indigo-500 uppercase tracking-wider">Capital
-                                ($)</label>
-                            <input type="number" id="btCapital"
-                                class="w-full bg-white border border-indigo-200 rounded-xl px-3 py-2.5 text-sm font-bold text-indigo-900"
-                                value="1000">
-                        </div>
-                        <div class="space-y-1">
-                            <label class="block text-[0.65rem] font-bold text-indigo-500 uppercase tracking-wider">Buy
-                                Threshold</label>
-                            <input type="number" id="btThreshold"
-                                class="w-full bg-white border border-indigo-200 rounded-xl px-3 py-2.5 text-sm font-bold text-indigo-900"
-                                value="1" min="1" max="7">
-                        </div>
-                        <div class="space-y-1">
-                            <label class="block text-[0.65rem] font-bold text-indigo-500 uppercase tracking-wider">Sell
-                                Threshold</label>
-                            <input type="number" id="btSellThreshold"
-                                class="w-full bg-white border border-indigo-200 rounded-xl px-3 py-2.5 text-sm font-bold text-indigo-900"
-                                value="1" min="1" max="7">
-                        </div>
-                    </div>
-
-                    <div class="space-y-3">
-                        <label
-                            class="block text-[0.65rem] font-bold text-indigo-900 uppercase tracking-[0.2em]">Strategy
-                            Indicator Matrix</label>
-                        <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
-                            <label
-                                class="flex items-center p-3 bg-white rounded-xl border border-indigo-100 cursor-pointer hover:border-indigo-400 transition-all group shadow-sm">
-                                <input type="checkbox"
-                                    class="bt-indicator-check w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500"
-                                    value="RSI">
-                                <span
-                                    class="ml-2 text-xs font-bold text-indigo-900 group-hover:text-indigo-600">RSI</span>
-                            </label>
-                            <label
-                                class="flex items-center p-3 bg-white rounded-xl border border-indigo-100 cursor-pointer hover:border-indigo-400 transition-all group shadow-sm">
-                                <input type="checkbox"
-                                    class="bt-indicator-check w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500"
-                                    value="MACD">
-                                <span
-                                    class="ml-2 text-xs font-bold text-indigo-900 group-hover:text-indigo-600">MACD</span>
-                            </label>
-                            <label
-                                class="flex items-center p-3 bg-white rounded-xl border border-indigo-100 cursor-pointer hover:border-indigo-400 transition-all group shadow-sm">
-                                <input type="checkbox"
-                                    class="bt-indicator-check w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500"
-                                    value="EMA Cross">
-                                <span
-                                    class="ml-2 text-xs font-bold text-indigo-900 group-hover:text-indigo-600">EMA</span>
-                            </label>
-                            <label
-                                class="flex items-center p-3 bg-white rounded-xl border border-indigo-100 cursor-pointer hover:border-indigo-400 transition-all group shadow-sm">
-                                <input type="checkbox"
-                                    class="bt-indicator-check w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500"
-                                    value="Supertrend">
-                                <span
-                                    class="ml-2 text-xs font-bold text-indigo-900 group-hover:text-indigo-600">Trend</span>
-                            </label>
-                            <label
-                                class="flex items-center p-3 bg-white rounded-xl border border-indigo-100 cursor-pointer hover:border-indigo-400 transition-all group shadow-sm">
-                                <input type="checkbox"
-                                    class="bt-indicator-check w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500"
-                                    value="Bollinger">
-                                <span
-                                    class="ml-2 text-xs font-bold text-indigo-900 group-hover:text-indigo-600">Bands</span>
-                            </label>
-                            <label
-                                class="flex items-center p-3 bg-white rounded-xl border border-indigo-100 cursor-pointer hover:border-indigo-400 transition-all group shadow-sm">
-                                <input type="checkbox"
-                                    class="bt-indicator-check w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500"
-                                    value="VWAP">
-                                <span
-                                    class="ml-2 text-xs font-bold text-indigo-900 group-hover:text-indigo-600">VWAP</span>
-                            </label>
-                            <label
-                                class="flex items-center p-3 bg-white rounded-xl border border-indigo-100 cursor-pointer hover:border-indigo-400 transition-all group shadow-sm">
-                                <input type="checkbox"
-                                    class="bt-indicator-check w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500"
-                                    value="Mystic Pulse">
-                                <span
-                                    class="ml-2 text-xs font-bold text-indigo-900 group-hover:text-indigo-600">Mystic</span>
-                            </label>
-                            <label
-                                class="flex items-center p-3 bg-white rounded-xl border border-indigo-100 cursor-pointer hover:border-indigo-400 transition-all group shadow-sm">
-                                <input type="checkbox"
-                                    class="bt-indicator-check w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500"
-                                    value="Candle Patterns" checked>
-                                <span
-                                    class="ml-2 text-xs font-bold text-indigo-900 group-hover:text-indigo-600">Candle</span>
-                            </label>
-                        </div>
-                    </div>
-
-                    <button id="runBtBtn" onclick="runBacktest()"
-                        class="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-black py-4 rounded-2xl hover:shadow-indigo-500/40 hover:shadow-2xl transition-all active:scale-[0.98] uppercase tracking-[0.3em] text-sm shadow-xl">
-                        🚀 EXECUTE HISTORICAL ANALYSIS
-                    </button>
-                </div>
-
-                <!-- ── Loading State ── -->
-                <div id="btLoading" class="hidden py-20 text-center space-y-6">
-                    <div class="relative inline-block h-20 w-20">
-                        <div class="absolute inset-0 border-4 border-indigo-100 rounded-full"></div>
-                        <div
-                            class="absolute inset-0 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin">
-                        </div>
-                    </div>
-                    <div class="space-y-1">
-                        <p class="text-xl font-black text-indigo-900 uppercase tracking-tighter animate-pulse">Computing
-                            Strategy Alpha...</p>
-                        <p class="text-indigo-400 text-xs font-bold uppercase tracking-widest">Simulating thousands of
-                            historical bar scenarios</p>
-                    </div>
-                </div>
-
-                <!-- ── Results Container ── -->
-                <div id="btResults" class="hidden space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-
-                    <!-- Stats Grid -->
-                    <div class="grid grid-cols-2 lg:grid-cols-5 gap-4">
-                        <div class="p-4 bg-white rounded-2xl border border-indigo-100 shadow-sm">
-                            <span class="text-[0.6rem] font-bold text-indigo-400 uppercase tracking-widest">ROI</span>
-                            <p class="text-2xl font-black text-indigo-900" id="resRoi">0%</p>
-                        </div>
-                        <div class="p-4 bg-white rounded-2xl border border-indigo-100 shadow-sm">
-                            <span class="text-[0.6rem] font-bold text-indigo-400 uppercase tracking-widest">Win
-                                Rate</span>
-                            <p class="text-2xl font-black text-emerald-600" id="resWinRate">0%</p>
-                        </div>
-                        <div class="p-4 bg-white rounded-2xl border border-indigo-100 shadow-sm">
-                            <span class="text-[0.6rem] font-bold text-indigo-400 uppercase tracking-widest">Total
-                                Trades</span>
-                            <p class="text-2xl font-black text-indigo-900" id="resTrades">0</p>
-                        </div>
-                        <div
-                            class="p-4 bg-indigo-600 rounded-2xl border border-indigo-400 shadow-lg col-span-1 lg:col-span-1">
-                            <span class="text-[0.6rem] font-bold text-indigo-200 uppercase tracking-widest">Final
-                                Equity</span>
-                            <p class="text-2xl font-black text-white" id="resEquity">$0</p>
-                        </div>
-                        <div
-                            class="p-4 bg-indigo-950 rounded-2xl border border-indigo-800 shadow-xl col-span-1 lg:col-span-1">
-                            <span class="text-[0.6rem] font-bold text-indigo-400 uppercase tracking-widest">Market
-                                HODL</span>
-                            <p class="text-2xl font-black text-white" id="resHoldEquity">$0</p>
-                            <span class="text-[0.6rem] font-bold text-emerald-400" id="resHoldRoi">0% Return</span>
-                        </div>
-                    </div>
-
-                    <div class="flex justify-center">
-                        <button onclick="resetBacktestUI()"
-                            class="px-8 py-2.5 bg-indigo-50 text-indigo-600 font-black text-[0.65rem] rounded-full border border-indigo-100 hover:bg-indigo-600 hover:text-white transition-all shadow-sm uppercase tracking-widest">
-                            ↺ Reset & Configure New Test
-                        </button>
-                    </div>
-
-                    <!-- Trade List -->
-                    <div class="space-y-4">
-                        <div class="flex justify-between items-end px-1">
-                            <h3 class="text-sm font-black text-indigo-900 uppercase tracking-tight">Strategy Execution
-                                Log</h3>
-                            <span class="text-[0.65rem] font-bold text-indigo-400 uppercase" id="btPageInfoTop">Page 1
-                                of 1</span>
-                        </div>
-                        <div class="bg-white rounded-2xl border border-indigo-100 shadow-sm overflow-hidden">
-                            <div class="overflow-x-auto">
-                                <table class="w-full text-left text-xs border-collapse">
-                                    <thead
-                                        class="bg-indigo-50/80 text-indigo-700 font-black uppercase tracking-wider text-[0.6rem]">
-                                        <tr>
-                                            <th class="p-4">Entry Timestamp</th>
-                                            <th class="p-4">Exit Timestamp</th>
-                                            <th class="p-4">Price Action</th>
-                                            <th class="p-4 text-center">P/L %</th>
-                                            <th class="p-4">Exit Logic</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="btTradeLog" class="divide-y divide-indigo-50">
-                                        <!-- Trades injected by JS -->
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-
-                        <!-- Pagination Controls -->
-                        <div id="btPagination"
-                            class="flex justify-between items-center py-2 px-2 bg-indigo-50/30 rounded-xl border border-indigo-50 hidden">
-                            <span class="text-[0.6rem] font-bold text-indigo-400 uppercase tracking-widest"
-                                id="btPageInfo">Page 1 of 1</span>
-                            <div class="flex gap-2">
-                                <button onclick="changeBtPage(-1)"
-                                    class="w-10 h-10 flex items-center justify-center bg-white text-indigo-600 rounded-xl border border-indigo-100 hover:bg-indigo-600 hover:text-white transition-all shadow-sm">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none"
-                                        viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M15 19l-7-7 7-7" />
-                                    </svg>
-                                </button>
-                                <button onclick="changeBtPage(1)"
-                                    class="w-10 h-10 flex items-center justify-center bg-white text-indigo-600 rounded-xl border border-indigo-100 hover:bg-indigo-600 hover:text-white transition-all shadow-sm">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none"
-                                        viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M9 5l7 7-7 7" />
-                                    </svg>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Ticker Settings Modal -->
-    <div id="tickerModal"
-        class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden z-50 flex items-center justify-center p-4">
-        <div
-            class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
-            <div
-                class="bg-gradient-to-r from-indigo-600 to-purple-600 p-4 flex justify-between items-center text-white">
-                <h3 class="font-bold text-lg" id="modalTickerName">BTCUSD Settings</h3>
-                <button onclick="closeTickerModal()" class="hover:rotate-90 transition-all duration-300">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12">
-                        </path>
-                    </svg>
-                </button>
-            </div>
-            <div class="p-6 space-y-4">
-                <div class="space-y-1">
-                    <div class="flex items-center gap-1 mb-1">
-                        <label class="text-xs font-bold text-slate-500 uppercase">Trade Amount ($)</label>
-                        <div class="group relative">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-slate-400 cursor-help"
-                                fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                            </svg>
-                            <div
-                                class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-white text-[0.65rem] rounded-lg shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 leading-relaxed">
-                                Total capital allocated to this specific ticker. Overrides global defaults.
-                            </div>
-                        </div>
-                    </div>
-                    <input type="number" id="modalAmount"
-                        class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                        placeholder="Manual Entry Required">
-                </div>
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="space-y-1">
-                        <div class="flex items-center gap-1 mb-1">
-                            <label class="text-xs font-bold text-slate-500 uppercase">Risk / Trade (%)</label>
-                            <div class="group relative">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-slate-400 cursor-help"
-                                    fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                </svg>
-                                <div
-                                    class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-white text-[0.65rem] rounded-lg shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 leading-relaxed">
-                                    % of your budget to risk on each trade based on stop loss distance.
-                                </div>
-                            </div>
-                        </div>
-                        <input type="number" id="modalRisk"
-                            class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                            placeholder="Enter Risk %" step="0.1">
-                    </div>
-                    <div class="space-y-1">
-                        <div class="flex items-center gap-1 mb-1">
-                            <label class="text-xs font-bold text-slate-500 uppercase">ATR Stop Mult</label>
-                            <div class="group relative">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-slate-400 cursor-help"
-                                    fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                </svg>
-                                <div
-                                    class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-white text-[0.65rem] rounded-lg shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 leading-relaxed">
-                                    Multiplier for ATR to set stop loss distance. Higher = wider stops.
-                                </div>
-                            </div>
-                        </div>
-                        <input type="number" id="modalAtrStop"
-                            class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                            placeholder="Enter ATR Mult" step="0.1">
-                    </div>
-                </div>
-                <div class="space-y-1">
-                    <div class="flex items-center gap-1 mb-1">
-                        <label class="text-xs font-bold text-slate-500 uppercase">Take Profit Mult</label>
-                        <div class="group relative">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-slate-400 cursor-help"
-                                fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                            </svg>
-                            <div
-                                class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-white text-[0.65rem] rounded-lg shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 leading-relaxed">
-                                Multiplier for your risk distance to set the target. e.g. 1.5 = 1.5x risk.
-                            </div>
-                        </div>
-                    </div>
-                    <input type="number" id="modalTpMult"
-                        class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                        placeholder="Enter TP Mult" step="0.1">
-                </div>
-
-                <div class="pt-4 flex gap-3">
-                    <button onclick="saveTickerSettings()"
-                        class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl shadow-lg transition-all active:scale-95">Save
-                        Settings</button>
-                    <button onclick="resetTickerSettings()"
-                        class="px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold py-3 rounded-xl transition-all">Reset</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script src="app.js"></script>
 </body>
-
 </html>
