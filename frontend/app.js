@@ -4,7 +4,7 @@
 // ═══════════════════════════════════════════════════
 
 // 6. Production API Configuration
-const API_BASE = 'https://ai-trade-bot-backend-1077198186521.us-central1.run.app';
+const API_BASE = 'https://ai-trade-bot-backend-946557219642.us-central1.run.app';
 const REFRESH_INTERVAL = 15000; // 15 seconds
 let selectedTicker = null; // Start null to force sync with Active Bots
 let tvWidget = null;
