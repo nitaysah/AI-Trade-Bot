@@ -24,6 +24,7 @@ import config
 import yfinance as yf
 import json
 import os
+import re
 
 
 # ──────────────────────────────────────────────
@@ -386,8 +387,8 @@ def get_dashboard(ticker: str = None, timeframe: str = None):
 
 @app.get("/api/scan/{ticker}")
 def scan_ticker(ticker: str, timeframe: str = "5Min"):
-    if not ticker.isalnum() or len(ticker) > 10:
-        return {"error": "Invalid ticker symbol"}
+    if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker.upper()):
+        return {"error": "Invalid ticker format"}
     """On-demand scan of a specific ticker."""
     account = broker.get_account_info()
     # Use settled cash (non-marginable) for crypto
@@ -413,8 +414,8 @@ async def run_backtest(data: dict):
     Runs a historical backtest for a ticker.
     """
     ticker = data.get("ticker", "AAPL").upper()
-    if not ticker.isalnum() or len(ticker) > 10:
-        return {"status": "error", "message": "Invalid ticker symbol"}
+    if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
+        return {"status": "error", "message": "Invalid ticker format"}
     timeframe = data.get("timeframe", "1Day")
     days = int(data.get("days", 30))
     capital = float(data.get("capital", 1000.0))
@@ -453,9 +454,12 @@ async def download_all_data(data: dict):
     Downloads and caches all available history for a ticker across all timeframes.
     Also saves stock metadata (sector, market cap, etc.)
     """
-    ticker = data.get("ticker", "").upper()
-    if not ticker or not ticker.isalnum() or len(ticker) > 10:
-        return {"error": "Invalid ticker symbol provided."}
+    raw_ticker = str(data.get("ticker", "")).strip().upper()
+    if not raw_ticker:
+        return {"error": "Ticker required"}
+    if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", raw_ticker):
+        return {"error": "Invalid ticker format"}
+    ticker = raw_ticker
     
     timeframes = [
         ("1Min", 7),
@@ -481,7 +485,15 @@ async def download_all_data(data: dict):
     try:
         t = yf.Ticker(ticker)
         info = t.info
-        info_path = os.path.join(os.path.dirname(__file__), "data", f"{ticker}_info.json")
+        
+        # Security: Canonicalize path and verify it stays inside data/
+        data_dir = os.path.realpath(os.path.join(os.path.dirname(__file__), "data"))
+        if not os.path.exists(data_dir): os.makedirs(data_dir)
+        
+        info_path = os.path.realpath(os.path.join(data_dir, f"{ticker}_info.json"))
+        if os.path.commonpath([data_dir, info_path]) != data_dir:
+            return {"error": "Invalid ticker path"}
+            
         with open(info_path, "w") as f:
             json.dump(info, f, indent=4)
         log.append("Metadata: Saved")
