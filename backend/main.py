@@ -433,11 +433,14 @@ async def run_backtest(data: dict):
         enabled_indicators=indicators
     )
     
-    results = bt.run()
-    if "error" in results:
-        return {"status": "error", "message": results["error"]}
-    
-    return {"status": "success", "results": results}
+    try:
+        results = bt.run()
+        if "error" in results:
+            return {"status": "error", "message": results["error"]}
+        return {"status": "success", "results": results}
+    except Exception as e:
+        print(f"[api] Backtest crash: {e}")
+        return {"status": "error", "message": f"Server Error: {str(e)}"}
 
 
 @app.post("/api/download_all")
