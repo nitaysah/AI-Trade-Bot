@@ -102,14 +102,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 
-        const firebaseConfig = {
-            apiKey: "AIzaSyCr9C32u2x7cKl3UUrBjHhRlQbp_1HeErU",
-            authDomain: "trading-bot-engine-df3de.firebaseapp.com",
-            projectId: "trading-bot-engine-df3de",
-            storageBucket: "trading-bot-engine-df3de.firebasestorage.app",
-            messagingSenderId: "946557219642",
-            appId: "1:946557219642:web:0f1fea143cfe1accbbd603"
-        };
+        import { firebaseConfig } from "./firebase-config.js";
 
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
