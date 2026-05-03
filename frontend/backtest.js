@@ -124,32 +124,32 @@ function renderBtTradesPage() {
         document.getElementById('btPageInfoTop').textContent = `Showing ${start + 1}-${Math.min(end, allBtTrades.length)} of ${allBtTrades.length} trades`;
     } else {
         document.getElementById('btPagination').classList.add('hidden');
-        tbody.innerHTML = '<tr><td colspan="9" class="p-10 text-center text-indigo-300 font-bold italic">No trades executed with current strategy parameters.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="py-12 text-center text-purple-400 text-xs md:text-sm font-medium italic">No strategy executions detected with current parameters.</td></tr>';
         return;
     }
 
     paginated.forEach(t => {
-        const plClass = t.pl_pct >= 0 ? 'text-emerald-500' : 'text-rose-500';
+        const plClass = t.pl_pct >= 0 ? 'text-emerald-600 font-bold' : 'text-red-500 font-bold';
         const row = `
-            <tr class="hover:bg-indigo-50/50 transition-all border-b border-indigo-50/30">
-                <td class="p-8">
-                    <div class="font-black text-indigo-950 text-sm tracking-tight">${formatDate(t.entry_time)}</div>
-                    <div class="text-[0.65rem] text-indigo-300 font-bold uppercase mt-1">Entry @ $${t.entry_price.toFixed(2)}</div>
+            <tr class="border-b border-purple-100 hover:bg-purple-50/30 transition-colors">
+                <td class="py-3 px-4">
+                    <div class="text-xs font-semibold text-indigo-950">${formatDate(t.entry_time)}</div>
+                    <div class="text-[0.6rem] text-purple-400 font-medium mt-0.5">Entry @ $${t.entry_price.toFixed(2)}</div>
                 </td>
-                <td class="p-8">
-                    <div class="font-black text-indigo-950 text-sm tracking-tight">${formatDate(t.exit_time)}</div>
-                    <div class="text-[0.65rem] text-indigo-300 font-bold uppercase mt-1">Exit @ $${t.exit_price.toFixed(2)}</div>
+                <td class="py-3 px-4">
+                    <div class="text-xs font-semibold text-indigo-950">${formatDate(t.exit_time)}</div>
+                    <div class="text-[0.6rem] text-purple-400 font-medium mt-0.5">Exit @ $${t.exit_price.toFixed(2)}</div>
                 </td>
-                <td class="p-8 text-center">
-                    <span class="px-4 py-1.5 rounded-xl bg-indigo-100/50 text-indigo-600 text-[0.65rem] font-black uppercase tracking-widest">LONG</span>
+                <td class="py-3 px-4">
+                    <span class="px-2 py-0.5 rounded bg-purple-100 text-purple-700 font-bold text-[0.6rem] uppercase">LONG</span>
                 </td>
-                <td class="p-8 text-center font-black text-indigo-950">${t.qty.toFixed(4)}</td>
-                <td class="p-8 text-center font-bold text-indigo-400">$${t.entry_cost.toFixed(2)}</td>
-                <td class="p-8 text-center font-bold text-indigo-950">$${t.exit_value.toFixed(2)}</td>
-                <td class="p-8 text-center text-indigo-300 font-medium">$${(t.fees || 0).toFixed(2)}</td>
-                <td class="p-8 text-center font-black ${plClass} text-base">${t.pl_pct >= 0 ? '+' : ''}${t.pl_pct.toFixed(2)}%</td>
-                <td class="p-8">
-                    <div class="text-[0.65rem] font-black text-indigo-400 leading-relaxed uppercase max-w-[140px] bg-indigo-50/50 p-3 rounded-2xl border border-indigo-100/50">${t.reason}</div>
+                <td class="py-3 px-4 text-center text-xs font-bold text-indigo-900">${t.qty.toFixed(4)}</td>
+                <td class="py-3 px-4 text-center text-xs font-medium text-indigo-700">$${t.entry_cost.toFixed(2)}</td>
+                <td class="py-3 px-4 text-center text-xs font-bold text-indigo-950">$${t.exit_value.toFixed(2)}</td>
+                <td class="py-3 px-4 text-center text-[0.65rem] text-purple-400 font-mono">$${(t.fees || 0).toFixed(2)}</td>
+                <td class="py-3 px-4 text-center text-xs ${plClass}">${t.pl_pct >= 0 ? '+' : ''}${t.pl_pct.toFixed(2)}%</td>
+                <td class="py-3 px-4">
+                    <div class="text-[0.65rem] text-purple-500 italic max-w-[160px] truncate" title="${t.reason}">${t.reason}</div>
                 </td>
             </tr>
         `;
