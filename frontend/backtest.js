@@ -82,17 +82,19 @@ function displayResults(res) {
     document.getElementById('btLoading').classList.add('hidden');
     document.getElementById('btResults').classList.remove('hidden');
 
+    const s = res.summary;
+
     // Stats
-    document.getElementById('resRoi').textContent = res.roi_pct.toFixed(2) + '%';
-    document.getElementById('resWinRate').textContent = res.win_rate.toFixed(1) + '%';
-    document.getElementById('resTrades').textContent = res.total_trades;
-    document.getElementById('resEquity').textContent = '$' + res.final_equity.toLocaleString(undefined, { minimumFractionDigits: 2 });
-    document.getElementById('resHoldEquity').textContent = '$' + res.hold_equity.toLocaleString(undefined, { minimumFractionDigits: 2 });
-    document.getElementById('resHoldRoi').textContent = res.hold_roi_pct.toFixed(2) + '% Return';
+    document.getElementById('resRoi').textContent = s.roi_pct.toFixed(2) + '%';
+    document.getElementById('resWinRate').textContent = s.win_rate_pct.toFixed(1) + '%';
+    document.getElementById('resTrades').textContent = s.total_trades;
+    document.getElementById('resEquity').textContent = '$' + s.final_equity.toLocaleString(undefined, { minimumFractionDigits: 2 });
+    document.getElementById('resHoldEquity').textContent = '$' + s.buy_hold_equity.toLocaleString(undefined, { minimumFractionDigits: 2 });
+    document.getElementById('resHoldRoi').textContent = s.buy_hold_roi_pct.toFixed(2) + '% Return';
 
     // Color logic for ROI
     const roiEl = document.getElementById('resRoi');
-    roiEl.className = `text-3xl font-black mt-1 ${res.roi_pct >= 0 ? 'text-emerald-600' : 'text-rose-600'}`;
+    roiEl.className = `text-3xl font-black mt-1 ${s.roi_pct >= 0 ? 'text-emerald-600' : 'text-rose-600'}`;
 
     // Trade Log
     allBtTrades = res.trades || [];
