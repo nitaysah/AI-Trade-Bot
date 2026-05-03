@@ -65,7 +65,9 @@ async function runBacktest() {
         if (data.status === 'success') {
             displayResults(data.results);
         } else {
-            alert("Backtest Failed: " + (data.message || "Unknown error"));
+            // Handle both structured error objects and raw error fields
+            const errMsg = data.message || data.error || "Unknown error";
+            alert("Backtest Failed: " + errMsg);
             resetBacktestUI();
         }
     } catch (err) {
@@ -235,9 +237,13 @@ async function bulkDownloadTicker() {
     btn.innerHTML = `<svg class="animate-spin h-5 w-5" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`;
 
     try {
-        const response = await fetch(`${API_BASE}/api/download_history?ticker=${ticker}`);
+        const response = await fetch(`${API_BASE}/api/download_all`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ticker })
+        });
         const data = await response.json();
-        alert(data.message || "History updated.");
+        alert(data.message || data.status || "History updated.");
     } catch (err) {
         alert("Download failed.");
     } finally {
