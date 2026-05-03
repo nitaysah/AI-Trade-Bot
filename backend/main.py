@@ -439,7 +439,10 @@ async def run_backtest(data: dict):
     )
     
     results = bt.run()
-    return results
+    if "error" in results:
+        return {"status": "error", "message": results["error"]}
+    
+    return {"status": "success", "results": results}
 
 
 @app.post("/api/download_all")

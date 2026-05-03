@@ -52,9 +52,9 @@ async function runBacktest() {
             body: JSON.stringify({
                 ticker,
                 timeframe,
-                lookback_days: parseInt(days),
-                initial_capital: parseFloat(capital),
-                buy_threshold: parseInt(threshold),
+                days: parseInt(days),
+                capital: parseFloat(capital),
+                threshold: parseInt(threshold),
                 sell_threshold: parseInt(sellThreshold),
                 indicators: indicators // Pass the manual selection to backend
             })
