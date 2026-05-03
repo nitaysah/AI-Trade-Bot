@@ -124,7 +124,7 @@ function renderBtTradesPage() {
         document.getElementById('btPageInfoTop').textContent = `Showing ${start + 1}-${Math.min(end, allBtTrades.length)} of ${allBtTrades.length} trades`;
     } else {
         document.getElementById('btPagination').classList.add('hidden');
-        tbody.innerHTML = '<tr><td colspan="9" class="py-12 text-center text-purple-400 text-xs md:text-sm font-medium italic">No strategy executions detected with current parameters.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="py-12 text-center text-purple-400 text-xs md:text-sm font-medium italic">No strategy executions detected with current parameters.</td></tr>';
         return;
     }
 
@@ -140,17 +140,11 @@ function renderBtTradesPage() {
                     <div class="text-xs font-semibold text-indigo-950">${formatDate(t.exit_time)}</div>
                     <div class="text-[0.6rem] text-purple-400 font-medium mt-0.5">Exit @ $${t.exit_price.toFixed(2)}</div>
                 </td>
-                <td class="py-3 px-4">
-                    <span class="px-2 py-0.5 rounded bg-purple-100 text-purple-700 font-bold text-[0.6rem] uppercase">LONG</span>
-                </td>
                 <td class="py-3 px-4 text-center text-xs font-bold text-indigo-900">${t.qty.toFixed(4)}</td>
                 <td class="py-3 px-4 text-center text-xs font-medium text-indigo-700">$${t.entry_cost.toFixed(2)}</td>
                 <td class="py-3 px-4 text-center text-xs font-bold text-indigo-950">$${t.exit_value.toFixed(2)}</td>
                 <td class="py-3 px-4 text-center text-[0.65rem] text-purple-400 font-mono">$${(t.fees || 0).toFixed(2)}</td>
                 <td class="py-3 px-4 text-center text-xs ${plClass}">${t.pl_pct >= 0 ? '+' : ''}${t.pl_pct.toFixed(2)}%</td>
-                <td class="py-3 px-4">
-                    <div class="text-[0.65rem] text-purple-500 italic max-w-[160px] truncate" title="${t.reason}">${t.reason}</div>
-                </td>
             </tr>
         `;
         tbody.insertAdjacentHTML('beforeend', row);
