@@ -80,6 +80,10 @@ async function runBacktest() {
 // 3. Results Rendering
 function displayResults(res) {
     document.getElementById('btLoading').classList.add('hidden');
+    
+    // Show Modal
+    const modal = document.getElementById('btResultsModal');
+    modal.classList.remove('hidden');
     document.getElementById('btResults').classList.remove('hidden');
 
     const s = res.summary;
@@ -94,7 +98,7 @@ function displayResults(res) {
 
     // Color logic for ROI
     const roiEl = document.getElementById('resRoi');
-    roiEl.className = `text-3xl font-black mt-1 ${s.roi_pct >= 0 ? 'text-emerald-600' : 'text-rose-600'}`;
+    roiEl.className = `text-4xl font-black tracking-tighter ${s.roi_pct >= 0 ? 'text-emerald-500' : 'text-rose-500'}`;
 
     // Trade Log
     allBtTrades = res.trades || [];
@@ -121,27 +125,27 @@ function renderBtTradesPage() {
     }
 
     paginated.forEach(t => {
-        const plClass = t.pl_pct >= 0 ? 'text-emerald-600' : 'text-rose-600';
+        const plClass = t.pl_pct >= 0 ? 'text-emerald-500' : 'text-rose-500';
         const row = `
-            <tr class="hover:bg-indigo-50/30 transition-colors">
-                <td class="p-6">
-                    <div class="font-black text-indigo-950">${formatDate(t.entry_time)}</div>
-                    <div class="text-[0.65rem] text-indigo-400 font-bold">@ $${t.entry_price.toFixed(2)}</div>
+            <tr class="hover:bg-indigo-50/50 transition-all border-b border-indigo-50/30">
+                <td class="p-8">
+                    <div class="font-black text-indigo-950 text-sm tracking-tight">${formatDate(t.entry_time)}</div>
+                    <div class="text-[0.65rem] text-indigo-300 font-bold uppercase mt-1">Entry @ $${t.entry_price.toFixed(2)}</div>
                 </td>
-                <td class="p-6">
-                    <div class="font-black text-indigo-950">${formatDate(t.exit_time)}</div>
-                    <div class="text-[0.65rem] text-indigo-400 font-bold">@ $${t.exit_price.toFixed(2)}</div>
+                <td class="p-8">
+                    <div class="font-black text-indigo-950 text-sm tracking-tight">${formatDate(t.exit_time)}</div>
+                    <div class="text-[0.65rem] text-indigo-300 font-bold uppercase mt-1">Exit @ $${t.exit_price.toFixed(2)}</div>
                 </td>
-                <td class="p-6">
-                    <span class="px-3 py-1 rounded-full bg-indigo-100 text-indigo-700 text-[0.6rem] font-black uppercase">LONG</span>
+                <td class="p-8 text-center">
+                    <span class="px-4 py-1.5 rounded-xl bg-indigo-100/50 text-indigo-600 text-[0.65rem] font-black uppercase tracking-widest">LONG</span>
                 </td>
-                <td class="p-6 text-center font-black">${t.qty.toFixed(4)}</td>
-                <td class="p-6 text-center font-bold text-indigo-400">$${t.entry_cost.toFixed(2)}</td>
-                <td class="p-6 text-center font-bold text-indigo-900">$${t.exit_value.toFixed(2)}</td>
-                <td class="p-6 text-center text-indigo-300 font-medium">$${(t.fees || 0).toFixed(2)}</td>
-                <td class="p-6 text-center font-black ${plClass}">${t.pl_pct.toFixed(2)}%</td>
-                <td class="p-6">
-                    <div class="text-[0.6rem] font-bold text-indigo-400 leading-tight uppercase max-w-[120px]">${t.reason}</div>
+                <td class="p-8 text-center font-black text-indigo-950">${t.qty.toFixed(4)}</td>
+                <td class="p-8 text-center font-bold text-indigo-400">$${t.entry_cost.toFixed(2)}</td>
+                <td class="p-8 text-center font-bold text-indigo-950">$${t.exit_value.toFixed(2)}</td>
+                <td class="p-8 text-center text-indigo-300 font-medium">$${(t.fees || 0).toFixed(2)}</td>
+                <td class="p-8 text-center font-black ${plClass} text-base">${t.pl_pct >= 0 ? '+' : ''}${t.pl_pct.toFixed(2)}%</td>
+                <td class="p-8">
+                    <div class="text-[0.65rem] font-black text-indigo-400 leading-relaxed uppercase max-w-[140px] bg-indigo-50/50 p-3 rounded-2xl border border-indigo-100/50">${t.reason}</div>
                 </td>
             </tr>
         `;
@@ -160,8 +164,10 @@ function changeBtPage(dir) {
 
 // 4. Helper Functions
 function resetBacktestUI() {
-    document.getElementById('btSettingsContainer').classList.remove('hidden');
+    document.getElementById('btResultsModal').classList.add('hidden');
     document.getElementById('btResults').classList.add('hidden');
+    document.getElementById('btSettingsContainer').classList.remove('hidden');
+    document.getElementById('runBtBtn').disabled = false;
     document.getElementById('btLoading').classList.add('hidden');
 }
 

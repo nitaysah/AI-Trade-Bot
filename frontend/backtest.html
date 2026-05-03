@@ -60,32 +60,22 @@
     <main class="max-w-3xl mx-auto px-4 py-8">
 
         <div id="btSettingsContainer" class="space-y-8 animate-in fade-in duration-500">
-
             <!-- Environment Group -->
-            <div
-                class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6 p-6 bg-white/60 backdrop-blur-xl rounded-3xl border border-white shadow-xl">
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6 p-6 bg-white/60 backdrop-blur-xl rounded-3xl border border-white shadow-xl">
                 <div class="space-y-2">
-                    <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Target
-                        Ticker</label>
+                    <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Target Ticker</label>
                     <div class="flex gap-2">
-                        <input type="text" id="btTicker"
-                            class="flex-1 bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-sm uppercase font-black text-indigo-900 focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all"
-                            value="BTCUSD">
-                        <button onclick="bulkDownloadTicker()"
-                            class="px-3 bg-indigo-50 border border-indigo-100 rounded-2xl text-indigo-600 hover:bg-indigo-600 hover:text-white transition-all shadow-sm">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
-                                stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                    d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10" />
+                        <input type="text" id="btTicker" class="flex-1 bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-sm uppercase font-black text-indigo-900 focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all" value="BTCUSD">
+                        <button onclick="bulkDownloadTicker()" class="px-3 bg-indigo-50 border border-indigo-100 rounded-2xl text-indigo-600 hover:bg-indigo-600 hover:text-white transition-all shadow-sm">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10" />
                             </svg>
                         </button>
                     </div>
                 </div>
                 <div class="space-y-2">
-                    <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Time
-                        Interval</label>
-                    <select id="btTimeframe"
-                        class="w-full bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-sm font-black text-indigo-900 focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm appearance-none cursor-pointer">
+                    <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Time Interval</label>
+                    <select id="btTimeframe" class="w-full bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-sm font-black text-indigo-900 focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm appearance-none cursor-pointer">
                         <option value="1Day">1 Day (Max 5Y)</option>
                         <option value="4Hour">4 Hours (Max 2Y)</option>
                         <option value="1Hour" selected>1 Hour (Max 1Y)</option>
@@ -96,18 +86,12 @@
                     </select>
                 </div>
                 <div class="space-y-2">
-                    <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Simulation
-                        Days</label>
-                    <input type="number" id="btDays"
-                        class="w-full bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-sm font-black text-indigo-900 shadow-sm"
-                        value="365">
+                    <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Simulation Days</label>
+                    <input type="number" id="btDays" class="w-full bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-sm font-black text-indigo-900 shadow-sm" value="365">
                 </div>
                 <div class="space-y-2">
-                    <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Initial
-                        Capital ($)</label>
-                    <input type="number" id="btCapital"
-                        class="w-full bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-sm font-black text-indigo-900 shadow-sm"
-                        value="1000">
+                    <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Initial Capital ($)</label>
+                    <input type="number" id="btCapital" class="w-full bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-sm font-black text-indigo-900 shadow-sm" value="1000">
                 </div>
             </div>
 
@@ -117,30 +101,15 @@
                 <div class="bg-purple-50/40 p-6 md:p-8 rounded-[2.5rem] shadow-sm relative border border-purple-200">
                     <div class="relative z-10 flex flex-col lg:flex-row justify-between items-center gap-8">
                         <div class="text-center lg:text-left flex-shrink-0">
-                            <h2
-                                class="text-xl md:text-2xl font-black uppercase tracking-[0.2em] text-indigo-900 leading-tight whitespace-nowrap">
-                                Strategy Intelligence</h2>
-                            <p class="text-[0.65rem] font-bold text-purple-400 uppercase mt-2 tracking-[0.2em]">Define
-                                the threshold for trade execution</p>
+                            <h2 class="text-xl md:text-2xl font-black uppercase tracking-[0.2em] text-indigo-900 leading-tight whitespace-nowrap">Strategy Intelligence</h2>
+                            <p class="text-[0.65rem] font-bold text-purple-400 uppercase mt-2 tracking-[0.2em]">Define the threshold for trade execution</p>
                         </div>
-
-                        <div
-                            class="flex-1 w-full lg:max-w-xs bg-white p-6 rounded-[2rem] border border-purple-100 shadow-sm flex flex-col items-center gap-4">
-                            <span
-                                class="text-[0.65rem] font-black text-indigo-900 uppercase tracking-widest text-center">Aggressive
-                                vs. Quality</span>
-
-                            <input type="range" id="btAggressiveSlider" min="1" max="1" value="1"
-                                class="w-full h-2 bg-indigo-50 rounded-full appearance-none cursor-pointer accent-purple-600"
-                                oninput="updateBtAggressiveness(this.value)">
-
-                            <span id="btAggressiveLabel"
-                                class="text-[0.65rem] font-black px-4 py-1.5 rounded-full bg-purple-100 text-purple-600 shadow-sm uppercase tracking-wider transition-all duration-300">Balanced
-                                (1 of 1)</span>
+                        <div class="flex-1 w-full lg:max-w-xs bg-white p-6 rounded-[2rem] border border-purple-100 shadow-sm flex flex-col items-center gap-4">
+                            <span class="text-[0.65rem] font-black text-indigo-900 uppercase tracking-widest text-center">Aggressive vs. Quality</span>
+                            <input type="range" id="btAggressiveSlider" min="1" max="1" value="1" class="w-full h-2 bg-indigo-50 rounded-full appearance-none cursor-pointer accent-purple-600" oninput="updateBtAggressiveness(this.value)">
+                            <span id="btAggressiveLabel" class="text-[0.65rem] font-black px-4 py-1.5 rounded-full bg-purple-100 text-purple-600 shadow-sm uppercase tracking-wider transition-all duration-300">Balanced (1 of 1)</span>
                         </div>
                     </div>
-
-
                     <input type="hidden" id="btThreshold" value="1">
                     <input type="hidden" id="btSellThreshold" value="1">
                 </div>
@@ -149,8 +118,7 @@
                 <div class="space-y-6">
                     <div class="flex items-center gap-3 px-1">
                         <div class="h-6 w-1.5 bg-gradient-to-b from-fuchsia-600 to-purple-600 rounded-full"></div>
-                        <label class="text-sm font-black text-indigo-900 uppercase tracking-widest">Strategy Indicator
-                            Matrix</label>
+                        <label class="text-sm font-black text-indigo-900 uppercase tracking-widest">Strategy Indicator Matrix</label>
                     </div>
                     <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                         <label class="indicator-card group">
@@ -237,8 +205,7 @@
                 </div>
             </div>
 
-            <button id="runBtBtn" onclick="runBacktest()"
-                class="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-black py-6 rounded-[2rem] hover:shadow-indigo-500/40 hover:shadow-2xl transition-all active:scale-[0.98] uppercase tracking-[0.5em] text-sm md:text-base shadow-xl">
+            <button id="runBtBtn" onclick="runBacktest()" class="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-black py-6 rounded-[2rem] hover:shadow-indigo-500/40 hover:shadow-2xl transition-all active:scale-[0.98] uppercase tracking-[0.5em] text-sm md:text-base shadow-xl">
                 🚀 RUN STRATEGY ALPHA SIMULATION
             </button>
         </div>
@@ -247,115 +214,132 @@
         <div id="btLoading" class="hidden py-32 text-center space-y-8">
             <div class="relative inline-block h-24 w-24">
                 <div class="absolute inset-0 border-4 border-indigo-100 rounded-full"></div>
-                <div class="absolute inset-0 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin">
-                </div>
+                <div class="absolute inset-0 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
             </div>
             <div class="space-y-2">
-                <p class="text-2xl font-black text-indigo-900 uppercase tracking-tighter animate-pulse">Computing
-                    Strategy Alpha...</p>
-                <p class="text-indigo-400 text-xs font-bold uppercase tracking-widest">Simulating historical bar
-                    scenarios</p>
+                <p class="text-2xl font-black text-indigo-900 uppercase tracking-tighter animate-pulse">Computing Strategy Alpha...</p>
+                <p class="text-indigo-400 text-xs font-bold uppercase tracking-widest">Simulating historical bar scenarios</p>
             </div>
         </div>
 
-        <!-- Results Container -->
-        <div id="btResults" class="hidden space-y-12 animate-in fade-in slide-in-from-bottom-8 duration-700">
+        <!-- Results Modal Overlay -->
+        <div id="btResultsModal" class="fixed inset-0 z-[60] hidden flex items-center justify-center p-4 md:p-6">
+            <!-- Glass Backdrop -->
+            <div class="absolute inset-0 bg-indigo-950/40 backdrop-blur-md transition-opacity duration-500" onclick="resetBacktestUI()"></div>
+            
+            <!-- Modal Content Container -->
+            <div id="btResults" class="relative w-full max-w-5xl bg-white/90 backdrop-blur-2xl rounded-[3rem] shadow-[0_50px_100px_-20px_rgba(139,92,246,0.3)] border border-white overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-500">
+                
+                <!-- Modal Header -->
+                <div class="sentient-purple p-8 md:p-10 flex justify-between items-center relative overflow-hidden">
+                    <div class="relative z-10">
+                        <h2 class="text-2xl md:text-3xl font-black text-white uppercase tracking-tight">Simulation Results</h2>
+                        <p class="text-[0.65rem] text-fuchsia-200 font-black uppercase tracking-[0.2em] mt-1 opacity-90">Quantum Alpha Performance Matrix</p>
+                    </div>
+                    <button onclick="resetBacktestUI()" class="relative z-10 w-12 h-12 flex items-center justify-center rounded-2xl bg-white/10 text-white hover:bg-white/20 transition-all border border-white/20 shadow-lg">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l18 18" />
+                        </svg>
+                    </button>
+                    <!-- Decorative Orb -->
+                    <div class="absolute -top-24 -right-24 w-64 h-64 bg-fuchsia-500/20 rounded-full blur-3xl"></div>
+                </div>
 
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 md:gap-6">
-                <div class="p-6 bg-white rounded-3xl border border-indigo-50 shadow-sm">
-                    <span class="text-[0.65rem] font-black text-indigo-300 uppercase tracking-widest">ROI</span>
-                    <p class="text-3xl font-black text-indigo-900 mt-1" id="resRoi">0%</p>
-                </div>
-                <div class="p-6 bg-white rounded-3xl border border-indigo-50 shadow-sm">
-                    <span class="text-[0.65rem] font-black text-indigo-300 uppercase tracking-widest">Win Rate</span>
-                    <p class="text-3xl font-black text-emerald-600 mt-1" id="resWinRate">0%</p>
-                </div>
-                <div class="p-6 bg-white rounded-3xl border border-indigo-50 shadow-sm">
-                    <span class="text-[0.65rem] font-black text-indigo-300 uppercase tracking-widest">Total
-                        Trades</span>
-                    <p class="text-3xl font-black text-indigo-900 mt-1" id="resTrades">0</p>
-                </div>
-                <div class="p-6 sentient-purple rounded-3xl shadow-xl">
-                    <span class="text-[0.65rem] font-black text-indigo-200 uppercase tracking-widest">Final
-                        Equity</span>
-                    <p class="text-3xl font-black text-white mt-1" id="resEquity">$0</p>
-                </div>
-                <div class="p-6 bg-indigo-950 rounded-3xl shadow-xl sm:col-span-2 lg:col-span-1">
-                    <span class="text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Market HODL</span>
-                    <div class="flex justify-between items-end lg:block mt-1">
-                        <p class="text-2xl font-black text-white" id="resHoldEquity">$0</p>
-                        <span class="text-[0.6rem] font-black text-emerald-400 uppercase tracking-tighter"
-                            id="resHoldRoi">0% Return</span>
+                <!-- Scrollable Body -->
+                <div class="flex-grow overflow-y-auto p-8 md:p-12 space-y-12 custom-scrollbar">
+                    
+                    <!-- Stats Grid -->
+                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                        <div class="p-8 bg-purple-50/50 rounded-[2.5rem] border border-purple-100/50 shadow-sm transition-all hover:shadow-md">
+                            <span class="text-[0.65rem] font-black text-purple-400 uppercase tracking-widest block mb-3">Strategy ROI</span>
+                            <div class="flex items-baseline gap-1">
+                                <p class="text-4xl font-black text-indigo-950 tracking-tighter" id="resRoi">0%</p>
+                            </div>
+                        </div>
+                        <div class="p-8 bg-emerald-50/50 rounded-[2.5rem] border border-emerald-100/50 shadow-sm transition-all hover:shadow-md">
+                            <span class="text-[0.65rem] font-black text-emerald-600 uppercase tracking-widest block mb-3">Win Rate</span>
+                            <p class="text-4xl font-black text-emerald-700 tracking-tighter" id="resWinRate">0%</p>
+                        </div>
+                        <div class="p-8 bg-indigo-50/50 rounded-[2.5rem] border border-indigo-100/50 shadow-sm transition-all hover:shadow-md">
+                            <span class="text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest block mb-3">Executed Trades</span>
+                            <p class="text-4xl font-black text-indigo-950 tracking-tighter" id="resTrades">0</p>
+                        </div>
+                        <div class="p-8 bg-white rounded-[2.5rem] border border-indigo-100 shadow-xl ring-4 ring-indigo-50/50">
+                            <span class="text-[0.65rem] font-black text-indigo-300 uppercase tracking-widest block mb-3">Final Equity</span>
+                            <p class="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-br from-indigo-600 to-purple-600 tracking-tighter" id="resEquity">$0</p>
+                        </div>
+                    </div>
+
+                    <!-- Market Comparison -->
+                    <div class="bg-indigo-950 rounded-[3rem] p-10 shadow-2xl relative overflow-hidden group">
+                        <div class="relative z-10 flex flex-col md:flex-row justify-between items-center gap-6">
+                            <div>
+                                <h3 class="text-indigo-400 text-[0.65rem] font-black uppercase tracking-[0.3em] mb-2">Benchmark Comparison</h3>
+                                <p class="text-2xl font-black text-white uppercase tracking-tight">Market Buy & Hold</p>
+                            </div>
+                            <div class="text-center md:text-right">
+                                <p class="text-4xl font-black text-white tracking-tighter" id="resHoldEquity">$0</p>
+                                <span class="text-[0.7rem] font-black text-emerald-400 uppercase tracking-widest bg-emerald-400/10 px-4 py-1.5 rounded-full inline-block mt-3 border border-emerald-400/20" id="resHoldRoi">0% Return</span>
+                            </div>
+                        </div>
+                        <div class="absolute top-0 right-0 w-1/2 h-full bg-gradient-to-l from-indigo-500/10 to-transparent"></div>
+                    </div>
+
+                    <!-- Trade Log -->
+                    <div class="space-y-8">
+                        <div class="flex justify-between items-center px-4">
+                            <div class="flex items-center gap-4">
+                                <div class="w-2 h-8 bg-gradient-to-b from-fuchsia-500 to-purple-600 rounded-full"></div>
+                                <h3 class="text-xl font-black text-indigo-950 uppercase tracking-tight">Trade Intelligence Log</h3>
+                            </div>
+                            <span class="text-[0.65rem] font-black text-indigo-300 uppercase tracking-widest bg-indigo-50 px-4 py-2 rounded-2xl border border-indigo-100" id="btPageInfoTop">Page 1 of 1</span>
+                        </div>
+
+                        <div class="bg-white rounded-[3rem] border border-indigo-50 shadow-sm overflow-hidden">
+                            <div class="overflow-x-auto overflow-y-auto max-h-[500px]">
+                                <table class="w-full text-left text-sm border-collapse">
+                                    <thead class="bg-indigo-50/50 text-indigo-400 font-black uppercase tracking-widest text-[0.6rem] sticky top-0 backdrop-blur-md">
+                                        <tr>
+                                            <th class="p-8">Entry Timeline</th>
+                                            <th class="p-8">Exit Timeline</th>
+                                            <th class="p-8 text-center">Type</th>
+                                            <th class="p-8 text-center">Volume</th>
+                                            <th class="p-8 text-center">In / Out</th>
+                                            <th class="p-8 text-center">Fees</th>
+                                            <th class="p-8 text-center">Net P/L</th>
+                                            <th class="p-8 text-center">Rationale</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="btTradeLog" class="divide-y divide-indigo-50/50">
+                                        <!-- Trades injected by JS -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Pagination -->
+                        <div id="btPagination" class="flex justify-between items-center p-6 bg-white rounded-[2.5rem] border border-indigo-50 shadow-sm hidden">
+                            <span class="text-[0.7rem] font-black text-indigo-300 uppercase tracking-widest ml-4" id="btPageInfo">Page 1 of 1</span>
+                            <div class="flex gap-4">
+                                <button onclick="changeBtPage(-1)" class="w-14 h-14 flex items-center justify-center bg-white text-indigo-600 rounded-3xl border border-indigo-100 hover:bg-indigo-600 hover:text-white transition-all shadow-sm active:scale-90">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7" />
+                                    </svg>
+                                </button>
+                                <button onclick="changeBtPage(1)" class="w-14 h-14 flex items-center justify-center bg-white text-indigo-600 rounded-3xl border border-indigo-100 hover:bg-indigo-600 hover:text-white transition-all shadow-sm active:scale-90">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7" />
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            <div class="flex justify-center">
-                <button onclick="resetBacktestUI()"
-                    class="px-10 py-4 bg-white text-indigo-600 font-black text-[0.7rem] rounded-full border border-indigo-100 hover:bg-indigo-600 hover:text-white transition-all shadow-lg uppercase tracking-widest">
-                    ↺ Reset & Configure New Test
-                </button>
-            </div>
-
-            <!-- Trade Log -->
-            <div class="space-y-6">
-                <div class="flex justify-between items-end px-2">
-                    <div class="flex items-center gap-3">
-                        <div class="h-6 w-1.5 bg-indigo-600 rounded-full"></div>
-                        <h3 class="text-sm font-black text-indigo-900 uppercase tracking-widest">Strategy Execution Log
-                        </h3>
-                    </div>
-                    <span class="text-[0.65rem] font-black text-indigo-300 uppercase" id="btPageInfoTop">Page 1 of
-                        1</span>
-                </div>
-
-                <div class="bg-white rounded-[2rem] border border-indigo-50 shadow-xl overflow-hidden">
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left text-sm border-collapse">
-                            <thead
-                                class="bg-indigo-50/50 text-indigo-900 font-black uppercase tracking-widest text-[0.65rem]">
-                                <tr>
-                                    <th class="p-6">Entry</th>
-                                    <th class="p-6">Exit</th>
-                                    <th class="p-6">Action</th>
-                                    <th class="p-6 text-center">Qty</th>
-                                    <th class="p-6 text-center">Cost</th>
-                                    <th class="p-6 text-center">Value</th>
-                                    <th class="p-6 text-center">Fees</th>
-                                    <th class="p-6 text-center">P/L %</th>
-                                    <th class="p-6">Logic</th>
-                                </tr>
-                            </thead>
-                            <tbody id="btTradeLog" class="divide-y divide-indigo-50/50 font-medium text-indigo-900/80">
-                                <!-- Trades injected by JS -->
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <!-- Pagination -->
-                <div id="btPagination"
-                    class="flex justify-between items-center p-4 bg-white/40 rounded-2xl border border-white hidden">
-                    <span class="text-[0.65rem] font-black text-indigo-400 uppercase tracking-[0.2em]"
-                        id="btPageInfo">Page 1 of 1</span>
-                    <div class="flex gap-2">
-                        <button onclick="changeBtPage(-1)"
-                            class="w-12 h-12 flex items-center justify-center bg-white text-indigo-600 rounded-2xl border border-indigo-100 hover:bg-indigo-600 hover:text-white transition-all shadow-sm">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
-                                stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                    d="M15 19l-7-7 7-7" />
-                            </svg>
-                        </button>
-                        <button onclick="changeBtPage(1)"
-                            class="w-12 h-12 flex items-center justify-center bg-white text-indigo-600 rounded-2xl border border-indigo-100 hover:bg-indigo-600 hover:text-white transition-all shadow-sm">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
-                                stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                    d="M9 5l7 7-7 7" />
-                            </svg>
-                        </button>
-                    </div>
+                <div class="p-8 border-t border-indigo-50 bg-white/50 backdrop-blur-md flex justify-center">
+                    <button onclick="resetBacktestUI()" class="px-12 py-5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-black text-[0.8rem] rounded-[2rem] hover:shadow-2xl hover:shadow-indigo-500/40 transition-all active:scale-95 uppercase tracking-[0.3em] shadow-xl">
+                        ↻ Configure New Simulation
+                    </button>
                 </div>
             </div>
         </div>
