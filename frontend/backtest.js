@@ -100,6 +100,10 @@ function displayResults(res) {
     const roiEl = document.getElementById('resRoi');
     roiEl.className = `text-4xl font-black tracking-tighter ${s.roi_pct >= 0 ? 'text-emerald-500' : 'text-rose-500'}`;
 
+    const holdRoiEl = document.getElementById('resHoldRoi');
+    const holdColor = s.buy_hold_roi_pct >= 0 ? 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20' : 'text-rose-400 bg-rose-400/10 border-rose-400/20';
+    holdRoiEl.className = `text-[0.7rem] font-black uppercase tracking-widest px-4 py-1.5 rounded-full inline-block mt-3 border transition-all ${holdColor}`;
+
     // Trade Log
     allBtTrades = res.trades || [];
     btPage = 1;
