@@ -386,6 +386,8 @@ def get_dashboard(ticker: str = None, timeframe: str = None):
 
 @app.get("/api/scan/{ticker}")
 def scan_ticker(ticker: str, timeframe: str = "5Min"):
+    if not ticker.isalnum() or len(ticker) > 10:
+        return {"error": "Invalid ticker symbol"}
     """On-demand scan of a specific ticker."""
     account = broker.get_account_info()
     # Use settled cash (non-marginable) for crypto
@@ -411,6 +413,8 @@ async def run_backtest(data: dict):
     Runs a historical backtest for a ticker.
     """
     ticker = data.get("ticker", "AAPL").upper()
+    if not ticker.isalnum() or len(ticker) > 10:
+        return {"status": "error", "message": "Invalid ticker symbol"}
     timeframe = data.get("timeframe", "1Day")
     days = int(data.get("days", 30))
     capital = float(data.get("capital", 1000.0))
@@ -440,7 +444,7 @@ async def run_backtest(data: dict):
         return {"status": "success", "results": results}
     except Exception as e:
         print(f"[api] Backtest crash: {e}")
-        return {"status": "error", "message": f"Server Error: {str(e)}"}
+        return {"status": "error", "message": "An internal error occurred during backtest simulation."}
 
 
 @app.post("/api/download_all")
@@ -450,7 +454,8 @@ async def download_all_data(data: dict):
     Also saves stock metadata (sector, market cap, etc.)
     """
     ticker = data.get("ticker", "").upper()
-    if not ticker: return {"error": "Ticker required"}
+    if not ticker or not ticker.isalnum() or len(ticker) > 10:
+        return {"error": "Invalid ticker symbol provided."}
     
     timeframes = [
         ("1Min", 7),
