@@ -34,23 +34,27 @@ class AlpacaBroker:
         self.sim_positions = {}
         self.sim_orders = []
 
-        if ALPACA_AVAILABLE and config.ALPACA_API_KEY and config.ALPACA_API_KEY != "your_alpaca_api_key_here":
-            try:
-                self.client = TradingClient(
-                    config.ALPACA_API_KEY,
-                    config.ALPACA_SECRET_KEY,
-                    paper=config.ALPACA_PAPER
-                )
-                # Test connection
-                account = self.client.get_account()
-                self.simulation_mode = False
-                print(f"[broker] Connected to Alpaca {'Paper' if config.ALPACA_PAPER else 'Live'} Trading")
-                print(f"[broker] Account Equity: ${float(account.equity):.2f}")
-            except Exception as e:
-                print(f"[broker] Alpaca connection failed: {e}. Running in simulation mode.")
-                self.simulation_mode = True
-        else:
-            print("[broker] No Alpaca API keys configured. Running in simulation mode.")
+        if config.ALPACA_API_KEY and config.ALPACA_API_KEY != "your_alpaca_api_key_here":
+            self.connect(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY, config.ALPACA_PAPER)
+
+    def connect(self, api_key: str, secret_key: str, paper: bool = True) -> bool:
+        """Attempts to connect to Alpaca with provided keys."""
+        if not ALPACA_AVAILABLE:
+            print("[broker] alpaca-py not installed. Cannot connect.")
+            return False
+
+        try:
+            self.client = TradingClient(api_key, secret_key, paper=paper)
+            # Test connection
+            account = self.client.get_account()
+            self.simulation_mode = False
+            print(f"[broker] Successfully connected to Alpaca {'Paper' if paper else 'Live'} Trading")
+            return True
+        except Exception as e:
+            print(f"[broker] Alpaca connection failed: {e}. Falling back to simulation.")
+            self.simulation_mode = True
+            self.client = None
+            return False
 
     def get_account_info(self) -> dict:
         """Returns current account details."""
@@ -129,6 +133,7 @@ class AlpacaBroker:
                     'stop_loss': 0,
                     'take_profit': 0,
                 })
+            print(f"[broker] Fetched {len(positions)} active positions from Alpaca")
             return positions
         except Exception as e:
             print(f"[broker] Error getting positions: {e}")
@@ -164,12 +169,19 @@ class AlpacaBroker:
                 time_in_force=tif
             )
             order = self.client.submit_order(order_data=order_data)
+            
+            # Estimate fee (Crypto is ~0.1%, Stocks are $0 in Alpaca usually)
+            fee = round(notional * 0.001, 2) if is_crypto else 0.00
+            
             return {
                 'success': True,
                 'order_id': str(order.id),
                 'symbol': symbol,
                 'side': side.upper(),
+                'qty': order.qty if order.qty else 0, # Note: Notional orders might have None qty until filled
                 'notional': round(notional, 2),
+                'total_cost': round(notional + fee, 2),
+                'fees': fee,
                 'status': str(order.status),
             }
         except Exception as e:
@@ -191,17 +203,32 @@ class AlpacaBroker:
             return {'success': False, 'error': f'No position in {symbol}'}
 
         try:
-            # Format crypto symbol if needed (e.g. BTCUSD -> BTC/USD)
+            # 1. Format crypto symbol if needed (e.g. BTCUSD -> BTC/USD)
             request_symbol = symbol.upper().replace("/", "")
             is_crypto = any(request_symbol.endswith(base) for base in ["USD", "USDT", "USDC"])
+            
+            formats_to_try = [request_symbol] # Try no-slash first
             if is_crypto:
                 for base in ["USDT", "USDC", "USD"]:
                     if request_symbol.endswith(base):
-                        request_symbol = request_symbol.replace(base, f"/{base}")
+                        formats_to_try.append(request_symbol.replace(base, f"/{base}")) # Add slashed version
                         break
-
-            self.client.close_position(request_symbol)
-            return {'success': True, 'symbol': request_symbol}
+            
+            # 2. Attempt to close using available formats
+            last_err = "Unknown"
+            for sym in formats_to_try:
+                try:
+                    self.client.close_position(sym)
+                    print(f"[broker] Successfully closed position for {sym}")
+                    return {'success': True, 'symbol': sym}
+                except Exception as e:
+                    last_err = str(e)
+                    if "not found" in last_err.lower():
+                        continue # Try the next format
+                    else:
+                        break # Critical error, stop
+            
+            return {'success': False, 'error': last_err}
         except Exception as e:
             return {'success': False, 'error': str(e)}
 
@@ -223,31 +250,34 @@ class AlpacaBroker:
 
     def _sim_order(self, symbol: str, notional: float, side: str,
                    stop_loss: float, take_profit: float) -> dict:
-        """Simulates an order in local state."""
+        """Simulates an order in local state with detailed receipts."""
         if side.lower() == 'buy':
             if notional > self.sim_cash:
                 return {'success': False, 'error': 'Insufficient buying power'}
 
-            # Simulate fill at current price (would need real price data)
-            avg_price = notional  # Placeholder — gets updated by trader with real price
-            qty = 1.0  # Placeholder
+            # Detailed receipt data
+            fee = round(notional * 0.001, 2)
+            total_spent = notional + fee
+            
+            # Use $100 as a placeholder price for qty calculation
+            price = 100.0 
+            qty = round(notional / price, 6)
 
             if symbol in self.sim_positions:
-                # Add to existing position
                 existing = self.sim_positions[symbol]
-                total_cost = (existing['qty'] * existing['avg_price']) + notional
+                total_pos_cost = (existing['qty'] * existing['avg_price']) + notional
                 existing['qty'] += qty
-                existing['avg_price'] = total_cost / existing['qty']
+                existing['avg_price'] = total_pos_cost / existing['qty']
             else:
                 self.sim_positions[symbol] = {
                     'qty': qty,
-                    'avg_price': avg_price,
-                    'current_price': avg_price,
+                    'avg_price': price,
+                    'current_price': price,
                     'stop_loss': stop_loss,
                     'take_profit': take_profit,
                 }
 
-            self.sim_cash -= notional
+            self.sim_cash -= total_spent
             self.sim_equity = self.sim_cash + sum(
                 p['qty'] * p.get('current_price', p['avg_price'])
                 for p in self.sim_positions.values()
@@ -255,10 +285,13 @@ class AlpacaBroker:
 
             return {
                 'success': True,
-                'order_id': f'SIM-{len(self.sim_orders)}',
+                'order_id': f'SIM-{len(self.sim_positions)}',
                 'symbol': symbol,
                 'side': 'BUY',
+                'qty': qty,
                 'notional': round(notional, 2),
+                'total_cost': round(total_spent, 2),
+                'fees': fee,
                 'status': 'filled',
             }
 

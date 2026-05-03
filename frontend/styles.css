@@ -273,3 +273,113 @@
     color: #7c3aed;
     box-shadow: 0 2px 10px rgba(139, 92, 246, 0.2);
 }
+
+/* ── Backtest Indicator Cards ── */
+.indicator-card {
+    cursor: pointer;
+    position: relative;
+    transition: all 0.2s ease;
+}
+
+.indicator-card input:checked+.indicator-card-inner {
+    border-color: #9333ea;
+    background: rgba(147, 51, 234, 0.08);
+    box-shadow: 0 4px 15px rgba(147, 51, 234, 0.15);
+    filter: grayscale(0%);
+    opacity: 1;
+}
+
+.indicator-card-inner {
+    padding: 0.75rem;
+    border-radius: 0.75rem;
+    border: 1px solid rgba(156, 163, 175, 0.3);
+    background: rgba(243, 244, 246, 0.6);
+    filter: grayscale(100%);
+    opacity: 0.6;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    transition: all 0.25s ease;
+}
+
+.indicator-card:hover .indicator-card-inner {
+    border-color: rgba(147, 51, 234, 0.4);
+    background: rgba(255, 255, 255, 0.8);
+}
+
+.indicator-name {
+    font-size: 0.75rem;
+    font-weight: 800;
+    color: #312e81;
+    text-transform: uppercase;
+}
+
+.indicator-desc {
+    font-size: 0.6rem;
+    color: #7c3aed;
+    margin-top: 0.25rem;
+    line-height: 1.3;
+    opacity: 0.8;
+}
+
+.indicator-check-mark {
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    border: 1.5px solid #d8b4fe;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    flex-shrink: 0;
+}
+
+.indicator-card input:checked+.indicator-card-inner .indicator-check-mark {
+    background: #9333ea;
+    border-color: #9333ea;
+}
+
+.indicator-card input:checked+.indicator-card-inner .indicator-check-mark::after {
+    content: "✓";
+    color: white;
+    font-size: 10px;
+    font-weight: 900;
+}
+
+/* ── Sentient Purple Theme ── */
+.sentient-purple {
+    background: linear-gradient(135deg, #9333ea 0%, #6366f1 100%);
+    box-shadow: 0 20px 50px rgba(147, 51, 234, 0.25), inset 0 0 30px rgba(255, 255, 255, 0.1);
+    position: relative;
+    overflow: hidden;
+}
+
+.sentient-purple::before {
+    content: '';
+    position: absolute;
+    inset: -50%;
+    background: radial-gradient(circle at center, rgba(232, 121, 249, 0.2) 0%, transparent 60%);
+    animation: sentient-pulse 8s infinite ease-in-out;
+    pointer-events: none;
+}
+
+@keyframes sentient-pulse {
+
+    0%,
+    100% {
+        transform: scale(1);
+        opacity: 0.4;
+    }
+
+    50% {
+        transform: scale(1.2);
+        opacity: 0.7;
+    }
+}
+
+.sentient-purple-label {
+    background: rgba(255, 255, 255, 0.15);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: white;
+}

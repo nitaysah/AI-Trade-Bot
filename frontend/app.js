@@ -3,8 +3,11 @@
 // Auto-refreshing, multi-panel, real-time dashboard
 // ═══════════════════════════════════════════════════
 
-// 6. Production API Configuration
-const API_BASE = 'https://ai-trade-bot-backend-946557219642.us-central1.run.app';
+// 6. Production API Configuration (Auto-switch between Local and Cloud)
+const CLOUD_URL = 'https://ai-trade-bot-backend-946557219642.us-central1.run.app';
+const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
+    ? 'http://localhost:8000' 
+    : CLOUD_URL;
 const REFRESH_INTERVAL = 15000; // 15 seconds
 let selectedTicker = null; // Start null to force sync with Active Bots
 let tvWidget = null;
@@ -137,7 +140,7 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
 // ──────────────────────────────────────────────
 // 4. Render Watchlist
 // ──────────────────────────────────────────────
-function renderWatchlist(scans, watchlist) {
+function renderWatchlist(scans, watchlist, tradelist = []) {
     const container = document.getElementById('watchlistContainer');
     container.innerHTML = '';
 
@@ -160,6 +163,7 @@ function renderWatchlist(scans, watchlist) {
                 <div>
                     <span class="font-bold text-sm text-indigo-900">${ticker}</span>
                     <span class="text-xs text-purple-500 ml-2">${price}</span>
+                    ${tradelist.includes(ticker) ? '<span class="ml-2 px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-600 text-[0.6rem] font-bold">BOT</span>' : ''}
                 </div>
                 <div class="flex items-center gap-2">
                     <span class="text-[0.6rem] text-purple-400">${bullish}/${total}</span>
@@ -167,12 +171,12 @@ function renderWatchlist(scans, watchlist) {
                 </div>
             </div>
             <div class="flex items-center gap-1 ml-2">
-                <button class="watchlist-action text-emerald-500 hover:bg-emerald-50" title="Activate Bot for ${ticker}" onclick="addToTradelist('${ticker}')">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <button class="watchlist-action ${tradelist.includes(ticker) ? 'text-purple-600 bg-purple-50' : 'text-emerald-500 hover:bg-emerald-50'}" title="Activate Bot for ${ticker}" onclick="event.stopPropagation(); addToTradelist('${ticker}')">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="${tradelist.includes(ticker) ? 'currentColor' : 'none'}" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
                     </svg>
                 </button>
-                <button class="watchlist-delete text-red-400 hover:bg-red-50" title="Remove ${ticker}" onclick="removeFromWatchlist('${ticker}')">
+                <button class="watchlist-delete text-red-400 hover:bg-red-50" title="Remove ${ticker}" onclick="event.stopPropagation(); removeFromWatchlist('${ticker}')">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                     </svg>
@@ -352,15 +356,16 @@ function renderTradeLog(scanHistory, executedTrades) {
     const trades = currentLogTab === 'trades' ? (executedTrades || []) : (scanHistory || []);
 
     if (!trades || trades.length === 0) {
-        noMsg.style.display = 'block';
-        noMsg.textContent = currentLogTab === 'trades' ? "No orders executed yet." : "Waiting for first scan...";
+        if (noMsg) {
+            noMsg.style.display = 'block';
+            noMsg.textContent = currentLogTab === 'trades' ? "No orders executed yet." : "Waiting for first scan...";
+        }
         return;
     }
+    if (noMsg) noMsg.style.display = 'none';
 
     // Slice for display
     let filtered = trades.slice(0, 50);
-
-    noMsg.style.display = 'none';
 
     filtered.forEach(trade => {
         const actionColor = trade.action === 'BUY'
@@ -380,10 +385,16 @@ function renderTradeLog(scanHistory, executedTrades) {
             <td class="py-2.5 pr-4 ${actionColor} text-xs">${trade.action}</td>
             <td class="py-2.5 pr-4 text-indigo-950 font-semibold text-xs">${trade.ticker}</td>
             <td class="py-2.5 pr-4 text-indigo-700 font-medium text-xs">${trade.price}</td>
+            <td class="py-2.5 pr-4 text-center text-[0.65rem] font-bold text-indigo-900">${trade.qty || '—'}</td>
+            <td class="py-2.5 pr-4 text-center text-[0.65rem] font-bold text-emerald-600">$${trade.total_cost ? Number(trade.total_cost).toFixed(2) : '—'}</td>
+            <td class="py-2.5 pr-4 text-center text-[0.65rem] text-purple-400 font-mono">$${trade.fees ? Number(trade.fees).toFixed(2) : '0.00'}</td>
             <td class="py-2.5 pr-4 text-xs">
                 <span class="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-mono text-[0.6rem]">${signalBadge}</span>
             </td>
             <td class="py-2.5 pr-4 text-purple-500 italic text-xs max-w-xs truncate" title="${trade.reason}">${trade.reason}</td>
+            <td class="py-2.5 pr-4 text-right">
+                ${trade.order ? '<span class="text-emerald-500 text-[0.6rem] font-bold">FILLED</span>' : '<span class="text-purple-300 text-[0.6rem]">SCAN</span>'}
+            </td>
         `;
         tbody.appendChild(row);
     });
@@ -515,6 +526,39 @@ async function fetchDashboard() {
             selectedTicker = data.primaryTicker || data.watchlist[0];
         }
 
+        // Alpaca Status Pill & Action Toggle
+        const statusPill = document.getElementById('alpacaLinkStatus');
+        const statusDot = document.getElementById('alpacaStatusDot');
+        const statusText = document.getElementById('alpacaStatusText');
+        const btnConnect = document.getElementById('btnConnectAlpaca');
+        const btnUnlink = document.getElementById('btnUnlinkAlpaca');
+
+        if (statusPill && statusDot && statusText) {
+            if (data.simulation) {
+                statusPill.className = "flex items-center text-sm font-black px-8 py-3 rounded-full bg-rose-50 text-rose-600 border-2 border-rose-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
+                statusDot.className = "h-2.5 w-2.5 rounded-full mr-2.5 bg-rose-500 animate-pulse";
+                statusText.textContent = "Alpaca Disconnected";
+                if (btnUnlink) btnUnlink.classList.add('hidden');
+            } else {
+                statusPill.className = "flex items-center text-sm font-black px-8 py-3 rounded-full bg-emerald-50 text-emerald-600 border-2 border-emerald-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
+                statusDot.className = "h-2.5 w-2.5 rounded-full mr-2.5 bg-emerald-500 animate-pulse";
+                statusText.textContent = "Alpaca Linked";
+                if (btnUnlink) btnUnlink.classList.remove('hidden');
+            }
+        }
+
+        // Connection prompt visibility
+        const connPrompt = document.getElementById('connectionPrompt');
+        const dashContent = document.getElementById('dashboardContent');
+        
+        if (data.simulation) {
+            if (connPrompt) connPrompt.classList.remove('hidden');
+            if (dashContent) dashContent.classList.add('hidden');
+        } else {
+            if (connPrompt) connPrompt.classList.add('hidden');
+            if (dashContent) dashContent.classList.remove('hidden');
+        }
+
         // Portfolio stats
         const capitalEl = document.getElementById('totalCapital');
         const openPosEl = document.getElementById('openPositions');
@@ -523,10 +567,14 @@ async function fetchDashboard() {
 
         if (capitalEl) {
             capitalEl.textContent = data.capital || '---';
+            if (data.simulation) capitalEl.textContent += ' (Simulated)';
             capitalEl.classList.remove('animate-pulse');
         }
         const cashEl = document.getElementById('cashDisplay');
-        if (cashEl) cashEl.textContent = `Cash: ${data.cash || '---'}`;
+        if (cashEl) {
+            cashEl.textContent = `Cash: ${data.cash || '---'}`;
+            if (data.simulation) cashEl.textContent += ' (Simulated)';
+        }
 
         if (openPosEl) {
             openPosEl.textContent = data.openPositions || '0';
@@ -577,14 +625,17 @@ async function fetchDashboard() {
 
         // Mode indicator
         const modeEl = document.getElementById('modeIndicator');
-        if (data.simulation) {
-            modeEl.innerHTML = '<span class="h-2.5 w-2.5 bg-amber-500 rounded-full mr-2 animate-pulse"></span> Simulation Mode';
-        } else {
-            modeEl.innerHTML = '<span class="h-2.5 w-2.5 bg-green-500 rounded-full mr-2 animate-pulse"></span> Live Trading';
+        if (modeEl) {
+            if (data.simulation) {
+                modeEl.innerHTML = '<span class="h-2.5 w-2.5 bg-amber-500 rounded-full mr-2 animate-pulse"></span> Simulation Mode';
+            } else {
+                modeEl.innerHTML = '<span class="h-2.5 w-2.5 bg-green-500 rounded-full mr-2 animate-pulse"></span> Live Trading';
+            }
         }
 
         // Last scan
-        document.getElementById('lastScanTime').textContent = data.lastScan || '—';
+        const lastScanEl = document.getElementById('lastScanTime');
+        if (lastScanEl) lastScanEl.textContent = data.lastScan || '—';
 
         // Sync Strategy TF dropdown
         const tfSelector = document.getElementById('strategyTf');
@@ -632,8 +683,8 @@ async function fetchDashboard() {
 
         // Watchlist & Tradelist
         renderTradelist(data.watchlistScans, data.tradelist, data.tickerAmounts);
-        renderWatchlist(data.watchlistScans, data.watchlist);
-
+        renderWatchlist(data.watchlistScans, data.watchlist, data.tradelist);
+        
         // Risk
         
         // Cache data for settings modals to access
@@ -642,11 +693,14 @@ async function fetchDashboard() {
         // Trade log
         latestScanHistory = data.recentTrades || [];
         latestExecutedTrades = data.executedTrades || [];
+        
+        // Muted repetitive sync logs to keep console clean. Use the UI 'Last Scan' indicator for status.
         renderTradeLog(latestScanHistory, latestExecutedTrades);
 
     } catch (error) {
         console.error('[dashboard] Fetch error:', error);
-        document.getElementById('lastScanTime').textContent = 'Connection error';
+        const lastScanEl = document.getElementById('lastScanTime');
+        if (lastScanEl) lastScanEl.textContent = 'Connection error';
         showGlobalError('Cannot connect to the trading backend.');
     }
 }
@@ -820,6 +874,11 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Backtest Indicator Listener for Dynamic Slider
+    document.querySelectorAll('.bt-indicator-check').forEach(cb => {
+        cb.addEventListener('change', syncBacktestSliderRange);
+    });
+
     console.log('[dashboard] AI Trading Bot Dashboard initialized.');
 });
 
@@ -838,6 +897,7 @@ function openBacktestModal() {
     document.getElementById('backtestModal').classList.remove('hidden');
     document.getElementById('btTicker').value = selectedTicker || "TSLA";
     resetBacktestUI(); // Ensure settings are visible
+    syncBacktestSliderRange(); // Initial sync of slider range
 }
 
 function closeBacktestModal() {
@@ -988,6 +1048,10 @@ function renderBtTradesPage() {
                 <td class="p-4 font-medium text-indigo-900">${t.entry_time}</td>
                 <td class="p-4 font-medium text-indigo-400">${t.exit_time}</td>
                 <td class="p-4 font-black text-indigo-900 tracking-tight">$${t.entry_price} → $${t.exit_price}</td>
+                <td class="p-4 text-center text-indigo-900 font-bold">${t.qty || '—'}</td>
+                <td class="p-4 text-center text-indigo-600 font-medium">$${t.entry_cost ? Number(t.entry_cost).toFixed(2) : '—'}</td>
+                <td class="p-4 text-center text-emerald-600 font-bold">$${t.exit_value ? Number(t.exit_value).toFixed(2) : '—'}</td>
+                <td class="p-4 text-center text-purple-400 font-mono text-[0.6rem]">$${t.fees ? Number(t.fees).toFixed(2) : '0.00'}</td>
                 <td class="p-4 text-center">
                     <span class="inline-block px-2 py-1 rounded-md ${plBg} ${plColor} font-black text-[0.7rem] min-w-[60px]">
                         ${isWin ? '+' : ''}${t.pl_pct}%
@@ -1007,4 +1071,176 @@ function changeBtPage(delta) {
         btCurrentPage = newPage;
         renderBtTradesPage();
     }
+}
+// ──────────────────────────────────────────────
+// 13. Backtest Aggressiveness Logic
+// ──────────────────────────────────────────────
+function syncBacktestSliderRange() {
+    const checkedCount = document.querySelectorAll('.bt-indicator-check:checked').length;
+    const slider = document.getElementById('btAggressiveSlider');
+    const label = document.getElementById('btAggressiveLabel');
+    
+    if (checkedCount === 0) {
+        slider.min = 0;
+        slider.max = 0;
+        slider.value = 0;
+        slider.disabled = true;
+        label.textContent = "Select Indicators First";
+        label.className = "text-[0.75rem] font-black px-3 py-1 rounded-full bg-rose-500 text-white uppercase shadow-md";
+        return;
+    }
+    
+    slider.disabled = false;
+    slider.min = 1;
+    slider.max = checkedCount;
+    
+    // If current value is higher than new max, cap it
+    if (parseInt(slider.value) > checkedCount) {
+        slider.value = checkedCount;
+    }
+    
+    updateBtAggressiveness(slider.value);
+}
+
+function updateBtAggressiveness(val) {
+    const slider = document.getElementById('btAggressiveSlider');
+    const max = parseInt(slider.max) || 1;
+    const label = document.getElementById('btAggressiveLabel');
+    const buyInp = document.getElementById('btThreshold');
+    const sellInp = document.getElementById('btSellThreshold');
+    
+    val = parseInt(val);
+    buyInp.value = val;
+    sellInp.value = val;
+
+    const pct = Math.round((val / max) * 100);
+    let mode = "Balanced";
+    let colorClass = "bg-indigo-600";
+    
+    if (pct <= 34) {
+        mode = "Aggressive";
+        colorClass = "bg-emerald-600";
+    } else if (pct >= 75) {
+        mode = "Quality";
+        colorClass = "bg-purple-600";
+    }
+    
+    if (val === max && max > 1) {
+        mode = "Ultra-Quality";
+        colorClass = "bg-indigo-900";
+    }
+    
+    label.textContent = `${mode} (${val} of ${max} signals)`;
+    label.className = `text-[0.75rem] font-black px-3 py-1 rounded-full ${colorClass} text-white uppercase shadow-md`;
+}
+
+// ──────────────────────────────────────────────
+// 11. Emergency Shutdown
+// ──────────────────────────────────────────────
+async function emergencyShutdown() {
+    if (!confirm("☢️ WARNING: This will DEACTIVATE the entire trading engine (Local and Cloud). The bot will remain dormant until manually restarted. Continue?")) return;
+
+    try {
+        const response = await fetch(`${API_BASE}/api/bot/shutdown`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await response.json();
+        if (data.status === 'success') {
+            alert("SYSTEM OFFLINE: Trading engine has been deactivated. You must manually set ENGINE_ACTIVE to true in settings.json to restart.");
+            window.location.reload(); 
+        }
+    } catch (e) {
+        console.error('Shutdown error:', e);
+        alert("Failed to send shutdown command.");
+    }
+}
+
+// ──────────────────────────────────────────────
+// 12. Alpaca Connection Logic
+// ──────────────────────────────────────────────
+function openAlpacaModal() {
+    document.getElementById('alpacaModal').classList.remove('hidden');
+    // Clear fields for security
+    document.getElementById('alpacaKey').value = "";
+    document.getElementById('alpacaSecret').value = "";
+}
+
+function closeAlpacaModal() {
+    document.getElementById('alpacaModal').classList.add('hidden');
+}
+
+async function submitAlpacaConfig() {
+    const key = document.getElementById('alpacaKey').value.trim();
+    const secret = document.getElementById('alpacaSecret').value.trim();
+    const isPaper = document.getElementById('alpacaPaper').checked;
+    const btn = document.getElementById('alpacaSubmitBtn');
+
+    if (!key || !secret) {
+        alert("Please provide both API Key and Secret.");
+        return;
+    }
+
+    const originalText = btn.innerText;
+    btn.innerText = "ESTABLISHING BRIDGE...";
+    btn.disabled = true;
+
+    try {
+        const response = await fetch(`${API_BASE}/api/alpaca_config`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                api_key: key,
+                secret_key: secret,
+                paper: isPaper
+            })
+        });
+
+        const data = await response.json();
+        if (data.status === 'success') {
+            alert("Connection Successful! Your Alpaca account is now linked.");
+            closeAlpacaModal();
+            // Refresh dashboard data to show new balance
+            if (typeof fetchDashboardData === 'function') fetchDashboardData();
+        } else {
+            alert("Connection Failed: " + data.message);
+        }
+    } catch (err) {
+        console.error(err);
+        alert("Backend communication error.");
+    } finally {
+        btn.innerText = originalText;
+        btn.disabled = false;
+    }
+}
+
+async function unlinkAlpaca() {
+    if (!confirm("Are you sure you want to unlink your Alpaca account? The bot will switch back to simulation mode.")) return;
+
+    try {
+        const response = await fetch(`${API_BASE}/api/alpaca_config`, {
+            method: 'DELETE'
+        });
+        const data = await response.json();
+        if (data.status === 'success') {
+            alert(data.message);
+            if (typeof fetchDashboard === 'function') fetchDashboard();
+        } else {
+            alert("Error unlinking account.");
+        }
+    } catch (err) {
+        console.error(err);
+        alert("Backend communication error.");
+    }
+}
+
+// ──────────────────────────────────────────────
+// 13. Onboarding Guide Logic
+// ──────────────────────────────────────────────
+function openGuideModal() {
+    document.getElementById('guideModal').classList.remove('hidden');
+}
+
+function closeGuideModal() {
+    document.getElementById('guideModal').classList.add('hidden');
 }

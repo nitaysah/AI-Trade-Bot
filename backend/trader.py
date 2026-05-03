@@ -31,66 +31,100 @@ def evaluate_trade(ticker: str, account_equity: float = 100.0, timeframe: str = 
     if not analysis:
         return None
 
-def get_confluence_decision(analysis_results, ai_sentiment_score=0.0, ai_sentiment_confidence=0.0):
+def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai_sentiment_confidence=0.0):
     """
     Pure decision logic based on technical and AI signals.
-    Does not touch live APIs or risk managers.
+    Respects global ENABLE_ toggles for technical indicators.
     """
-    bullish_count = analysis_results['bullish_count']
-    bearish_count = analysis_results['bearish_count']
-    
-    signals = analysis_results['signals'].copy()
+    # Map Signal Names to Config Keys
+    SIGNAL_TO_TOGGLE = {
+        'RSI': 'ENABLE_RSI',
+        'MACD': 'ENABLE_MACD',
+        'EMA Cross': 'ENABLE_EMA',
+        'Supertrend': 'ENABLE_SUPERTREND',
+        'Bollinger': 'ENABLE_BOLLINGER',
+        'VWAP': 'ENABLE_VWAP',
+        'Mystic Pulse': 'ENABLE_MYSTIC_PULSE',
+        'Candle Patterns': 'ENABLE_CANDLE_PATTERNS',
+    }
 
-    # Factor in AI sentiment as a signal (only if enabled)
+    raw_signals = analysis_results.get('signals', {})
+    filtered_signals = {}
+    
+    bullish_count = 0
+    bearish_count = 0
+
+    # 1. Process Technical Indicators
+    for name, data in raw_signals.items():
+        toggle_key = SIGNAL_TO_TOGGLE.get(name)
+        is_enabled = getattr(config, toggle_key, True) if toggle_key else True
+        
+        # Add to output signals with enabled status
+        filtered_signals[name] = {**data, 'enabled': is_enabled}
+        
+        # Only count towards decision if enabled
+        if is_enabled:
+            if data.get('signal') == 'BULLISH':
+                bullish_count += 1
+            elif data.get('signal') == 'BEARISH':
+                bearish_count += 1
+
+    # 2. Factor in AI sentiment as a signal (only if enabled)
     if getattr(config, 'ENABLE_AI_SENTIMENT', True):
+        ai_enabled = True
         if ai_sentiment_score >= config.SENTIMENT_BULLISH_THRESHOLD and ai_sentiment_confidence >= 0.4:
             bullish_count += 1
-            signals['AI Sentiment'] = {
+            filtered_signals['AI Sentiment'] = {
                 'value': ai_sentiment_score,
                 'signal': 'BULLISH',
-                'reason': "Positive catalysts detected"
+                'reason': "Positive catalysts detected",
+                'enabled': True
             }
         elif ai_sentiment_score <= config.SENTIMENT_BEARISH_THRESHOLD and ai_sentiment_confidence >= 0.4:
             bearish_count += 1
-            signals['AI Sentiment'] = {
+            filtered_signals['AI Sentiment'] = {
                 'value': ai_sentiment_score,
                 'signal': 'BEARISH',
-                'reason': "Negative catalysts detected"
+                'reason': "Negative catalysts detected",
+                'enabled': True
             }
         else:
-            signals['AI Sentiment'] = {
+            filtered_signals['AI Sentiment'] = {
                 'value': ai_sentiment_score,
                 'signal': 'NEUTRAL',
-                'reason': "Mixed or weak news flow"
+                'reason': "Mixed or weak news flow",
+                'enabled': True
             }
     else:
-        # If disabled, still show the value but don't count it towards action
-        signals['AI Sentiment'] = {
+        filtered_signals['AI Sentiment'] = {
             'value': ai_sentiment_score,
             'signal': 'NEUTRAL',
             'reason': "AI Sentiment Disabled",
             'enabled': False
         }
 
-    # Determine action
+    # 3. Determine final action
     action = "HOLD"
     reason = "Neutral"
 
     if bullish_count >= config.MIN_BULLISH_SIGNALS:
         action = "BUY"
-        bullish_names = [k for k, v in signals.items() if v.get('signal') == 'BULLISH']
-        reason = f"{bullish_count} bullish signals ({', '.join(bullish_names)})"
+        bullish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BULLISH' and v.get('enabled')]
+        reason = f"BUY Triggered: {bullish_count} bullish signals ({', '.join(bullish_names)})"
     elif bearish_count >= config.MIN_BEARISH_SIGNALS:
         action = "SELL"
-        bearish_names = [k for k, v in signals.items() if v.get('signal') == 'BEARISH']
-        reason = f"{bearish_count} bearish signals ({', '.join(bearish_names)})"
+        bearish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BEARISH' and v.get('enabled')]
+        reason = f"SELL Triggered: {bearish_count} bearish signals ({', '.join(bearish_names)})"
+    
+    if ticker in config.TRADELIST:
+        print(f"[trader] {ticker} Decision: {action} ({bullish_count}B/{bearish_count}S) - {reason}")
 
     return {
         "action": action,
         "reason": reason,
         "bullish_count": bullish_count,
         "bearish_count": bearish_count,
-        "signals": signals
+        "signals": filtered_signals
     }
 
 
@@ -111,6 +145,7 @@ def evaluate_trade(ticker: str, account_equity: float = 100.0, available_cash: f
 
     # 3. Get decision from confluence logic
     decision = get_confluence_decision(
+        ticker,
         analysis, 
         ai_data['score'], 
         ai_data['confidence']

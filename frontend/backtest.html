@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Trader — Backtest Center</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <link rel="icon"
+        href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📊</text></svg>">
+
+    <!-- Firebase Sentinel (Auth Guard) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+        import { firebaseConfig } from "./firebase-config.js";
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+
+        onAuthStateChanged(auth, (user) => {
+            if (!user) window.location.href = "index.html";
+        });
+    </script>
+</head>
+
+<body class="bg-gradient-to-br from-fuchsia-50 via-purple-100 to-indigo-100 text-indigo-950 min-h-screen font-sans">
+
+    <!-- Header -->
+    <header class="sentient-purple flex justify-between items-center p-4 md:p-6 shadow-xl sticky top-0 z-50">
+        <div class="flex items-center gap-4">
+            <a href="dashboard.html"
+                class="w-10 h-10 flex items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20 transition-all backdrop-blur-md border border-white/20"
+                title="Back to Dashboard">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
+                    stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                        d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                </svg>
+            </a>
+            <div>
+                <h1 class="text-lg md:text-xl font-black text-white uppercase tracking-tight">Backtest Center</h1>
+                <p
+                    class="text-[0.6rem] md:text-[0.65rem] text-fuchsia-200 font-black uppercase tracking-[0.2em] opacity-90">
+                    Historical Performance Simulator</p>
+            </div>
+        </div>
+        <div class="hidden md:flex items-center gap-3">
+            <span
+                class="text-[0.6rem] font-black px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-100 border border-emerald-500/30 uppercase">Historical
+                Engine v2.0</span>
+        </div>
+    </header>
+
+    <main class="max-w-3xl mx-auto px-4 py-8">
+
+        <div id="btSettingsContainer" class="space-y-8 animate-in fade-in duration-500">
+
+            <!-- Environment Group -->
+            <div
+                class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6 p-6 bg-white/60 backdrop-blur-xl rounded-3xl border border-white shadow-xl">
+                <div class="space-y-2">
+                    <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Target
+                        Ticker</label>
+                    <div class="flex gap-2">
+                        <input type="text" id="btTicker"
+                            class="flex-1 bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-sm uppercase font-black text-indigo-900 focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all"
+                            value="BTCUSD">
+                        <button onclick="bulkDownloadTicker()"
+                            class="px-3 bg-indigo-50 border border-indigo-100 rounded-2xl text-indigo-600 hover:bg-indigo-600 hover:text-white transition-all shadow-sm">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
+                                stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="space-y-2">
+                    <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Time
+                        Interval</label>
+                    <select id="btTimeframe"
+                        class="w-full bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-sm font-black text-indigo-900 focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm appearance-none cursor-pointer">
+                        <option value="1Day">1 Day (Max 5Y)</option>
+                        <option value="4Hour">4 Hours (Max 2Y)</option>
+                        <option value="1Hour" selected>1 Hour (Max 1Y)</option>
+                        <option value="30Min">30 Minutes (60D)</option>
+                        <option value="15Min">15 Minutes (60D)</option>
+                        <option value="5Min">5 Minutes (60D)</option>
+                        <option value="1Min">1 Minute (7D)</option>
+                    </select>
+                </div>
+                <div class="space-y-2">
+                    <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Simulation
+                        Days</label>
+                    <input type="number" id="btDays"
+                        class="w-full bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-sm font-black text-indigo-900 shadow-sm"
+                        value="365">
+                </div>
+                <div class="space-y-2">
+                    <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Initial
+                        Capital ($)</label>
+                    <input type="number" id="btCapital"
+                        class="w-full bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-sm font-black text-indigo-900 shadow-sm"
+                        value="1000">
+                </div>
+            </div>
+
+            <!-- Strategy Brain Group -->
+            <div class="space-y-8">
+                <!-- Confluence Slider Card -->
+                <div class="bg-purple-50/40 p-6 md:p-8 rounded-[2.5rem] shadow-sm relative border border-purple-200">
+                    <div class="relative z-10 flex flex-col lg:flex-row justify-between items-center gap-8">
+                        <div class="text-center lg:text-left flex-shrink-0">
+                            <h2
+                                class="text-xl md:text-2xl font-black uppercase tracking-[0.2em] text-indigo-900 leading-tight whitespace-nowrap">
+                                Strategy Intelligence</h2>
+                            <p class="text-[0.65rem] font-bold text-purple-400 uppercase mt-2 tracking-[0.2em]">Define
+                                the threshold for trade execution</p>
+                        </div>
+
+                        <div
+                            class="flex-1 w-full lg:max-w-xs bg-white p-6 rounded-[2rem] border border-purple-100 shadow-sm flex flex-col items-center gap-4">
+                            <span
+                                class="text-[0.65rem] font-black text-indigo-900 uppercase tracking-widest text-center">Aggressive
+                                vs. Quality</span>
+
+                            <input type="range" id="btAggressiveSlider" min="1" max="1" value="1"
+                                class="w-full h-2 bg-indigo-50 rounded-full appearance-none cursor-pointer accent-purple-600"
+                                oninput="updateBtAggressiveness(this.value)">
+
+                            <span id="btAggressiveLabel"
+                                class="text-[0.65rem] font-black px-4 py-1.5 rounded-full bg-purple-100 text-purple-600 shadow-sm uppercase tracking-wider transition-all duration-300">Balanced
+                                (1 of 1)</span>
+                        </div>
+                    </div>
+
+
+                    <input type="hidden" id="btThreshold" value="1">
+                    <input type="hidden" id="btSellThreshold" value="1">
+                </div>
+
+                <!-- Indicator Grid -->
+                <div class="space-y-6">
+                    <div class="flex items-center gap-3 px-1">
+                        <div class="h-6 w-1.5 bg-gradient-to-b from-fuchsia-600 to-purple-600 rounded-full"></div>
+                        <label class="text-sm font-black text-indigo-900 uppercase tracking-widest">Strategy Indicator
+                            Matrix</label>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                        <label class="indicator-card group">
+                            <input type="checkbox" class="bt-indicator-check hidden" value="RSI">
+                            <div class="indicator-card-inner">
+                                <div class="flex justify-between items-start mb-1">
+                                    <span class="indicator-name">RSI</span>
+                                    <div class="indicator-check-mark"></div>
+                                </div>
+                                <p class="indicator-desc">Relative Strength Index — Momentum oscillator.</p>
+                            </div>
+                        </label>
+                        <label class="indicator-card group">
+                            <input type="checkbox" class="bt-indicator-check hidden" value="MACD">
+                            <div class="indicator-card-inner">
+                                <div class="flex justify-between items-start mb-1">
+                                    <span class="indicator-name">MACD</span>
+                                    <div class="indicator-check-mark"></div>
+                                </div>
+                                <p class="indicator-desc">Moving Average Convergence Divergence.</p>
+                            </div>
+                        </label>
+                        <label class="indicator-card group">
+                            <input type="checkbox" class="bt-indicator-check hidden" value="EMA Cross">
+                            <div class="indicator-card-inner">
+                                <div class="flex justify-between items-start mb-1">
+                                    <span class="indicator-name">EMA Cross</span>
+                                    <div class="indicator-check-mark"></div>
+                                </div>
+                                <p class="indicator-desc">9/21 Exponential Moving Average crossover.</p>
+                            </div>
+                        </label>
+                        <label class="indicator-card group">
+                            <input type="checkbox" class="bt-indicator-check hidden" value="Supertrend">
+                            <div class="indicator-card-inner">
+                                <div class="flex justify-between items-start mb-1">
+                                    <span class="indicator-name">Supertrend</span>
+                                    <div class="indicator-check-mark"></div>
+                                </div>
+                                <p class="indicator-desc">Trend follower based on ATR volatility.</p>
+                            </div>
+                        </label>
+                        <label class="indicator-card group">
+                            <input type="checkbox" class="bt-indicator-check hidden" value="Bollinger">
+                            <div class="indicator-card-inner">
+                                <div class="flex justify-between items-start mb-1">
+                                    <span class="indicator-name">Bollinger</span>
+                                    <div class="indicator-check-mark"></div>
+                                </div>
+                                <p class="indicator-desc">Standard Deviation bands for volatility.</p>
+                            </div>
+                        </label>
+                        <label class="indicator-card group">
+                            <input type="checkbox" class="bt-indicator-check hidden" value="VWAP">
+                            <div class="indicator-card-inner">
+                                <div class="flex justify-between items-start mb-1">
+                                    <span class="indicator-name">VWAP</span>
+                                    <div class="indicator-check-mark"></div>
+                                </div>
+                                <p class="indicator-desc">Volume Weighted Average Price anchor.</p>
+                            </div>
+                        </label>
+                        <label class="indicator-card group">
+                            <input type="checkbox" class="bt-indicator-check hidden" value="Mystic Pulse">
+                            <div class="indicator-card-inner">
+                                <div class="flex justify-between items-start mb-1">
+                                    <span class="indicator-name">Mystic Pulse</span>
+                                    <div class="indicator-check-mark"></div>
+                                </div>
+                                <p class="indicator-desc">Proprietary trend persistence index.</p>
+                            </div>
+                        </label>
+                        <label class="indicator-card group">
+                            <input type="checkbox" class="bt-indicator-check hidden" value="Candle Patterns">
+                            <div class="indicator-card-inner">
+                                <div class="flex justify-between items-start mb-1">
+                                    <span class="indicator-name">Candle patterns</span>
+                                    <div class="indicator-check-mark"></div>
+                                </div>
+                                <p class="indicator-desc">Automated engulfing and reversal detection.</p>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <button id="runBtBtn" onclick="runBacktest()"
+                class="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-black py-6 rounded-[2rem] hover:shadow-indigo-500/40 hover:shadow-2xl transition-all active:scale-[0.98] uppercase tracking-[0.5em] text-sm md:text-base shadow-xl">
+                🚀 RUN STRATEGY ALPHA SIMULATION
+            </button>
+        </div>
+
+        <!-- Loading State -->
+        <div id="btLoading" class="hidden py-32 text-center space-y-8">
+            <div class="relative inline-block h-24 w-24">
+                <div class="absolute inset-0 border-4 border-indigo-100 rounded-full"></div>
+                <div class="absolute inset-0 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin">
+                </div>
+            </div>
+            <div class="space-y-2">
+                <p class="text-2xl font-black text-indigo-900 uppercase tracking-tighter animate-pulse">Computing
+                    Strategy Alpha...</p>
+                <p class="text-indigo-400 text-xs font-bold uppercase tracking-widest">Simulating historical bar
+                    scenarios</p>
+            </div>
+        </div>
+
+        <!-- Results Container -->
+        <div id="btResults" class="hidden space-y-12 animate-in fade-in slide-in-from-bottom-8 duration-700">
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 md:gap-6">
+                <div class="p-6 bg-white rounded-3xl border border-indigo-50 shadow-sm">
+                    <span class="text-[0.65rem] font-black text-indigo-300 uppercase tracking-widest">ROI</span>
+                    <p class="text-3xl font-black text-indigo-900 mt-1" id="resRoi">0%</p>
+                </div>
+                <div class="p-6 bg-white rounded-3xl border border-indigo-50 shadow-sm">
+                    <span class="text-[0.65rem] font-black text-indigo-300 uppercase tracking-widest">Win Rate</span>
+                    <p class="text-3xl font-black text-emerald-600 mt-1" id="resWinRate">0%</p>
+                </div>
+                <div class="p-6 bg-white rounded-3xl border border-indigo-50 shadow-sm">
+                    <span class="text-[0.65rem] font-black text-indigo-300 uppercase tracking-widest">Total
+                        Trades</span>
+                    <p class="text-3xl font-black text-indigo-900 mt-1" id="resTrades">0</p>
+                </div>
+                <div class="p-6 sentient-purple rounded-3xl shadow-xl">
+                    <span class="text-[0.65rem] font-black text-indigo-200 uppercase tracking-widest">Final
+                        Equity</span>
+                    <p class="text-3xl font-black text-white mt-1" id="resEquity">$0</p>
+                </div>
+                <div class="p-6 bg-indigo-950 rounded-3xl shadow-xl sm:col-span-2 lg:col-span-1">
+                    <span class="text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Market HODL</span>
+                    <div class="flex justify-between items-end lg:block mt-1">
+                        <p class="text-2xl font-black text-white" id="resHoldEquity">$0</p>
+                        <span class="text-[0.6rem] font-black text-emerald-400 uppercase tracking-tighter"
+                            id="resHoldRoi">0% Return</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex justify-center">
+                <button onclick="resetBacktestUI()"
+                    class="px-10 py-4 bg-white text-indigo-600 font-black text-[0.7rem] rounded-full border border-indigo-100 hover:bg-indigo-600 hover:text-white transition-all shadow-lg uppercase tracking-widest">
+                    ↺ Reset & Configure New Test
+                </button>
+            </div>
+
+            <!-- Trade Log -->
+            <div class="space-y-6">
+                <div class="flex justify-between items-end px-2">
+                    <div class="flex items-center gap-3">
+                        <div class="h-6 w-1.5 bg-indigo-600 rounded-full"></div>
+                        <h3 class="text-sm font-black text-indigo-900 uppercase tracking-widest">Strategy Execution Log
+                        </h3>
+                    </div>
+                    <span class="text-[0.65rem] font-black text-indigo-300 uppercase" id="btPageInfoTop">Page 1 of
+                        1</span>
+                </div>
+
+                <div class="bg-white rounded-[2rem] border border-indigo-50 shadow-xl overflow-hidden">
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-sm border-collapse">
+                            <thead
+                                class="bg-indigo-50/50 text-indigo-900 font-black uppercase tracking-widest text-[0.65rem]">
+                                <tr>
+                                    <th class="p-6">Entry</th>
+                                    <th class="p-6">Exit</th>
+                                    <th class="p-6">Action</th>
+                                    <th class="p-6 text-center">Qty</th>
+                                    <th class="p-6 text-center">Cost</th>
+                                    <th class="p-6 text-center">Value</th>
+                                    <th class="p-6 text-center">Fees</th>
+                                    <th class="p-6 text-center">P/L %</th>
+                                    <th class="p-6">Logic</th>
+                                </tr>
+                            </thead>
+                            <tbody id="btTradeLog" class="divide-y divide-indigo-50/50 font-medium text-indigo-900/80">
+                                <!-- Trades injected by JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Pagination -->
+                <div id="btPagination"
+                    class="flex justify-between items-center p-4 bg-white/40 rounded-2xl border border-white hidden">
+                    <span class="text-[0.65rem] font-black text-indigo-400 uppercase tracking-[0.2em]"
+                        id="btPageInfo">Page 1 of 1</span>
+                    <div class="flex gap-2">
+                        <button onclick="changeBtPage(-1)"
+                            class="w-12 h-12 flex items-center justify-center bg-white text-indigo-600 rounded-2xl border border-indigo-100 hover:bg-indigo-600 hover:text-white transition-all shadow-sm">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
+                                stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                    d="M15 19l-7-7 7-7" />
+                            </svg>
+                        </button>
+                        <button onclick="changeBtPage(1)"
+                            class="w-12 h-12 flex items-center justify-center bg-white text-indigo-600 rounded-2xl border border-indigo-100 hover:bg-indigo-600 hover:text-white transition-all shadow-sm">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
+                                stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                    d="M9 5l7 7-7 7" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer class="mt-12 text-center text-[0.65rem] text-purple-400 font-bold uppercase tracking-[0.3em] pb-12">
+        <p>⚠️ Algorithmic trading involves significant risk. This simulator is for educational use only.</p>
+        <p class="mt-2 text-purple-300 opacity-50">AI Trading Bot — Sentient Backtest Engine v2.0</p>
+    </footer>
+
+    <script src="backtest.js"></script>
+</body>
+
+</html>

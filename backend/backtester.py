@@ -119,22 +119,32 @@ class Backtester:
     def _exit_trade(self, bar, timestamp, reason):
         if not self.position: return
         exit_price = bar['Close']
-        pl = (exit_price - self.position['entry_price']) * self.position['qty']
-        pl_pct = (pl / (self.position['qty'] * self.position['entry_price'])) * 100
-        self.equity += pl
+        entry_cost = self.position['qty'] * self.position['entry_price']
+        exit_value = self.position['qty'] * exit_price
         
-        print(f"[{timestamp.strftime('%Y-%m-%d %H:%M')}] SELL {self.ticker} @ ${exit_price:.2f} | P/L: ${pl:.2f} ({pl_pct:+.2f}%) | Reason: {reason}")
+        # 0.1% Fee per side (Entry + Exit)
+        fee = round((entry_cost + exit_value) * 0.001, 2)
+        pl = (exit_price - self.position['entry_price']) * self.position['qty'] - fee
+        pl_pct = (pl / entry_cost) * 100
+        self.equity += (exit_value - entry_cost - fee)
+        
+        print(f"[{timestamp.strftime('%Y-%m-%d %H:%M')}] SELL {self.ticker} @ ${exit_price:.2f} | P/L: ${pl:.2f} ({pl_pct:+.2f}%) | Fee: ${fee:.2f} | Reason: {reason}")
 
         self.trades.append({
             'ticker': self.ticker,
             'entry_time': self.position['entry_time'].strftime("%Y-%m-%d %H:%M"),
             'exit_time': timestamp.strftime("%Y-%m-%d %H:%M"),
+            'qty': round(self.position['qty'], 4),
             'entry_price': round(self.position['entry_price'], 2),
             'exit_price': round(exit_price, 2),
+            'entry_cost': round(entry_cost, 2),
+            'exit_value': round(exit_value, 2),
+            'fees': fee,
             'pl': round(pl, 2),
             'pl_pct': round(pl_pct, 2),
             'reason': reason
         })
+        self.position = None
         self.position = None
 
     def _check_exit_conditions(self, bar, timestamp):

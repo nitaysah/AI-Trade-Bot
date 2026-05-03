@@ -12,6 +12,7 @@ Production-grade trading engine with:
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from pydantic import BaseModel
 import asyncio
 from datetime import datetime, timedelta
 
@@ -35,13 +36,39 @@ latest_scans = {}   # {ticker: latest_evaluation_result}
 bot_running = False
 last_scan_time = None
 
+# Persistence path
+ALPACA_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "alpaca_settings.json")
+
+class AlpacaConfig(BaseModel):
+    api_key: str
+    secret_key: str
+    paper: bool = True
+
+def load_persisted_alpaca():
+    if os.path.exists(ALPACA_CONFIG_PATH):
+        try:
+            with open(ALPACA_CONFIG_PATH, "r") as f:
+                data = json.load(f)
+                success = broker.connect(data['api_key'], data['secret_key'], data['paper'])
+                if success:
+                    # Update global config for other components to see
+                    config.ALPACA_API_KEY = data['api_key']
+                    config.ALPACA_SECRET_KEY = data['secret_key']
+                    config.ALPACA_PAPER = data['paper']
+                    print("[main] Loaded persisted Alpaca credentials.")
+        except Exception as e:
+            print(f"[main] Error loading persisted Alpaca config: {e}")
+
+load_persisted_alpaca()
+
 
 # ──────────────────────────────────────────────
 # Background Scheduler
 # ──────────────────────────────────────────────
 async def trading_loop():
     """Background task that scans the watchlist on an interval."""
-    global bot_running, last_scan_time, latest_scans
+    global bot_running, last_scan_time, latest_scans, force_scan_trigger
+    force_scan_trigger = asyncio.Event()
 
     bot_running = True
     print(f"[scheduler] Trading loop started. Scanning every {config.SCAN_INTERVAL_SECONDS}s")
@@ -75,6 +102,10 @@ async def trading_loop():
                         timeframe=config.DEFAULT_TIMEFRAME
                     )
                     if result:
+                        is_active = ticker in config.TRADELIST
+                        log_prefix = "[trader]" if is_active else "[scan]"
+                        print(f"{log_prefix} {ticker}: ${result['price_raw']} | Signal: {result['action']} | Sent: {result['sentiment_score']}")
+                        
                         latest_scans[ticker] = result
                         trade_executed = False
 
@@ -82,7 +113,10 @@ async def trading_loop():
                         if ticker in config.TRADELIST:
                             # Normalize symbol for position matching
                             ticker_norm = ticker.replace("/", "").upper()
-                            has_this_pos = any(p['symbol'].replace("/", "").upper() == ticker_norm for p in all_positions)
+                            has_this_pos = any(
+                                p['symbol'].replace("/", "").upper() == ticker_norm and float(p.get('qty', 0)) > 0 
+                                for p in all_positions
+                            )
 
                             if result['action'] == 'BUY':
                                 sizing = result['position_sizing']
@@ -103,6 +137,15 @@ async def trading_loop():
                                         result['order'] = order_result
                                         trade_executed = True
                                         portfolio_count += 1 # Lock further buys in this loop
+                                        
+                                        # Capture Detailed Receipt
+                                        # Force float to ensure decimal precision
+                                        result['qty'] = float(order_result.get('qty', 0))
+                                        result['total_cost'] = order_result.get('total_cost', sizing['notional'])
+                                        result['fees'] = order_result.get('fees', 0)
+
+                                        # Enhance reason with execution info — using 6 decimal places
+                                        result['reason'] = f"✅ BOUGHT {result['qty']:.6f} shares at {result['price']}: {result['reason']}"
                                         print(f"[trader] BUY {ticker}: ${sizing['notional']:.2f}")
                                 elif has_this_pos:
                                     result['action'] = 'HOLD'
@@ -115,10 +158,22 @@ async def trading_loop():
                                         result['order'] = order_result
                                         trade_executed = True
                                         portfolio_count -= 1
+
+                                        # Capture Detailed Receipt (Close position proceeds)
+                                        result['qty'] = order_result.get('qty', 'ALL')
+                                        result['total_cost'] = order_result.get('proceeds', 0)
+                                        result['fees'] = order_result.get('fees', 0)
+
+                                        # Enhance reason with execution info
+                                        result['reason'] = f"✅ SOLD at {result['price']}: {result['reason']}"
                                         print(f"[trader] SELL {ticker}: closed position")
+                                    else:
+                                        print(f"[trader] FAILED SELL {ticker}: {order_result.get('error', 'Unknown Error')}")
+                                        result['reason'] = f"Sell order failed: {order_result.get('error', 'Broker Error')}"
                                 else:
-                                    result['action'] = 'WATCH'
-                                    result['reason'] = "Signal SELL ignored: No open position."
+                                    print(f"[trader] SKIP SELL {ticker}: No position found in broker scan.")
+                                    # Keep the action as SELL for the logs, but mark it as skipped
+                                    result['reason'] = "Signal SELL ignored: No open position detected."
                         
                         # 4. Dashboard / Log Management
                         should_log = trade_executed or (ticker in config.TRADELIST)
@@ -146,7 +201,12 @@ async def trading_loop():
         except Exception as e:
             print(f"[scheduler] Loop error: {e}")
 
-        await asyncio.sleep(config.SCAN_INTERVAL_SECONDS)
+        try:
+            # Wait for interval OR force trigger
+            await asyncio.wait_for(force_scan_trigger.wait(), timeout=config.SCAN_INTERVAL_SECONDS)
+            force_scan_trigger.clear()
+        except asyncio.TimeoutError:
+            pass
 
 
 # ──────────────────────────────────────────────
@@ -196,6 +256,44 @@ def root():
         "docs": "/docs",
         "dashboard": "/api/dashboard"
     }
+
+
+@app.post("/api/alpaca_config")
+async def update_alpaca_config(cfg: AlpacaConfig):
+    success = broker.connect(cfg.api_key, cfg.secret_key, cfg.paper)
+    if success:
+        # Persist
+        with open(ALPACA_CONFIG_PATH, "w") as f:
+            json.dump({
+                "api_key": cfg.api_key,
+                "secret_key": cfg.secret_key,
+                "paper": cfg.paper
+            }, f)
+        
+        # Update config module state
+        config.ALPACA_API_KEY = cfg.api_key
+        config.ALPACA_SECRET_KEY = cfg.secret_key
+        config.ALPACA_PAPER = cfg.paper
+        
+        return {"status": "success", "message": "Connected to Alpaca."}
+    else:
+        return {"status": "error", "message": "Failed to connect to Alpaca. Check your keys."}
+
+
+@app.delete("/api/alpaca_config")
+async def unlink_alpaca():
+    if os.path.exists(ALPACA_CONFIG_PATH):
+        os.remove(ALPACA_CONFIG_PATH)
+    
+    # Reset broker to simulation
+    broker.simulation_mode = True
+    broker.client = None
+    
+    # Clear config module state
+    config.ALPACA_API_KEY = ""
+    config.ALPACA_SECRET_KEY = ""
+    
+    return {"status": "success", "message": "Alpaca account unlinked. Switched to simulation mode."}
 
 
 @app.get("/api/dashboard")
@@ -259,6 +357,7 @@ def get_dashboard(ticker: str = None, timeframe: str = None):
         "sentimentConfidence": sentiment_confidence,
         "sentimentSummary": primary_scan.get("sentiment_summary", ""),
         "tickerAmounts": config.TICKER_AMOUNTS,
+        "simulation": account.get('simulation', True),
 
         # Detailed Data
         "positions": positions,
@@ -281,6 +380,7 @@ def get_dashboard(ticker: str = None, timeframe: str = None):
         # Bot Meta
         "botRunning": bot_running,
         "lastScan": last_scan_time or "Starting...",
+        "indicator_settings": {k: getattr(config, k, True) for k in dir(config) if k.startswith("ENABLE_")},
         "strategyTimeframe": config.DEFAULT_TIMEFRAME,
         "simulation": account.get('simulation', True),
         "watchlist": config.WATCHLIST,
@@ -308,18 +408,6 @@ def scan_ticker(ticker: str, timeframe: str = "5Min"):
         latest_scans[ticker.upper()] = result
         return _format_scan_for_ui(result)
     return {"error": f"Could not analyze {ticker}"}
-
-
-@app.get("/api/positions")
-def get_positions():
-    """Returns current open positions."""
-    return broker.get_positions()
-
-
-@app.get("/api/account")
-def get_account():
-    """Returns raw account info."""
-    return broker.get_account_info()
 
 
 @app.post("/api/backtest")
@@ -435,6 +523,7 @@ def update_risk_settings(settings: dict):
             setattr(config, key, value)
     
     _save_settings()
+    print(f"[settings] Updated risk parameters: {', '.join(settings.keys())}")
     return {"status": "success", "settings": settings}
 
 
@@ -455,6 +544,7 @@ def update_ticker_amount(data: dict):
                 return {"status": "error", "message": "Invalid amount"}
         
         _save_settings()
+        print(f"[settings] {ticker}: Allocated trade amount updated")
         return {"status": "success", "ticker_amounts": config.TICKER_AMOUNTS}
     return {"status": "error", "message": "Ticker required"}
 
@@ -466,16 +556,17 @@ def update_timeframe(data: dict):
     new_tf = data.get("timeframe")
     if new_tf in ["1Min", "5Min", "15Min", "30Min", "1Hour", "4Hour", "1Day"]:
         config.DEFAULT_TIMEFRAME = new_tf
-        # Clear stale scans
+        # Clear stale scans and indicator cache
         latest_scans = {}
-        # Clear indicator cache
         from indicators import _data_cache
         _data_cache.clear()
         
         _save_settings()
+        print(f"[settings] Global Timeframe synced to {new_tf}. Triggering immediate scan.")
         
-        # Trigger an immediate background scan (optional, or just let UI fetch)
-        # For now, clearing is enough because UI will show "Syncing" until next loop
+        # Wake up the background loop
+        if 'force_scan_trigger' in globals():
+            force_scan_trigger.set()
         # or we can force one loop here:
         print(f"[settings] Timeframe changed to {new_tf}. Clearing cache.")
         
@@ -496,6 +587,7 @@ async def add_to_watchlist(data: dict):
     if ticker and ticker not in config.WATCHLIST:
         config.WATCHLIST.append(ticker)
         _save_settings()
+        print(f"[settings] Added {ticker} to watchlist")
     return {"status": "success", "watchlist": config.WATCHLIST}
 
 
@@ -505,8 +597,17 @@ async def remove_from_watchlist(ticker: str):
     ticker = ticker.upper()
     if ticker in config.WATCHLIST:
         config.WATCHLIST.remove(ticker)
+        # Deactivate bot if removed from watchlist
+        if ticker in config.TRADELIST:
+            config.TRADELIST.remove(ticker)
+            print(f"[settings] {ticker} removed from watchlist & deactivated")
+        else:
+            print(f"[settings] Removed {ticker} from watchlist")
+            
         _save_settings()
-    return {"status": "success", "watchlist": config.WATCHLIST}
+        if 'force_scan_trigger' in globals():
+            force_scan_trigger.set()
+    return {"status": "success", "watchlist": config.WATCHLIST, "tradelist": config.TRADELIST}
 
 
 @app.get("/api/tradelist")
@@ -521,8 +622,17 @@ async def add_to_tradelist(data: dict):
     ticker = data.get("ticker", "").upper()
     if ticker and ticker not in config.TRADELIST:
         config.TRADELIST.append(ticker)
+        # Ensure it's also in watchlist so we can see it
+        if ticker not in config.WATCHLIST:
+            config.WATCHLIST.append(ticker)
+            print(f"[settings] Added {ticker} to watchlist & activated bot")
+        else:
+            print(f"[settings] Added {ticker} to active tradelist (Bot Activated)")
+            
         _save_settings()
-    return {"status": "success", "tradelist": config.TRADELIST}
+        if 'force_scan_trigger' in globals():
+            force_scan_trigger.set()
+    return {"status": "success", "tradelist": config.TRADELIST, "watchlist": config.WATCHLIST}
 
 
 @app.delete("/api/tradelist/{ticker}")
@@ -532,6 +642,7 @@ async def remove_from_tradelist(ticker: str):
     if ticker in config.TRADELIST:
         config.TRADELIST.remove(ticker)
         _save_settings()
+        print(f"[settings] Removed {ticker} from active tradelist (Bot Deactivated)")
     return {"status": "success", "tradelist": config.TRADELIST}
 
 
@@ -548,6 +659,8 @@ def _save_settings():
         existing["WATCHLIST"] = config.WATCHLIST
         existing["TRADELIST"] = config.TRADELIST
         existing["TICKER_SETTINGS"] = config.TICKER_SETTINGS
+        existing["DEFAULT_TIMEFRAME"] = config.DEFAULT_TIMEFRAME
+        existing["SCAN_INTERVAL_SECONDS"] = config.SCAN_INTERVAL_SECONDS
 
         with open(settings_path, "w") as f:
             json.dump(existing, f, indent=2)
@@ -580,6 +693,7 @@ async def update_indicators(updates: dict):
     except Exception as e:
         print(f"[settings] Error saving: {e}")
 
+    print(f"[settings] Updated indicator toggles: {', '.join(updates.keys())}")
     return {"status": "success"}
 
 
@@ -627,13 +741,10 @@ def _load_saved_settings():
                     config.TRADELIST = v
                 elif hasattr(config, k) and k.startswith("ENABLE_"):
                     setattr(config, k, bool(v))
-            # Load Ticker Settings & Legacy Amounts
+            # Load Ticker Settings
             config.TICKER_SETTINGS = saved.get("TICKER_SETTINGS", {})
-            legacy_amounts = saved.get("TICKER_AMOUNTS", {})
-            # Merge legacy into new structure if missing
-            for t, amt in legacy_amounts.items():
-                if t not in config.TICKER_SETTINGS:
-                    config.TICKER_SETTINGS[t] = {"amount": amt}
+            config.DEFAULT_TIMEFRAME = saved.get("DEFAULT_TIMEFRAME", config.DEFAULT_TIMEFRAME)
+            config.SCAN_INTERVAL_SECONDS = saved.get("SCAN_INTERVAL_SECONDS", config.SCAN_INTERVAL_SECONDS)
             
             print(f"[settings] Loaded {len(saved)} saved settings")
         except Exception as e:
@@ -689,6 +800,9 @@ def _format_trade_for_ui(trade: dict) -> dict:
         "action": trade.get("action", ""),
         "ticker": trade.get("ticker", ""),
         "price": trade.get("price", ""),
+        "qty": trade.get("qty", "N/A"),
+        "total_cost": trade.get("total_cost", 0),
+        "fees": trade.get("fees", 0),
         "reason": trade.get("reason", ""),
         "sentiment_score": trade.get("sentiment_score", 0),
         "bullish_count": trade.get("bullish_count", 0),
