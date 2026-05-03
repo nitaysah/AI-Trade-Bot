@@ -121,7 +121,7 @@ function renderBtTradesPage() {
     }
 
     paginated.forEach(t => {
-        const plClass = t.pnl_pct >= 0 ? 'text-emerald-600' : 'text-rose-600';
+        const plClass = t.pl_pct >= 0 ? 'text-emerald-600' : 'text-rose-600';
         const row = `
             <tr class="hover:bg-indigo-50/30 transition-colors">
                 <td class="p-6">
@@ -136,12 +136,12 @@ function renderBtTradesPage() {
                     <span class="px-3 py-1 rounded-full bg-indigo-100 text-indigo-700 text-[0.6rem] font-black uppercase">LONG</span>
                 </td>
                 <td class="p-6 text-center font-black">${t.qty.toFixed(4)}</td>
-                <td class="p-6 text-center font-bold text-indigo-400">$${t.cost.toFixed(2)}</td>
-                <td class="p-6 text-center font-bold text-indigo-900">$${t.value.toFixed(2)}</td>
+                <td class="p-6 text-center font-bold text-indigo-400">$${t.entry_cost.toFixed(2)}</td>
+                <td class="p-6 text-center font-bold text-indigo-900">$${t.exit_value.toFixed(2)}</td>
                 <td class="p-6 text-center text-indigo-300 font-medium">$${(t.fees || 0).toFixed(2)}</td>
-                <td class="p-6 text-center font-black ${plClass}">${t.pnl_pct.toFixed(2)}%</td>
+                <td class="p-6 text-center font-black ${plClass}">${t.pl_pct.toFixed(2)}%</td>
                 <td class="p-6">
-                    <div class="text-[0.6rem] font-bold text-indigo-400 leading-tight uppercase max-w-[120px]">${t.exit_reason}</div>
+                    <div class="text-[0.6rem] font-bold text-indigo-400 leading-tight uppercase max-w-[120px]">${t.reason}</div>
                 </td>
             </tr>
         `;
