@@ -71,8 +71,8 @@ async function runBacktest() {
             resetBacktestUI();
         }
     } catch (err) {
-        console.error(err);
-        alert("Connection to AI Backend failed.");
+        console.error("BACKTEST FETCH ERROR:", err);
+        alert("Connection to AI Backend failed. Check console for details.");
         resetBacktestUI();
     }
 }
