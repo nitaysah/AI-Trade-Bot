@@ -383,3 +383,12 @@
 ::1 - - [02/May/2026 18:52:51] "GET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1" 404 -
 ::1 - - [02/May/2026 18:52:51] code 404, message File not found
 ::1 - - [02/May/2026 18:52:51] "GET /favicon.ico HTTP/1.1" 404 -
+::1 - - [02/May/2026 18:54:23] code 404, message File not found
+::1 - - [02/May/2026 18:54:23] "GET /main.html HTTP/1.1" 404 -
+::1 - - [02/May/2026 18:54:23] code 404, message File not found
+::1 - - [02/May/2026 18:54:23] "GET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1" 404 -
+::1 - - [02/May/2026 18:54:23] code 404, message File not found
+::1 - - [02/May/2026 18:54:23] "GET /favicon.ico HTTP/1.1" 404 -
+::1 - - [02/May/2026 18:54:27] "GET / HTTP/1.1" 200 -
+::1 - - [02/May/2026 18:54:27] code 404, message File not found
+::1 - - [02/May/2026 18:54:27] "GET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1" 404 -
