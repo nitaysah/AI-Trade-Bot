@@ -2,7 +2,10 @@
 // BACKTEST CENTER LOGIC v2.0
 // ──────────────────────────────────────────────
 
-const API_BASE = "http://localhost:8000";
+const CLOUD_URL = 'https://ai-trade-bot-backend-946557219642.us-central1.run.app';
+const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
+    ? 'http://localhost:8000' 
+    : CLOUD_URL;
 let allBtTrades = [];
 let btPage = 1;
 const btPageSize = 10;
