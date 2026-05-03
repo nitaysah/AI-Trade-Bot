@@ -7,7 +7,7 @@ from trader import get_confluence_decision
 import config
 
 class Backtester:
-    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None):
+    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=1.0, max_pos_pct=1.0):
         self.ticker = ticker
         self.timeframe = timeframe
         self.start_date = start_date
@@ -16,6 +16,8 @@ class Backtester:
         self.threshold = threshold
         self.sell_threshold = sell_threshold
         self.enabled_indicators = enabled_indicators or []
+        self.risk_per_trade = risk_per_trade
+        self.max_pos_pct = max_pos_pct
         
         self.equity = initial_capital
         self.position = None 
@@ -97,12 +99,12 @@ class Backtester:
     def _enter_trade(self, bar, timestamp, reason):
         price = bar['Close']
         atr = bar['ATR']
-        risk_amount = self.equity * config.RISK_PER_TRADE
+        risk_amount = self.equity * self.risk_per_trade
         stop_dist = atr * config.ATR_STOP_MULTIPLIER
         if stop_dist == 0: return
 
         qty = risk_amount / stop_dist
-        max_notional = self.equity * config.MAX_POSITION_PCT
+        max_notional = self.equity * self.max_pos_pct
         if (qty * price) > max_notional:
             qty = max_notional / price
 
