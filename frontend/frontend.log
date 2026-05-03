@@ -392,3 +392,12 @@
 ::1 - - [02/May/2026 18:54:27] "GET / HTTP/1.1" 200 -
 ::1 - - [02/May/2026 18:54:27] code 404, message File not found
 ::1 - - [02/May/2026 18:54:27] "GET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1" 404 -
+::1 - - [02/May/2026 22:09:40] "GET / HTTP/1.1" 200 -
+::1 - - [02/May/2026 22:09:41] "GET /styles.css HTTP/1.1" 200 -
+::1 - - [02/May/2026 22:09:41] code 404, message File not found
+::1 - - [02/May/2026 22:09:41] "GET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1" 404 -
+::1 - - [02/May/2026 22:09:41] "GET /firebase-config.js HTTP/1.1" 200 -
+::1 - - [02/May/2026 22:10:14] "GET / HTTP/1.1" 304 -
+::1 - - [02/May/2026 22:10:14] code 404, message File not found
+::1 - - [02/May/2026 22:10:14] "GET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1" 404 -
+::1 - - [02/May/2026 22:10:14] "GET /firebase-config.js HTTP/1.1" 304 -
