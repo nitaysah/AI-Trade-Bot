@@ -251,7 +251,12 @@ function updateBtAggressiveness(val) {
 
 function formatDate(ds) {
     if (!ds) return "---";
-    const date = new Date(ds);
+    // If naive, treat as UTC
+    let timestamp = ds;
+    if (ds && !ds.includes('Z') && !/[+-]\d{2}:\d{2}$/.test(ds)) {
+        timestamp += 'Z';
+    }
+    const date = new Date(timestamp);
     // Force Central Time (Chicago)
     const options = { 
         timeZone: 'America/Chicago',

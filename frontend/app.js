@@ -40,7 +40,13 @@ async function getAuthHeaders() {
 function formatLocalTime(isoString) {
     if (!isoString || isoString === "Starting...") return isoString;
     try {
-        const date = new Date(isoString);
+        // If the string is naive (no 'Z' and no offset like +00:00 or -05:00), 
+        // append 'Z' to force the browser to treat it as UTC/GMT.
+        let timestamp = isoString;
+        if (isoString && !isoString.includes('Z') && !/[+-]\d{2}:\d{2}$/.test(isoString)) {
+            timestamp += 'Z';
+        }
+        const date = new Date(timestamp);
         // Force Central Time (Chicago) for everywhere
         return date.toLocaleTimeString('en-US', { 
             timeZone: 'America/Chicago',
