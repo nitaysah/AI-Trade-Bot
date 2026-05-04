@@ -32,26 +32,32 @@ import re
 # ──────────────────────────────────────────────
 # Initialization
 # ──────────────────────────────────────────────
-# Initialize Firebase Admin using Application Default Credentials
+# Initialize Firebase Admin
 try:
-    firebase_admin.initialize_app()
-    print("[main] Firebase Admin initialized.")
+    # Explicitly provide project ID for robustness
+    firebase_admin.initialize_app(options={'projectId': 'trading-bot-engine-df3de'})
+    print("[main] Firebase Admin initialized (trading-bot-engine-df3de).")
 except Exception as e:
-    print(f"[main] Firebase Admin init warning: {e}")
+    print(f"[main] Firebase Admin init: {e}")
 
 async def verify_token(authorization: str = Header(None)):
     """Security dependency to verify Firebase ID Token."""
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
+    if not authorization:
+        print("[security] Missing Authorization header")
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    
+    if not authorization.startswith("Bearer "):
+        print("[security] Invalid Authorization format")
+        raise HTTPException(status_code=401, detail="Invalid Authorization format")
     
     token = authorization.split("Bearer ")[1]
     try:
-        # Verify the ID token sent by the client
+        # Verify the ID token
         decoded_token = auth.verify_id_token(token)
         return decoded_token
     except Exception as e:
-        print(f"[security] Token verification failed: {e}")
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+        print(f"[security] Token verification failed: {str(e)}")
+        raise HTTPException(status_code=401, detail=f"Token verification failed: {str(e)}")
 
 broker = AlpacaBroker()
 trade_log = []      # In-memory history for all scans (HOLD/WATCH/BUY/SELL)

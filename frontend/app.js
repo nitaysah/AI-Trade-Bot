@@ -14,16 +14,27 @@ const REFRESH_INTERVAL = 15000; // 15 seconds
  * Retrieves the current Firebase ID token and prepares headers.
  */
 async function getAuthHeaders() {
-    // Use the globally exposed auth instance from the HTML module block
     const auth = window.auth;
-    const user = auth ? auth.currentUser : null;
+    if (!auth) {
+        console.warn('[auth] window.auth is NOT defined yet');
+        return { 'Content-Type': 'application/json' };
+    }
+    const user = auth.currentUser;
+    if (!user) {
+        console.warn('[auth] No current user found in auth instance');
+        return { 'Content-Type': 'application/json' };
+    }
     
-    if (!user) return { 'Content-Type': 'application/json' };
-    const token = await user.getIdToken();
-    return {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-    };
+    try {
+        const token = await user.getIdToken();
+        return {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+        };
+    } catch (e) {
+        console.error('[auth] Error getting ID token:', e);
+        return { 'Content-Type': 'application/json' };
+    }
 }
 let selectedTicker = null; // Start null to force sync with Active Bots
 let tvWidget = null;
@@ -543,10 +554,14 @@ async function fetchDashboard() {
             : `${API_BASE}/api/dashboard`;
 
         const headers = await getAuthHeaders();
+        console.log('[dashboard] Fetching with headers:', headers.Authorization ? 'Token Present' : 'NO TOKEN');
+        
         const response = await fetch(url, { headers });
         if (!response.ok) {
-            console.error(`[dashboard] HTTP Error: ${response.status}`);
-            return; // Exit if error
+            const errText = await response.text();
+            console.error(`[dashboard] HTTP Error: ${response.status} - ${errText}`);
+            showGlobalError(`Security Error: ${response.status}. Please refresh or re-login.`);
+            return;
         }
         const data = await response.json();
 
