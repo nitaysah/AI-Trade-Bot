@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from pydantic import BaseModel
 import asyncio
 from datetime import datetime, timedelta
+import pytz
 import firebase_admin
 from firebase_admin import auth, credentials, firestore
 from cryptography.fernet import Fernet
@@ -207,6 +208,11 @@ class AlpacaConfig(BaseModel):
 # Global Bot State
 # ──────────────────────────────────────────────
 
+def get_now():
+    """Returns current time in the configured timezone (Central Time by default)."""
+    tz = pytz.timezone(config.TIMEZONE)
+    return datetime.now(tz)
+
 
 # ──────────────────────────────────────────────
 # Background Scheduler
@@ -343,7 +349,7 @@ async def trading_loop():
                 except Exception as e:
                     print(f"[scheduler] Error scanning {ticker}: {e}")
 
-            last_scan_time = datetime.now().isoformat()
+            last_scan_time = get_now().isoformat()
             print(f"[scheduler] Scan complete at {last_scan_time}")
             # Periodically sync scan log to cloud
             await save_history_to_cloud()
@@ -570,7 +576,7 @@ async def run_backtest(data: dict):
     sell_threshold = int(data.get("sell_threshold", 3))
     indicators = data.get("indicators", []) # List of names like ['RSI', 'MACD']
     
-    end_date = datetime.now()
+    end_date = get_now()
     start_date = end_date - timedelta(days=days)
     
     # Backtester uses yfinance internally
@@ -619,7 +625,7 @@ async def download_all_data(data: dict):
     ]
     
     log = []
-    end_date = datetime.now()
+    end_date = get_now()
     
     # 1. Download Price History
     for tf, days in timeframes:

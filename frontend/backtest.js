@@ -252,8 +252,16 @@ function updateBtAggressiveness(val) {
 function formatDate(ds) {
     if (!ds) return "---";
     const date = new Date(ds);
-    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' +
-        date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+    // Force Central Time (Chicago)
+    const options = { 
+        timeZone: 'America/Chicago',
+        month: 'short', 
+        day: 'numeric',
+        hour: '2-digit', 
+        minute: '2-digit', 
+        hour12: false 
+    };
+    return date.toLocaleString('en-US', options);
 }
 
 async function bulkDownloadTicker() {

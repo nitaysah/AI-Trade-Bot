@@ -10,6 +10,7 @@ This is the "brain" that orchestrates:
 """
 
 from datetime import datetime
+import pytz
 from indicators import get_full_analysis
 from sentiment import get_ai_sentiment
 from risk_manager import RiskManager
@@ -17,6 +18,10 @@ import config
 
 
 risk_mgr = RiskManager()
+def get_now():
+    """Returns current time in the configured timezone."""
+    tz = pytz.timezone(config.TIMEZONE)
+    return datetime.now(tz)
 
 
 
@@ -166,7 +171,7 @@ def evaluate_trade(ticker: str, account_equity: float = 100.0, available_cash: f
         reason = f"Trading halted: {risk_mgr.halt_reason}"
 
     return {
-        "time": datetime.now().isoformat(),
+        "time": get_now().isoformat(),
         "action": action,
         "ticker": ticker,
         "price": f"${analysis['price']:.2f}",

@@ -41,7 +41,14 @@ function formatLocalTime(isoString) {
     if (!isoString || isoString === "Starting...") return isoString;
     try {
         const date = new Date(isoString);
-        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+        // Force Central Time (Chicago) for everywhere
+        return date.toLocaleTimeString('en-US', { 
+            timeZone: 'America/Chicago',
+            hour: '2-digit', 
+            minute: '2-digit', 
+            second: '2-digit', 
+            hour12: false 
+        });
     } catch (e) {
         return isoString;
     }
@@ -78,7 +85,7 @@ function initChart(ticker = "AAPL", tf = "1D") {
         "autosize": true,
         "symbol": tvSymbol,
         "interval": interval,
-        "timezone": "Etc/UTC",
+        "timezone": "America/Chicago",
         "theme": "light",
         "style": "1",
         "locale": "en",
