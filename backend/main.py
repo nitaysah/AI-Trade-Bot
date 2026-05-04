@@ -58,8 +58,9 @@ print("[main] Firestore client connected to database: trading-bot")
 class Vault:
     """Handles bank-grade encryption for sensitive API keys."""
     def __init__(self):
-        # Derive a stable master key from the project ID
-        seed = "trading-bot-engine-df3de".encode()
+        # Derive a stable master key from the project ID (Cloud Run provides GOOGLE_CLOUD_PROJECT)
+        project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "trading-bot-engine-df3de")
+        seed = project_id.encode()
         key_hash = hashlib.sha256(seed).digest()
         self.fernet = Fernet(base64.urlsafe_b64encode(key_hash))
 
@@ -70,12 +71,23 @@ class Vault:
     def decrypt(self, cipher_text: str) -> str:
         if not cipher_text: return ""
         try:
-            return self.fernet.decrypt(cipher_text.encode()).decode()
+            decrypted = self.fernet.decrypt(cipher_text.encode()).decode()
+            return decrypted.strip()
         except Exception as e:
             print(f"[vault] DECRYPTION FAILED: {e}")
             return ""
 
+    def self_test(self):
+        test_str = "alpaca_test_123"
+        encrypted = self.encrypt(test_str)
+        decrypted = self.decrypt(encrypted)
+        if test_str == decrypted:
+            print("[vault] Self-test PASSED.")
+        else:
+            print("[vault] Self-test FAILED! Encryption/Decryption mismatch.")
+
 vault = Vault()
+vault.self_test()
 
 async def save_config_to_cloud(api_key, secret_key, paper):
     """Saves encrypted keys to Firestore."""
@@ -120,24 +132,34 @@ async def load_all_from_cloud():
     if not db: return
     global executed_trades, trade_log
     try:
-        # 1. Alpaca Config
         try:
+            print("[vault] Fetching Alpaca config from Firestore...")
             doc_alpaca = db.collection("settings").document("alpaca").get()
             if doc_alpaca.exists:
                 data = doc_alpaca.to_dict()
-                decrypted_key = vault.decrypt(data.get("api_key", ""))
-                decrypted_secret = vault.decrypt(data.get("secret_key", ""))
+                api_cipher = data.get("api_key", "")
+                sec_cipher = data.get("secret_key", "")
+                
+                print(f"[vault] Decrypting keys (cipher lengths: {len(api_cipher)}, {len(sec_cipher)})...")
+                decrypted_key = vault.decrypt(api_cipher)
+                decrypted_secret = vault.decrypt(sec_cipher)
                 
                 if decrypted_key and decrypted_secret:
                     config.ALPACA_API_KEY = decrypted_key
                     config.ALPACA_SECRET_KEY = decrypted_secret
                     config.ALPACA_PAPER = data.get("paper", True)
-                    print(f"[vault] Keys decrypted. Attempting broker connection...")
-                    broker.connect(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY, config.ALPACA_PAPER)
+                    print(f"[vault] Keys decrypted (ID starts with: {decrypted_key[:4]}...). Attempting broker connection...")
+                    success = broker.connect(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY, config.ALPACA_PAPER)
+                    if success:
+                        print("[vault] SUCCESS: Broker connected using cloud keys.")
+                    else:
+                        print("[vault] FAILED: Broker could not connect using cloud keys.")
                 else:
-                    print("[vault] WARNING: Decryption returned empty keys. Keeping current state.")
+                    print("[vault] WARNING: Decryption produced empty results. Check encryption seed.")
+            else:
+                print("[vault] No Alpaca config found in Firestore.")
         except Exception as e:
-            print(f"[vault] WARNING: Could not fetch Alpaca config from cloud: {e}")
+            print(f"[vault] ERROR: Could not fetch Alpaca config: {e}")
 
         # 2. UI Settings
         try:
