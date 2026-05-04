@@ -251,6 +251,11 @@ async def trading_loop():
     while bot_running:
         try:
             account = broker.get_account_info()
+            # BLOCKED: Only scan if Alpaca is linked
+            if account.get('simulation', True):
+                last_scan_time = "Disconnected (Alpaca Link Required)"
+                await asyncio.sleep(10)
+                continue
             equity = account['equity']
 
             # Set daily baseline if not set or suspiciously low (e.g., default 100.0)
@@ -586,6 +591,8 @@ def scan_ticker(ticker: str, timeframe: str = "5Min"):
         return {"error": "Invalid ticker format"}
     """On-demand scan of a specific ticker."""
     account = broker.get_account_info()
+    if account.get('simulation', True):
+        return {"error": "Alpaca connection required for scanning."}
     # Use settled cash (non-marginable) for crypto
     is_crypto = any(c in ticker.upper() for c in ["BTC", "ETH", "LTC", "SOL", "DOGE"]) or "USD" in ticker.upper()
     # Use non_marginable_buying_power, but fallback to cash if it's 0

@@ -10,6 +10,14 @@ const API_BASE = window.location.hostname === 'localhost' || window.location.hos
     : CLOUD_URL;
 const REFRESH_INTERVAL = 15000; // 15 seconds
 
+let selectedTicker = null;
+let currentBackendTf = "5Min";
+let isAlpacaLinked = false; // Track live connection status
+let favoriteTickers = JSON.parse(localStorage.getItem('favoriteTickers') || '["BTCUSD", "ETHUSD", "TSLA", "AAPL", "MSFT"]');
+let tvWidget = null;
+let currentLogTab = "all"; // 'all' or 'trades'
+let latestTradesData = []; // Cached log data
+
 /**
  * Retrieves the current Firebase ID token and prepares headers.
  */
@@ -59,11 +67,7 @@ function formatLocalTime(isoString) {
         return isoString;
     }
 }
-let selectedTicker = null; // Start null to force sync with Active Bots
-let tvWidget = null;
-let currentBackendTf = "5Min";
-let currentLogTab = "all"; // 'all' or 'trades'
-let latestTradesData = []; // Cached log data
+// Tracked in consolidated block at top
 
 // ──────────────────────────────────────────────
 // 1. Initialize Chart (TradingView Advanced Widget)
@@ -633,6 +637,7 @@ async function fetchDashboard() {
 
         if (statusPill && statusDot && statusText) {
             if (data.simulation) {
+                isAlpacaLinked = false;
                 if (data.has_keys) {
                     statusPill.className = "flex items-center text-sm font-black px-8 py-3 rounded-full bg-amber-50 text-amber-600 border-2 border-amber-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
                     statusDot.className = "h-2.5 w-2.5 rounded-full mr-2.5 bg-amber-500 animate-pulse";
@@ -644,6 +649,7 @@ async function fetchDashboard() {
                 }
                 if (btnUnlink) btnUnlink.classList.add('hidden');
             } else {
+                isAlpacaLinked = true;
                 statusPill.className = "flex items-center text-sm font-black px-8 py-3 rounded-full bg-emerald-50 text-emerald-600 border-2 border-emerald-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
                 statusDot.className = "h-2.5 w-2.5 rounded-full mr-2.5 bg-emerald-500 animate-pulse";
                 statusText.textContent = "Alpaca Live";
@@ -816,6 +822,10 @@ async function fetchDashboard() {
 }
 
 async function fetchTickerChart(ticker, signals) {
+    if (!isAlpacaLinked) {
+        console.log('[chart] Skip fetch: Alpaca not linked.');
+        return;
+    }
     try {
         const headers = await getAuthHeaders();
         const response = await fetch(`${API_BASE}/api/scan/${ticker}?timeframe=${currentBackendTf}`, { headers });
