@@ -9,12 +9,14 @@ Production-grade trading engine with:
 - Risk management enforcement
 """
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Header, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 import asyncio
 from datetime import datetime, timedelta
+import firebase_admin
+from firebase_admin import auth, credentials
 
 from trader import evaluate_trade, get_risk_manager
 from broker import AlpacaBroker
@@ -28,8 +30,29 @@ import re
 
 
 # ──────────────────────────────────────────────
-# Globals
+# Initialization
 # ──────────────────────────────────────────────
+# Initialize Firebase Admin using Application Default Credentials
+try:
+    firebase_admin.initialize_app()
+    print("[main] Firebase Admin initialized.")
+except Exception as e:
+    print(f"[main] Firebase Admin init warning: {e}")
+
+async def verify_token(authorization: str = Header(None)):
+    """Security dependency to verify Firebase ID Token."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
+    
+    token = authorization.split("Bearer ")[1]
+    try:
+        # Verify the ID token sent by the client
+        decoded_token = auth.verify_id_token(token)
+        return decoded_token
+    except Exception as e:
+        print(f"[security] Token verification failed: {e}")
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
 broker = AlpacaBroker()
 trade_log = []      # In-memory history for all scans (HOLD/WATCH/BUY/SELL)
 executed_trades = [] # Persistent history for successful BUY/SELL orders only
@@ -255,7 +278,7 @@ def root():
 
 
 @app.post("/api/alpaca_config")
-async def update_alpaca_config(cfg: AlpacaConfig):
+async def update_alpaca_config(cfg: AlpacaConfig, user = Depends(verify_token)):
     success = broker.connect(cfg.api_key, cfg.secret_key, cfg.paper)
     if success:
         # Persist
@@ -277,7 +300,7 @@ async def update_alpaca_config(cfg: AlpacaConfig):
 
 
 @app.delete("/api/alpaca_config")
-async def unlink_alpaca():
+async def unlink_alpaca(user = Depends(verify_token)):
     if os.path.exists(ALPACA_CONFIG_PATH):
         os.remove(ALPACA_CONFIG_PATH)
     
@@ -293,7 +316,7 @@ async def unlink_alpaca():
 
 
 @app.get("/api/dashboard")
-def get_dashboard(ticker: str = None, timeframe: str = None):
+def get_dashboard(ticker: str = None, timeframe: str = None, user = Depends(verify_token)):
     """
     Main dashboard endpoint — returns everything the UI needs in one call.
     """
@@ -386,7 +409,7 @@ def get_dashboard(ticker: str = None, timeframe: str = None):
 
 
 @app.get("/api/scan/{ticker}")
-def scan_ticker(ticker: str, timeframe: str = "5Min"):
+def scan_ticker(ticker: str, timeframe: str = "5Min", user = Depends(verify_token)):
     if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker.upper()):
         return {"error": "Invalid ticker format"}
     """On-demand scan of a specific ticker."""
@@ -409,7 +432,7 @@ def scan_ticker(ticker: str, timeframe: str = "5Min"):
 
 
 @app.post("/api/backtest")
-async def run_backtest(data: dict):
+async def run_backtest(data: dict, user = Depends(verify_token)):
     """
     Runs a historical backtest for a ticker.
     """
@@ -449,7 +472,7 @@ async def run_backtest(data: dict):
 
 
 @app.post("/api/download_all")
-async def download_all_data(data: dict):
+async def download_all_data(data: dict, user = Depends(verify_token)):
     """
     Downloads and caches all available history for a ticker across all timeframes.
     Also saves stock metadata (sector, market cap, etc.)
@@ -546,7 +569,7 @@ def update_risk_settings(settings: dict):
 
 
 @app.post("/api/settings/ticker_amount")
-def update_ticker_amount(data: dict):
+def update_ticker_amount(data: dict, user = Depends(verify_token)):
     """Updates the allocated trade amount for a specific ticker."""
     ticker = data.get("ticker", "").upper()
     amount = data.get("amount")
@@ -716,7 +739,7 @@ async def update_indicators(updates: dict):
 
 
 @app.post("/api/settings/ticker")
-async def update_ticker_settings(data: dict):
+async def update_ticker_settings(data: dict, user = Depends(verify_token)):
     """Update settings for a specific ticker."""
     ticker = data.get("ticker", "").upper()
     settings = data.get("settings", {})
@@ -736,7 +759,7 @@ async def update_ticker_settings(data: dict):
     return {"status": "success"}
 
 @app.delete("/api/settings/ticker/{ticker}")
-async def reset_ticker_settings(ticker: str):
+async def reset_ticker_settings(ticker: str, user = Depends(verify_token)):
     """Reset a ticker to global defaults."""
     ticker = ticker.upper()
     if ticker in config.TICKER_SETTINGS:

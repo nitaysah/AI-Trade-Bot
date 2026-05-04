@@ -9,6 +9,19 @@ const API_BASE = window.location.hostname === 'localhost' || window.location.hos
     ? 'http://localhost:8000' 
     : CLOUD_URL;
 const REFRESH_INTERVAL = 15000; // 15 seconds
+
+/**
+ * Retrieves the current Firebase ID token and prepares headers.
+ */
+async function getAuthHeaders() {
+    const user = firebase.auth().currentUser;
+    if (!user) return { 'Content-Type': 'application/json' };
+    const token = await user.getIdToken();
+    return {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+    };
+}
 let selectedTicker = null; // Start null to force sync with Active Bots
 let tvWidget = null;
 let currentBackendTf = "5Min";
@@ -286,9 +299,10 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
 
 async function updateTickerAmount(ticker, amount) {
     try {
+        const headers = await getAuthHeaders();
         await fetch(`${API_BASE}/api/settings/ticker_amount`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: headers,
             body: JSON.stringify({ ticker: ticker, amount: amount })
         });
         // Quietly update in background, no need to refresh entire dashboard unless needed
@@ -300,9 +314,10 @@ async function updateTickerAmount(ticker, amount) {
 
 async function addToTradelist(ticker) {
     try {
+        const headers = await getAuthHeaders();
         const response = await fetch(`${API_BASE}/api/tradelist`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: headers,
             body: JSON.stringify({ ticker: ticker })
         });
         if (response.ok) fetchDashboard();
@@ -480,9 +495,10 @@ async function saveTickerSettings() {
     };
 
     try {
+        const headers = await getAuthHeaders();
         const response = await fetch(`${API_BASE}/api/settings/ticker`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: headers,
             body: JSON.stringify(data)
         });
         if (response.ok) {
@@ -500,7 +516,11 @@ async function resetTickerSettings() {
     if (!confirm(`Reset ${currentEditingTicker} to global defaults?`)) return;
 
     try {
-        await fetch(`${API_BASE}/api/settings/ticker/${currentEditingTicker}`, { method: 'DELETE' });
+        const headers = await getAuthHeaders();
+        await fetch(`${API_BASE}/api/settings/ticker/${currentEditingTicker}`, { 
+            method: 'DELETE',
+            headers: headers
+        });
         closeTickerModal();
         fetchDashboard();
     } catch (e) {
@@ -517,7 +537,8 @@ async function fetchDashboard() {
             ? `${API_BASE}/api/dashboard?ticker=${selectedTicker}&timeframe=${currentBackendTf}`
             : `${API_BASE}/api/dashboard`;
 
-        const response = await fetch(url);
+        const headers = await getAuthHeaders();
+        const response = await fetch(url, { headers });
         if (!response.ok) {
             console.error(`[dashboard] HTTP Error: ${response.status}`);
             return; // Exit if error
@@ -716,7 +737,8 @@ async function fetchDashboard() {
 
 async function fetchTickerChart(ticker, signals) {
     try {
-        const response = await fetch(`${API_BASE}/api/scan/${ticker}?timeframe=${currentBackendTf}`);
+        const headers = await getAuthHeaders();
+        const response = await fetch(`${API_BASE}/api/scan/${ticker}?timeframe=${currentBackendTf}`, { headers });
         if (!response.ok) return;
         const data = await response.json();
         if (data.price_history) {
@@ -1195,9 +1217,10 @@ async function submitAlpacaConfig() {
     btn.disabled = true;
 
     try {
+        const headers = await getAuthHeaders();
         const response = await fetch(`${API_BASE}/api/alpaca_config`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: headers,
             body: JSON.stringify({
                 api_key: key,
                 secret_key: secret,

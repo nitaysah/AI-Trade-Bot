@@ -10,6 +10,19 @@ let allBtTrades = [];
 let btPage = 1;
 const btPageSize = 10;
 
+/**
+ * Retrieves the current Firebase ID token and prepares headers.
+ */
+async function getAuthHeaders() {
+    const user = firebase.auth().currentUser;
+    if (!user) return { 'Content-Type': 'application/json' };
+    const token = await user.getIdToken();
+    return {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+    };
+}
+
 // 1. Initialization
 document.addEventListener('DOMContentLoaded', () => {
     // Attach listeners to indicator checkboxes for dynamic slider
@@ -47,9 +60,10 @@ async function runBacktest() {
 
     try {
         console.log(`[backtest] Starting request to: ${API_BASE}/api/backtest`);
+        const headers = await getAuthHeaders();
         const response = await fetch(`${API_BASE}/api/backtest`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: headers,
             body: JSON.stringify({
                 ticker,
                 timeframe,
