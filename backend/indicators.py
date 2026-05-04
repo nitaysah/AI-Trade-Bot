@@ -9,13 +9,11 @@ from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 import ta as ta_lib
-import pandas_ta as pta
 import config
 
 from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
-import config
 
 
 # ---------------------------------------------------------------------------
