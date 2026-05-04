@@ -64,7 +64,8 @@ class Vault:
         if not cipher_text: return ""
         try:
             return self.fernet.decrypt(cipher_text.encode()).decode()
-        except:
+        except Exception as e:
+            print(f"[vault] DECRYPTION FAILED: {e}")
             return ""
 
 vault = Vault()
@@ -143,9 +144,11 @@ async def load_all_from_cloud():
         if doc_scans.exists:
             trade_log = doc_scans.to_dict().get("data", [])
             
-        print(f"[vault] Restored {len(executed_trades)} trades and {len(trade_log)} scan entries.")
+        print(f"[vault] Cloud restore complete. Alpaca Linked: {bool(config.ALPACA_API_KEY)}")
     except Exception as e:
-        print(f"[vault] Cloud restore failed: {e}")
+        print(f"[vault] FATAL: Cloud restore failed: {e}")
+        import traceback
+        traceback.print_exc()
 
 async def verify_token(authorization: str = Header(None)):
     """Security dependency to verify Firebase ID Token."""

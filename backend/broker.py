@@ -53,7 +53,7 @@ class AlpacaBroker:
             # Test connection
             account = self.client.get_account()
             self.simulation_mode = False
-            print(f"[broker] SUCCESS: Connected to Alpaca (Equity: ${account.equity})")
+            print(f"[broker] SUCCESS: Connected to Alpaca ({account.account_number}) - Equity: ${account.equity}")
             return True
         except Exception as e:
             print(f"[broker] CONNECTION FAILED: {str(e)}")
