@@ -282,13 +282,18 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
 
         item.innerHTML = `
             <div class="flex items-center justify-between flex-grow cursor-pointer" onclick="selectTicker('${ticker}')">
-                <div class="flex items-center">
-                    <div class="h-2 w-2 bg-emerald-500 rounded-full mr-2 animate-pulse"></div>
-                    <span class="font-bold text-sm text-indigo-900">${ticker}</span>
+                <div class="flex flex-col">
+                    <div class="flex items-center">
+                        <div class="h-1.5 w-1.5 bg-emerald-500 rounded-full mr-1.5 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]"></div>
+                        <span class="font-black text-sm text-indigo-950 tracking-tight">${ticker}</span>
+                    </div>
+                    <span class="text-[0.6rem] font-bold text-slate-400 uppercase tracking-tighter ml-3">Live Execution</span>
                 </div>
-                <div class="flex items-center gap-2">
-                    <span class="text-xs text-purple-500">${price}</span>
-                    <span class="font-bold text-xs ${actionColor}">${action}</span>
+                <div class="flex flex-col items-end gap-0.5">
+                    <span class="text-xs font-black text-slate-700 font-mono">${price}</span>
+                    <div class="px-1.5 py-0.5 rounded bg-white border border-slate-100 shadow-sm">
+                        <span class="font-black text-[0.6rem] ${actionColor} tracking-widest">${action}</span>
+                    </div>
                 </div>
             </div>
             
