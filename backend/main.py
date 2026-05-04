@@ -172,6 +172,7 @@ executed_trades = [] # Persistent history for successful BUY/SELL orders only
 latest_scans = {}   # {ticker: latest_evaluation_result}
 bot_running = False
 last_scan_time = None
+force_scan_trigger = None
 
 class AlpacaConfig(BaseModel):
     api_key: str
@@ -189,7 +190,8 @@ class AlpacaConfig(BaseModel):
 async def trading_loop():
     """Background task that scans the watchlist on an interval."""
     global bot_running, last_scan_time, latest_scans, force_scan_trigger
-    force_scan_trigger = asyncio.Event()
+    if force_scan_trigger is None:
+        force_scan_trigger = asyncio.Event()
 
     bot_running = True
     print(f"[scheduler] Trading loop started. Scanning every {config.SCAN_INTERVAL_SECONDS}s")
@@ -703,8 +705,10 @@ async def update_timeframe(data: dict, user = Depends(verify_token)):
         print(f"[settings] Global Timeframe synced to {new_tf}. Triggering immediate scan.")
         
         # Wake up the background loop
-        if 'force_scan_trigger' in globals():
+        if force_scan_trigger:
             force_scan_trigger.set()
+        else:
+            print("[settings] Trigger skip: loop not started.")
         
         return {"status": "success", "timeframe": new_tf}
     return {"status": "error", "message": "Invalid timeframe"}
@@ -741,7 +745,7 @@ async def remove_from_watchlist(ticker: str, user = Depends(verify_token)):
             print(f"[settings] Removed {ticker} from watchlist")
             
         await save_settings_to_cloud()
-        if 'force_scan_trigger' in globals():
+        if force_scan_trigger:
             force_scan_trigger.set()
     return {"status": "success", "watchlist": config.WATCHLIST, "tradelist": config.TRADELIST}
 
@@ -766,7 +770,7 @@ async def add_to_tradelist(data: dict, user = Depends(verify_token)):
             print(f"[settings] Added {ticker} to active tradelist (Bot Activated)")
             
         await save_settings_to_cloud()
-        if 'force_scan_trigger' in globals():
+        if force_scan_trigger:
             force_scan_trigger.set()
     return {"status": "success", "tradelist": config.TRADELIST, "watchlist": config.WATCHLIST}
 
