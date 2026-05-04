@@ -151,15 +151,23 @@ async def load_all_from_cloud():
                     print(f"[vault] Keys decrypted (ID starts with: {decrypted_key[:4]}...). Attempting broker connection...")
                     success = broker.connect(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY, config.ALPACA_PAPER)
                     if success:
-                        print("[vault] SUCCESS: Broker connected using cloud keys.")
+                        msg = "SUCCESS: Broker connected using cloud keys."
                     else:
-                        print("[vault] FAILED: Broker could not connect using cloud keys.")
+                        msg = "FAILED: Broker could not connect using cloud keys."
+                    print(f"[vault] {msg}")
+                    cloud_restore_log.append(msg)
                 else:
-                    print("[vault] WARNING: Decryption produced empty results. Check encryption seed.")
+                    msg = "WARNING: Decryption produced empty results."
+                    print(f"[vault] {msg}")
+                    cloud_restore_log.append(msg)
             else:
-                print("[vault] No Alpaca config found in Firestore.")
+                msg = "No Alpaca config found in Firestore."
+                print(f"[vault] {msg}")
+                cloud_restore_log.append(msg)
         except Exception as e:
-            print(f"[vault] ERROR: Could not fetch Alpaca config: {e}")
+            msg = f"ERROR: Could not fetch Alpaca config: {e}"
+            print(f"[vault] {msg}")
+            cloud_restore_log.append(msg)
 
         # 2. UI Settings
         try:
@@ -189,8 +197,11 @@ async def load_all_from_cloud():
             print(f"[vault] WARNING: Could not fetch trade history from cloud: {e}")
             
         print(f"[vault] Cloud restore complete. Alpaca Linked: {bool(config.ALPACA_API_KEY)}")
+        cloud_restore_log.append(f"Cloud restore complete at {get_now()}. Linked: {bool(config.ALPACA_API_KEY)}")
     except Exception as e:
-        print(f"[vault] FATAL: Cloud restore failed: {e}")
+        msg = f"FATAL: Cloud restore failed: {e}"
+        print(f"[vault] {msg}")
+        cloud_restore_log.append(msg)
         import traceback
         traceback.print_exc()
 
@@ -220,6 +231,7 @@ latest_scans = {}   # {ticker: latest_evaluation_result}
 bot_running = False
 last_scan_time = None
 force_scan_trigger = None
+cloud_restore_log = [] # Capture startup events for debugging
 
 class AlpacaConfig(BaseModel):
     api_key: str
@@ -582,6 +594,7 @@ def get_dashboard(ticker: str = None, timeframe: str = None):
         "watchlist": config.WATCHLIST,
         "tradelist": config.TRADELIST,
         "scanInterval": config.SCAN_INTERVAL_SECONDS,
+        "debug_logs": cloud_restore_log
     }
 
 
