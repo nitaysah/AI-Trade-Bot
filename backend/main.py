@@ -384,7 +384,7 @@ def root():
 
 
 @app.post("/api/alpaca_config")
-async def update_alpaca_config(cfg: AlpacaConfig, user = Depends(verify_token)):
+def update_alpaca_config(cfg: AlpacaConfig):
     success = broker.connect(cfg.api_key, cfg.secret_key, cfg.paper)
     if success:
         # Persist to cloud (Encrypted)
@@ -401,7 +401,7 @@ async def update_alpaca_config(cfg: AlpacaConfig, user = Depends(verify_token)):
 
 
 @app.delete("/api/alpaca_config")
-async def unlink_alpaca(user = Depends(verify_token)):
+def unlink_alpaca():
     # Delete from cloud
     if db:
         db.collection("settings").document("alpaca").delete()
@@ -418,7 +418,7 @@ async def unlink_alpaca(user = Depends(verify_token)):
 
 
 @app.get("/api/dashboard")
-def get_dashboard(ticker: str = None, timeframe: str = None, user = Depends(verify_token)):
+def get_dashboard(ticker: str = None, timeframe: str = None):
     """
     Main dashboard endpoint — returns everything the UI needs in one call.
     """
@@ -511,7 +511,7 @@ def get_dashboard(ticker: str = None, timeframe: str = None, user = Depends(veri
 
 
 @app.get("/api/scan/{ticker}")
-def scan_ticker(ticker: str, timeframe: str = "5Min", user = Depends(verify_token)):
+def scan_ticker(ticker: str, timeframe: str = "5Min"):
     if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker.upper()):
         return {"error": "Invalid ticker format"}
     """On-demand scan of a specific ticker."""
@@ -534,7 +534,7 @@ def scan_ticker(ticker: str, timeframe: str = "5Min", user = Depends(verify_toke
 
 
 @app.post("/api/backtest")
-async def run_backtest(data: dict, user = Depends(verify_token)):
+async def run_backtest(data: dict):
     """
     Runs a historical backtest for a ticker.
     """
@@ -574,7 +574,7 @@ async def run_backtest(data: dict, user = Depends(verify_token)):
 
 
 @app.post("/api/download_all")
-async def download_all_data(data: dict, user = Depends(verify_token)):
+async def download_all_data(data: dict):
     """
     Downloads and caches all available history for a ticker across all timeframes.
     Also saves stock metadata (sector, market cap, etc.)
@@ -629,7 +629,7 @@ async def download_all_data(data: dict, user = Depends(verify_token)):
 
 
 @app.get("/api/settings/indicators")
-def get_indicator_settings(user = Depends(verify_token)):
+def get_indicator_settings():
     """Returns all indicator toggles grouped by category."""
     return {
         "Momentum": {
@@ -653,7 +653,7 @@ def get_indicator_settings(user = Depends(verify_token)):
 
 
 @app.post("/api/settings/risk")
-async def update_risk_settings(settings: dict, user = Depends(verify_token)):
+async def update_risk_settings(settings: dict):
     """Updates risk management parameters."""
     for key, value in settings.items():
         if hasattr(config, key):
@@ -671,7 +671,7 @@ async def update_risk_settings(settings: dict, user = Depends(verify_token)):
 
 
 @app.post("/api/settings/ticker_amount")
-async def update_ticker_amount(data: dict, user = Depends(verify_token)):
+async def update_ticker_amount(data: dict):
     """Updates the allocated trade amount for a specific ticker."""
     ticker = data.get("ticker", "").upper()
     amount = data.get("amount")
@@ -693,7 +693,7 @@ async def update_ticker_amount(data: dict, user = Depends(verify_token)):
 
 
 @app.post("/api/settings/timeframe")
-async def update_timeframe(data: dict, user = Depends(verify_token)):
+async def update_timeframe(data: dict):
     """Updates the default trading timeframe and triggers a re-scan."""
     global latest_scans
     new_tf = data.get("timeframe")
@@ -718,13 +718,13 @@ async def update_timeframe(data: dict, user = Depends(verify_token)):
 
 
 @app.get("/api/watchlist")
-def get_watchlist(user = Depends(verify_token)):
+def get_watchlist():
     """Returns the current watchlist."""
     return config.WATCHLIST
 
 
 @app.post("/api/watchlist")
-async def add_to_watchlist(data: dict, user = Depends(verify_token)):
+async def add_to_watchlist(data: dict):
     """Add a ticker to the watchlist."""
     ticker = data.get("ticker", "").upper()
     if ticker and ticker not in config.WATCHLIST:
@@ -735,7 +735,7 @@ async def add_to_watchlist(data: dict, user = Depends(verify_token)):
 
 
 @app.delete("/api/watchlist/{ticker}")
-async def remove_from_watchlist(ticker: str, user = Depends(verify_token)):
+async def remove_from_watchlist(ticker: str):
     """Remove a ticker from the watchlist."""
     ticker = ticker.upper()
     if ticker in config.WATCHLIST:
@@ -754,13 +754,13 @@ async def remove_from_watchlist(ticker: str, user = Depends(verify_token)):
 
 
 @app.get("/api/tradelist")
-def get_tradelist(user = Depends(verify_token)):
+def get_tradelist():
     """Returns the current active trade list."""
     return config.TRADELIST
 
 
 @app.post("/api/tradelist")
-async def add_to_tradelist(data: dict, user = Depends(verify_token)):
+async def add_to_tradelist(data: dict):
     """Add a ticker to the active trade list."""
     ticker = data.get("ticker", "").upper()
     if ticker and ticker not in config.TRADELIST:
@@ -779,7 +779,7 @@ async def add_to_tradelist(data: dict, user = Depends(verify_token)):
 
 
 @app.delete("/api/tradelist/{ticker}")
-async def remove_from_tradelist(ticker: str, user = Depends(verify_token)):
+async def remove_from_tradelist(ticker: str):
     """Remove a ticker from the active trade list."""
     ticker = ticker.upper()
     if ticker in config.TRADELIST:
@@ -795,7 +795,7 @@ async def remove_from_tradelist(ticker: str, user = Depends(verify_token)):
 
 
 @app.post("/api/settings/indicators")
-async def update_indicators(updates: dict, user = Depends(verify_token)):
+async def update_indicators(updates: dict):
     """Toggle one or more indicators on or off. Instant in-memory + persists to Firestore."""
     # Update in memory immediately (instant)
     for k, v in updates.items():
@@ -809,7 +809,7 @@ async def update_indicators(updates: dict, user = Depends(verify_token)):
 
 
 @app.post("/api/settings/ticker")
-async def update_ticker_settings(data: dict, user = Depends(verify_token)):
+async def update_ticker_settings(data: dict):
     """Update settings for a specific ticker."""
     ticker = data.get("ticker", "").upper()
     settings = data.get("settings", {})
@@ -828,7 +828,7 @@ async def update_ticker_settings(data: dict, user = Depends(verify_token)):
     return {"status": "success"}
 
 @app.delete("/api/settings/ticker/{ticker}")
-async def reset_ticker_settings(ticker: str, user = Depends(verify_token)):
+async def reset_ticker_settings(ticker: str):
     """Reset a ticker to global defaults."""
     ticker = ticker.upper()
     if ticker in config.TICKER_SETTINGS:
