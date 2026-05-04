@@ -487,6 +487,7 @@ def get_dashboard(ticker: str = None, timeframe: str = None):
         "sentimentSummary": primary_scan.get("sentiment_summary", ""),
         "tickerAmounts": config.TICKER_AMOUNTS,
         "simulation": account.get('simulation', True),
+        "has_keys": bool(config.ALPACA_API_KEY),
 
         # Detailed Data
         "positions": positions,
