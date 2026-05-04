@@ -518,7 +518,10 @@ async function fetchDashboard() {
             : `${API_BASE}/api/dashboard`;
 
         const response = await fetch(url);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (!response.ok) {
+            console.error(`[dashboard] HTTP Error: ${response.status}`);
+            return; // Exit if error
+        }
         const data = await response.json();
 
         // Set default selected ticker
@@ -701,6 +704,12 @@ async function fetchDashboard() {
         console.error('[dashboard] Fetch error:', error);
         const lastScanEl = document.getElementById('lastScanTime');
         if (lastScanEl) lastScanEl.textContent = 'Connection error';
+        
+        // On mobile, show a more intrusive alert for connectivity issues to help debug
+        if (window.innerWidth < 768) {
+             alert(`Dashboard Connection Failed: ${error.message}\n\nTroubleshooting:\n1. Check your internet.\n2. Disable Mobile VPN/Private Relay.\n3. Try a Hard Refresh.`);
+        }
+        
         showGlobalError('Cannot connect to the trading backend.');
     }
 }
