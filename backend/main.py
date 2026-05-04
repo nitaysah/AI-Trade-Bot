@@ -682,7 +682,7 @@ async def update_risk_settings(settings: dict, user = Depends(verify_token)):
 
 
 @app.post("/api/settings/ticker_amount")
-def update_ticker_amount(data: dict, user = Depends(verify_token)):
+async def update_ticker_amount(data: dict, user = Depends(verify_token)):
     """Updates the allocated trade amount for a specific ticker."""
     ticker = data.get("ticker", "").upper()
     amount = data.get("amount")
