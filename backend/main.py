@@ -173,30 +173,14 @@ latest_scans = {}   # {ticker: latest_evaluation_result}
 bot_running = False
 last_scan_time = None
 
-# Persistence path
-ALPACA_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "alpaca_settings.json")
-
 class AlpacaConfig(BaseModel):
     api_key: str
     secret_key: str
     paper: bool = True
 
-def load_persisted_alpaca():
-    if os.path.exists(ALPACA_CONFIG_PATH):
-        try:
-            with open(ALPACA_CONFIG_PATH, "r") as f:
-                data = json.load(f)
-                success = broker.connect(data['api_key'], data['secret_key'], data['paper'])
-                if success:
-                    # Update global config for other components to see
-                    config.ALPACA_API_KEY = data['api_key']
-                    config.ALPACA_SECRET_KEY = data['secret_key']
-                    config.ALPACA_PAPER = data['paper']
-                    print("[main] Loaded persisted Alpaca credentials.")
-        except Exception as e:
-            print(f"[main] Error loading persisted Alpaca config: {e}")
-
-load_config_from_cloud()
+# ──────────────────────────────────────────────
+# Global Bot State
+# ──────────────────────────────────────────────
 
 
 # ──────────────────────────────────────────────
