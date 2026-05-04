@@ -78,7 +78,7 @@ class RiskManager:
         stop_mult = t_settings.get('atr_stop_multiplier', self.atr_stop_multiplier)
 
         if custom_amount is not None:
-            # Fixed Amount Sizing
+            # Fixed Amount Sizing - Bypass the % cap if explicitly set
             notional = float(custom_amount)
             stop_distance = atr * stop_mult
             shares = notional / entry_price
@@ -89,10 +89,11 @@ class RiskManager:
             stop_distance = atr * stop_mult
             shares = risk_amount / stop_distance
             notional = shares * entry_price
-
-        # 1. Cap position size to max portfolio concentration
-        max_notional = account_equity * self.max_position_pct
-        notional = min(shares * entry_price, max_notional)
+            
+            # Cap position size to max portfolio concentration only for automated sizing
+            max_notional = account_equity * self.max_position_pct
+            notional = min(notional, max_notional)
+            shares = notional / entry_price
         
         # 2. Buying Power Check (CRITICAL FIX)
         if available_cash is not None:
