@@ -229,8 +229,10 @@ function selectTicker(ticker) {
 
 async function removeFromWatchlist(ticker) {
     try {
+        const headers = await getAuthHeaders();
         const response = await fetch(`${API_BASE}/api/watchlist/${ticker}`, {
-            method: 'DELETE'
+            method: 'DELETE',
+            headers: headers
         });
         if (response.ok) {
             // Remove from local favorites as well for fallback consistency
@@ -791,12 +793,16 @@ function attachEventListeners() {
             const isRemoving = currentWatchlist.includes(selectedTicker);
 
             try {
+                const headers = await getAuthHeaders();
                 if (isRemoving) {
-                    await fetch(`${API_BASE}/api/watchlist/${selectedTicker}`, { method: 'DELETE' });
+                    await fetch(`${API_BASE}/api/watchlist/${selectedTicker}`, { 
+                        method: 'DELETE',
+                        headers: headers 
+                    });
                 } else {
                     await fetch(`${API_BASE}/api/watchlist`, {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: headers,
                         body: JSON.stringify({ ticker: selectedTicker })
                     });
                 }
@@ -840,9 +846,10 @@ function updateFavoriteIcon() {
 // ──────────────────────────────────────────────
 async function toggleIndicator(key, value) {
     try {
+        const headers = await getAuthHeaders();
         await fetch(`${API_BASE}/api/settings/indicators`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: headers,
             body: JSON.stringify({ [key]: value })
         });
 
@@ -858,9 +865,10 @@ async function updateStrategyTf(newTf) {
         const loading = document.getElementById('gridLoading');
         if (loading) loading.classList.remove('hidden');
 
+        const headers = await getAuthHeaders();
         const response = await fetch(`${API_BASE}/api/settings/timeframe`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: headers,
             body: JSON.stringify({ timeframe: newTf })
         });
 
@@ -888,11 +896,15 @@ document.addEventListener('DOMContentLoaded', () => {
     // Chart will be initialized dynamically by fetchDashboard() once primary bot is known
     console.log('[dashboard] Waiting for backend data to initialize chart...');
 
-    // Initial data fetch
-    fetchDashboard();
-
-    // Auto-refresh every 15s
-    setInterval(fetchDashboard, REFRESH_INTERVAL);
+    // Initial data fetch once auth is ready
+    const checkAuth = setInterval(() => {
+        if (window.auth && window.auth.currentUser) {
+            console.log('[dashboard] Auth ready. Starting data stream.');
+            fetchDashboard();
+            setInterval(fetchDashboard, REFRESH_INTERVAL);
+            clearInterval(checkAuth);
+        }
+    }, 500);
 
     // Backtest Timeframe Listener
     const btTfSelect = document.getElementById('btTimeframe');
@@ -965,9 +977,10 @@ async function runBacktest() {
     results.classList.add('hidden');
 
     try {
+        const headers = await getAuthHeaders();
         const response = await fetch(`${API_BASE}/api/backtest`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: headers,
             body: JSON.stringify({ ticker, timeframe, days, capital, threshold, sell_threshold, indicators })
         });
 
