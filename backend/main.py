@@ -640,7 +640,7 @@ async def download_all_data(data: dict, user = Depends(verify_token)):
 
 
 @app.get("/api/settings/indicators")
-def get_indicator_settings():
+def get_indicator_settings(user = Depends(verify_token)):
     """Returns all indicator toggles grouped by category."""
     return {
         "Momentum": {
@@ -664,7 +664,7 @@ def get_indicator_settings():
 
 
 @app.post("/api/settings/risk")
-def update_risk_settings(settings: dict):
+async def update_risk_settings(settings: dict, user = Depends(verify_token)):
     """Updates risk management parameters."""
     for key, value in settings.items():
         if hasattr(config, key):
@@ -704,7 +704,7 @@ def update_ticker_amount(data: dict, user = Depends(verify_token)):
 
 
 @app.post("/api/settings/timeframe")
-def update_timeframe(data: dict):
+async def update_timeframe(data: dict, user = Depends(verify_token)):
     """Updates the default trading timeframe and triggers a re-scan."""
     global latest_scans
     new_tf = data.get("timeframe")
@@ -727,13 +727,13 @@ def update_timeframe(data: dict):
 
 
 @app.get("/api/watchlist")
-def get_watchlist():
+def get_watchlist(user = Depends(verify_token)):
     """Returns the current watchlist."""
     return config.WATCHLIST
 
 
 @app.post("/api/watchlist")
-async def add_to_watchlist(data: dict):
+async def add_to_watchlist(data: dict, user = Depends(verify_token)):
     """Add a ticker to the watchlist."""
     ticker = data.get("ticker", "").upper()
     if ticker and ticker not in config.WATCHLIST:
@@ -744,7 +744,7 @@ async def add_to_watchlist(data: dict):
 
 
 @app.delete("/api/watchlist/{ticker}")
-async def remove_from_watchlist(ticker: str):
+async def remove_from_watchlist(ticker: str, user = Depends(verify_token)):
     """Remove a ticker from the watchlist."""
     ticker = ticker.upper()
     if ticker in config.WATCHLIST:
@@ -763,13 +763,13 @@ async def remove_from_watchlist(ticker: str):
 
 
 @app.get("/api/tradelist")
-def get_tradelist():
+def get_tradelist(user = Depends(verify_token)):
     """Returns the current active trade list."""
     return config.TRADELIST
 
 
 @app.post("/api/tradelist")
-async def add_to_tradelist(data: dict):
+async def add_to_tradelist(data: dict, user = Depends(verify_token)):
     """Add a ticker to the active trade list."""
     ticker = data.get("ticker", "").upper()
     if ticker and ticker not in config.TRADELIST:
@@ -788,7 +788,7 @@ async def add_to_tradelist(data: dict):
 
 
 @app.delete("/api/tradelist/{ticker}")
-async def remove_from_tradelist(ticker: str):
+async def remove_from_tradelist(ticker: str, user = Depends(verify_token)):
     """Remove a ticker from the active trade list."""
     ticker = ticker.upper()
     if ticker in config.TRADELIST:
@@ -826,15 +826,14 @@ async def update_ticker_settings(data: dict, user = Depends(verify_token)):
 
     if ticker not in config.TICKER_SETTINGS:
         config.TICKER_SETTINGS[ticker] = {}
-    
     # Filter out null values to keep global defaults if not specified
     for k, v in settings.items():
         if v is not None:
             config.TICKER_SETTINGS[ticker][k] = v
         elif k in config.TICKER_SETTINGS[ticker]:
             del config.TICKER_SETTINGS[ticker][k]
-
-    _save_settings()
+    
+    await save_settings_to_cloud()
     return {"status": "success"}
 
 @app.delete("/api/settings/ticker/{ticker}")
@@ -843,7 +842,7 @@ async def reset_ticker_settings(ticker: str, user = Depends(verify_token)):
     ticker = ticker.upper()
     if ticker in config.TICKER_SETTINGS:
         del config.TICKER_SETTINGS[ticker]
-        _save_settings()
+        await save_settings_to_cloud()
     return {"status": "success"}
 
 def _load_saved_settings():
