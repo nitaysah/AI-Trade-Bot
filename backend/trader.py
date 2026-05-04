@@ -166,7 +166,7 @@ def evaluate_trade(ticker: str, account_equity: float = 100.0, available_cash: f
         reason = f"Trading halted: {risk_mgr.halt_reason}"
 
     return {
-        "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "time": datetime.now().isoformat(),
         "action": action,
         "ticker": ticker,
         "price": f"${analysis['price']:.2f}",

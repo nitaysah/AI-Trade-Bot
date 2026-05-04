@@ -226,7 +226,7 @@ async def trading_loop():
                 except Exception as e:
                     print(f"[scheduler] Error scanning {ticker}: {e}")
 
-            last_scan_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            last_scan_time = datetime.now().isoformat()
             print(f"[scheduler] Scan complete at {last_scan_time}")
 
         except Exception as e:

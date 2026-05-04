@@ -36,6 +36,16 @@ async function getAuthHeaders() {
         return { 'Content-Type': 'application/json' };
     }
 }
+
+function formatLocalTime(isoString) {
+    if (!isoString || isoString === "Starting...") return isoString;
+    try {
+        const date = new Date(isoString);
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    } catch (e) {
+        return isoString;
+    }
+}
 let selectedTicker = null; // Start null to force sync with Active Bots
 let tvWidget = null;
 let currentBackendTf = "5Min";
@@ -417,7 +427,7 @@ function renderTradeLog(scanHistory, executedTrades) {
         const row = document.createElement('tr');
         row.className = 'border-b border-purple-100 fade-in';
         row.innerHTML = `
-            <td class="py-2.5 pr-4 text-purple-600 text-xs">${trade.time}</td>
+            <td class="py-2.5 pr-4 text-purple-600 text-xs">${formatLocalTime(trade.time)}</td>
             <td class="py-2.5 pr-4 ${actionColor} text-xs">${trade.action}</td>
             <td class="py-2.5 pr-4 text-indigo-950 font-semibold text-xs">${trade.ticker}</td>
             <td class="py-2.5 pr-4 text-indigo-700 font-medium text-xs">${trade.price}</td>
@@ -684,7 +694,7 @@ async function fetchDashboard() {
 
         // Last scan
         const lastScanEl = document.getElementById('lastScanTime');
-        if (lastScanEl) lastScanEl.textContent = data.lastScan || '—';
+        if (lastScanEl) lastScanEl.textContent = formatLocalTime(data.lastScan) || '—';
 
         // Sync Strategy TF dropdown
         const tfSelector = document.getElementById('strategyTf');
