@@ -282,47 +282,44 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
 
     tradelist.forEach(ticker => {
         const scan = (scans || {})[ticker];
-        const amount = tickerAmounts[ticker] || '';
         const item = document.createElement('div');
-        item.className = `watchlist-item group active-bot ${selectedTicker === ticker ? 'active' : ''} flex items-center gap-2`;
+        item.className = `watchlist-item group active-bot ${selectedTicker === ticker ? 'active' : ''} flex items-center justify-between py-2 px-3 gap-3`;
 
         const action = scan?.action || '—';
-        const price = scan?.price ? `$${parseFloat(scan.price.toString().replace('$', '')).toFixed(2)}` : '—';
-        const actionColor = action === 'BUY' ? 'text-emerald-600' : action === 'SELL' ? 'text-red-500' : 'text-purple-500';
+        const price = scan?.price ? `$${parseFloat(scan.price.toString().replace('$', '')).toFixed(2)}` : '---';
+        const actionColor = action === 'BUY' ? 'text-emerald-600' : action === 'SELL' ? 'text-red-500' : 'text-purple-400';
 
         item.innerHTML = `
-            <div class="flex items-center justify-between flex-grow cursor-pointer" onclick="selectTicker('${ticker}')">
-                <div class="flex flex-col">
-                    <div class="flex items-center">
-                        <div class="h-1.5 w-1.5 bg-emerald-500 rounded-full mr-1.5 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]"></div>
-                        <span class="font-black text-sm text-indigo-950 tracking-tight">${ticker}</span>
-                    </div>
-                    <span class="text-[0.6rem] font-bold text-slate-400 uppercase tracking-tighter ml-3">Live Execution</span>
-                </div>
-                <div class="flex flex-col items-end gap-0.5">
-                    <span class="text-xs font-black text-slate-700 font-mono">${price}</span>
-                    <div class="px-1.5 py-0.5 rounded bg-white border border-slate-100 shadow-sm">
-                        <span class="font-black text-[0.6rem] ${actionColor} tracking-widest">${action}</span>
-                    </div>
+            <div class="flex items-center gap-2 min-w-[70px] cursor-pointer" onclick="selectTicker('${ticker}')">
+                <div class="h-2 w-2 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]"></div>
+                <span class="font-black text-sm text-indigo-950">${ticker}</span>
+            </div>
+
+            <div class="flex-grow flex items-center justify-end gap-3 cursor-pointer" onclick="selectTicker('${ticker}')">
+                <span class="text-xs font-black text-slate-600 font-mono">${price}</span>
+                <div class="px-2 py-0.5 rounded bg-white/60 border border-slate-100 shadow-sm min-w-[45px] text-center">
+                    <span class="font-black text-[0.65rem] ${actionColor} tracking-widest">${action}</span>
                 </div>
             </div>
-            
 
+            <div class="flex items-center gap-1">
+                <button class="text-indigo-300 hover:text-indigo-600 p-1 rounded hover:bg-indigo-50 transition-all" 
+                    title="Bot Settings for ${ticker}" 
+                    onclick="event.stopPropagation(); openTickerModal('${ticker}')">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                </button>
 
-            <button class="text-indigo-400 hover:text-indigo-600 p-1 rounded hover:bg-indigo-50 transition-all" 
-                title="Individual Risk Settings for ${ticker}" 
-                onclick="event.stopPropagation(); openTickerModal('${ticker}')">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-            </button>
-
-            <button class="watchlist-delete text-red-400 hover:bg-red-50" title="Deactivate Bot for ${ticker}" onclick="removeFromTradelist('${ticker}')">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6" />
-                </svg>
-            </button>
+                <button class="text-rose-300 hover:text-rose-600 p-1 rounded hover:bg-rose-50 transition-all" 
+                    title="Deactivate Bot for ${ticker}" 
+                    onclick="event.stopPropagation(); removeFromTradelist('${ticker}')">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                </button>
+            </div>
         `;
         container.appendChild(item);
     });
