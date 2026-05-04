@@ -23,6 +23,7 @@ fi
 
 # 3. Launch: Starts the server via uvicorn
 echo "🚀 Launching FastAPI server (Unbuffered)..."
+export GOOGLE_APPLICATION_CREDENTIALS="/Users/nitaysah/Documents/Antigravity/AI-Trade-Bot/backend/serviceAccount.json"
 PYTHONUNBUFFERED=1 uvicorn main:app --reload --port 8000 > stdout.log 2>&1 &
 
 # 4. Logging

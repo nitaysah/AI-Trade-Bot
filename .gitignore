@@ -46,3 +46,4 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+backend/serviceAccount.json

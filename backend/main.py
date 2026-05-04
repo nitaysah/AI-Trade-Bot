@@ -35,17 +35,21 @@ import re
 # ──────────────────────────────────────────────
 # Initialization
 # ──────────────────────────────────────────────
-# Initialize Firebase Admin
-# Initialize Firebase Admin with singleton check
+# Initialize Firebase Admin with service account and singleton check
 if not firebase_admin._apps:
     try:
-        firebase_admin.initialize_app(options={'projectId': 'trading-bot-engine-df3de'})
+        cred_path = os.path.join(os.path.dirname(__file__), "serviceAccount.json")
+        if os.path.exists(cred_path):
+            cred = credentials.Certificate(cred_path)
+            firebase_admin.initialize_app(cred)
+        else:
+            firebase_admin.initialize_app(options={'projectId': 'trading-bot-engine-df3de'})
         print("[main] Firebase Admin initialized.")
     except Exception as e:
         print(f"[main] Firebase Admin init error: {e}")
 
-db = firestore.client()
-print("[main] Firestore client connected.")
+db = firestore.client(database_id="trading-bot")
+print("[main] Firestore client connected to database: trading-bot")
 
 # ──────────────────────────────────────────────
 # Secret Encryption Vault
@@ -116,41 +120,50 @@ async def load_all_from_cloud():
     global executed_trades, trade_log
     try:
         # 1. Alpaca Config
-        doc_alpaca = db.collection("settings").document("alpaca").get()
-        if doc_alpaca.exists:
-            data = doc_alpaca.to_dict()
-            decrypted_key = vault.decrypt(data.get("api_key", ""))
-            decrypted_secret = vault.decrypt(data.get("secret_key", ""))
-            
-            if decrypted_key and decrypted_secret:
-                config.ALPACA_API_KEY = decrypted_key
-                config.ALPACA_SECRET_KEY = decrypted_secret
-                config.ALPACA_PAPER = data.get("paper", True)
-                print(f"[vault] Keys decrypted. Attempting broker connection...")
-                broker.connect(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY, config.ALPACA_PAPER)
-            else:
-                print("[vault] WARNING: Decryption returned empty keys. Keeping current state.")
+        try:
+            doc_alpaca = db.collection("settings").document("alpaca").get()
+            if doc_alpaca.exists:
+                data = doc_alpaca.to_dict()
+                decrypted_key = vault.decrypt(data.get("api_key", ""))
+                decrypted_secret = vault.decrypt(data.get("secret_key", ""))
+                
+                if decrypted_key and decrypted_secret:
+                    config.ALPACA_API_KEY = decrypted_key
+                    config.ALPACA_SECRET_KEY = decrypted_secret
+                    config.ALPACA_PAPER = data.get("paper", True)
+                    print(f"[vault] Keys decrypted. Attempting broker connection...")
+                    broker.connect(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY, config.ALPACA_PAPER)
+                else:
+                    print("[vault] WARNING: Decryption returned empty keys. Keeping current state.")
+        except Exception as e:
+            print(f"[vault] WARNING: Could not fetch Alpaca config from cloud: {e}")
 
         # 2. UI Settings
-        doc_ui = db.collection("settings").document("ui").get()
-        if doc_ui.exists:
-            ui = doc_ui.to_dict()
-            config.WATCHLIST = ui.get("watchlist", config.WATCHLIST)
-            config.TRADELIST = ui.get("tradelist", config.TRADELIST)
-            config.TICKER_SETTINGS = ui.get("ticker_settings", {})
-            toggles = ui.get("toggles", {})
-            for k, v in toggles.items():
-                if hasattr(config, k): setattr(config, k, v)
-            print("[vault] Restored UI settings and watchlist.")
+        try:
+            doc_ui = db.collection("settings").document("ui").get()
+            if doc_ui.exists:
+                ui = doc_ui.to_dict()
+                config.WATCHLIST = ui.get("watchlist", config.WATCHLIST)
+                config.TRADELIST = ui.get("tradelist", config.TRADELIST)
+                config.TICKER_SETTINGS = ui.get("ticker_settings", {})
+                toggles = ui.get("toggles", {})
+                for k, v in toggles.items():
+                    if hasattr(config, k): setattr(config, k, v)
+                print("[vault] Restored UI settings and watchlist.")
+        except Exception as e:
+            print(f"[vault] WARNING: Could not fetch UI settings from cloud: {e}")
 
         # 3. History
-        doc_trades = db.collection("history").document("trades").get()
-        if doc_trades.exists:
-            executed_trades = doc_trades.to_dict().get("data", [])
-        
-        doc_scans = db.collection("history").document("scans").get()
-        if doc_scans.exists:
-            trade_log = doc_scans.to_dict().get("data", [])
+        try:
+            doc_trades = db.collection("history").document("trades").get()
+            if doc_trades.exists:
+                executed_trades = doc_trades.to_dict().get("data", [])
+            
+            doc_scans = db.collection("history").document("scans").get()
+            if doc_scans.exists:
+                trade_log = doc_scans.to_dict().get("data", [])
+        except Exception as e:
+            print(f"[vault] WARNING: Could not fetch trade history from cloud: {e}")
             
         print(f"[vault] Cloud restore complete. Alpaca Linked: {bool(config.ALPACA_API_KEY)}")
     except Exception as e:
