@@ -44,6 +44,10 @@ class AlpacaBroker:
             return False
 
         try:
+            # Clean keys to prevent invisible whitespace errors
+            api_key = api_key.strip()
+            secret_key = secret_key.strip()
+            
             print(f"[broker] Attempting connection (Paper={paper})...")
             self.client = TradingClient(api_key, secret_key, paper=paper)
             # Test connection
