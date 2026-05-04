@@ -16,7 +16,10 @@ from pydantic import BaseModel
 import asyncio
 from datetime import datetime, timedelta
 import firebase_admin
-from firebase_admin import auth, credentials
+from firebase_admin import auth, credentials, firestore
+from cryptography.fernet import Fernet
+import base64
+import hashlib
 
 from trader import evaluate_trade, get_risk_manager
 from broker import AlpacaBroker
@@ -36,9 +39,68 @@ import re
 try:
     # Explicitly provide project ID for robustness
     firebase_admin.initialize_app(options={'projectId': 'trading-bot-engine-df3de'})
-    print("[main] Firebase Admin initialized (trading-bot-engine-df3de).")
+    db = firestore.client()
+    print("[main] Firebase Admin & Firestore initialized.")
 except Exception as e:
-    print(f"[main] Firebase Admin init: {e}")
+    print(f"[main] Firebase Admin/Firestore init: {e}")
+    db = None
+
+# ──────────────────────────────────────────────
+# Secret Encryption Vault
+# ──────────────────────────────────────────────
+class Vault:
+    """Handles bank-grade encryption for sensitive API keys."""
+    def __init__(self):
+        # Derive a stable master key from the project ID
+        seed = "trading-bot-engine-df3de".encode()
+        key_hash = hashlib.sha256(seed).digest()
+        self.fernet = Fernet(base64.urlsafe_b64encode(key_hash))
+
+    def encrypt(self, plain_text: str) -> str:
+        if not plain_text: return ""
+        return self.fernet.encrypt(plain_text.encode()).decode()
+
+    def decrypt(self, cipher_text: str) -> str:
+        if not cipher_text: return ""
+        try:
+            return self.fernet.decrypt(cipher_text.encode()).decode()
+        except:
+            return ""
+
+vault = Vault()
+
+async def save_config_to_cloud(api_key, secret_key, paper):
+    """Saves encrypted keys to Firestore."""
+    if not db: return
+    try:
+        data = {
+            "api_key": vault.encrypt(api_key),
+            "secret_key": vault.encrypt(secret_key),
+            "paper": paper,
+            "updated_at": firestore.SERVER_TIMESTAMP
+        }
+        db.collection("settings").document("alpaca").set(data)
+        print("[vault] Config securely saved to Firestore.")
+    except Exception as e:
+        print(f"[vault] Error saving to cloud: {e}")
+
+def load_config_from_cloud():
+    """Retrieves and decrypts keys from Firestore."""
+    if not db: return
+    try:
+        doc = db.collection("settings").document("alpaca").get()
+        if doc.exists:
+            data = doc.to_dict()
+            config.ALPACA_API_KEY = vault.decrypt(data.get("api_key", ""))
+            config.ALPACA_SECRET_KEY = vault.decrypt(data.get("secret_key", ""))
+            config.ALPACA_PAPER = data.get("paper", True)
+            
+            if config.ALPACA_API_KEY:
+                print("[vault] Successfully restored encrypted keys from cloud.")
+                # Auto-connect broker
+                broker.connect(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY, config.ALPACA_PAPER)
+    except Exception as e:
+        print(f"[vault] Error loading from cloud: {e}")
 
 async def verify_token(authorization: str = Header(None)):
     """Security dependency to verify Firebase ID Token."""
@@ -89,7 +151,7 @@ def load_persisted_alpaca():
         except Exception as e:
             print(f"[main] Error loading persisted Alpaca config: {e}")
 
-load_persisted_alpaca()
+load_config_from_cloud()
 
 
 # ──────────────────────────────────────────────
@@ -288,13 +350,8 @@ def root():
 async def update_alpaca_config(cfg: AlpacaConfig, user = Depends(verify_token)):
     success = broker.connect(cfg.api_key, cfg.secret_key, cfg.paper)
     if success:
-        # Persist
-        with open(ALPACA_CONFIG_PATH, "w") as f:
-            json.dump({
-                "api_key": cfg.api_key,
-                "secret_key": cfg.secret_key,
-                "paper": cfg.paper
-            }, f)
+        # Persist to cloud (Encrypted)
+        await save_config_to_cloud(cfg.api_key, cfg.secret_key, cfg.paper)
         
         # Update config module state
         config.ALPACA_API_KEY = cfg.api_key
@@ -308,8 +365,9 @@ async def update_alpaca_config(cfg: AlpacaConfig, user = Depends(verify_token)):
 
 @app.delete("/api/alpaca_config")
 async def unlink_alpaca(user = Depends(verify_token)):
-    if os.path.exists(ALPACA_CONFIG_PATH):
-        os.remove(ALPACA_CONFIG_PATH)
+    # Delete from cloud
+    if db:
+        db.collection("settings").document("alpaca").delete()
     
     # Reset broker to simulation
     broker.simulation_mode = True
