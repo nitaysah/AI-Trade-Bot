@@ -384,7 +384,7 @@ def root():
 
 
 @app.post("/api/alpaca_config")
-def update_alpaca_config(cfg: AlpacaConfig):
+async def update_alpaca_config(cfg: AlpacaConfig):
     success = broker.connect(cfg.api_key, cfg.secret_key, cfg.paper)
     if success:
         # Persist to cloud (Encrypted)
