@@ -186,7 +186,7 @@ function renderWatchlist(scans, watchlist, tradelist = []) {
     tickers.forEach(ticker => {
         const scan = (scans || {})[ticker];
         const item = document.createElement('div');
-        item.className = `watchlist-item group ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2`;
+        item.className = `watchlist-item group ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2 flex flex-col gap-2`;
 
         const action = scan?.action || '—';
         const price = scan?.price ? `$${parseFloat(scan.price.toString().replace('$', '')).toFixed(2)}` : '---';
@@ -197,7 +197,6 @@ function renderWatchlist(scans, watchlist, tradelist = []) {
         const isBotActive = tradelist.includes(ticker);
 
         item.innerHTML = `
-            <div class="flex flex-col gap-2">
                 <!-- Top Layer: Ticker & Bot Badge -->
                 <div class="flex items-center justify-between">
                     <div class="flex items-center gap-2 cursor-pointer" onclick="selectTicker('${ticker}')">
@@ -233,7 +232,6 @@ function renderWatchlist(scans, watchlist, tradelist = []) {
                         <span class="font-black text-[0.65rem] tracking-widest">${action}</span>
                     </div>
                 </div>
-            </div>
         `;
         container.appendChild(item);
     });
@@ -298,14 +296,13 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
     tradelist.forEach(ticker => {
         const scan = (scans || {})[ticker];
         const item = document.createElement('div');
-        item.className = `watchlist-item group active-bot ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2`;
+        item.className = `watchlist-item group active-bot ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2 flex flex-col gap-2`;
 
         const action = scan?.action || '—';
         const price = scan?.price ? `$${parseFloat(scan.price.toString().replace('$', '')).toFixed(2)}` : '---';
         const actionColor = action === 'BUY' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : action === 'SELL' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-400 border-slate-100';
 
         item.innerHTML = `
-            <div class="flex flex-col gap-2">
                 <!-- Top Layer: Ticker & Status -->
                 <div class="flex items-center justify-between">
                     <div class="flex items-center gap-2 cursor-pointer" onclick="selectTicker('${ticker}')">
@@ -337,7 +334,6 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         <span class="font-black text-[0.65rem] tracking-widest">${action}</span>
                     </div>
                 </div>
-            </div>
         `;
         container.appendChild(item);
     });
