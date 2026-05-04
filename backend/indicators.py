@@ -19,11 +19,6 @@ import config
 
 
 # ---------------------------------------------------------------------------
-# Alpaca clients (initialised once at import time)
-# ---------------------------------------------------------------------------
-stock_client = None
-crypto_client = None
-
 # ---------------------------------------------------------------------------
 # Mystic Pulse V2.0 Utilities
 # ---------------------------------------------------------------------------
@@ -58,16 +53,18 @@ def _get_mystic_v2_presets(timeframe):
     elif timeframe == '1Day': key = '1d'
     return defaults.get(key, defaults['1h'])
 
-if config.ALPACA_API_KEY and config.ALPACA_API_KEY != "your_alpaca_api_key_here":
-    stock_client = StockHistoricalDataClient(
-        config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY
-    )
-    crypto_client = CryptoHistoricalDataClient(
-        config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY
-    )
+# Alpaca clients (Dynamic access)
+# ---------------------------------------------------------------------------
+def get_alpaca_clients():
+    """Returns initialized Alpaca clients using the latest config keys."""
+    if not config.ALPACA_API_KEY or config.ALPACA_API_KEY == "your_alpaca_api_key_here":
+        return None, None
+    
+    s_client = StockHistoricalDataClient(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY)
+    c_client = CryptoHistoricalDataClient(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY)
+    return s_client, c_client
 
 _data_cache = {}
-
 
 # ---------------------------------------------------------------------------
 # Public API: get_full_analysis
@@ -78,6 +75,9 @@ def get_full_analysis(ticker, timeframe="5Min"):
     Supports both Stocks and Crypto.
     """
     try:
+        # 1. Initialize clients with LATEST keys from config
+        stock_client, crypto_client = get_alpaca_clients()
+        
         # Detect if it's crypto (standard Alpaca crypto pairs)
         clean_ticker = ticker.upper().replace("/", "")
         is_crypto = any(clean_ticker.endswith(base) for base in ["USD", "USDT", "USDC"])
@@ -98,6 +98,8 @@ def get_full_analysis(ticker, timeframe="5Min"):
             request_class = StockBarsRequest
 
         if not client:
+            print(f"[indicators] ERROR: Alpaca client not initialized. Check your API keys.")
+            return None
             return None
 
         end_date = datetime.now()
