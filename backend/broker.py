@@ -44,14 +44,15 @@ class AlpacaBroker:
             return False
 
         try:
+            print(f"[broker] Attempting connection (Paper={paper})...")
             self.client = TradingClient(api_key, secret_key, paper=paper)
             # Test connection
             account = self.client.get_account()
             self.simulation_mode = False
-            print(f"[broker] Successfully connected to Alpaca {'Paper' if paper else 'Live'} Trading")
+            print(f"[broker] SUCCESS: Connected to Alpaca (Equity: ${account.equity})")
             return True
         except Exception as e:
-            print(f"[broker] Alpaca connection failed: {e}. Falling back to simulation.")
+            print(f"[broker] CONNECTION FAILED: {str(e)}")
             self.simulation_mode = True
             self.client = None
             return False
