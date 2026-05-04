@@ -36,14 +36,16 @@ import re
 # Initialization
 # ──────────────────────────────────────────────
 # Initialize Firebase Admin
-try:
-    # Explicitly provide project ID for robustness
-    firebase_admin.initialize_app(options={'projectId': 'trading-bot-engine-df3de'})
-    db = firestore.client()
-    print("[main] Firebase Admin & Firestore initialized.")
-except Exception as e:
-    print(f"[main] Firebase Admin/Firestore init: {e}")
-    db = None
+# Initialize Firebase Admin with singleton check
+if not firebase_admin._apps:
+    try:
+        firebase_admin.initialize_app(options={'projectId': 'trading-bot-engine-df3de'})
+        print("[main] Firebase Admin initialized.")
+    except Exception as e:
+        print(f"[main] Firebase Admin init error: {e}")
+
+db = firestore.client()
+print("[main] Firestore client connected.")
 
 # ──────────────────────────────────────────────
 # Secret Encryption Vault
@@ -117,11 +119,17 @@ async def load_all_from_cloud():
         doc_alpaca = db.collection("settings").document("alpaca").get()
         if doc_alpaca.exists:
             data = doc_alpaca.to_dict()
-            config.ALPACA_API_KEY = vault.decrypt(data.get("api_key", ""))
-            config.ALPACA_SECRET_KEY = vault.decrypt(data.get("secret_key", ""))
-            config.ALPACA_PAPER = data.get("paper", True)
-            if config.ALPACA_API_KEY:
+            decrypted_key = vault.decrypt(data.get("api_key", ""))
+            decrypted_secret = vault.decrypt(data.get("secret_key", ""))
+            
+            if decrypted_key and decrypted_secret:
+                config.ALPACA_API_KEY = decrypted_key
+                config.ALPACA_SECRET_KEY = decrypted_secret
+                config.ALPACA_PAPER = data.get("paper", True)
+                print(f"[vault] Keys decrypted. Attempting broker connection...")
                 broker.connect(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY, config.ALPACA_PAPER)
+            else:
+                print("[vault] WARNING: Decryption returned empty keys. Keeping current state.")
 
         # 2. UI Settings
         doc_ui = db.collection("settings").document("ui").get()
