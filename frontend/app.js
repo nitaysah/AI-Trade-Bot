@@ -14,7 +14,10 @@ const REFRESH_INTERVAL = 15000; // 15 seconds
  * Retrieves the current Firebase ID token and prepares headers.
  */
 async function getAuthHeaders() {
-    const user = firebase.auth().currentUser;
+    // Use the globally exposed auth instance from the HTML module block
+    const auth = window.auth;
+    const user = auth ? auth.currentUser : null;
+    
     if (!user) return { 'Content-Type': 'application/json' };
     const token = await user.getIdToken();
     return {

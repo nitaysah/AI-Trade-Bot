@@ -25,6 +25,7 @@
 
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
+        window.auth = auth; // Expose for app.js
 
         onAuthStateChanged(auth, (user) => {
             if (!user) {
