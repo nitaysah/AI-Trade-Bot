@@ -84,23 +84,68 @@ async def save_config_to_cloud(api_key, secret_key, paper):
     except Exception as e:
         print(f"[vault] Error saving to cloud: {e}")
 
-def load_config_from_cloud():
-    """Retrieves and decrypts keys from Firestore."""
+async def save_history_to_cloud():
+    """Saves executed trades and scan history to Firestore."""
     if not db: return
     try:
-        doc = db.collection("settings").document("alpaca").get()
-        if doc.exists:
-            data = doc.to_dict()
+        db.collection("history").document("trades").set({"data": executed_trades})
+        db.collection("history").document("scans").set({"data": trade_log})
+    except Exception as e:
+        print(f"[vault] Error saving history: {e}")
+
+async def save_settings_to_cloud():
+    """Saves all UI settings to Firestore."""
+    if not db: return
+    try:
+        data = {
+            "watchlist": config.WATCHLIST,
+            "tradelist": config.TRADELIST,
+            "ticker_settings": getattr(config, 'TICKER_SETTINGS', {}),
+            "toggles": {k: getattr(config, k) for k in dir(config) if k.startswith("ENABLE_")}
+        }
+        db.collection("settings").document("ui").set(data)
+    except Exception as e:
+        print(f"[vault] Error saving settings: {e}")
+
+async def load_all_from_cloud():
+    """Restores everything from Firestore on startup."""
+    if not db: return
+    global executed_trades, trade_log
+    try:
+        # 1. Alpaca Config
+        doc_alpaca = db.collection("settings").document("alpaca").get()
+        if doc_alpaca.exists:
+            data = doc_alpaca.to_dict()
             config.ALPACA_API_KEY = vault.decrypt(data.get("api_key", ""))
             config.ALPACA_SECRET_KEY = vault.decrypt(data.get("secret_key", ""))
             config.ALPACA_PAPER = data.get("paper", True)
-            
             if config.ALPACA_API_KEY:
-                print("[vault] Successfully restored encrypted keys from cloud.")
-                # Auto-connect broker
                 broker.connect(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY, config.ALPACA_PAPER)
+
+        # 2. UI Settings
+        doc_ui = db.collection("settings").document("ui").get()
+        if doc_ui.exists:
+            ui = doc_ui.to_dict()
+            config.WATCHLIST = ui.get("watchlist", config.WATCHLIST)
+            config.TRADELIST = ui.get("tradelist", config.TRADELIST)
+            config.TICKER_SETTINGS = ui.get("ticker_settings", {})
+            toggles = ui.get("toggles", {})
+            for k, v in toggles.items():
+                if hasattr(config, k): setattr(config, k, v)
+            print("[vault] Restored UI settings and watchlist.")
+
+        # 3. History
+        doc_trades = db.collection("history").document("trades").get()
+        if doc_trades.exists:
+            executed_trades = doc_trades.to_dict().get("data", [])
+        
+        doc_scans = db.collection("history").document("scans").get()
+        if doc_scans.exists:
+            trade_log = doc_scans.to_dict().get("data", [])
+            
+        print(f"[vault] Restored {len(executed_trades)} trades and {len(trade_log)} scan entries.")
     except Exception as e:
-        print(f"[vault] Error loading from cloud: {e}")
+        print(f"[vault] Cloud restore failed: {e}")
 
 async def verify_token(authorization: str = Header(None)):
     """Security dependency to verify Firebase ID Token."""
@@ -279,7 +324,7 @@ async def trading_loop():
                                 # If it was a real execution, save to permanent ledger
                                 if trade_executed:
                                     executed_trades.insert(0, result)
-                                    _save_executed_trade(result)
+                                    await save_history_to_cloud()
 
                         # Cap log size to prevent memory bloat
                         if len(trade_log) > 100:
@@ -290,6 +335,8 @@ async def trading_loop():
 
             last_scan_time = datetime.now().isoformat()
             print(f"[scheduler] Scan complete at {last_scan_time}")
+            # Periodically sync scan log to cloud
+            await save_history_to_cloud()
 
         except Exception as e:
             print(f"[scheduler] Loop error: {e}")
@@ -308,6 +355,7 @@ async def trading_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start background trading loop on startup."""
+    await load_all_from_cloud()
     task = asyncio.create_task(trading_loop())
     yield
     global bot_running
@@ -628,7 +676,7 @@ def update_risk_settings(settings: dict):
             
             setattr(config, key, value)
     
-    _save_settings()
+    await save_settings_to_cloud()
     print(f"[settings] Updated risk parameters: {', '.join(settings.keys())}")
     return {"status": "success", "settings": settings}
 
@@ -649,7 +697,7 @@ def update_ticker_amount(data: dict, user = Depends(verify_token)):
             except:
                 return {"status": "error", "message": "Invalid amount"}
         
-        _save_settings()
+        await save_settings_to_cloud()
         print(f"[settings] {ticker}: Allocated trade amount updated")
         return {"status": "success", "ticker_amounts": config.TICKER_AMOUNTS}
     return {"status": "error", "message": "Ticker required"}
@@ -667,14 +715,12 @@ def update_timeframe(data: dict):
         from indicators import _data_cache
         _data_cache.clear()
         
-        _save_settings()
+        await save_settings_to_cloud()
         print(f"[settings] Global Timeframe synced to {new_tf}. Triggering immediate scan.")
         
         # Wake up the background loop
         if 'force_scan_trigger' in globals():
             force_scan_trigger.set()
-        # or we can force one loop here:
-        print(f"[settings] Timeframe changed to {new_tf}. Clearing cache.")
         
         return {"status": "success", "timeframe": new_tf}
     return {"status": "error", "message": "Invalid timeframe"}
@@ -692,7 +738,7 @@ async def add_to_watchlist(data: dict):
     ticker = data.get("ticker", "").upper()
     if ticker and ticker not in config.WATCHLIST:
         config.WATCHLIST.append(ticker)
-        _save_settings()
+        await save_settings_to_cloud()
         print(f"[settings] Added {ticker} to watchlist")
     return {"status": "success", "watchlist": config.WATCHLIST}
 
@@ -710,7 +756,7 @@ async def remove_from_watchlist(ticker: str):
         else:
             print(f"[settings] Removed {ticker} from watchlist")
             
-        _save_settings()
+        await save_settings_to_cloud()
         if 'force_scan_trigger' in globals():
             force_scan_trigger.set()
     return {"status": "success", "watchlist": config.WATCHLIST, "tradelist": config.TRADELIST}
@@ -735,7 +781,7 @@ async def add_to_tradelist(data: dict):
         else:
             print(f"[settings] Added {ticker} to active tradelist (Bot Activated)")
             
-        _save_settings()
+        await save_settings_to_cloud()
         if 'force_scan_trigger' in globals():
             force_scan_trigger.set()
     return {"status": "success", "tradelist": config.TRADELIST, "watchlist": config.WATCHLIST}
@@ -747,58 +793,26 @@ async def remove_from_tradelist(ticker: str):
     ticker = ticker.upper()
     if ticker in config.TRADELIST:
         config.TRADELIST.remove(ticker)
-        _save_settings()
+        await save_settings_to_cloud()
         print(f"[settings] Removed {ticker} from active tradelist (Bot Deactivated)")
     return {"status": "success", "tradelist": config.TRADELIST}
 
 
-def _save_settings():
-    """Persist watchlist and tradelist to settings.json."""
-    import json, os
-    settings_path = os.path.join(os.path.dirname(__file__), "settings.json")
-    try:
-        existing = {}
-        if os.path.exists(settings_path):
-            with open(settings_path, "r") as f:
-                existing = json.load(f)
-
-        existing["WATCHLIST"] = config.WATCHLIST
-        existing["TRADELIST"] = config.TRADELIST
-        existing["TICKER_SETTINGS"] = config.TICKER_SETTINGS
-        existing["DEFAULT_TIMEFRAME"] = config.DEFAULT_TIMEFRAME
-        existing["SCAN_INTERVAL_SECONDS"] = config.SCAN_INTERVAL_SECONDS
-
-        with open(settings_path, "w") as f:
-            json.dump(existing, f, indent=2)
-    except Exception as e:
-        print(f"[settings] Error saving settings: {e}")
+# ──────────────────────────────────────────────
+# Legacy persistence removed (Now using Cloud Vault)
+# ──────────────────────────────────────────────
 
 
 @app.post("/api/settings/indicators")
-async def update_indicators(updates: dict):
-    """Toggle one or more indicators on or off. Instant in-memory + persists to settings.json."""
-    import json, os
-
+async def update_indicators(updates: dict, user = Depends(verify_token)):
+    """Toggle one or more indicators on or off. Instant in-memory + persists to Firestore."""
     # Update in memory immediately (instant)
     for k, v in updates.items():
         if hasattr(config, k) and k.startswith("ENABLE_"):
             setattr(config, k, bool(v))
 
-    # Save to settings.json (does NOT trigger uvicorn reload)
-    settings_path = os.path.join(os.path.dirname(__file__), "settings.json")
-    try:
-        existing = {}
-        if os.path.exists(settings_path):
-            with open(settings_path, "r") as f:
-                existing = json.load(f)
-
-        existing.update({k: bool(v) for k, v in updates.items() if k.startswith("ENABLE_")})
-
-        with open(settings_path, "w") as f:
-            json.dump(existing, f, indent=2)
-    except Exception as e:
-        print(f"[settings] Error saving: {e}")
-
+    # Save to Firestore (Does not trigger uvicorn reload)
+    await save_settings_to_cloud()
     print(f"[settings] Updated indicator toggles: {', '.join(updates.keys())}")
     return {"status": "success"}
 
@@ -891,9 +905,7 @@ def _load_executed_trades():
             print(f"[trades] Error loading history: {e}")
 
 
-# Load saved settings on import
-_load_saved_settings()
-_load_executed_trades()
+# Load initial settings (Now handled by lifespan on startup)
 
 # ──────────────────────────────────────────────
 # Helpers
