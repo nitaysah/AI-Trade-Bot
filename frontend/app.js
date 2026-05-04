@@ -186,38 +186,53 @@ function renderWatchlist(scans, watchlist, tradelist = []) {
     tickers.forEach(ticker => {
         const scan = (scans || {})[ticker];
         const item = document.createElement('div');
-        item.className = `watchlist-item group ${selectedTicker === ticker ? 'active' : ''}`;
+        item.className = `watchlist-item group ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2`;
 
         const action = scan?.action || '—';
-        const price = scan?.price ? `$${parseFloat(scan.price.toString().replace('$', '')).toFixed(2)}` : '—';
-        const actionColor = action === 'BUY' ? 'text-emerald-600' : action === 'SELL' ? 'text-red-500' : 'text-purple-500';
+        const price = scan?.price ? `$${parseFloat(scan.price.toString().replace('$', '')).toFixed(2)}` : '---';
+        const actionColor = action === 'BUY' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : action === 'SELL' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-400 border-slate-100';
 
         const bullish = scan?.bullish_count || 0;
         const total = scan?.total_signals || 0;
+        const isBotActive = tradelist.includes(ticker);
 
         item.innerHTML = `
-            <div class="flex items-center justify-between flex-grow cursor-pointer" onclick="selectTicker('${ticker}')">
-                <div>
-                    <span class="font-bold text-sm text-indigo-900">${ticker}</span>
-                    <span class="text-xs text-purple-500 ml-2">${price}</span>
-                    ${tradelist.includes(ticker) ? '<span class="ml-2 px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-600 text-[0.6rem] font-bold">BOT</span>' : ''}
+            <div class="flex flex-col gap-2">
+                <!-- Top Layer: Ticker & Bot Badge -->
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-2 cursor-pointer" onclick="selectTicker('${ticker}')">
+                        <span class="font-black text-sm text-indigo-950 tracking-tight">${ticker}</span>
+                        ${isBotActive ? '<span class="px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-600 text-[0.6rem] font-black tracking-widest uppercase">Active Bot</span>' : ''}
+                    </div>
+                    
+                    <div class="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
+                        <button class="p-1.5 rounded hover:bg-indigo-50 ${isBotActive ? 'text-indigo-600' : 'text-indigo-300'}" 
+                            title="${isBotActive ? 'Bot Active' : 'Activate Bot'}"
+                            onclick="event.stopPropagation(); addToTradelist('${ticker}')">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="${isBotActive ? 'currentColor' : 'none'}" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                            </svg>
+                        </button>
+                        <button class="p-1.5 rounded hover:bg-rose-50 text-rose-300 hover:text-rose-400 transition-all" 
+                            title="Remove from Watchlist"
+                            onclick="event.stopPropagation(); removeFromWatchlist('${ticker}')">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </div>
                 </div>
-                <div class="flex items-center gap-2">
-                    <span class="text-[0.6rem] text-purple-400">${bullish}/${total}</span>
-                    <span class="font-bold text-xs ${actionColor}">${action}</span>
+
+                <!-- Bottom Layer: Price, Signal Count & Action -->
+                <div class="flex items-center justify-between border-t border-slate-50 pt-2 cursor-pointer" onclick="selectTicker('${ticker}')">
+                    <div class="flex flex-col">
+                        <span class="text-xs font-black text-slate-500 font-mono tracking-tight">${price}</span>
+                        <span class="text-[0.6rem] text-slate-400 font-bold uppercase tracking-tighter">${bullish}/${total} Signals</span>
+                    </div>
+                    <div class="px-2 py-0.5 rounded border ${actionColor} shadow-sm min-w-[50px] text-center">
+                        <span class="font-black text-[0.65rem] tracking-widest">${action}</span>
+                    </div>
                 </div>
-            </div>
-            <div class="flex items-center gap-1 ml-2">
-                <button class="watchlist-action ${tradelist.includes(ticker) ? 'text-purple-600 bg-purple-50' : 'text-emerald-500 hover:bg-emerald-50'}" title="Activate Bot for ${ticker}" onclick="event.stopPropagation(); addToTradelist('${ticker}')">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="${tradelist.includes(ticker) ? 'currentColor' : 'none'}" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                    </svg>
-                </button>
-                <button class="watchlist-delete text-red-400 hover:bg-red-50" title="Remove ${ticker}" onclick="event.stopPropagation(); removeFromWatchlist('${ticker}')">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                </button>
             </div>
         `;
         container.appendChild(item);
