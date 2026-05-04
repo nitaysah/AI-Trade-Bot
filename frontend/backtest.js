@@ -46,6 +46,7 @@ async function runBacktest() {
     document.getElementById('btLoading').classList.remove('hidden');
 
     try {
+        console.log(`[backtest] Starting request to: ${API_BASE}/api/backtest`);
         const response = await fetch(`${API_BASE}/api/backtest`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -56,23 +57,27 @@ async function runBacktest() {
                 capital: parseFloat(capital),
                 threshold: parseInt(threshold),
                 sell_threshold: parseInt(sellThreshold),
-                indicators: indicators // Pass the manual selection to backend
+                indicators: indicators 
             })
         });
 
+        if (!response.ok) {
+            throw new Error(`HTTP Error: ${response.status}`);
+        }
+
         const data = await response.json();
+        console.log('[backtest] Response received:', data.status);
 
         if (data.status === 'success') {
             displayResults(data.results);
         } else {
-            // Handle both structured error objects and raw error fields
             const errMsg = data.message || data.error || "Unknown error";
             alert("Backtest Failed: " + errMsg);
             resetBacktestUI();
         }
     } catch (err) {
         console.error("BACKTEST FETCH ERROR:", err);
-        alert("Connection to AI Backend failed. Check console for details.");
+        alert(`Connection Failed: ${err.message}\n\nTroubleshooting:\n1. Ensure you have a stable internet connection.\n2. If on mobile, try disabling VPN or Private Relay.\n3. Try a Hard Refresh (Cmd+Shift+R or clear mobile cache).`);
         resetBacktestUI();
     }
 }
