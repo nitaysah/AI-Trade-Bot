@@ -303,10 +303,19 @@ async def trading_loop():
                                         print(f"[trader] BUY {ticker}: ${sizing['notional']:.2f}")
                                 elif has_this_pos:
                                     result['action'] = 'HOLD'
+                                    # Capture unrealized P/L for scan log
+                                    pos_info = next((p for p in active_positions if p['symbol'] == ticker), None)
+                                    if pos_info:
+                                        result['pl'] = pos_info['unrealized_pl']
+                                        result['pl_pct'] = pos_info['unrealized_pl_pct']
+                                        result['qty'] = pos_info['qty']
                                     result['reason'] = "Position already open."
 
                             elif result['action'] == 'SELL':
                                 if has_this_pos:
+                                    # Get position info before closing for P/L calculation
+                                    pos_info = next((p for p in active_positions if p['symbol'] == ticker), None)
+                                    
                                     order_result = broker.close_position(ticker)
                                     if order_result.get('success'):
                                         result['order'] = order_result
@@ -318,9 +327,20 @@ async def trading_loop():
                                         result['total_cost'] = order_result.get('proceeds', 0)
                                         result['fees'] = order_result.get('fees', 0)
 
+                                        # Calculate Realized P/L
+                                        if pos_info:
+                                            entry_price = pos_info['avg_price']
+                                            exit_price = result['price']
+                                            # If qty is not available in order_result, use pos_info qty
+                                            qty = float(order_result.get('qty')) if order_result.get('qty') else pos_info['qty']
+                                            pl = (exit_price - entry_price) * qty
+                                            pl_pct = ((exit_price / entry_price) - 1) * 100
+                                            result['pl'] = round(pl, 2)
+                                            result['pl_pct'] = round(pl_pct, 2)
+
                                         # Enhance reason with execution info
                                         result['reason'] = f"✅ SOLD at {result['price']}: {result['reason']}"
-                                        print(f"[trader] SELL {ticker}: closed position")
+                                        print(f"[trader] SELL {ticker}: closed position, PL: {result.get('pl', 0)}")
                                     else:
                                         print(f"[trader] FAILED SELL {ticker}: {order_result.get('error', 'Unknown Error')}")
                                         result['reason'] = f"Sell order failed: {order_result.get('error', 'Broker Error')}"
@@ -940,9 +960,8 @@ def _format_trade_for_ui(trade: dict) -> dict:
         "total_cost": trade.get("total_cost", 0),
         "fees": trade.get("fees", 0),
         "reason": trade.get("reason", ""),
-        "sentiment_score": trade.get("sentiment_score", 0),
-        "bullish_count": trade.get("bullish_count", 0),
-        "bearish_count": trade.get("bearish_count", 0),
+        "pl": trade.get("pl"),
+        "pl_pct": trade.get("pl_pct"),
         "total_signals": trade.get("total_signals", 0),
     }
 

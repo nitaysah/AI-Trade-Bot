@@ -450,6 +450,21 @@ function renderTradeLog(scanHistory, executedTrades) {
             ? `${trade.bullish_count}B / ${trade.bearish_count}S`
             : '—';
 
+        const plVal = trade.pl !== undefined && trade.pl !== null ? Number(trade.pl) : null;
+        const plPct = trade.pl_pct !== undefined && trade.pl_pct !== null ? Number(trade.pl_pct) : null;
+        let plHtml = '<td class="py-2.5 pr-4 text-center text-[0.65rem] text-slate-300">—</td>';
+        
+        if (plVal !== null) {
+            const plColor = plVal >= 0 ? 'text-emerald-500' : 'text-red-500';
+            const sign = plVal >= 0 ? '+' : '';
+            plHtml = `
+                <td class="py-2.5 pr-4 text-center ${plColor} font-bold text-[0.65rem]">
+                    <div>${sign}${plVal.toFixed(2)}</div>
+                    <div class="text-[0.55rem] opacity-80">${sign}${plPct.toFixed(2)}%</div>
+                </td>
+            `;
+        }
+
         const row = document.createElement('tr');
         row.className = 'border-b border-purple-100 fade-in';
         row.innerHTML = `
@@ -460,13 +475,11 @@ function renderTradeLog(scanHistory, executedTrades) {
             <td class="py-2.5 pr-4 text-center text-[0.65rem] font-bold text-indigo-900">${trade.qty || '—'}</td>
             <td class="py-2.5 pr-4 text-center text-[0.65rem] font-bold text-emerald-600">$${trade.total_cost ? Number(trade.total_cost).toFixed(2) : '—'}</td>
             <td class="py-2.5 pr-4 text-center text-[0.65rem] text-purple-400 font-mono">$${trade.fees ? Number(trade.fees).toFixed(2) : '0.00'}</td>
+            ${plHtml}
             <td class="py-2.5 pr-4 text-xs">
                 <span class="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-mono text-[0.6rem]">${signalBadge}</span>
             </td>
             <td class="py-2.5 pr-4 text-purple-500 italic text-xs max-w-xs truncate" title="${trade.reason}">${trade.reason}</td>
-            <td class="py-2.5 pr-4 text-right">
-                ${trade.order ? '<span class="text-emerald-500 text-[0.6rem] font-bold">FILLED</span>' : '<span class="text-purple-300 text-[0.6rem]">SCAN</span>'}
-            </td>
         `;
         tbody.appendChild(row);
     });
