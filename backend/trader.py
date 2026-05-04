@@ -19,17 +19,7 @@ import config
 risk_mgr = RiskManager()
 
 
-def evaluate_trade(ticker: str, account_equity: float = 100.0, timeframe: str = "5Min"):
-    """
-    Full evaluation pipeline for a single ticker.
-    Combines technical signals + AI sentiment + risk management.
-    
-    Returns a comprehensive trade decision dict.
-    """
-    # 1. Get technical analysis
-    analysis = get_full_analysis(ticker, timeframe)
-    if not analysis:
-        return None
+
 
 def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai_sentiment_confidence=0.0):
     """
@@ -138,7 +128,14 @@ def evaluate_trade(ticker: str, account_equity: float = 100.0, available_cash: f
     # 1. Get technical analysis
     analysis = get_full_analysis(ticker, timeframe)
     if not analysis:
-        return None
+        print(f"[trader] WARNING: No technical analysis data for {ticker}")
+        return {
+            "ticker": ticker,
+            "action": "HOLD",
+            "reason": "Indicator data missing",
+            "signals": {},
+            "price_history": []
+        }
 
     # 2. Get AI sentiment
     ai_data = get_ai_sentiment(ticker)

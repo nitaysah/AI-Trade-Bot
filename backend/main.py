@@ -108,9 +108,10 @@ async def trading_loop():
             account = broker.get_account_info()
             equity = account['equity']
 
-            # Set daily baseline if not set
+            # Set daily baseline if not set or suspiciously low (e.g., default 100.0)
             risk_mgr = get_risk_manager()
-            if risk_mgr.daily_starting_equity is None:
+            if risk_mgr.daily_starting_equity is None or risk_mgr.daily_starting_equity < 1000.0:
+                print(f"[scheduler] Setting baseline equity: ${equity:.2f}")
                 risk_mgr.set_daily_equity(equity)
             
             all_positions = broker.get_positions()

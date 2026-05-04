@@ -151,14 +151,27 @@ def get_full_analysis(ticker, timeframe="5Min"):
 
         try:
             if is_crypto:
+                print(f"[indicators] Fetching Crypto Bars for {request_ticker} ({timeframe})")
                 bars = client.get_crypto_bars(request_params)
             else:
+                print(f"[indicators] Fetching Stock Bars for {request_ticker} ({timeframe})")
                 bars = client.get_stock_bars(request_params)
                 
             if bars.df.empty:
+                print(f"[indicators] WARNING: Bars DF is EMPTY for {ticker}")
                 new_df = pd.DataFrame()
             else:
-                new_df = bars.df.loc[request_ticker].copy()
+                # Handle MultiIndex if necessary, or just extract the ticker
+                if isinstance(bars.df.index, pd.MultiIndex):
+                    if request_ticker in bars.df.index.levels[0]:
+                        new_df = bars.df.loc[request_ticker].copy()
+                    else:
+                        print(f"[indicators] Ticker {request_ticker} not found in MultiIndex")
+                        new_df = pd.DataFrame()
+                else:
+                    new_df = bars.df.copy()
+                
+                print(f"[indicators] Processed {len(new_df)} bars for {ticker}")
         except Exception as e:
             print(f"[indicators] Request error for {request_ticker}: {e}")
             new_df = pd.DataFrame()
