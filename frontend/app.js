@@ -356,8 +356,10 @@ async function addToTradelist(ticker) {
 
 async function removeFromTradelist(ticker) {
     try {
+        const headers = await getAuthHeaders();
         const response = await fetch(`${API_BASE}/api/tradelist/${ticker}`, {
-            method: 'DELETE'
+            method: 'DELETE',
+            headers: headers
         });
         if (response.ok) fetchDashboard();
     } catch (e) {
@@ -1293,8 +1295,10 @@ async function unlinkAlpaca() {
     if (!confirm("Are you sure you want to unlink your Alpaca account? The bot will switch back to simulation mode.")) return;
 
     try {
+        const headers = await getAuthHeaders();
         const response = await fetch(`${API_BASE}/api/alpaca_config`, {
-            method: 'DELETE'
+            method: 'DELETE',
+            headers: headers
         });
         const data = await response.json();
         if (data.status === 'success') {
