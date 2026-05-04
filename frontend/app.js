@@ -623,6 +623,11 @@ async function fetchDashboard() {
         }
         const data = await response.json();
 
+        // Log diagnostic info from backend
+        if (data.debug_logs && data.debug_logs.length > 0) {
+            console.log('%c[backend-startup]', 'color: #7c3aed; font-weight: bold;', data.debug_logs);
+        }
+
         // Set default selected ticker
         if (!selectedTicker && data.watchlist?.length > 0) {
             selectedTicker = data.primaryTicker || data.watchlist[0];
