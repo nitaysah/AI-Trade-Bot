@@ -663,6 +663,14 @@ async function fetchDashboard() {
             return;
         }
         const data = await response.json();
+        
+        // Sync Timeframe from Backend
+        if (data.strategyTimeframe && data.strategyTimeframe !== currentBackendTf) {
+            console.log(`[dashboard] Syncing timeframe to backend: ${data.strategyTimeframe}`);
+            currentBackendTf = data.strategyTimeframe;
+            const tfSelector = document.getElementById('strategyTf');
+            if (tfSelector) tfSelector.value = currentBackendTf;
+        }
 
         // Log diagnostic info from backend
         if (data.debug_logs && data.debug_logs.length > 0) {

@@ -89,7 +89,7 @@ class AlpacaBroker:
                 'equity': round(equity, 2),
                 'cash': round(float(account.cash), 2),
                 'buying_power': round(float(account.buying_power), 2),
-                'non_marginable_buying_power': round(non_marginable, 2),
+                'non_marginable_buying_power': max(0.0, round(non_marginable, 2)),
                 'daily_pl': round(daily_pl, 2),
                 'daily_pl_pct': round(daily_pl_pct, 2),
                 'simulation': False

@@ -108,8 +108,16 @@ async def save_history_to_cloud():
     """Saves executed trades and scan history to Firestore."""
     if not db: return
     try:
-        db.collection("history").document("trades").set({"data": executed_trades})
-        db.collection("history").document("scans").set({"data": trade_log})
+        # Optimization: Remove heavy price_history from logs before saving to cloud
+        # to prevent Firestore 1MB document limit issues
+        cloud_log = []
+        for log in trade_log[:100]:
+            clean_log = log.copy()
+            if "price_history" in clean_log: del clean_log["price_history"]
+            cloud_log.append(clean_log)
+            
+        db.collection("history").document("scans").set({"data": cloud_log})
+        db.collection("history").document("trades").set({"data": executed_trades[:100]})
     except Exception as e:
         print(f"[vault] Error saving history: {e}")
 
