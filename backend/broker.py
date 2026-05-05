@@ -327,3 +327,30 @@ class AlpacaBroker:
             return self.close_position(symbol)
 
         return {'success': False, 'error': 'Invalid side'}
+
+    def get_recent_trades(self, limit: int = 10) -> list:
+        """Fetches recently filled orders from Alpaca for reconciliation."""
+        if self.simulation_mode: return []
+        try:
+            from alpaca.trading.requests import GetOrdersRequest
+            from alpaca.trading.enums import OrderStatus, QueryOrderSide
+            
+            # Fetch closed orders to find recent fills
+            req = GetOrdersRequest(status=OrderStatus.CLOSED, limit=limit, nested=True)
+            orders = self.client.get_orders(filter=req)
+            
+            trades = []
+            for o in orders:
+                if o.status.value == 'filled':
+                    trades.append({
+                        'symbol': o.symbol.replace("/", "").upper(),
+                        'qty': float(o.filled_qty),
+                        'price': float(o.filled_avg_price),
+                        'side': o.side.value.upper(),
+                        'time': o.filled_at.isoformat(),
+                        'id': str(o.id)
+                    })
+            return trades
+        except Exception as e:
+            print(f"[broker] Error getting recent trades: {e}")
+            return []

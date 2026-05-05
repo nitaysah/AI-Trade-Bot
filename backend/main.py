@@ -289,6 +289,35 @@ async def trading_loop():
             all_orders = broker.get_open_orders()
             portfolio_count = len(all_positions)
 
+            # ─── RECONCILIATION: Capture Stop Loss / Take Profit ───
+            try:
+                recent_fills = broker.get_recent_trades(limit=10)
+                for fill in recent_fills:
+                    # Check if this trade is already in our executed_trades log
+                    already_logged = any(
+                        (t.get('order', {}).get('order_id') == fill['id']) or 
+                        (t.get('order_id') == fill['id']) 
+                        for t in executed_trades
+                    )
+                    
+                    if not already_logged and fill['side'] == 'SELL':
+                        print(f"[scheduler] Reconciled automatic SELL for {fill['symbol']} at ${fill['price']}")
+                        recon_entry = {
+                            "time": fill['time'],
+                            "action": "SELL",
+                            "ticker": fill['symbol'],
+                            "price": f"${fill['price']:.2f}",
+                            "price_raw": fill['price'],
+                            "qty": fill['qty'],
+                            "reason": "✅ AUTO-EXIT (Stop Loss or Take Profit)",
+                            "order": {"success": True, "order_id": fill['id'], "status": "filled"}
+                        }
+                        executed_trades.insert(0, recon_entry)
+                        trade_log.insert(0, recon_entry)
+                        await save_history_to_cloud()
+            except Exception as e:
+                print(f"[scheduler] Reconciliation error: {e}")
+
             for ticker in config.WATCHLIST:
                 try:
                     # 1. Determine available cash based on asset type
