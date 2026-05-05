@@ -123,7 +123,7 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
     }
 
 
-def evaluate_trade(ticker: str, account_equity: float = 100.0, available_cash: float = None, timeframe: str = "5Min"):
+def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash: float = None, timeframe: str = "5Min"):
     """
     Full evaluation pipeline for a single ticker.
     Combines technical signals + AI sentiment + risk management.
@@ -131,7 +131,7 @@ def evaluate_trade(ticker: str, account_equity: float = 100.0, available_cash: f
     Returns a comprehensive trade decision dict.
     """
     # 1. Get technical analysis
-    analysis = get_full_analysis(ticker, timeframe)
+    analysis = get_full_analysis(ticker, timeframe=timeframe)
     if not analysis:
         print(f"[trader] WARNING: No technical analysis data for {ticker}")
         return {
@@ -139,7 +139,8 @@ def evaluate_trade(ticker: str, account_equity: float = 100.0, available_cash: f
             "action": "HOLD",
             "reason": "Indicator data missing",
             "signals": {},
-            "price_history": []
+            "price_history": [],
+            "timeframe": timeframe
         }
 
     # 2. Get AI sentiment
@@ -190,7 +191,8 @@ def evaluate_trade(ticker: str, account_equity: float = 100.0, available_cash: f
         "position_sizing": position_sizing,
         "price_history": analysis.get('price_history', []),
         "risk_status": risk_mgr.get_risk_status(account_equity),
-        "is_custom": (ticker.upper() in getattr(config, 'TICKER_AMOUNTS', {}))
+        "is_custom": (ticker.upper() in getattr(config, 'TICKER_AMOUNTS', {})),
+        "timeframe": timeframe
     }
 
 

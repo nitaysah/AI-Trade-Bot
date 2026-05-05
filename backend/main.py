@@ -1049,6 +1049,7 @@ def _format_trade_for_ui(trade: dict) -> dict:
         "bullish_count": trade.get("bullish_count", 0),
         "bearish_count": trade.get("bearish_count", 0),
         "total_signals": trade.get("total_signals", 0),
+        "timeframe": trade.get("timeframe", config.DEFAULT_TIMEFRAME),
     }
 
 
