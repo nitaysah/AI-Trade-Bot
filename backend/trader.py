@@ -112,7 +112,7 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
         reason = f"SELL Triggered: {bearish_count} bearish signals ({', '.join(bearish_names)})"
     
     if ticker in config.TRADELIST:
-        print(f"[ACTION] {ticker} Decision: {action} ({bullish_count}B/{bearish_count}S) - {reason}")
+        print(f"[trader] {ticker} Decision: {action} ({bullish_count}B/{bearish_count}S) - {reason}")
 
     return {
         "action": action,
