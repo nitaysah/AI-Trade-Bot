@@ -8,7 +8,7 @@ const CLOUD_URL = 'https://ai-trade-bot-backend-946557219642.us-central1.run.app
 const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
     ? 'http://localhost:8000'
     : CLOUD_URL;
-const REFRESH_INTERVAL = 15000; // 15 seconds
+const REFRESH_INTERVAL = 60000; // 60 seconds (1 minute)
 
 let selectedTicker = null;
 let currentBackendTf = "5Min";
@@ -436,8 +436,24 @@ function renderTradeLog(scanHistory, executedTrades) {
     if (!tbody) return;
 
     tbody.innerHTML = '';
+    const filterToggle = document.getElementById('filterLogToggle');
+    const isFiltered = filterToggle && filterToggle.checked;
 
-    const trades = currentLogTab === 'trades' ? (executedTrades || []) : (scanHistory || []);
+    let trades = currentLogTab === 'trades' ? (executedTrades || []) : (scanHistory || []);
+    
+    // Apply Filtering if enabled
+    if (currentLogTab === 'all') {
+        // By default, only show Bot trading logs (Exclude HOLD to keep it clean)
+        trades = trades.filter(t => t.action !== 'HOLD');
+        
+        if (isFiltered && selectedTicker) {
+            trades = trades.filter(t => 
+                t.ticker === selectedTicker && 
+                t.timeframe === currentBackendTf
+            );
+        }
+    }
+
     const currentPage = currentLogTab === 'trades' ? currentTradePage : currentScanPage;
 
     if (!trades || trades.length === 0) {
