@@ -403,7 +403,13 @@ async def trading_loop():
                             log_key = f"{log_time_min}_{ticker}_{result['action']}"
                             
                             # Check if we already have this stock/action logged for this minute
-                            if not any(f"{datetime.fromisoformat(log['time']).strftime('%Y-%m-%dT%H:%M')}_{log['ticker']}_{log['action']}" == log_key for log in trade_log):
+                            def _get_log_key(log_entry):
+                                try:
+                                    t_str = datetime.fromisoformat(log_entry.get('time', '')).strftime('%Y-%m-%dT%H:%M')
+                                    return f"{t_str}_{log_entry.get('ticker','')}_{log_entry.get('action','')}"
+                                except: return ""
+                                
+                            if not any(_get_log_key(log) == log_key for log in trade_log):
                                 trade_log.insert(0, result)
                                 
                                 # If it was a real execution, save to permanent ledger
