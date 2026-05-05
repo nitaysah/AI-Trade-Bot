@@ -110,14 +110,20 @@ async def save_history_to_cloud():
     try:
         # Optimization: Remove heavy price_history from logs before saving to cloud
         # to prevent Firestore 1MB document limit issues
-        cloud_log = []
-        for log in trade_log[:100]:
-            clean_log = log.copy()
-            if "price_history" in clean_log: del clean_log["price_history"]
-            cloud_log.append(clean_log)
-            
-        db.collection("history").document("scans").set({"data": cloud_log})
-        db.collection("history").document("trades").set({"data": executed_trades[:100]})
+        def _strip_heavy_data(log_list):
+            stripped = []
+            for entry in log_list[:100]:
+                clean_entry = entry.copy()
+                if "price_history" in clean_entry:
+                    del clean_entry["price_history"]
+                stripped.append(clean_entry)
+            return stripped
+
+        cloud_scans = _strip_heavy_data(trade_log)
+        cloud_trades = _strip_heavy_data(executed_trades)
+
+        db.collection("history").document("scans").set({"data": cloud_scans})
+        db.collection("history").document("trades").set({"data": cloud_trades})
     except Exception as e:
         print(f"[vault] Error saving history: {e}")
 
@@ -948,6 +954,15 @@ async def add_to_tradelist(data: dict):
     return {"status": "success", "tradelist": config.TRADELIST, "watchlist": config.WATCHLIST}
 
 
+@app.get("/api/debug/history")
+async def debug_history():
+    return {
+        "executed_trades_count": len(executed_trades),
+        "trade_log_count": len(trade_log),
+        "executed_trades": executed_trades[:10],
+        "trade_log": trade_log[:10]
+    }
+
 @app.delete("/api/tradelist/{ticker}")
 async def remove_from_tradelist(ticker: str):
     """Remove a ticker from the active trade list."""
@@ -1134,6 +1149,9 @@ def _format_scan_for_ui(scan: dict) -> dict:
         "signals": all_signals,
         "rsi": scan.get("rsi", 0),
         "atr": scan.get("atr", 0),
+        "pl": scan.get("pl"),
+        "pl_pct": scan.get("pl_pct"),
+        "qty": scan.get("qty"),
         "position_sizing": scan.get("position_sizing", {}),
         "price_history": scan.get("price_history", []),
     }
