@@ -276,7 +276,9 @@ async def trading_loop():
                 print(f"[scheduler] Setting baseline equity: ${equity:.2f}")
                 risk_mgr.set_daily_equity(equity)
             
+            # Get all open positions and pending orders once per cycle
             all_positions = broker.get_positions()
+            all_orders = broker.get_open_orders()
             portfolio_count = len(all_positions)
 
             for ticker in config.WATCHLIST:
@@ -304,11 +306,15 @@ async def trading_loop():
 
                         # 3. Auto-execute trades ONLY if ticker is in TRADELIST
                         if ticker in config.TRADELIST:
-                            # Normalize symbol for position matching
+                            # Normalize symbol for matching
                             ticker_norm = ticker.replace("/", "").upper()
                             has_this_pos = any(
                                 p['symbol'].replace("/", "").upper() == ticker_norm and float(p.get('qty', 0)) > 0 
                                 for p in all_positions
+                            )
+                            has_open_order = any(
+                                o['symbol'] == ticker_norm and o['side'] == 'buy'
+                                for o in all_orders
                             )
 
                             if result['action'] == 'BUY':
@@ -324,6 +330,10 @@ async def trading_loop():
                                         result['pl_pct'] = pos_info['unrealized_pl_pct']
                                         result['qty'] = pos_info['qty']
                                     result['reason'] = "Position already open for this ticker."
+                                elif has_open_order:
+                                    # Block new buys if a buy order is already pending
+                                    result['action'] = 'PENDING'
+                                    result['reason'] = "Buy order already sent and pending execution."
                                 elif sizing['notional'] > 0:
                                     order_result = broker.place_order(
                                         symbol=ticker,

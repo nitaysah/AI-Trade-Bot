@@ -144,6 +144,29 @@ class AlpacaBroker:
             print(f"[broker] Error getting positions: {e}")
             return []
 
+    def get_open_orders(self) -> list:
+        """Returns list of currently open (pending) orders."""
+        if self.simulation_mode:
+            return [] # Sim mode fills immediately
+
+        try:
+            # Get only open orders
+            orders = self.client.get_orders(filter=None) # Default filter is open orders
+            open_list = []
+            for o in orders:
+                open_list.append({
+                    'id': str(o.id),
+                    'symbol': o.symbol.replace("/", "").upper(),
+                    'side': str(o.side),
+                    'status': str(o.status),
+                    'qty': float(o.qty) if o.qty else 0,
+                    'notional': float(o.notional) if o.notional else 0,
+                })
+            return open_list
+        except Exception as e:
+            print(f"[broker] Error getting open orders: {e}")
+            return []
+
     def place_order(self, symbol: str, notional: float, side: str = 'buy',
                     stop_loss: float = 0, take_profit: float = 0) -> dict:
         """
