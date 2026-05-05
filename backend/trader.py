@@ -175,7 +175,7 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         "time": get_now().isoformat(),
         "action": action,
         "ticker": ticker,
-        "price": f"${analysis['price']:.2f}",
+        "price": f"${analysis['price']:.4f}" if analysis['price'] < 10 else f"${analysis['price']:.2f}",
         "price_raw": analysis['price'],
         "reason": reason,
         "sentiment_score": ai_data['score'],

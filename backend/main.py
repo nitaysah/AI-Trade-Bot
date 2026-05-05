@@ -441,7 +441,6 @@ async def trading_loop():
                                         if pos_info:
                                             entry_price = float(pos_info['avg_price'])
                                             exit_price = result['price_raw']
-                                            # If qty is not available in order_result, use pos_info qty
                                             qty = float(order_result.get('qty')) if order_result.get('qty') else float(pos_info['qty'])
                                             pl = (exit_price - entry_price) * qty
                                             pl_pct = ((exit_price / entry_price) - 1) * 100
@@ -449,7 +448,10 @@ async def trading_loop():
                                             result['pl_pct'] = round(pl_pct, 2)
 
                                         # Enhance reason with execution info
-                                        result['reason'] = f"✅ SOLD at {result['price']}: {result['reason']}"
+                                        if pos_info:
+                                            result['reason'] = f"✅ SOLD at {result['price']} (Entry: ${entry_price:.4f}): {result['reason']}"
+                                        else:
+                                            result['reason'] = f"✅ SOLD at {result['price']}: {result['reason']}"
                                         print(f"[trader] SELL {ticker}: closed position, PL: {result.get('pl', 0)}")
                                     else:
                                         print(f"[trader] FAILED SELL {ticker}: {order_result.get('error', 'Unknown Error')}")
