@@ -290,6 +290,9 @@ async def trading_loop():
                 print(f"[scheduler] Setting baseline equity: ${equity:.2f}")
                 risk_mgr.set_daily_equity(equity)
             
+            # Refresh history from cloud every cycle to ensure all instances are in sync
+            await load_all_from_cloud()
+            
             # Get all open positions and pending orders once per cycle
             all_positions = broker.get_positions()
             all_orders = broker.get_open_orders()
