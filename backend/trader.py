@@ -69,7 +69,7 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
         ai_enabled = True
         if ai_sentiment_score >= config.SENTIMENT_BULLISH_THRESHOLD and ai_sentiment_confidence >= 0.4:
             bullish_count += 1
-            filtered_signals['AI Sentiment'] = {
+            filtered_signals['News Sentiment'] = {
                 'value': ai_sentiment_score,
                 'signal': 'BULLISH',
                 'reason': "Positive catalysts detected",
@@ -77,24 +77,24 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
             }
         elif ai_sentiment_score <= config.SENTIMENT_BEARISH_THRESHOLD and ai_sentiment_confidence >= 0.4:
             bearish_count += 1
-            filtered_signals['AI Sentiment'] = {
+            filtered_signals['News Sentiment'] = {
                 'value': ai_sentiment_score,
                 'signal': 'BEARISH',
                 'reason': "Negative catalysts detected",
                 'enabled': True
             }
         else:
-            filtered_signals['AI Sentiment'] = {
+            filtered_signals['News Sentiment'] = {
                 'value': ai_sentiment_score,
                 'signal': 'NEUTRAL',
                 'reason': "Mixed or weak news flow",
                 'enabled': True
             }
     else:
-        filtered_signals['AI Sentiment'] = {
+        filtered_signals['News Sentiment'] = {
             'value': ai_sentiment_score,
             'signal': 'NEUTRAL',
-            'reason': "AI Sentiment Disabled",
+            'reason': "News Sentiment Disabled",
             'enabled': False
         }
 

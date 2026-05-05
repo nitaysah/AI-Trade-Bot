@@ -816,7 +816,7 @@ def get_indicator_settings():
         },
         "Custom": {
             "ENABLE_MYSTIC_PULSE": {"label": "Mystic Pulse", "description": "DMI-based Consecutive Trend Strength", "enabled": getattr(config, "ENABLE_MYSTIC_PULSE", True)},
-            "ENABLE_AI_SENTIMENT": {"label": "AI Sentiment", "description": "Groq-powered News Sentiment Analysis", "enabled": getattr(config, "ENABLE_AI_SENTIMENT", True)},
+            "ENABLE_AI_SENTIMENT": {"label": "News Sentiment", "description": "Groq-powered News Sentiment Analysis", "enabled": getattr(config, "ENABLE_AI_SENTIMENT", True)},
             "ENABLE_CANDLE_PATTERNS": {"label": "Candle Patterns", "description": "Engulfing, Hammer, Shooting Star patterns", "enabled": getattr(config, "ENABLE_CANDLE_PATTERNS", True)},
         },
     }
@@ -1104,7 +1104,7 @@ def _format_scan_for_ui(scan: dict) -> dict:
         'Bollinger': 'ENABLE_BOLLINGER',
         'VWAP': 'ENABLE_VWAP',
         'Mystic Pulse': 'ENABLE_MYSTIC_PULSE',
-        'AI Sentiment': 'ENABLE_AI_SENTIMENT',
+        'News Sentiment': 'ENABLE_AI_SENTIMENT',
         'Candle Patterns': 'ENABLE_CANDLE_PATTERNS',
     }
 
