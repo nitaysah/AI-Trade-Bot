@@ -574,7 +574,7 @@ def get_dashboard(ticker: str = None, timeframe: str = None):
 
         # Detailed Data
         "positions": positions,
-        "recentTrades": [_format_trade_for_ui(t) for t in trade_log[:20]],
+        "recentTrades": [_format_trade_for_ui(t) for t in trade_log],
         "executedTrades": [_format_trade_for_ui(t) for t in executed_trades],
         "watchlistScans": {
             ticker: _format_scan_for_ui(scan)
