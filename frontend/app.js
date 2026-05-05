@@ -491,7 +491,7 @@ function renderTradeLog(scanHistory, executedTrades) {
             <td class="py-2.5 pr-4 ${actionColor} text-xs">${trade.action}</td>
             <td class="py-2.5 pr-4 text-indigo-950 font-semibold text-xs">${trade.ticker}</td>
             <td class="py-2.5 pr-4 text-indigo-700 font-medium text-xs">${trade.price}</td>
-            <td class="py-2.5 pr-4 text-center text-[0.65rem] font-bold text-indigo-900">${trade.qty || '—'}</td>
+            <td class="py-2.5 pr-4 text-center text-[0.65rem] font-bold text-indigo-900">${trade.qty && !isNaN(trade.qty) ? Number(trade.qty).toFixed(4) : (trade.qty || '—')}</td>
             <td class="py-2.5 pr-4 text-center text-[0.65rem] font-bold text-emerald-600">$${trade.total_cost ? Number(trade.total_cost).toFixed(2) : '—'}</td>
             <td class="py-2.5 pr-4 text-center text-[0.65rem] text-purple-400 font-mono">$${trade.fees ? Number(trade.fees).toFixed(2) : '0.00'}</td>
             ${plHtml}

@@ -349,9 +349,14 @@ async def trading_loop():
                                         
                                         # Capture Detailed Receipt
                                         # Force float to ensure decimal precision
-                                        result['qty'] = float(order_result.get('qty', 0))
-                                        result['total_cost'] = order_result.get('total_cost', sizing['notional'])
-                                        result['fees'] = order_result.get('fees', 0)
+                                        # For notional orders, qty might be None initially, so estimate it
+                                        order_qty = order_result.get('qty')
+                                        if order_qty is None and result['price_raw'] > 0:
+                                            order_qty = sizing['notional'] / result['price_raw']
+                                            
+                                        result['qty'] = float(order_qty) if order_qty else 0
+                                        result['total_cost'] = float(order_result.get('total_cost', sizing['notional']))
+                                        result['fees'] = float(order_result.get('fees', 0))
 
                                         # Enhance reason with execution info — using 6 decimal places
                                         result['reason'] = f"✅ BOUGHT {result['qty']:.6f} shares at {result['price']}: {result['reason']}"
@@ -378,9 +383,15 @@ async def trading_loop():
                                         portfolio_count -= 1
 
                                         # Capture Detailed Receipt (Close position proceeds)
-                                        result['qty'] = order_result.get('qty', 'ALL')
-                                        result['total_cost'] = order_result.get('proceeds', 0)
-                                        result['fees'] = order_result.get('fees', 0)
+                                        # Use pos_info to get the exact qty and value being closed
+                                        if pos_info:
+                                            result['qty'] = float(pos_info['qty'])
+                                            result['total_cost'] = float(pos_info['market_value'])
+                                        else:
+                                            result['qty'] = order_result.get('qty', 0)
+                                            result['total_cost'] = order_result.get('proceeds', 0)
+                                        
+                                        result['fees'] = float(order_result.get('fees', 0))
 
                                         # Calculate Realized P/L
                                         if pos_info:
