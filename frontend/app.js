@@ -674,7 +674,7 @@ async function fetchDashboard() {
 
         // Log diagnostic info from backend
         if (data.debug_logs && data.debug_logs.length > 0) {
-            console.log('%c[backend-startup]', 'color: #7c3aed; font-weight: bold;', data.debug_logs);
+            // Diagnostic logs silenced as requested
         }
 
         // Set default selected ticker
