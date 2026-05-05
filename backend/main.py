@@ -409,7 +409,7 @@ async def trading_loop():
 
                                         # Enhance reason with execution info — using 6 decimal places
                                         result['reason'] = f"✅ BOUGHT {result['qty']:.6f} shares at {result['price']}: {result['reason']}"
-                                        print(f"[trader] BUY {ticker}: ${sizing['notional']:.2f}")
+                                        print(f"[ACTION] BUY {ticker}: Executing trade for ${sizing['notional']:.2f}")
                                 elif has_this_pos:
                                     result['action'] = 'HOLD'
                                     # Capture unrealized P/L for scan log
@@ -463,12 +463,12 @@ async def trading_loop():
                                             result['reason'] = f"✅ SOLD at {result['price']} (Entry: ${entry_price:.4f}): {result['reason']}"
                                         else:
                                             result['reason'] = f"✅ SOLD at {result['price']}: {result['reason']}"
-                                        print(f"[trader] SELL {ticker}: closed position, PL: {result.get('pl', 0)}")
+                                        print(f"[ACTION] SELL {ticker}: Closed position, P/L: {result.get('pl', 0)}")
                                     else:
                                         print(f"[trader] FAILED SELL {ticker}: {order_result.get('error', 'Unknown Error')}")
                                         result['reason'] = f"Sell order failed: {order_result.get('error', 'Broker Error')}"
                                 else:
-                                    print(f"[trader] SKIP SELL {ticker}: No position found in broker scan.")
+                                    print(f"[ACTION] SKIP SELL {ticker}: No position found in broker scan.")
                                     # Keep the action as SELL for the logs, but mark it as skipped
                                     result['reason'] = "Signal SELL ignored: No open position detected."
                         
