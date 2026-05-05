@@ -1009,6 +1009,8 @@ def _format_trade_for_ui(trade: dict) -> dict:
         "reason": trade.get("reason", ""),
         "pl": trade.get("pl"),
         "pl_pct": trade.get("pl_pct"),
+        "bullish_count": trade.get("bullish_count", 0),
+        "bearish_count": trade.get("bearish_count", 0),
         "total_signals": trade.get("total_signals", 0),
     }
 
