@@ -427,12 +427,18 @@ async def trading_loop():
                                         portfolio_count -= 1
 
                                         # Capture Detailed Receipt (Close position proceeds)
-                                        # Use pos_info to get the exact qty and value being closed
-                                        if pos_info:
+                                        # PRIORITIZE the quantity returned from the broker order
+                                        order_qty = order_result.get('qty')
+                                        if order_qty and float(order_qty) > 0:
+                                            result['qty'] = float(order_qty)
+                                        elif pos_info:
                                             result['qty'] = float(pos_info['qty'])
+                                        else:
+                                            result['qty'] = 0
+
+                                        if pos_info:
                                             result['total_cost'] = float(pos_info['market_value'])
                                         else:
-                                            result['qty'] = order_result.get('qty', 0)
                                             result['total_cost'] = order_result.get('proceeds', 0)
                                         
                                         result['fees'] = float(order_result.get('fees', 0))

@@ -247,9 +247,9 @@ class AlpacaBroker:
             last_err = "Unknown"
             for sym in formats_to_try:
                 try:
-                    self.client.close_position(sym)
+                    order = self.client.close_position(sym)
                     print(f"[broker] Successfully closed position for {sym}")
-                    return {'success': True, 'symbol': sym}
+                    return {'success': True, 'symbol': sym, 'qty': float(order.qty) if order.qty else 0}
                 except Exception as e:
                     last_err = str(e)
                     if "not found" in last_err.lower():
