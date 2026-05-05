@@ -156,14 +156,16 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
     action = decision['action']
     reason = decision['reason']
 
-    # 5. Calculate risk parameters
-    position_sizing = risk_mgr.calculate_position_size(
-        account_equity=account_equity,
-        entry_price=analysis['price'],
-        atr=analysis['atr'],
-        available_cash=available_cash,
-        ticker=ticker
-    )
+    # 5. Calculate risk parameters (ONLY for active bots or when requested by UI)
+    position_sizing = {}
+    if ticker in config.TRADELIST:
+        position_sizing = risk_mgr.calculate_position_size(
+            ticker=ticker,
+            price=analysis['price'],
+            account_equity=account_equity,
+            available_cash=available_cash,
+            atr=analysis.get('indicators', {}).get('ATR', 0)
+        )
 
     # 6. Check daily drawdown
     can_trade = risk_mgr.check_drawdown(account_equity)
