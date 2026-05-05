@@ -791,7 +791,7 @@ async function fetchDashboard() {
 
         const sentBar = document.getElementById('sentimentBar');
         if (sentBar) {
-            const sentScore = data.sentimentConfidence || 0.5;
+            const sentScore = data.sentiment_confidence || 0.5;
             sentBar.style.width = `${Math.max(10, ((sentScore + 1) / 2) * 100)}%`;
         }
 
