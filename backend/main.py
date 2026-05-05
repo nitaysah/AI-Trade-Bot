@@ -332,6 +332,7 @@ async def trading_loop():
                                     # Block new buys if we already have a position for THIS stock
                                     result['action'] = 'HOLD'
                                     # Capture unrealized P/L for scan log
+                                    # Use normalized matching
                                     pos_info = next((p for p in all_positions if p['symbol'].replace("/", "").upper() == ticker_norm), None)
                                     if pos_info:
                                         result['pl'] = pos_info['unrealized_pl']
@@ -372,7 +373,7 @@ async def trading_loop():
                                 elif has_this_pos:
                                     result['action'] = 'HOLD'
                                     # Capture unrealized P/L for scan log
-                                    pos_info = next((p for p in active_positions if p['symbol'] == ticker), None)
+                                    pos_info = next((p for p in all_positions if p['symbol'].replace("/", "").upper() == ticker_norm), None)
                                     if pos_info:
                                         result['pl'] = pos_info['unrealized_pl']
                                         result['pl_pct'] = pos_info['unrealized_pl_pct']
@@ -382,7 +383,7 @@ async def trading_loop():
                             elif result['action'] == 'SELL':
                                 if has_this_pos:
                                     # Get position info before closing for P/L calculation
-                                    pos_info = next((p for p in active_positions if p['symbol'] == ticker), None)
+                                    pos_info = next((p for p in all_positions if p['symbol'].replace("/", "").upper() == ticker_norm), None)
                                     
                                     order_result = broker.close_position(ticker)
                                     if order_result.get('success'):
