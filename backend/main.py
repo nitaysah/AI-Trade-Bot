@@ -314,11 +314,17 @@ async def trading_loop():
                             if result['action'] == 'BUY':
                                 sizing = result['position_sizing']
                                 
-                                if portfolio_count > 0 and not has_this_pos:
-                                    # Block new buys if we already have a position elsewhere
-                                    result['action'] = 'WATCH'
-                                    result['reason'] = "Signal BUY ignored: Already holding another position."
-                                elif not has_this_pos and sizing['notional'] > 0:
+                                if has_this_pos:
+                                    # Block new buys if we already have a position for THIS stock
+                                    result['action'] = 'HOLD'
+                                    # Capture unrealized P/L for scan log
+                                    pos_info = next((p for p in all_positions if p['symbol'].replace("/", "").upper() == ticker_norm), None)
+                                    if pos_info:
+                                        result['pl'] = pos_info['unrealized_pl']
+                                        result['pl_pct'] = pos_info['unrealized_pl_pct']
+                                        result['qty'] = pos_info['qty']
+                                    result['reason'] = "Position already open for this ticker."
+                                elif sizing['notional'] > 0:
                                     order_result = broker.place_order(
                                         symbol=ticker,
                                         notional=sizing['notional'],
