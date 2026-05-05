@@ -253,7 +253,7 @@ def get_now():
 # ──────────────────────────────────────────────
 async def trading_loop():
     """Background task that scans the watchlist on an interval."""
-    global bot_running, last_scan_time, latest_scans, force_scan_trigger
+    global bot_running, last_scan_time, latest_scans, force_scan_trigger, trade_log, executed_trades
     if force_scan_trigger is None:
         force_scan_trigger = asyncio.Event()
 
@@ -417,17 +417,21 @@ async def trading_loop():
                                     executed_trades.insert(0, result)
                                     await save_history_to_cloud()
 
-                        # Cap log size and remove entries for stocks no longer in TRADELIST
-                        trade_log = [log for log in trade_log if log['ticker'] in config.TRADELIST]
-                        if len(trade_log) > 100:
-                            trade_log = trade_log[:100]
 
                 except Exception as e:
                     print(f"[scheduler] Error scanning {ticker}: {e}")
 
+            # 4. Post-Cycle Cleanup & Sync
+            # STRICT: Remove entries for stocks no longer in TRADELIST
+            trade_log = [log for log in trade_log if log.get('ticker') in config.TRADELIST]
+            if len(trade_log) > 100:
+                trade_log = trade_log[:100]
+
             last_scan_time = get_now().isoformat()
             print(f"[scheduler] Scan complete at {last_scan_time}")
-            # Periodically sync scan log to cloud
+            
+            # Periodically sync scan log to cloud even if no trade executed
+            # This ensures logs survive Cloud Run container restarts
             await save_history_to_cloud()
 
         except Exception as e:
