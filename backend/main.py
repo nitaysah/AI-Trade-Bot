@@ -609,21 +609,39 @@ def get_dashboard(ticker: str = None, timeframe: str = None):
         )
     )
     
-    # If a specific ticker/timeframe is requested, we can optionally re-evaluate here
-    # or just pull from the latest_scans. Let's re-evaluate to ensure fresh data.
-    # Use settled cash (non-marginable) for crypto
-    is_crypto = any(c in primary_ticker for c in ["BTC", "ETH", "LTC", "SOL", "DOGE"]) or "USD" in primary_ticker
-    avail_cash = account.get('non_marginable_buying_power', account['cash']) if is_crypto else account['cash']
+    # ─── CACHING ───
+    # Prevent excessive re-scanning if we already have a recent scan for this ticker/tf
+    cache_key = f"{primary_ticker}_{timeframe}"
+    now = datetime.now()
+    cached_scan = latest_scans.get(primary_ticker)
+    
+    # If the cached scan matches the ticker/tf and is < 30s old, reuse it
+    # Note: We still allow background trading_loop scans to override this
+    is_recent = False
+    if cached_scan and cached_scan.get('timeframe') == timeframe:
+        try:
+            last_time = datetime.fromisoformat(cached_scan.get('time', ''))
+            if (now - last_time).total_seconds() < 30:
+                is_recent = True
+        except: pass
 
-    primary_scan = evaluate_trade(
-        primary_ticker, 
-        account_equity=account['equity'], 
-        available_cash=avail_cash,
-        timeframe=timeframe
-    )
-    if primary_scan:
-        latest_scans[primary_ticker] = primary_scan
+    if is_recent:
+        primary_scan = cached_scan
     else:
+        # Use settled cash (non-marginable) for crypto
+        is_crypto = any(c in primary_ticker for c in ["BTC", "ETH", "LTC", "SOL", "DOGE"]) or "USD" in primary_ticker
+        avail_cash = account.get('non_marginable_buying_power', account['cash']) if is_crypto else account['cash']
+
+        primary_scan = evaluate_trade(
+            primary_ticker, 
+            account_equity=account['equity'], 
+            available_cash=avail_cash,
+            timeframe=timeframe
+        )
+        if primary_scan:
+            latest_scans[primary_ticker] = primary_scan
+    
+    if not primary_scan:
         primary_scan = latest_scans.get(primary_ticker, {})
     sentiment_score = primary_scan.get('sentiment_score', 0)
     sentiment_confidence = primary_scan.get('sentiment_confidence', 0)
@@ -692,9 +710,22 @@ def scan_ticker(ticker: str, timeframe: str = "5Min"):
     account = broker.get_account_info()
     if account.get('simulation', True):
         return {"error": "Alpaca connection required for scanning."}
+    # ─── CACHING ───
+    now = datetime.now()
+    cached_scan = latest_scans.get(ticker.upper())
+    is_recent = False
+    if cached_scan and cached_scan.get('timeframe') == timeframe:
+        try:
+            last_time = datetime.fromisoformat(cached_scan.get('time', ''))
+            if (now - last_time).total_seconds() < 30:
+                is_recent = True
+        except: pass
+
+    if is_recent:
+        return _format_scan_for_ui(cached_scan)
+
     # Use settled cash (non-marginable) for crypto
     is_crypto = any(c in ticker.upper() for c in ["BTC", "ETH", "LTC", "SOL", "DOGE"]) or "USD" in ticker.upper()
-    # Use non_marginable_buying_power, but fallback to cash if it's 0
     avail_cash = account.get('non_marginable_buying_power') or account['cash'] if is_crypto else account['cash']
 
     result = evaluate_trade(
