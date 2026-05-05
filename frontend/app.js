@@ -715,6 +715,33 @@ async function fetchDashboard() {
         const connPrompt = document.getElementById('connectionPrompt');
         const dashContent = document.getElementById('dashboardContent');
         
+        const summaryEl = document.getElementById('aiSummary');
+        const cardSentSummary = document.getElementById('sentimentSummary');
+
+        if (summaryEl) {
+            if (data.sentiment_summary) {
+                summaryEl.innerHTML = `
+                    <div class="mb-2">
+                        <span class="text-[10px] uppercase tracking-wider text-fuchsia-500 font-bold block mb-1">Key Market Factor</span>
+                        <p class="text-indigo-900 font-semibold not-italic">${data.sentiment_key_factor || 'Mixed Catalysts'}</p>
+                    </div>
+                    <div>
+                        <span class="text-[10px] uppercase tracking-wider text-purple-400 font-bold block mb-1">AI Briefing</span>
+                        <p>${data.sentiment_summary}</p>
+                    </div>
+                    <div class="mt-2 pt-2 border-t border-purple-100 flex justify-between items-center opacity-60">
+                         <span>Analysis Confidence</span>
+                         <span class="font-bold">${Math.round(data.sentiment_confidence * 100)}%</span>
+                    </div>
+                `;
+                summaryEl.classList.remove('italic');
+                if (cardSentSummary) cardSentSummary.textContent = data.sentiment_summary;
+            } else {
+                summaryEl.textContent = 'Waiting for next scan analysis...';
+                if (cardSentSummary) cardSentSummary.textContent = 'Fetching latest market news...';
+            }
+        }
+
         if (data.simulation) {
             if (connPrompt) connPrompt.classList.remove('hidden');
             if (dashContent) dashContent.classList.add('hidden');
@@ -761,16 +788,6 @@ async function fetchDashboard() {
             sentEl.classList.remove('animate-pulse');
         }
 
-        const summaryEl = document.getElementById('aiSummary');
-        if (summaryEl) {
-            if (data.sentimentSummary) {
-                summaryEl.textContent = data.sentimentSummary;
-                summaryEl.classList.remove('italic', 'text-purple-400');
-            } else {
-                summaryEl.textContent = 'Waiting for scan analysis...';
-                summaryEl.classList.add('italic', 'text-purple-400');
-            }
-        }
 
         const sentBar = document.getElementById('sentimentBar');
         if (sentBar) {

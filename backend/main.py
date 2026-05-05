@@ -1127,6 +1127,7 @@ def _format_scan_for_ui(scan: dict) -> dict:
         "sentiment_score": scan.get("sentiment_score", 0),
         "sentiment_confidence": scan.get("sentiment_confidence", 0),
         "sentiment_summary": scan.get("sentiment_summary", ""),
+        "sentiment_key_factor": scan.get("sentiment_key_factor", "N/A"),
         "bullish_count": bullish,
         "bearish_count": bearish,
         "total_signals": active_count,
