@@ -610,7 +610,9 @@ def get_dashboard(ticker: str = None, timeframe: str = None):
         timeframe = config.DEFAULT_TIMEFRAME
         
     account = broker.get_account_info()
-    
+    positions = broker.get_positions()
+    risk_mgr = get_risk_manager()
+
     # Determine which ticker to focus on for the chart/analysis
     # Priority: 1. URL Param, 2. First Active Bot, 3. First Watchlist Item, 4. TSLA fallback
     primary_ticker = ticker.upper() if ticker else (
