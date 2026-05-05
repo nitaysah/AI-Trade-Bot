@@ -361,6 +361,23 @@
                     <p id="noTradesMsg" class="text-center text-purple-400 text-xs md:text-sm py-6">Waiting for first
                         scan...</p>
                 </div>
+                
+                <!-- Pagination Controls -->
+                <div class="mt-4 flex items-center justify-between border-t border-purple-100 pt-4">
+                    <div class="text-[0.65rem] font-bold text-purple-400 uppercase tracking-widest" id="logPageIndicator">
+                        Page 1 of 1
+                    </div>
+                    <div class="flex gap-2">
+                        <button id="logPrevBtn" onclick="changeLogPage(-1)"
+                            class="px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all bg-indigo-50 text-indigo-400 hover:bg-indigo-100 disabled:opacity-30 disabled:cursor-not-allowed">
+                            Previous
+                        </button>
+                        <button id="logNextBtn" onclick="changeLogPage(1)"
+                            class="px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all bg-indigo-50 text-indigo-400 hover:bg-indigo-100 disabled:opacity-30 disabled:cursor-not-allowed">
+                            Next
+                        </button>
+                    </div>
+                </div>
             </div>
 
         </div>

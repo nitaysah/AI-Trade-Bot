@@ -403,9 +403,15 @@ async function removeFromTradelist(ticker) {
 // ──────────────────────────────────────────────
 let latestScanHistory = [];
 let latestExecutedTrades = [];
+let currentScanPage = 1;
+let currentTradePage = 1;
+const LOG_PAGE_SIZE = 20;
 
 function setLogTab(tab) {
     currentLogTab = tab;
+    // Reset to first page when switching tabs
+    if (tab === 'all') currentScanPage = 1;
+    else currentTradePage = 1;
 
     // UI Update
     const allBtn = document.getElementById('tabLogAll');
@@ -427,23 +433,32 @@ function setLogTab(tab) {
 function renderTradeLog(scanHistory, executedTrades) {
     const tbody = document.getElementById('tradeLogBody');
     const noMsg = document.getElementById('noTradesMsg');
+    if (!tbody) return;
+    
     tbody.innerHTML = '';
 
     const trades = currentLogTab === 'trades' ? (executedTrades || []) : (scanHistory || []);
+    const currentPage = currentLogTab === 'trades' ? currentTradePage : currentScanPage;
 
     if (!trades || trades.length === 0) {
         if (noMsg) {
             noMsg.style.display = 'block';
             noMsg.textContent = currentLogTab === 'trades' ? "No orders executed yet." : "Waiting for first scan...";
         }
+        updatePaginationUI(0, 1);
         return;
     }
     if (noMsg) noMsg.style.display = 'none';
 
-    // Slice for display
-    let filtered = trades.slice(0, 50);
+    // Calculate pagination
+    const totalPages = Math.ceil(trades.length / LOG_PAGE_SIZE) || 1;
+    const start = (currentPage - 1) * LOG_PAGE_SIZE;
+    const end = start + LOG_PAGE_SIZE;
+    const paginated = trades.slice(start, end);
 
-    filtered.forEach(trade => {
+    updatePaginationUI(totalPages, currentPage);
+
+    paginated.forEach(trade => {
         const actionColor = trade.action === 'BUY'
             ? 'text-emerald-600 font-bold'
             : trade.action === 'SELL'
@@ -487,6 +502,29 @@ function renderTradeLog(scanHistory, executedTrades) {
         `;
         tbody.appendChild(row);
     });
+}
+
+function updatePaginationUI(totalPages, currentPage) {
+    const indicator = document.getElementById('logPageIndicator');
+    const prevBtn = document.getElementById('logPrevBtn');
+    const nextBtn = document.getElementById('logNextBtn');
+    
+    if (!indicator || !prevBtn || !nextBtn) return;
+    
+    indicator.textContent = `Page ${currentPage} of ${Math.max(1, totalPages)}`;
+    prevBtn.disabled = currentPage <= 1;
+    nextBtn.disabled = currentPage >= totalPages;
+}
+
+function changeLogPage(delta) {
+    if (currentLogTab === 'all') {
+        const total = Math.ceil(latestScanHistory.length / LOG_PAGE_SIZE);
+        currentScanPage = Math.max(1, Math.min(total, currentScanPage + delta));
+    } else {
+        const total = Math.ceil(latestExecutedTrades.length / LOG_PAGE_SIZE);
+        currentTradePage = Math.max(1, Math.min(total, currentTradePage + delta));
+    }
+    renderTradeLog(latestScanHistory, latestExecutedTrades);
 }
 
 // ──────────────────────────────────────────────
