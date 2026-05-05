@@ -79,8 +79,8 @@ MYSTIC_PULSE_THRESHOLD = 5
 # ──────────────────────────────────────────────
 # Strategy — Signal Confluence Thresholds
 # ──────────────────────────────────────────────
-MIN_BULLISH_SIGNALS = 5
-MIN_BEARISH_SIGNALS = 5
+MIN_BULLISH_SIGNALS = 4
+MIN_BEARISH_SIGNALS = 4
 SENTIMENT_BULLISH_THRESHOLD = 0.5
 SENTIMENT_BEARISH_THRESHOLD = -0.5
 
