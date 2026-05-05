@@ -495,10 +495,9 @@ async def trading_loop():
                     print(f"[scheduler] Error scanning {ticker}: {e}")
 
             # 4. Post-Cycle Cleanup & Sync
-            # STRICT: Remove entries for stocks no longer in TRADELIST
-            trade_log = [log for log in trade_log if log.get('ticker') in config.TRADELIST]
-            if len(trade_log) > 100:
-                trade_log = trade_log[:100]
+            # Bound history size
+            if len(trade_log) > 200:
+                trade_log = trade_log[:200]
 
             last_scan_time = get_now().isoformat()
             print(f"[scheduler] Scan complete at {last_scan_time}")
