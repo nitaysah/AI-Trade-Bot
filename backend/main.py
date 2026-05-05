@@ -134,6 +134,7 @@ async def save_settings_to_cloud():
         data = {
             "watchlist": config.WATCHLIST,
             "tradelist": config.TRADELIST,
+            "strategy_timeframe": config.DEFAULT_TIMEFRAME,
             "ticker_settings": getattr(config, 'TICKER_SETTINGS', {}),
             "toggles": {k: getattr(config, k) for k in dir(config) if k.startswith("ENABLE_")}
         }
@@ -190,6 +191,7 @@ async def load_all_from_cloud():
                 ui = doc_ui.to_dict()
                 config.WATCHLIST = ui.get("watchlist", config.WATCHLIST)
                 config.TRADELIST = ui.get("tradelist", config.TRADELIST)
+                config.DEFAULT_TIMEFRAME = ui.get("strategy_timeframe", config.DEFAULT_TIMEFRAME)
                 config.TICKER_SETTINGS = ui.get("ticker_settings", {})
                 toggles = ui.get("toggles", {})
                 for k, v in toggles.items():

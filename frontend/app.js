@@ -5,8 +5,8 @@
 
 // 6. Production API Configuration (Auto-switch between Local and Cloud)
 const CLOUD_URL = 'https://ai-trade-bot-backend-946557219642.us-central1.run.app';
-const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-    ? 'http://localhost:8000' 
+const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+    ? 'http://localhost:8000'
     : CLOUD_URL;
 const REFRESH_INTERVAL = 15000; // 15 seconds
 
@@ -32,7 +32,7 @@ async function getAuthHeaders() {
         console.warn('[auth] No current user found in auth instance');
         return { 'Content-Type': 'application/json' };
     }
-    
+
     try {
         const token = await user.getIdToken();
         return {
@@ -56,12 +56,12 @@ function formatLocalTime(isoString) {
         }
         const date = new Date(timestamp);
         // Force Central Time (Chicago) for everywhere
-        return date.toLocaleTimeString('en-US', { 
+        return date.toLocaleTimeString('en-US', {
             timeZone: 'America/Chicago',
-            hour: '2-digit', 
-            minute: '2-digit', 
-            second: '2-digit', 
-            hour12: false 
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
         });
     } catch (e) {
         return isoString;
@@ -434,21 +434,10 @@ function renderTradeLog(scanHistory, executedTrades) {
     const tbody = document.getElementById('tradeLogBody');
     const noMsg = document.getElementById('noTradesMsg');
     if (!tbody) return;
-    
+
     tbody.innerHTML = '';
-    const filterToggle = document.getElementById('filterLogToggle');
-    const isFiltered = filterToggle && filterToggle.checked;
 
-    let trades = currentLogTab === 'trades' ? (executedTrades || []) : (scanHistory || []);
-    
-    // Apply Filtering if enabled
-    if (isFiltered && selectedTicker) {
-        trades = trades.filter(t => 
-            t.ticker === selectedTicker && 
-            t.timeframe === currentBackendTf
-        );
-    }
-
+    const trades = currentLogTab === 'trades' ? (executedTrades || []) : (scanHistory || []);
     const currentPage = currentLogTab === 'trades' ? currentTradePage : currentScanPage;
 
     if (!trades || trades.length === 0) {
@@ -483,7 +472,7 @@ function renderTradeLog(scanHistory, executedTrades) {
         const plVal = trade.pl !== undefined && trade.pl !== null ? Number(trade.pl) : null;
         const plPct = trade.pl_pct !== undefined && trade.pl_pct !== null ? Number(trade.pl_pct) : null;
         let plHtml = '<td class="py-2.5 pr-4 text-center text-[0.65rem] text-slate-300">—</td>';
-        
+
         if (plVal !== null) {
             const plColor = plVal >= 0 ? 'text-emerald-500' : 'text-red-500';
             const sign = plVal >= 0 ? '+' : '';
@@ -522,9 +511,9 @@ function updatePaginationUI(totalPages, currentPage) {
     const indicator = document.getElementById('logPageIndicator');
     const prevBtn = document.getElementById('logPrevBtn');
     const nextBtn = document.getElementById('logNextBtn');
-    
+
     if (!indicator || !prevBtn || !nextBtn) return;
-    
+
     indicator.textContent = `Page ${currentPage} of ${Math.max(1, totalPages)}`;
     prevBtn.disabled = currentPage <= 1;
     nextBtn.disabled = currentPage >= totalPages;
@@ -643,7 +632,7 @@ async function resetTickerSettings() {
 
     try {
         const headers = await getAuthHeaders();
-        await fetch(`${API_BASE}/api/settings/ticker/${currentEditingTicker}`, { 
+        await fetch(`${API_BASE}/api/settings/ticker/${currentEditingTicker}`, {
             method: 'DELETE',
             headers: headers
         });
@@ -665,7 +654,7 @@ async function fetchDashboard() {
 
         const headers = await getAuthHeaders();
         // Removed redundant header log
-        
+
         const response = await fetch(url, { headers });
         if (!response.ok) {
             const errText = await response.text();
@@ -674,7 +663,7 @@ async function fetchDashboard() {
             return;
         }
         const data = await response.json();
-        
+
         // Sync Timeframe from Backend
         if (data.strategyTimeframe && data.strategyTimeframe !== currentBackendTf) {
             console.log(`[dashboard] Syncing timeframe to backend: ${data.strategyTimeframe}`);
@@ -725,7 +714,7 @@ async function fetchDashboard() {
         // Connection prompt visibility
         const connPrompt = document.getElementById('connectionPrompt');
         const dashContent = document.getElementById('dashboardContent');
-        
+
         const summaryEl = document.getElementById('aiSummary');
         const cardSentSummary = document.getElementById('sentimentSummary');
 
@@ -876,16 +865,16 @@ async function fetchDashboard() {
         // Watchlist & Tradelist
         renderTradelist(data.watchlistScans, data.tradelist, data.tickerAmounts);
         renderWatchlist(data.watchlistScans, data.watchlist, data.tradelist);
-        
+
         // Risk
-        
+
         // Cache data for settings modals to access
         window.lastDashboardData = data;
 
         // Trade log
         latestScanHistory = data.recentTrades || [];
         latestExecutedTrades = data.executedTrades || [];
-        
+
         // Muted repetitive sync logs to keep console clean. Use the UI 'Last Scan' indicator for status.
         renderTradeLog(latestScanHistory, latestExecutedTrades);
 
@@ -893,12 +882,12 @@ async function fetchDashboard() {
         console.error('[dashboard] Fetch error:', error);
         const lastScanEl = document.getElementById('lastScanTime');
         if (lastScanEl) lastScanEl.textContent = 'Connection error';
-        
+
         // On mobile, show a more intrusive alert for connectivity issues to help debug
         if (window.innerWidth < 768) {
-             alert(`Dashboard Connection Failed: ${error.message}\n\nTroubleshooting:\n1. Check your internet.\n2. Disable Mobile VPN/Private Relay.\n3. Try a Hard Refresh.`);
+            alert(`Dashboard Connection Failed: ${error.message}\n\nTroubleshooting:\n1. Check your internet.\n2. Disable Mobile VPN/Private Relay.\n3. Try a Hard Refresh.`);
         }
-        
+
         showGlobalError('Cannot connect to the trading backend.');
     }
 }
@@ -962,9 +951,9 @@ function attachEventListeners() {
             try {
                 const headers = await getAuthHeaders();
                 if (isRemoving) {
-                    await fetch(`${API_BASE}/api/watchlist/${selectedTicker}`, { 
+                    await fetch(`${API_BASE}/api/watchlist/${selectedTicker}`, {
                         method: 'DELETE',
-                        headers: headers 
+                        headers: headers
                     });
                 } else {
                     await fetch(`${API_BASE}/api/watchlist`, {
@@ -1293,7 +1282,7 @@ function syncBacktestSliderRange() {
     const checkedCount = document.querySelectorAll('.bt-indicator-check:checked').length;
     const slider = document.getElementById('btAggressiveSlider');
     const label = document.getElementById('btAggressiveLabel');
-    
+
     if (checkedCount === 0) {
         slider.min = 0;
         slider.max = 0;
@@ -1303,16 +1292,16 @@ function syncBacktestSliderRange() {
         label.className = "text-[0.75rem] font-black px-3 py-1 rounded-full bg-rose-500 text-white uppercase shadow-md";
         return;
     }
-    
+
     slider.disabled = false;
     slider.min = 1;
     slider.max = checkedCount;
-    
+
     // If current value is higher than new max, cap it
     if (parseInt(slider.value) > checkedCount) {
         slider.value = checkedCount;
     }
-    
+
     updateBtAggressiveness(slider.value);
 }
 
@@ -1322,7 +1311,7 @@ function updateBtAggressiveness(val) {
     const label = document.getElementById('btAggressiveLabel');
     const buyInp = document.getElementById('btThreshold');
     const sellInp = document.getElementById('btSellThreshold');
-    
+
     val = parseInt(val);
     buyInp.value = val;
     sellInp.value = val;
@@ -1330,7 +1319,7 @@ function updateBtAggressiveness(val) {
     const pct = Math.round((val / max) * 100);
     let mode = "Balanced";
     let colorClass = "bg-indigo-600";
-    
+
     if (pct <= 34) {
         mode = "Aggressive";
         colorClass = "bg-emerald-600";
@@ -1338,12 +1327,12 @@ function updateBtAggressiveness(val) {
         mode = "Quality";
         colorClass = "bg-purple-600";
     }
-    
+
     if (val === max && max > 1) {
         mode = "Ultra-Quality";
         colorClass = "bg-indigo-900";
     }
-    
+
     label.textContent = `${mode} (${val} of ${max} signals)`;
     label.className = `text-[0.75rem] font-black px-3 py-1 rounded-full ${colorClass} text-white uppercase shadow-md`;
 }
@@ -1362,7 +1351,7 @@ async function emergencyShutdown() {
         const data = await response.json();
         if (data.status === 'success') {
             alert("SYSTEM OFFLINE: Trading engine has been deactivated. You must manually set ENGINE_ACTIVE to true in settings.json to restart.");
-            window.location.reload(); 
+            window.location.reload();
         }
     } catch (e) {
         console.error('Shutdown error:', e);
