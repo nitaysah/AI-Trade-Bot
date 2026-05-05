@@ -851,13 +851,14 @@ async function fetchDashboard() {
         // Get selected ticker scan
         const activeScan = data.watchlistScans?.[selectedTicker];
 
-        // Chart
+        // Chart update logic
         if (!tvWidget && selectedTicker) {
             initChart(selectedTicker, currentBackendTf);
-        } else if (tvWidget && data.priceHistory?.length > 0 && selectedTicker === data.primaryTicker) {
+        } else if (tvWidget && data.priceHistory && data.priceHistory.length > 0) {
+            // Priority: Use the price history that came directly from the dashboard call
             updateChart(data.priceHistory, selectedTicker, activeScan?.signals || data.signals);
         } else if (tvWidget && activeScan) {
-            // Try to get price history from a manual scan
+            // Fallback: If dashboard was empty but we have an active scan, fetch history manually
             fetchTickerChart(selectedTicker, activeScan.signals);
         }
 
@@ -878,17 +879,13 @@ async function fetchDashboard() {
         // Watchlist & Tradelist
         renderTradelist(data.watchlistScans, data.tradelist, data.tickerAmounts);
         renderWatchlist(data.watchlistScans, data.watchlist, data.tradelist);
-
-        // Risk
-
+        
         // Cache data for settings modals to access
         window.lastDashboardData = data;
 
         // Trade log
         latestScanHistory = data.recentTrades || [];
         latestExecutedTrades = data.executedTrades || [];
-
-        // Muted repetitive sync logs to keep console clean. Use the UI 'Last Scan' indicator for status.
         renderTradeLog(latestScanHistory, latestExecutedTrades);
 
     } catch (error) {
