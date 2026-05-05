@@ -443,9 +443,6 @@ function renderTradeLog(scanHistory, executedTrades) {
     
     // Apply Filtering if enabled
     if (currentLogTab === 'all') {
-        // By default, only show Bot trading logs (Exclude HOLD to keep it clean)
-        trades = trades.filter(t => t.action !== 'HOLD');
-        
         if (isFiltered && selectedTicker) {
             trades = trades.filter(t => 
                 t.ticker === selectedTicker && 
