@@ -334,7 +334,7 @@ class AlpacaBroker:
         if self.simulation_mode: return []
         try:
             from alpaca.trading.requests import GetOrdersRequest
-            from alpaca.trading.enums import OrderStatus, QueryOrderSide
+            from alpaca.trading.enums import OrderStatus
             
             # Fetch closed orders to find recent fills
             req = GetOrdersRequest(status=OrderStatus.CLOSED, limit=limit, nested=True)
