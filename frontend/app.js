@@ -436,8 +436,19 @@ function renderTradeLog(scanHistory, executedTrades) {
     if (!tbody) return;
     
     tbody.innerHTML = '';
+    const filterToggle = document.getElementById('filterLogToggle');
+    const isFiltered = filterToggle && filterToggle.checked;
 
-    const trades = currentLogTab === 'trades' ? (executedTrades || []) : (scanHistory || []);
+    let trades = currentLogTab === 'trades' ? (executedTrades || []) : (scanHistory || []);
+    
+    // Apply Filtering if enabled
+    if (isFiltered && selectedTicker) {
+        trades = trades.filter(t => 
+            t.ticker === selectedTicker && 
+            t.timeframe === currentBackendTf
+        );
+    }
+
     const currentPage = currentLogTab === 'trades' ? currentTradePage : currentScanPage;
 
     if (!trades || trades.length === 0) {

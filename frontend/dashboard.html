@@ -328,15 +328,21 @@
                 <div class="panel-top-bar bg-gradient-to-r from-purple-400 to-violet-400"></div>
                 <div class="flex justify-between items-center mb-4">
                     <h2 class="text-lg font-bold text-indigo-900">Execution Log</h2>
-                    <div class="flex bg-indigo-50/50 p-1 rounded-xl border border-indigo-100">
-                        <button id="tabLogAll" onclick="setLogTab('all')"
-                            class="px-4 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all bg-white text-indigo-600 shadow-sm border border-indigo-100">
-                            Scan History
-                        </button>
-                        <button id="tabLogTrades" onclick="setLogTab('trades')"
-                            class="px-4 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600">
-                            Executed Trades
-                        </button>
+                    <div class="flex items-center gap-3">
+                        <div class="flex items-center gap-2 mr-4 bg-purple-50 px-2 py-1 rounded-lg border border-purple-100">
+                            <label class="text-[0.6rem] font-black text-purple-600 uppercase">Filter to Selection</label>
+                            <input type="checkbox" id="filterLogToggle" onchange="renderTradeLog(latestScanHistory, latestExecutedTrades)" class="w-3 h-3 accent-purple-600">
+                        </div>
+                        <div class="flex bg-indigo-50/50 p-1 rounded-xl border border-indigo-100">
+                            <button id="tabLogAll" onclick="setLogTab('all')"
+                                class="px-4 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all bg-white text-indigo-600 shadow-sm border border-indigo-100">
+                                Scan History
+                            </button>
+                            <button id="tabLogTrades" onclick="setLogTab('trades')"
+                                class="px-4 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600">
+                                Executed Trades
+                            </button>
+                        </div>
                     </div>
                 </div>
                 <div class="overflow-x-auto -mx-2 px-2 scrollbar-hide">
