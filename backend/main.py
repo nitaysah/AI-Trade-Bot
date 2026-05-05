@@ -350,7 +350,7 @@ async def trading_loop():
                                 for p in all_positions
                             )
                             has_open_order = any(
-                                o['symbol'] == ticker_norm and o['side'] == 'buy'
+                                o['symbol'] == ticker_norm and o['side'].lower() == 'buy'
                                 for o in all_orders
                             )
 

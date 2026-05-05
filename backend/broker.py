@@ -157,11 +157,12 @@ class AlpacaBroker:
                 open_list.append({
                     'id': str(o.id),
                     'symbol': o.symbol.replace("/", "").upper(),
-                    'side': str(o.side),
+                    'side': o.side.value.lower(),
                     'status': str(o.status),
                     'qty': float(o.qty) if o.qty else 0,
                     'notional': float(o.notional) if o.notional else 0,
                 })
+            print(f"[broker] Fetched {len(open_list)} open orders from Alpaca")
             return open_list
         except Exception as e:
             print(f"[broker] Error getting open orders: {e}")
