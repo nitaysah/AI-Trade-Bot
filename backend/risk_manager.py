@@ -84,11 +84,11 @@ class RiskManager:
             shares = notional / entry_price
             print(f"[risk] Using custom profile for {ticker}: ${notional}, stop_mult={stop_mult}")
         else:
-            # 1. Risk-based sizing
-            risk_amount = account_equity * risk_pct
+            # 1. Default fixed sizing (Requested by user: $100 default)
+            notional = float(getattr(config, 'DEFAULT_TRADE_AMOUNT', 100.0))
             stop_distance = atr * stop_mult
-            shares = risk_amount / stop_distance
-            notional = shares * entry_price
+            shares = notional / entry_price
+            print(f"[risk] Using default fixed sizing for {ticker}: ${notional}")
             
             # Cap position size to max portfolio concentration only for automated sizing
             max_notional = account_equity * self.max_position_pct

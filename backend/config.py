@@ -87,6 +87,7 @@ SENTIMENT_BEARISH_THRESHOLD = -0.5
 # ──────────────────────────────────────────────
 # Risk Management
 # ──────────────────────────────────────────────
+DEFAULT_TRADE_AMOUNT = 100.0  # Default notional amount per trade in USD
 RISK_PER_TRADE = 0.02
 MAX_DAILY_DRAWDOWN = 0.05
 MAX_POSITION_PCT = 0.25
