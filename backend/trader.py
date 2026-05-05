@@ -161,7 +161,7 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
     if ticker in config.TRADELIST:
         position_sizing = risk_mgr.calculate_position_size(
             ticker=ticker,
-            price=analysis['price'],
+            entry_price=analysis['price'],
             account_equity=account_equity,
             available_cash=available_cash,
             atr=analysis.get('indicators', {}).get('ATR', 0)
