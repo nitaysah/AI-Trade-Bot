@@ -389,11 +389,15 @@ async def trading_loop():
                                     result['reason'] = "Signal SELL ignored: No open position detected."
                         
                         # 4. Dashboard / Log Management
-                        should_log = trade_executed or (ticker in config.TRADELIST)
-                        if should_log:
-                            # Use a more specific key to prevent duplicate logs for the same minute
-                            log_key = f"{result['time']}_{ticker}_{result['action']}"
-                            if not any(f"{log['time']}_{log['ticker']}_{log['action']}" == log_key for log in trade_log):
+                        # STRICT: Only log active bots (TRADELIST)
+                        if ticker in config.TRADELIST:
+                            # Use 1-minute resolution for the duplicate check key
+                            # This prevents multiple logs for the same stock in the same minute
+                            log_time_min = get_now().strftime("%Y-%m-%dT%H:%M")
+                            log_key = f"{log_time_min}_{ticker}_{result['action']}"
+                            
+                            # Check if we already have this stock/action logged for this minute
+                            if not any(f"{datetime.fromisoformat(log['time']).strftime('%Y-%m-%dT%H:%M')}_{log['ticker']}_{log['action']}" == log_key for log in trade_log):
                                 trade_log.insert(0, result)
                                 
                                 # If it was a real execution, save to permanent ledger
@@ -401,9 +405,10 @@ async def trading_loop():
                                     executed_trades.insert(0, result)
                                     await save_history_to_cloud()
 
-                        # Cap log size to prevent memory bloat
+                        # Cap log size and remove entries for stocks no longer in TRADELIST
+                        trade_log = [log for log in trade_log if log['ticker'] in config.TRADELIST]
                         if len(trade_log) > 100:
-                            trade_log.pop()
+                            trade_log = trade_log[:100]
 
                 except Exception as e:
                     print(f"[scheduler] Error scanning {ticker}: {e}")
