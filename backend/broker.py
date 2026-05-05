@@ -206,7 +206,7 @@ class AlpacaBroker:
                 'order_id': str(order.id),
                 'symbol': symbol,
                 'side': side.upper(),
-                'qty': order.qty if order.qty else 0, # Note: Notional orders might have None qty until filled
+                'qty': order.qty, # Note: Notional orders might have None qty until filled
                 'notional': round(notional, 2),
                 'total_cost': round(notional + fee, 2),
                 'fees': fee,

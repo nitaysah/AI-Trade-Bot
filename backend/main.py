@@ -358,9 +358,9 @@ async def trading_loop():
                                         
                                         # Capture Detailed Receipt
                                         # Force float to ensure decimal precision
-                                        # For notional orders, qty might be None initially, so estimate it
+                                        # For notional orders, qty might be None or 0 initially, so estimate it
                                         order_qty = order_result.get('qty')
-                                        if order_qty is None and result['price_raw'] > 0:
+                                        if (order_qty is None or float(order_qty) == 0) and result['price_raw'] > 0:
                                             order_qty = sizing['notional'] / result['price_raw']
                                             
                                         result['qty'] = float(order_qty) if order_qty else 0
