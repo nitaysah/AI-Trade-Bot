@@ -439,10 +439,10 @@ async def trading_loop():
 
                                         # Calculate Realized P/L
                                         if pos_info:
-                                            entry_price = pos_info['avg_price']
-                                            exit_price = result['price']
+                                            entry_price = float(pos_info['avg_price'])
+                                            exit_price = result['price_raw']
                                             # If qty is not available in order_result, use pos_info qty
-                                            qty = float(order_result.get('qty')) if order_result.get('qty') else pos_info['qty']
+                                            qty = float(order_result.get('qty')) if order_result.get('qty') else float(pos_info['qty'])
                                             pl = (exit_price - entry_price) * qty
                                             pl_pct = ((exit_price / entry_price) - 1) * 100
                                             result['pl'] = round(pl, 2)
