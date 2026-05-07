@@ -13,7 +13,12 @@ load_dotenv()
 TIMEZONE = "US/Central"
 
 # ──────────────────────────────────────────────
-# API Keys
+# Broker Selection
+# ──────────────────────────────────────────────
+BROKER_TYPE = os.getenv("BROKER_TYPE", "alpaca")  # "alpaca" or "webull"
+
+# ──────────────────────────────────────────────
+# API Keys — Alpaca
 # ──────────────────────────────────────────────
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
@@ -21,6 +26,14 @@ ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
 
 # Set to True for paper trading, False for live
 ALPACA_PAPER = True
+
+# ──────────────────────────────────────────────
+# API Keys — Webull
+# ──────────────────────────────────────────────
+WEBULL_APP_KEY = os.getenv("WEBULL_APP_KEY", "")
+WEBULL_APP_SECRET = os.getenv("WEBULL_APP_SECRET", "")
+WEBULL_ACCOUNT_ID = os.getenv("WEBULL_ACCOUNT_ID", "")  # Auto-discovered if blank
+WEBULL_TEST_MODE = os.getenv("WEBULL_TEST_MODE", "true").lower() == "true"
 
 # ──────────────────────────────────────────────
 # Watchlist — Tickers to scan

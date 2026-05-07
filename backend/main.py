@@ -23,7 +23,7 @@ import base64
 import hashlib
 
 from trader import evaluate_trade, get_risk_manager
-from broker import AlpacaBroker
+from broker_factory import create_broker
 from backtester import Backtester
 from data_manager import get_historical_data
 import config
@@ -240,7 +240,7 @@ async def verify_token(authorization: str = Header(None)):
         print(f"[security] Token verification failed: {str(e)}")
         raise HTTPException(status_code=401, detail=f"Token verification failed: {str(e)}")
 
-broker = AlpacaBroker()
+broker = create_broker()
 trade_log = []      # In-memory history for all scans (HOLD/WATCH/BUY/SELL)
 executed_trades = [] # Persistent history for successful BUY/SELL orders only
 latest_scans = {}   # {ticker: latest_evaluation_result}
