@@ -553,6 +553,8 @@ function changeLogPage(delta) {
 // ──────────────────────────────────────────────
 function updateSizingPanel(scan) {
     const panel = document.getElementById('sizingPanel');
+    if (!panel) return; // FIX: Prevent crash if panel is missing (e.g. on Dashboard after move)
+
     if (!scan || !scan.position_sizing || scan.action === 'HOLD') {
         panel.style.display = 'none';
         return;
