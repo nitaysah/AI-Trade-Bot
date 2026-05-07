@@ -67,6 +67,11 @@
             </div>
 
             <div class="flex flex-wrap justify-center items-center gap-3 md:gap-4 w-full">
+                <a href="bots.html"
+                    class="flex items-center text-sm font-black bg-emerald-50 text-emerald-700 border-2 border-emerald-200 rounded-full px-8 py-3 hover:bg-emerald-600 hover:text-white hover:border-emerald-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
+                    🤖 Active Bots
+                </a>
+
                 <a href="backtest.html"
                     class="flex items-center text-sm font-black bg-purple-50 text-indigo-600 border-2 border-purple-100 rounded-full px-8 py-3 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
                     📊 Backtest Center
@@ -260,17 +265,19 @@
                 <!-- RIGHT: Sidebar (1 col) -->
                 <div class="space-y-6">
 
-                    <!-- Active Trading Bots -->
+                    <!-- Active Bots Quick View -->
                     <div class="panel-glass relative">
                         <div class="panel-top-bar bg-gradient-to-r from-emerald-400 to-teal-400"></div>
                         <div class="flex justify-between items-center mb-3">
-                            <h2 class="text-lg font-bold text-indigo-900">Active Trading Bots</h2>
+                            <h2 class="text-lg font-bold text-indigo-900">Active Bots</h2>
+                            <a href="bots.html"
+                                class="text-[0.6rem] font-black uppercase tracking-widest text-emerald-600 hover:text-emerald-800 transition-colors">
+                                Manage →
+                            </a>
                         </div>
                         <div id="tradelistContainer" class="space-y-2">
-                            <!-- Active trade items injected by JS -->
                             <p class="text-center text-purple-400 text-[0.65rem] py-4">No active bots. Add from
-                                watchlist
-                                below.</p>
+                                watchlist below.</p>
                         </div>
                     </div>
 
@@ -280,34 +287,6 @@
                         <h2 class="text-lg font-bold text-indigo-900 mb-3">My Watchlist</h2>
                         <div id="watchlistContainer" class="space-y-2">
                             <!-- Watchlist items injected by JS -->
-                        </div>
-                    </div>
-
-                    <!-- Position Sizing (shows when a signal is active) -->
-                    <div class="panel-glass relative" id="sizingPanel" style="display: none;">
-                        <div class="panel-top-bar bg-gradient-to-r from-emerald-400 to-teal-400"></div>
-                        <h2 class="text-lg font-bold text-indigo-900 mb-3">Position Sizing</h2>
-                        <div class="space-y-2 text-sm">
-                            <div class="flex justify-between">
-                                <span class="text-purple-600">Notional</span>
-                                <span class="font-bold" id="sizingNotional">$0.00</span>
-                            </div>
-                            <div class="flex justify-between">
-                                <span class="text-purple-600">Shares</span>
-                                <span class="font-bold" id="sizingShares">0</span>
-                            </div>
-                            <div class="flex justify-between">
-                                <span class="text-purple-600">Stop Loss</span>
-                                <span class="font-bold text-red-600" id="sizingStop">$0.00</span>
-                            </div>
-                            <div class="flex justify-between">
-                                <span class="text-purple-600">Take Profit</span>
-                                <span class="font-bold text-emerald-600" id="sizingTarget">$0.00</span>
-                            </div>
-                            <div class="flex justify-between">
-                                <span class="text-purple-600">Risk:Reward</span>
-                                <span class="font-bold" id="sizingRR">1:1.5</span>
-                            </div>
                         </div>
                     </div>
 
@@ -324,65 +303,7 @@
                 </div>
             </div>
 
-            <!-- ═══════════════ EXECUTION LOG ═══════════════ -->
-            <div class="panel-glass relative">
-                <div class="panel-top-bar bg-gradient-to-r from-purple-400 to-violet-400"></div>
-                <div class="flex justify-between items-center mb-4">
-                    <h2 class="text-lg font-bold text-indigo-900">Execution Log</h2>
-                    <div class="flex bg-indigo-50/50 p-1 rounded-xl border border-indigo-100">
-                        <button id="tabLogAll" onclick="setLogTab('all')"
-                            class="px-4 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all bg-white text-indigo-600 shadow-sm border border-indigo-100">
-                            Scan History
-                        </button>
-                        <button id="tabLogTrades" onclick="setLogTab('trades')"
-                            class="px-4 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600">
-                            Executed Trades
-                        </button>
-                    </div>
-                </div>
-                <div class="overflow-x-auto -mx-2 px-2 scrollbar-hide">
-                    <table class="w-full text-left border-collapse min-w-[600px]">
-                        <thead>
-                            <tr
-                                class="border-b border-purple-200 text-purple-700 text-[10px] md:text-xs uppercase tracking-wider">
-                                <th class="pb-3 pr-4">Time</th>
-                                <th class="pb-3 pr-4">Action</th>
-                                <th class="pb-3 pr-4">Ticker</th>
-                                <th class="pb-3 pr-4 text-center">TF</th>
-                                <th class="pb-3 pr-4">Price</th>
-                                <th class="pb-3 pr-4 text-center">Qty</th>
-                                <th class="pb-3 pr-4 text-center">Total</th>
-                                <th class="pb-3 pr-4 text-center">Fee</th>
-                                <th class="pb-3 pr-4 text-center">P/L</th>
-                                <th class="pb-3 pr-4">Signals</th>
-                                <th class="pb-3 pr-4">AI Reason</th>
-                            </tr>
-                        </thead>
-                        <tbody id="tradeLogBody" class="text-[11px] md:text-sm">
-                        </tbody>
-                    </table>
-                    <p id="noTradesMsg" class="text-center text-purple-400 text-xs md:text-sm py-6">Waiting for first
-                        scan...</p>
-                </div>
-
-                <!-- Pagination Controls -->
-                <div class="mt-4 flex items-center justify-between border-t border-purple-100 pt-4">
-                    <div class="text-[0.65rem] font-bold text-purple-400 uppercase tracking-widest"
-                        id="logPageIndicator">
-                        Page 1 of 1
-                    </div>
-                    <div class="flex gap-2">
-                        <button id="logPrevBtn" onclick="changeLogPage(-1)"
-                            class="px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all bg-indigo-50 text-indigo-400 hover:bg-indigo-100 disabled:opacity-30 disabled:cursor-not-allowed">
-                            Previous
-                        </button>
-                        <button id="logNextBtn" onclick="changeLogPage(1)"
-                            class="px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all bg-indigo-50 text-indigo-400 hover:bg-indigo-100 disabled:opacity-30 disabled:cursor-not-allowed">
-                            Next
-                        </button>
-                    </div>
-                </div>
-            </div>
+            <!-- Execution Log moved to Active Bots page -->
 
         </div>
 

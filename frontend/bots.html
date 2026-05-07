@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Trader BOT — Active Bots</title>
+    <meta name="description"
+        content="Manage your active AI trading bots — monitor signals, execution logs, position sizing, and per-ticker settings.">
+    <link rel="icon"
+        href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <!-- Firebase Sentinel (Auth Guard) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+        import { firebaseConfig } from "./firebase-config.js";
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        window.auth = auth;
+
+        onAuthStateChanged(auth, (user) => {
+            if (!user) {
+                window.location.href = "index.html";
+            }
+        });
+
+        window.logoutCommander = async () => {
+            await signOut(auth);
+            window.location.href = "index.html";
+        };
+    </script>
+</head>
+
+<body
+    class="bg-gradient-to-br from-fuchsia-50 via-purple-100 to-indigo-100 text-indigo-950 min-h-screen font-sans relative overflow-x-hidden"
+    style="font-family: 'Inter', sans-serif;">
+    <!-- Ethereal background overlay -->
+    <div
+        class="fixed inset-0 z-[-1] bg-[radial-gradient(ellipse_at_top_left,_var(--tw-gradient-stops))] from-white/80 via-purple-200/20 to-transparent">
+    </div>
+    <div
+        class="fixed inset-0 z-[-1] bg-[radial-gradient(ellipse_at_bottom_right,_var(--tw-gradient-stops))] from-indigo-200/30 via-transparent to-transparent">
+    </div>
+
+    <main class="max-w-5xl mx-auto px-4 py-8">
+
+        <!-- ═══════════════ HEADER ═══════════════ -->
+        <header class="flex flex-col items-center text-center mb-10 gap-8 border-b border-purple-200/80 pb-8">
+            <div class="space-y-2">
+                <h1
+                    class="text-3xl md:text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-600 via-teal-600 to-indigo-600 leading-tight">
+                    🤖 Active Bots
+                </h1>
+                <p class="text-purple-500 text-xs md:text-sm font-black uppercase tracking-[0.2em] opacity-80">
+                    Manage Your Automated Trading Fleet
+                </p>
+            </div>
+
+            <div class="flex flex-wrap justify-center items-center gap-3 md:gap-4 w-full">
+                <a href="dashboard.html"
+                    class="flex items-center text-sm font-black bg-purple-50 text-indigo-600 border-2 border-purple-100 rounded-full px-8 py-3 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
+                    📊 Dashboard
+                </a>
+
+                <a href="backtest.html"
+                    class="flex items-center text-sm font-black bg-purple-50 text-indigo-600 border-2 border-purple-100 rounded-full px-8 py-3 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
+                    📈 Backtest Center
+                </a>
+
+                <span id="alpacaLinkStatus"
+                    class="flex items-center text-sm font-black px-8 py-3 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider">
+                    <span class="h-2.5 w-2.5 rounded-full mr-2.5" id="alpacaStatusDot"></span>
+                    <span id="alpacaStatusText">Checking...</span>
+                </span>
+
+                <button onclick="logoutCommander()"
+                    class="flex items-center text-sm font-black bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white transition-all px-8 py-3 rounded-full border-2 border-rose-100 shadow-sm whitespace-nowrap uppercase tracking-wider">
+                    Logout
+                </button>
+            </div>
+        </header>
+
+        <!-- ═══════════════ BOT STATUS CARDS ═══════════════ -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-6">
+            <div class="card-glass group">
+                <div class="card-glow"></div>
+                <h3 class="card-label">Active Bots</h3>
+                <p class="card-value text-emerald-600 animate-pulse" id="activeBotCount">0</p>
+                <span class="card-sub" id="botStatusSub">No bots running</span>
+            </div>
+            <div class="card-glass group">
+                <div class="card-glow"></div>
+                <h3 class="card-label">Total Equity</h3>
+                <p class="card-value text-indigo-900 animate-pulse" id="totalCapital">---</p>
+                <span class="card-sub" id="cashDisplay">Cash: ---</span>
+            </div>
+            <div class="card-glass group">
+                <div class="card-glow"></div>
+                <h3 class="card-label">Open Positions</h3>
+                <p class="card-value text-indigo-600 animate-pulse" id="openPositions">---</p>
+                <span class="card-sub" id="positionsList">No positions</span>
+            </div>
+            <div class="card-glass group">
+                <div class="card-glow"></div>
+                <h3 class="card-label">Today's P/L</h3>
+                <p class="card-value animate-pulse" id="dailyPL">---</p>
+                <span class="card-sub">Daily performance</span>
+            </div>
+        </div>
+
+        <!-- ═══════════════ MAIN CONTENT ═══════════════ -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+
+            <!-- LEFT: Active Bots List + Position Sizing (1 col) -->
+            <div class="space-y-6">
+
+                <!-- Active Trading Bots -->
+                <div class="panel-glass relative">
+                    <div class="panel-top-bar bg-gradient-to-r from-emerald-400 to-teal-400"></div>
+                    <div class="flex justify-between items-center mb-3">
+                        <h2 class="text-lg font-bold text-indigo-900">Active Trading Bots</h2>
+                        <div class="flex items-center gap-2">
+                            <span class="text-[0.6rem] font-bold text-purple-400 uppercase tracking-widest"
+                                id="lastScanTime">—</span>
+                        </div>
+                    </div>
+                    <div id="tradelistContainer" class="space-y-2">
+                        <p class="text-center text-purple-400 text-[0.65rem] py-4">No active bots. Add from
+                            watchlist on the Dashboard.</p>
+                    </div>
+                </div>
+
+                <!-- Position Sizing -->
+                <div class="panel-glass relative" id="sizingPanel" style="display: none;">
+                    <div class="panel-top-bar bg-gradient-to-r from-emerald-400 to-teal-400"></div>
+                    <h2 class="text-lg font-bold text-indigo-900 mb-3">Position Sizing</h2>
+                    <div class="space-y-2 text-sm">
+                        <div class="flex justify-between">
+                            <span class="text-purple-600">Notional</span>
+                            <span class="font-bold" id="sizingNotional">$0.00</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-purple-600">Shares</span>
+                            <span class="font-bold" id="sizingShares">0</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-purple-600">Stop Loss</span>
+                            <span class="font-bold text-red-600" id="sizingStop">$0.00</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-purple-600">Take Profit</span>
+                            <span class="font-bold text-emerald-600" id="sizingTarget">$0.00</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-purple-600">Risk:Reward</span>
+                            <span class="font-bold" id="sizingRR">1:1.5</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AI Analysis Summary -->
+                <div class="panel-glass relative">
+                    <div class="panel-top-bar bg-gradient-to-r from-fuchsia-400 to-purple-500"></div>
+                    <h2 class="text-lg font-bold text-indigo-900 mb-3">AI Analysis</h2>
+                    <div class="p-3 bg-white/40 rounded-lg border border-purple-100 text-xs text-indigo-800 italic leading-relaxed"
+                        id="aiSummary">
+                        Waiting for scan analysis...
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- RIGHT: Execution Log (2 cols) -->
+            <div class="lg:col-span-2 space-y-6">
+
+                <!-- ═══════════════ EXECUTION LOG ═══════════════ -->
+                <div class="panel-glass relative">
+                    <div class="panel-top-bar bg-gradient-to-r from-purple-400 to-violet-400"></div>
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-lg font-bold text-indigo-900">Execution Log</h2>
+                        <div class="flex bg-indigo-50/50 p-1 rounded-xl border border-indigo-100">
+                            <button id="tabLogAll" onclick="setLogTab('all')"
+                                class="px-4 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all bg-white text-indigo-600 shadow-sm border border-indigo-100">
+                                Scan History
+                            </button>
+                            <button id="tabLogTrades" onclick="setLogTab('trades')"
+                                class="px-4 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600">
+                                Executed Trades
+                            </button>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto -mx-2 px-2 scrollbar-hide">
+                        <table class="w-full text-left border-collapse min-w-[600px]">
+                            <thead>
+                                <tr
+                                    class="border-b border-purple-200 text-purple-700 text-[10px] md:text-xs uppercase tracking-wider">
+                                    <th class="pb-3 pr-4">Time</th>
+                                    <th class="pb-3 pr-4">Action</th>
+                                    <th class="pb-3 pr-4">Ticker</th>
+                                    <th class="pb-3 pr-4 text-center">TF</th>
+                                    <th class="pb-3 pr-4">Price</th>
+                                    <th class="pb-3 pr-4 text-center">Qty</th>
+                                    <th class="pb-3 pr-4 text-center">Total</th>
+                                    <th class="pb-3 pr-4 text-center">Fee</th>
+                                    <th class="pb-3 pr-4 text-center">P/L</th>
+                                    <th class="pb-3 pr-4">Signals</th>
+                                    <th class="pb-3 pr-4">AI Reason</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tradeLogBody" class="text-[11px] md:text-sm">
+                            </tbody>
+                        </table>
+                        <p id="noTradesMsg" class="text-center text-purple-400 text-xs md:text-sm py-6">Waiting for
+                            first scan...</p>
+                    </div>
+
+                    <!-- Pagination Controls -->
+                    <div class="mt-4 flex items-center justify-between border-t border-purple-100 pt-4">
+                        <div class="text-[0.65rem] font-bold text-purple-400 uppercase tracking-widest"
+                            id="logPageIndicator">
+                            Page 1 of 1
+                        </div>
+                        <div class="flex gap-2">
+                            <button id="logPrevBtn" onclick="changeLogPage(-1)"
+                                class="px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all bg-indigo-50 text-indigo-400 hover:bg-indigo-100 disabled:opacity-30 disabled:cursor-not-allowed">
+                                Previous
+                            </button>
+                            <button id="logNextBtn" onclick="changeLogPage(1)"
+                                class="px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all bg-indigo-50 text-indigo-400 hover:bg-indigo-100 disabled:opacity-30 disabled:cursor-not-allowed">
+                                Next
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="mt-8 text-center text-xs text-purple-400 pb-4">
+            <p>⚠️ Algorithmic trading involves significant risk. This is for educational purposes only.</p>
+            <p class="mt-1">AI Trader BOT v2.0 — Built with FastAPI, Gemini AI & Alpaca</p>
+        </footer>
+
+    </main>
+
+    <!-- Ticker Settings Modal -->
+    <div id="tickerModal"
+        class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden z-50 flex items-center justify-center p-4">
+        <div
+            class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div
+                class="bg-gradient-to-r from-indigo-600 to-purple-600 p-4 flex justify-between items-center text-white">
+                <h3 class="font-bold text-lg" id="modalTickerName">BTCUSD Settings</h3>
+                <button onclick="closeTickerModal()" class="hover:rotate-90 transition-all duration-300">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M6 18L18 6M6 6l12 12">
+                        </path>
+                    </svg>
+                </button>
+            </div>
+            <div class="p-6 space-y-4">
+                <div class="space-y-1">
+                    <div class="flex items-center gap-1 mb-1">
+                        <label class="text-xs font-bold text-slate-500 uppercase">Trade Amount ($)</label>
+                    </div>
+                    <input type="number" id="modalAmount"
+                        class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                        placeholder="Manual Entry Required">
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="space-y-1">
+                        <label class="text-xs font-bold text-slate-500 uppercase">Risk / Trade (%)</label>
+                        <input type="number" id="modalRisk"
+                            class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                            placeholder="Enter Risk %" step="0.1">
+                    </div>
+                    <div class="space-y-1">
+                        <label class="text-xs font-bold text-slate-500 uppercase">ATR Stop Mult</label>
+                        <input type="number" id="modalAtrStop"
+                            class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                            placeholder="Enter ATR Mult" step="0.1">
+                    </div>
+                </div>
+                <div class="space-y-1">
+                    <label class="text-xs font-bold text-slate-500 uppercase">Take Profit Mult</label>
+                    <input type="number" id="modalTpMult"
+                        class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                        placeholder="Enter TP Mult" step="0.1">
+                </div>
+
+                <div class="pt-6 flex gap-4">
+                    <button onclick="saveTickerSettings()"
+                        class="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 hover:shadow-indigo-500/20 hover:shadow-xl text-white font-black py-4 rounded-xl shadow-lg transition-all active:scale-95 uppercase tracking-widest text-sm">Save
+                        Settings</button>
+                    <button onclick="resetTickerSettings()"
+                        class="px-6 bg-slate-100 hover:bg-slate-200 text-slate-500 font-black py-4 rounded-xl transition-all uppercase tracking-widest text-sm">Reset</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="bots.js"></script>
+</body>
+
+</html>
