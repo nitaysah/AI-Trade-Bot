@@ -165,6 +165,65 @@
                     </div>
                 </div>
 
+                <!-- ═══════════════ LIVE STRATEGY MATRIX ═══════════════ -->
+                <div class="panel-glass relative" id="strategyMatrixPanel" style="display: none;">
+                    <div class="panel-top-bar bg-gradient-to-r from-violet-500 to-fuchsia-500"></div>
+                    <div class="flex justify-between items-center mb-3">
+                        <h2 class="text-lg font-bold text-indigo-900">Live Strategy Matrix</h2>
+                        <span class="text-[0.5rem] font-black px-2 py-1 rounded-full bg-violet-100 text-violet-600 border border-violet-200 uppercase tracking-widest animate-pulse">LIVE</span>
+                    </div>
+
+                    <!-- Ticker + Timeframe Header -->
+                    <div class="flex items-center justify-between mb-4 p-3 bg-gradient-to-r from-indigo-50 to-violet-50 rounded-xl border border-indigo-100">
+                        <div class="flex items-center gap-2">
+                            <span class="h-3 w-3 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]"></span>
+                            <span class="font-black text-indigo-950 text-sm tracking-tight" id="matrixTickerName">---</span>
+                        </div>
+                        <select id="matrixTimeframe" onchange="onMatrixTimeframeChange()"
+                            class="bg-white border border-indigo-100 rounded-lg px-3 py-1.5 text-[0.65rem] font-black text-indigo-900 focus:ring-2 focus:ring-violet-500 focus:outline-none appearance-none cursor-pointer uppercase tracking-wider">
+                            <option value="1Min">1 Min</option>
+                            <option value="5Min" selected>5 Min</option>
+                            <option value="15Min">15 Min</option>
+                            <option value="1Hour">1 Hour</option>
+                            <option value="1Day">1 Day</option>
+                        </select>
+                    </div>
+
+                    <!-- Signal Confluence Summary -->
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="flex-1 bg-white rounded-xl p-3 border border-emerald-100 text-center">
+                            <span class="text-[0.55rem] font-black text-emerald-500 uppercase tracking-widest block">Bullish</span>
+                            <span class="text-2xl font-black text-emerald-600" id="matrixBullCount">0</span>
+                        </div>
+                        <div class="flex-1 bg-white rounded-xl p-3 border border-red-100 text-center">
+                            <span class="text-[0.55rem] font-black text-red-500 uppercase tracking-widest block">Bearish</span>
+                            <span class="text-2xl font-black text-red-600" id="matrixBearCount">0</span>
+                        </div>
+                        <div class="flex-1 bg-white rounded-xl p-3 border border-slate-100 text-center">
+                            <span class="text-[0.55rem] font-black text-slate-400 uppercase tracking-widest block">Neutral</span>
+                            <span class="text-2xl font-black text-slate-500" id="matrixNeutralCount">0</span>
+                        </div>
+                    </div>
+
+                    <!-- Final Verdict -->
+                    <div class="mb-4 p-3 rounded-xl border text-center" id="matrixVerdict">
+                        <span class="font-black text-sm uppercase tracking-widest" id="matrixVerdictText">HOLD</span>
+                    </div>
+
+                    <!-- Indicator Cards Grid -->
+                    <div class="grid grid-cols-2 gap-2" id="matrixIndicatorGrid">
+                        <!-- Rendered by JS -->
+                    </div>
+
+                    <!-- Loading Overlay -->
+                    <div id="matrixLoading" class="hidden absolute inset-0 bg-white/80 backdrop-blur-sm z-10 flex items-center justify-center rounded-2xl">
+                        <div class="flex flex-col items-center gap-2">
+                            <div class="h-8 w-8 border-3 border-violet-600 border-t-transparent rounded-full animate-spin"></div>
+                            <span class="text-[0.6rem] font-black text-violet-500 uppercase tracking-widest">Scanning...</span>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- AI Analysis Summary -->
                 <div class="panel-glass relative">
                     <div class="panel-top-bar bg-gradient-to-r from-fuchsia-400 to-purple-500"></div>
