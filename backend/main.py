@@ -619,7 +619,7 @@ async def update_alpaca_config(cfg: AlpacaConfig):
 def unlink_alpaca():
     # Delete from cloud
     if db:
-        db.collection("settings").document("alpaca").document("credentials").delete()
+        db.collection("settings").document("alpaca").delete()
     
     # Reset broker to simulation
     broker.simulation_mode = True
