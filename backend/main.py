@@ -1039,6 +1039,37 @@ async def remove_from_tradelist(ticker: str):
     return {"status": "success", "tradelist": config.TRADELIST}
 
 
+@app.get("/api/search/{query}")
+def search_symbols(query: str):
+    """Searches for tradeable assets using the modular broker."""
+    if len(query) < 1:
+        return []
+    return broker.search_assets(query)
+
+
+@app.post("/api/bots/create")
+async def create_bot(data: dict):
+    """Creates a new active bot (adds to watchlist and tradelist)."""
+    symbol = data.get("symbol", "").upper().strip()
+    if not symbol:
+        return {"status": "error", "message": "Symbol is required"}
+        
+    # Ensure it's in watchlist to be scanned
+    if symbol not in config.WATCHLIST:
+        config.WATCHLIST.append(symbol)
+        
+    # Add to tradelist to activate the bot
+    if symbol not in config.TRADELIST:
+        config.TRADELIST.append(symbol)
+        print(f"[settings] Launched new bot for {symbol}")
+        
+    # Save settings to cloud (runs in background)
+    asyncio.create_task(save_settings_to_cloud())
+    
+    return {"status": "success", "symbol": symbol, "watchlist": config.WATCHLIST, "tradelist": config.TRADELIST}
+
+
+
 # ──────────────────────────────────────────────
 # Legacy persistence removed (Now using Cloud Vault)
 # ──────────────────────────────────────────────

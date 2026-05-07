@@ -121,6 +121,39 @@
             <!-- LEFT: Active Bots List + Position Sizing (1 col) -->
             <div class="space-y-6">
 
+                <!-- ═══════════════ CREATE NEW BOT ═══════════════ -->
+                <div class="panel-glass relative overflow-visible z-20">
+                    <div class="panel-top-bar bg-gradient-to-r from-blue-400 to-indigo-500"></div>
+                    <h2 class="text-lg font-bold text-indigo-900 mb-3">Deploy New Bot</h2>
+                    
+                    <div class="relative w-full z-50">
+                        <input type="text" id="botSearchInput" autocomplete="off" placeholder="Search symbol or company (e.g. AAPL, Bitcoin)"
+                            class="w-full bg-white border-2 border-indigo-100 rounded-xl px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all shadow-sm">
+                        <!-- Dropdown Results -->
+                        <div id="botSearchResults" class="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-2xl border border-indigo-100 overflow-hidden hidden max-h-60 overflow-y-auto z-50">
+                        </div>
+                    </div>
+
+                    <!-- Selected Bot Preview -->
+                    <div id="botPreviewContainer" class="mt-4 hidden p-3 bg-indigo-50/50 rounded-xl border border-indigo-100">
+                        <div class="flex justify-between items-center mb-3">
+                            <div>
+                                <h3 id="previewSymbol" class="text-lg font-black text-indigo-950 leading-none"></h3>
+                                <p id="previewName" class="text-[0.65rem] font-bold text-indigo-400 uppercase tracking-widest mt-1"></p>
+                            </div>
+                            <button id="launchBotBtn" class="bg-gradient-to-r from-emerald-500 to-teal-500 text-white px-5 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider hover:shadow-lg hover:shadow-emerald-500/30 transition-all active:scale-95 flex items-center gap-2">
+                                Launch <span class="text-lg">🚀</span>
+                            </button>
+                        </div>
+                        <!-- Mini Chart Container -->
+                        <div id="previewChart" class="h-32 w-full rounded-lg overflow-hidden bg-white border border-indigo-100 relative pointer-events-none">
+                            <div class="tradingview-widget-container h-full w-full">
+                                <div id="tv_mini_chart" class="h-full w-full"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Active Trading Bots -->
                 <div class="panel-glass relative">
                     <div class="panel-top-bar bg-gradient-to-r from-emerald-400 to-teal-400"></div>

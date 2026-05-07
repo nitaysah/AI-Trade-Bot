@@ -438,6 +438,25 @@ class WebullBroker:
             print(f"[webull] Error getting recent trades: {e}")
             return []
 
+    def search_assets(self, query: str) -> list:
+        """Searches for assets matching the query. Proxies to Yahoo Finance for speed."""
+        import requests
+        try:
+            url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}"
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            res = requests.get(url, headers=headers, timeout=5).json()
+            results = []
+            for quote in res.get('quotes', []):
+                if quote.get('quoteType') in ['EQUITY', 'CRYPTOCURRENCY', 'ETF']:
+                    results.append({
+                        "symbol": quote.get('symbol'),
+                        "name": quote.get('shortname', quote.get('longname', quote.get('symbol')))
+                    })
+            return results[:10]
+        except Exception as e:
+            print(f"[webull] Search error: {e}")
+            return []
+
     # ──────────────────────────────────────────────
     # Helpers
     # ──────────────────────────────────────────────

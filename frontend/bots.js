@@ -743,12 +743,149 @@ async function toggleMatrixIndicator(name, configKey, currentState) {
             window.lastBotsData.indicator_settings[configKey] = newState;
         }
 
-        // Re-render with updated state
         renderIndicatorGrid(matrixScanData);
     } catch (e) {
         console.error('[matrix] Toggle indicator error:', e);
     }
 }
+
+// ──────────────────────────────────────────────
+// Bot Creation & Search
+// ──────────────────────────────────────────────
+let searchTimeout = null;
+let currentSelectedBot = null;
+
+document.getElementById('botSearchInput')?.addEventListener('input', (e) => {
+    const query = e.target.value.trim();
+    const resultsContainer = document.getElementById('botSearchResults');
+    
+    if (query.length < 2) {
+        resultsContainer.classList.add('hidden');
+        return;
+    }
+
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(async () => {
+        try {
+            const headers = await getAuthHeaders();
+            const res = await fetch(`${API_BASE}/api/search/${encodeURIComponent(query)}`, { headers });
+            const data = await res.json();
+            
+            resultsContainer.innerHTML = '';
+            if (data && data.length > 0) {
+                data.forEach(item => {
+                    const div = document.createElement('div');
+                    div.className = "p-3 hover:bg-indigo-50 cursor-pointer border-b border-indigo-50 last:border-0 transition-colors flex justify-between items-center";
+                    div.innerHTML = `
+                        <div>
+                            <span class="font-black text-indigo-900">${item.symbol}</span>
+                            <span class="text-xs text-indigo-400 ml-2 font-medium">${item.name}</span>
+                        </div>
+                        <span class="text-[0.6rem] bg-indigo-100 text-indigo-500 px-2 py-0.5 rounded uppercase font-bold tracking-widest">+ Add</span>
+                    `;
+                    div.onclick = () => selectSearchResult(item);
+                    resultsContainer.appendChild(div);
+                });
+                resultsContainer.classList.remove('hidden');
+            } else {
+                resultsContainer.innerHTML = '<div class="p-4 text-center text-xs text-indigo-400 font-medium">No assets found</div>';
+                resultsContainer.classList.remove('hidden');
+            }
+        } catch (e) {
+            console.error('[search] Error fetching results:', e);
+        }
+    }, 300); // 300ms debounce
+});
+
+// Close search dropdown on click outside
+document.addEventListener('click', (e) => {
+    if (!e.target.closest('.relative.w-full.z-50')) {
+        document.getElementById('botSearchResults')?.classList.add('hidden');
+    }
+});
+
+function selectSearchResult(item) {
+    document.getElementById('botSearchResults').classList.add('hidden');
+    document.getElementById('botSearchInput').value = '';
+    
+    currentSelectedBot = item.symbol;
+    document.getElementById('previewSymbol').textContent = item.symbol;
+    document.getElementById('previewName').textContent = item.name;
+    document.getElementById('botPreviewContainer').classList.remove('hidden');
+
+    // Load TradingView Mini Chart
+    const tvContainer = document.getElementById('tv_mini_chart');
+    tvContainer.innerHTML = '';
+    
+    const script = document.createElement('script');
+    script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js';
+    script.async = true;
+    script.innerHTML = JSON.stringify({
+        "symbol": item.symbol.includes('USD') && !item.symbol.includes('^') ? `CRYPTO:${item.symbol}` : item.symbol,
+        "width": "100%",
+        "height": "100%",
+        "locale": "en",
+        "dateRange": "1D",
+        "colorTheme": "light",
+        "isTransparent": true,
+        "autosize": true,
+        "largeChartUrl": ""
+    });
+    tvContainer.appendChild(script);
+}
+
+document.getElementById('launchBotBtn')?.addEventListener('click', async () => {
+    if (!currentSelectedBot) return;
+
+    // Optimistic UI Update
+    const symbol = currentSelectedBot;
+    const container = document.getElementById('tradelistContainer');
+    
+    // Hide preview
+    document.getElementById('botPreviewContainer').classList.add('hidden');
+    currentSelectedBot = null;
+    
+    // Remove "No active bots" text if present
+    if (container.querySelector('p')) {
+        container.innerHTML = '';
+    }
+
+    // Insert optimistic card
+    const tempDiv = document.createElement('div');
+    tempDiv.id = `temp-bot-${symbol}`;
+    tempDiv.className = "watchlist-item group active-bot p-3 mb-2 flex flex-col gap-2 bg-indigo-50 border-indigo-200 animate-pulse";
+    tempDiv.innerHTML = `
+        <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+                <div class="h-4 w-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+                <span class="font-black text-sm text-indigo-950 tracking-tight">${symbol}</span>
+                <span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-500 border border-amber-200">STARTING...</span>
+            </div>
+        </div>
+    `;
+    container.insertBefore(tempDiv, container.firstChild);
+
+    try {
+        const headers = await getAuthHeaders();
+        const response = await fetch(`${API_BASE}/api/bots/create`, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({ symbol })
+        });
+        
+        if (response.ok) {
+            // Force an immediate refresh to sync real data
+            await fetchBotsData();
+        } else {
+            // Revert on error
+            tempDiv.remove();
+            alert("Failed to launch bot. Please try again.");
+        }
+    } catch (e) {
+        console.error('[launch] Error:', e);
+        tempDiv.remove();
+    }
+});
 
 // ──────────────────────────────────────────────
 // Init
