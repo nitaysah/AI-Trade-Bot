@@ -83,6 +83,9 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         const action = scan?.action || '—';
         const price = scan?.price ? `$${parseFloat(scan.price.toString().replace('$', '')).toFixed(2)}` : '---';
         const actionColor = action === 'BUY' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : action === 'SELL' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-400 border-slate-100';
+        
+        const bullish = scan?.bullish_count ?? 0;
+        const bearish = scan?.bearish_count ?? 0;
 
         item.innerHTML = `
                 <!-- Top Layer: Ticker & Status -->
@@ -92,11 +95,16 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         <span class="font-black text-sm text-indigo-950 tracking-tight">${ticker}</span>
                     </div>
                     
+                    <div class="flex items-center gap-1.5 opacity-80">
+                        <span class="text-[0.6rem] font-bold text-emerald-600 bg-emerald-50 px-1 rounded border border-emerald-100">${bullish}B</span>
+                        <span class="text-[0.6rem] font-bold text-red-600 bg-red-50 px-1 rounded border border-red-100">${bearish}S</span>
+                    </div>
+
                     <div class="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
                         <button class="p-1.5 rounded hover:bg-indigo-50 text-indigo-400 transition-all" 
                             onclick="event.stopPropagation(); openTickerModal('${ticker}')">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924-1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                             </svg>
                         </button>
@@ -381,7 +389,8 @@ async function resetTickerSettings() {
 async function fetchBotsData() {
     try {
         const headers = await getAuthHeaders();
-        const url = `${API_BASE}/api/dashboard`;
+        // Use strategy timeframe from state if available
+        const url = `${API_BASE}/api/dashboard?timeframe=${currentBackendTf}`;
         const response = await fetch(url, { headers });
         const data = await response.json();
 

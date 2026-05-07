@@ -317,7 +317,8 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
 
         const action = scan?.action || '—';
         const price = scan?.price ? `$${parseFloat(scan.price.toString().replace('$', '')).toFixed(2)}` : '---';
-        const actionColor = action === 'BUY' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : action === 'SELL' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-400 border-slate-100';
+        const bullish = scan?.bullish_count ?? 0;
+        const bearish = scan?.bearish_count ?? 0;
 
         item.innerHTML = `
                 <!-- Top Layer: Ticker & Status -->
@@ -327,6 +328,11 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         <span class="font-black text-sm text-indigo-950 tracking-tight">${ticker}</span>
                     </div>
                     
+                    <div class="flex items-center gap-1.5 opacity-80">
+                        <span class="text-[0.6rem] font-bold text-emerald-600 bg-emerald-50 px-1 rounded border border-emerald-100">${bullish}B</span>
+                        <span class="text-[0.6rem] font-bold text-red-600 bg-red-50 px-1 rounded border border-red-100">${bearish}S</span>
+                    </div>
+
                     <div class="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
                         <button class="p-1.5 rounded hover:bg-indigo-50 text-indigo-400 transition-all" 
                             onclick="event.stopPropagation(); openTickerModal('${ticker}')">
