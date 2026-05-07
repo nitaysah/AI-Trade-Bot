@@ -456,6 +456,9 @@ async function fetchBotsData() {
         if (document.getElementById('openPositions')) {
             document.getElementById('openPositions').textContent = data.openPositions || '0';
             document.getElementById('openPositions').classList.remove('animate-pulse');
+            if (document.getElementById('positionsList')) {
+                document.getElementById('positionsList').textContent = data.positionsList || 'No positions';
+            }
         }
         if (document.getElementById('dailyPL')) {
             const plEl = document.getElementById('dailyPL');
