@@ -303,6 +303,7 @@ async function removeFromWatchlist(ticker) {
 // ──────────────────────────────────────────────
 function renderTradelist(scans, tradelist, tickerAmounts = {}) {
     const container = document.getElementById('tradelistContainer');
+    if (!container) return; // Prevent crash if container is removed
     container.innerHTML = '';
 
     if (!tradelist || tradelist.length === 0) {
