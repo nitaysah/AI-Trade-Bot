@@ -244,6 +244,7 @@ broker = AlpacaBroker()
 trade_log = []      # In-memory history for all scans (HOLD/WATCH/BUY/SELL)
 executed_trades = [] # Persistent history for successful BUY/SELL orders only
 latest_scans = {}   # {ticker: latest_evaluation_result}
+last_trade_timestamps = {}  # {ticker: datetime} — Cooldown tracking
 bot_running = False
 last_scan_time = None
 force_scan_trigger = None
@@ -331,10 +332,33 @@ async def trading_loop():
 
             for ticker in config.WATCHLIST:
                 try:
-                    # 1. Determine available cash based on asset type
-                    # Robust crypto detection
+                    # ── SAFETY CHECK 1: Per-Ticker Pause ──
+                    t_settings = getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {})
+                    if t_settings.get('paused', False):
+                        # Bot is paused — skip evaluation entirely but keep in list
+                        continue
+
+                    # ── SAFETY CHECK 2: Market Hours Filter (Stocks only) ──
                     clean_ticker = ticker.upper().replace("/", "")
                     is_crypto = any(clean_ticker.endswith(base) for base in ["USD", "USDT", "USDC"])
+                    
+                    if not is_crypto and getattr(config, 'MARKET_HOURS_ONLY', True):
+                        import pytz
+                        et_now = datetime.now(pytz.timezone("US/Eastern"))
+                        market_open = et_now.replace(hour=9, minute=30, second=0, microsecond=0)
+                        market_close = et_now.replace(hour=16, minute=0, second=0, microsecond=0)
+                        if et_now < market_open or et_now > market_close or et_now.weekday() >= 5:
+                            # Outside market hours — skip stock evaluation
+                            continue
+
+                    # ── SAFETY CHECK 3: Cooldown Timer ──
+                    cooldown_secs = getattr(config, 'TRADE_COOLDOWN_SECONDS', 300)
+                    if cooldown_secs > 0 and ticker in last_trade_timestamps:
+                        elapsed = (datetime.now(pytz.timezone(config.TIMEZONE)) - last_trade_timestamps[ticker]).total_seconds()
+                        if elapsed < cooldown_secs:
+                            continue
+
+                    # 1. Determine available cash based on asset type
                     avail_cash = account.get('non_marginable_buying_power') or account['cash'] if is_crypto else account['cash']
                     
                     # 2. Evaluate Ticker (Indicators + AI Sentiment)
@@ -367,7 +391,13 @@ async def trading_loop():
                             if result['action'] == 'BUY':
                                 sizing = result['position_sizing']
                                 
-                                if has_this_pos:
+                                # ── SAFETY CHECK 4: Max Open Positions ──
+                                max_positions = getattr(config, 'MAX_OPEN_POSITIONS', 5)
+                                if portfolio_count >= max_positions and not has_this_pos:
+                                    result['action'] = 'HOLD'
+                                    result['reason'] = f"Max positions reached ({portfolio_count}/{max_positions}). Buy signal blocked."
+                                    print(f"[risk] {ticker}: Blocked BUY — max positions ({portfolio_count}/{max_positions})")
+                                elif has_this_pos:
                                     # Block new buys if we already have a position for THIS stock
                                     result['action'] = 'HOLD'
                                     # Capture unrealized P/L for scan log
@@ -409,6 +439,7 @@ async def trading_loop():
                                         # Enhance reason with execution info — using 6 decimal places
                                         result['reason'] = f"✅ BOUGHT {result['qty']:.6f} shares at {result['price']}: {result['reason']}"
                                         print(f"[ACTION] BUY {ticker}: Executing trade for ${sizing['notional']:.2f}")
+                                        last_trade_timestamps[ticker] = datetime.now(pytz.timezone(config.TIMEZONE))
                                 elif has_this_pos:
                                     result['action'] = 'HOLD'
                                     # Capture unrealized P/L for scan log
@@ -463,6 +494,7 @@ async def trading_loop():
                                         else:
                                             result['reason'] = f"✅ SOLD at {result['price']}: {result['reason']}"
                                         print(f"[ACTION] SELL {ticker}: Closed position, P/L: {result.get('pl', 0)}")
+                                        last_trade_timestamps[ticker] = datetime.now(pytz.timezone(config.TIMEZONE))
                                     else:
                                         print(f"[trader] FAILED SELL {ticker}: {order_result.get('error', 'Unknown Error')}")
                                         result['reason'] = f"Sell order failed: {order_result.get('error', 'Broker Error')}"
@@ -689,10 +721,15 @@ def get_dashboard(ticker: str = None, timeframe: str = None):
         "lastScan": last_scan_time or "Starting...",
         "indicator_settings": {k: getattr(config, k, True) for k in dir(config) if k.startswith("ENABLE_")},
         "strategyTimeframe": config.DEFAULT_TIMEFRAME,
-        "simulation": account.get('simulation', True),
         "watchlist": config.WATCHLIST,
         "tradelist": config.TRADELIST,
         "scanInterval": config.SCAN_INTERVAL_SECONDS,
+
+        # Safety Controls
+        "maxOpenPositions": getattr(config, 'MAX_OPEN_POSITIONS', 5),
+        "tradeCooldownSeconds": getattr(config, 'TRADE_COOLDOWN_SECONDS', 300),
+        "marketHoursOnly": getattr(config, 'MARKET_HOURS_ONLY', True),
+
         "debug_logs": cloud_restore_log
     }
 

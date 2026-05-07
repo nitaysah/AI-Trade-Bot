@@ -35,6 +35,13 @@ DEFAULT_TIMEFRAME = "5Min"
 SCAN_INTERVAL_SECONDS = 60
 
 # ──────────────────────────────────────────────
+# Bot Safety Controls
+# ──────────────────────────────────────────────
+MAX_OPEN_POSITIONS = 5          # Max simultaneous positions across all bots
+TRADE_COOLDOWN_SECONDS = 300    # Wait N seconds after a trade before re-evaluating same ticker
+MARKET_HOURS_ONLY = True        # If True, stocks only trade during market hours (9:30-16:00 ET)
+
+# ──────────────────────────────────────────────
 # Ticker Amounts — Overrides for specific trade sizes (in USD)
 # If a ticker is here, it uses this amount instead of RISK_PER_TRADE %
 # ──────────────────────────────────────────────

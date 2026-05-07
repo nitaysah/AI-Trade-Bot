@@ -88,14 +88,19 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         const bearish = scan?.bearish_count ?? 0;
         const tickerTf = (window.lastBotsData?.ticker_settings || {})[ticker]?.timeframe || '';
         const tfLabel = tickerTf || (window.lastBotsData?.strategyTimeframe || '5Min');
+        const isPaused = (window.lastBotsData?.ticker_settings || {})[ticker]?.paused || false;
+        const dotClass = isPaused 
+            ? 'h-2 w-2 bg-slate-300 rounded-full' 
+            : 'h-2 w-2 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]';
 
         item.innerHTML = `
                 <!-- Top Layer: Ticker & Status -->
                 <div class="flex items-center justify-between">
                     <div class="flex items-center gap-2 cursor-pointer" onclick="selectTicker('${ticker}')">
-                        <div class="h-2 w-2 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]"></div>
-                        <span class="font-black text-sm text-indigo-950 tracking-tight">${ticker}</span>
+                        <div class="${dotClass}"></div>
+                        <span class="font-black text-sm ${isPaused ? 'text-slate-400' : 'text-indigo-950'} tracking-tight">${ticker}</span>
                         <span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-400 border border-indigo-100">${tfLabel}</span>
+                        ${isPaused ? '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-500 border border-amber-200">PAUSED</span>' : ''}
                     </div>
                     
                     <div class="flex items-center gap-1.5">
@@ -335,6 +340,33 @@ function openTickerModal(ticker) {
     
     const tfSelect = document.getElementById('modalTimeframe');
     if (tfSelect) tfSelect.value = settings.timeframe || '';
+
+    // Signal Thresholds
+    const minBuyEl = document.getElementById('modalMinBuy');
+    const minSellEl = document.getElementById('modalMinSell');
+    if (minBuyEl) minBuyEl.value = settings.min_buy_signals || '';
+    if (minSellEl) minSellEl.value = settings.min_sell_signals || '';
+
+    // Pause State
+    window._modalPaused = settings.paused || false;
+    updatePauseButton();
+}
+
+function updatePauseButton() {
+    const btn = document.getElementById('modalPauseBtn');
+    if (!btn) return;
+    if (window._modalPaused) {
+        btn.textContent = '⏸ Paused';
+        btn.className = 'px-4 py-2 rounded-lg font-black text-xs uppercase tracking-wider transition-all bg-amber-100 text-amber-700 border border-amber-300';
+    } else {
+        btn.textContent = '▶ Active';
+        btn.className = 'px-4 py-2 rounded-lg font-black text-xs uppercase tracking-wider transition-all bg-emerald-100 text-emerald-700 border border-emerald-300';
+    }
+}
+
+function togglePauseInModal() {
+    window._modalPaused = !window._modalPaused;
+    updatePauseButton();
 }
 
 function closeTickerModal() {
@@ -345,6 +377,9 @@ function closeTickerModal() {
 async function saveTickerSettings() {
     if (!currentEditingTicker) return;
 
+    const minBuyVal = parseInt(document.getElementById('modalMinBuy')?.value);
+    const minSellVal = parseInt(document.getElementById('modalMinSell')?.value);
+
     const data = {
         ticker: currentEditingTicker,
         settings: {
@@ -352,7 +387,10 @@ async function saveTickerSettings() {
             risk_per_trade: parseFloat(document.getElementById('modalRisk').value) / 100 || null,
             atr_stop_multiplier: parseFloat(document.getElementById('modalAtrStop').value) || null,
             take_profit_multiplier: parseFloat(document.getElementById('modalTpMult').value) || null,
-            timeframe: document.getElementById('modalTimeframe').value || null
+            timeframe: document.getElementById('modalTimeframe').value || null,
+            min_buy_signals: isNaN(minBuyVal) ? null : minBuyVal,
+            min_sell_signals: isNaN(minSellVal) ? null : minSellVal,
+            paused: window._modalPaused || false
         }
     };
 

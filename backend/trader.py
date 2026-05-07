@@ -98,21 +98,25 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
             'enabled': False
         }
 
-    # 3. Determine final action
+    # 3. Determine final action using per-ticker thresholds if available
+    t_settings = getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {})
+    min_buy = t_settings.get('min_buy_signals', config.MIN_BULLISH_SIGNALS)
+    min_sell = t_settings.get('min_sell_signals', config.MIN_BEARISH_SIGNALS)
+
     action = "HOLD"
     reason = "Neutral"
 
-    if bullish_count >= config.MIN_BULLISH_SIGNALS:
+    if bullish_count >= min_buy:
         action = "BUY"
         bullish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BULLISH' and v.get('enabled')]
         reason = f"BUY Triggered: {bullish_count} bullish signals ({', '.join(bullish_names)})"
-    elif bearish_count >= config.MIN_BEARISH_SIGNALS:
+    elif bearish_count >= min_sell:
         action = "SELL"
         bearish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BEARISH' and v.get('enabled')]
         reason = f"SELL Triggered: {bearish_count} bearish signals ({', '.join(bearish_names)})"
     
     if ticker in config.TRADELIST:
-        print(f"[trader] {ticker} Decision: {action} ({bullish_count}B/{bearish_count}S) - {reason}")
+        print(f"[trader] {ticker} Decision: {action} ({bullish_count}B/{bearish_count}S, need {min_buy}B/{min_sell}S) - {reason}")
 
     return {
         "action": action,

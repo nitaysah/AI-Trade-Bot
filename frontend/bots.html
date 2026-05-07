@@ -310,6 +310,33 @@
                     </select>
                 </div>
 
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="space-y-1">
+                        <label class="text-xs font-bold text-slate-500 uppercase">Min Buy Signals</label>
+                        <input type="number" id="modalMinBuy"
+                            class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                            placeholder="Default: 4" min="1" max="9" step="1">
+                    </div>
+                    <div class="space-y-1">
+                        <label class="text-xs font-bold text-slate-500 uppercase">Min Sell Signals</label>
+                        <input type="number" id="modalMinSell"
+                            class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                            placeholder="Default: 4" min="1" max="9" step="1">
+                    </div>
+                </div>
+
+                <!-- Pause Toggle -->
+                <div class="flex items-center justify-between p-3 bg-slate-50 rounded-lg border border-slate-200">
+                    <div>
+                        <label class="text-xs font-bold text-slate-600 uppercase">Bot Status</label>
+                        <p class="text-[0.6rem] text-slate-400 mt-0.5">Paused bots keep settings but stop trading</p>
+                    </div>
+                    <button id="modalPauseBtn" onclick="togglePauseInModal()"
+                        class="px-4 py-2 rounded-lg font-black text-xs uppercase tracking-wider transition-all">
+                        Active
+                    </button>
+                </div>
+
                 <div class="pt-6 flex gap-4">
                     <button onclick="saveTickerSettings()"
                         class="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 hover:shadow-indigo-500/20 hover:shadow-xl text-white font-black py-4 rounded-xl shadow-lg transition-all active:scale-95 uppercase tracking-widest text-sm">Save
