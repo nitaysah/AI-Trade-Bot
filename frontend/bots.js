@@ -506,6 +506,16 @@ async function fetchBotsData() {
         // Active bots list
         renderTradelist(data.watchlistScans, data.tradelist, data.tickerAmounts);
 
+        // Auto-select first active bot if none selected
+        if (!selectedTicker && data.tradelist && data.tradelist.length > 0) {
+            selectedTicker = data.tradelist[0];
+            const scanData = (data.watchlistScans || {})[selectedTicker];
+            if (scanData) {
+                showStrategyMatrix(selectedTicker, scanData);
+            }
+            fetchMatrixScan(selectedTicker);
+        }
+
         // Position sizing for selected ticker
         if (selectedTicker && data.watchlistScans?.[selectedTicker]) {
             updateSizingPanel(data.watchlistScans[selectedTicker]);
@@ -568,6 +578,9 @@ let matrixScanData = null;  // Cache latest scan response for the selected ticke
 
 function showStrategyMatrix(ticker, scanData) {
     const panel = document.getElementById('strategyMatrixPanel');
+    const emptyState = document.getElementById('strategyMatrixEmpty');
+    
+    if (emptyState) emptyState.style.display = 'none';
     if (!panel) return;
     panel.style.display = 'block';
 
@@ -586,7 +599,10 @@ function showStrategyMatrix(ticker, scanData) {
 
 function hideStrategyMatrix() {
     const panel = document.getElementById('strategyMatrixPanel');
+    const emptyState = document.getElementById('strategyMatrixEmpty');
+    
     if (panel) panel.style.display = 'none';
+    if (emptyState) emptyState.style.display = 'block';
 }
 
 function renderIndicatorGrid(scanData) {
