@@ -415,6 +415,19 @@
                             placeholder="Enter TP Mult" step="0.1">
                     </div>
 
+                    <div class="space-y-1">
+                        <label class="text-xs font-bold text-slate-500 uppercase">Trading Timeframe</label>
+                        <select id="modalTimeframe"
+                            class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none appearance-none cursor-pointer">
+                            <option value="">Use Global Strategy Default</option>
+                            <option value="1Min">1 Minute (Scalp)</option>
+                            <option value="5Min">5 Minutes (Intraday)</option>
+                            <option value="15Min">15 Minutes (Active)</option>
+                            <option value="1Hour">1 Hour (Swing)</option>
+                            <option value="1Day">1 Day (Long Term)</option>
+                        </select>
+                    </div>
+
                     <div class="pt-6 flex gap-4">
                         <button onclick="saveTickerSettings()"
                             class="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 hover:shadow-indigo-500/20 hover:shadow-xl text-white font-black py-4 rounded-xl shadow-lg transition-all active:scale-95 uppercase tracking-widest text-sm">Save

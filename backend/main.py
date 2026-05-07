@@ -341,8 +341,7 @@ async def trading_loop():
                     result = evaluate_trade(
                         ticker, 
                         account_equity=equity, 
-                        available_cash=avail_cash,
-                        timeframe=config.DEFAULT_TIMEFRAME
+                        available_cash=avail_cash
                     )
                     if result:
                         is_active = ticker in config.TRADELIST

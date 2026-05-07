@@ -123,13 +123,18 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
     }
 
 
-def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash: float = None, timeframe: str = "5Min"):
+def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash: float = None, timeframe: str = None):
     """
     Full evaluation pipeline for a single ticker.
     Combines technical signals + AI sentiment + risk management.
     
     Returns a comprehensive trade decision dict.
     """
+    # Priority: 1. Argument, 2. Ticker-specific setting, 3. Global default
+    if timeframe is None:
+        ticker_settings = getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {})
+        timeframe = ticker_settings.get('timeframe', config.DEFAULT_TIMEFRAME)
+
     # 1. Get technical analysis
     analysis = get_full_analysis(ticker, timeframe=timeframe)
     if not analysis:

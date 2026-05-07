@@ -610,6 +610,9 @@ function openTickerModal(ticker) {
     riskInput.value = settings.risk_per_trade ? settings.risk_per_trade * 100 : '';
     atrInput.value = settings.atr_stop_multiplier || '';
     tpInput.value = settings.take_profit_multiplier || '';
+
+    const tfSelect = document.getElementById('modalTimeframe');
+    if (tfSelect) tfSelect.value = settings.timeframe || '';
 }
 
 function closeTickerModal() {
@@ -626,7 +629,8 @@ async function saveTickerSettings() {
             amount: parseFloat(document.getElementById('modalAmount').value) || null,
             risk_per_trade: parseFloat(document.getElementById('modalRisk').value) / 100 || null,
             atr_stop_multiplier: parseFloat(document.getElementById('modalAtrStop').value) || null,
-            take_profit_multiplier: parseFloat(document.getElementById('modalTpMult').value) || null
+            take_profit_multiplier: parseFloat(document.getElementById('modalTpMult').value) || null,
+            timeframe: document.getElementById('modalTimeframe').value || null
         }
     };
 
