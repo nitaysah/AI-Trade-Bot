@@ -317,8 +317,11 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
 
         const action = scan?.action || '—';
         const price = scan?.price ? `$${parseFloat(scan.price.toString().replace('$', '')).toFixed(2)}` : '---';
+        const actionColor = action === 'BUY' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : action === 'SELL' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-400 border-slate-100';
         const bullish = scan?.bullish_count ?? 0;
         const bearish = scan?.bearish_count ?? 0;
+        const tickerTf = (window.lastDashboardData?.ticker_settings || {})[ticker]?.timeframe || '';
+        const tfLabel = tickerTf || (window.lastDashboardData?.strategyTimeframe || '5Min');
 
         item.innerHTML = `
                 <!-- Top Layer: Ticker & Status -->
@@ -326,9 +329,10 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                     <div class="flex items-center gap-2 cursor-pointer" onclick="selectTicker('${ticker}')">
                         <div class="h-2 w-2 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]"></div>
                         <span class="font-black text-sm text-indigo-950 tracking-tight">${ticker}</span>
+                        <span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-400 border border-indigo-100">${tfLabel}</span>
                     </div>
                     
-                    <div class="flex items-center gap-1.5 opacity-80">
+                    <div class="flex items-center gap-1.5">
                         <span class="text-[0.6rem] font-bold text-emerald-600 bg-emerald-50 px-1 rounded border border-emerald-100">${bullish}B</span>
                         <span class="text-[0.6rem] font-bold text-red-600 bg-red-50 px-1 rounded border border-red-100">${bearish}S</span>
                     </div>
@@ -623,6 +627,7 @@ function closeTickerModal() {
 async function saveTickerSettings() {
     if (!currentEditingTicker) return;
 
+    const tfEl = document.getElementById('modalTimeframe');
     const data = {
         ticker: currentEditingTicker,
         settings: {
@@ -630,7 +635,7 @@ async function saveTickerSettings() {
             risk_per_trade: parseFloat(document.getElementById('modalRisk').value) / 100 || null,
             atr_stop_multiplier: parseFloat(document.getElementById('modalAtrStop').value) || null,
             take_profit_multiplier: parseFloat(document.getElementById('modalTpMult').value) || null,
-            timeframe: document.getElementById('modalTimeframe').value || null
+            timeframe: tfEl ? (tfEl.value || null) : null
         }
     };
 
