@@ -388,6 +388,33 @@ async def trading_loop():
                                 for o in all_orders
                             )
 
+                            pos_info = next((p for p in all_positions if p['symbol'].replace("/", "").upper() == ticker_norm), None)
+                            t_settings = getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {})
+                            sell_mode = t_settings.get('sell_mode', 'indicator')
+                            
+                            # --- Sell Mode Logic ---
+                            if has_this_pos and pos_info:
+                                entry_price = float(pos_info.get('avg_entry_price', result['price_raw']))
+                                current_price = result['price_raw']
+                                
+                                stop_mult = t_settings.get('atr_stop_multiplier', getattr(config, 'ATR_STOP_MULTIPLIER', 2.0))
+                                tp_mult = t_settings.get('take_profit_multiplier', getattr(config, 'ATR_TAKE_PROFIT_MULTIPLIER', 4.0))
+                                
+                                stop_loss = entry_price - (result['atr'] * stop_mult)
+                                take_profit = entry_price + (result['atr'] * tp_mult)
+                                
+                                if sell_mode == 'sltp' and result['action'] == 'SELL':
+                                    result['action'] = 'HOLD'
+                                    result['reason'] = 'Sell Signal Ignored (Fixed SL/TP Mode)'
+                                    
+                                if sell_mode in ['sltp', 'hybrid']:
+                                    if current_price <= stop_loss:
+                                        result['action'] = 'SELL'
+                                        result['reason'] = f'Stop Loss Hit (${current_price:.2f} <= ${stop_loss:.2f})'
+                                    elif current_price >= take_profit:
+                                        result['action'] = 'SELL'
+                                        result['reason'] = f'Take Profit Hit (${current_price:.2f} >= ${take_profit:.2f})'
+
                             if result['action'] == 'BUY':
                                 sizing = result['position_sizing']
                                 
@@ -401,8 +428,6 @@ async def trading_loop():
                                     # Block new buys if we already have a position for THIS stock
                                     result['action'] = 'HOLD'
                                     # Capture unrealized P/L for scan log
-                                    # Use normalized matching
-                                    pos_info = next((p for p in all_positions if p['symbol'].replace("/", "").upper() == ticker_norm), None)
                                     if pos_info:
                                         result['pl'] = pos_info['unrealized_pl']
                                         result['pl_pct'] = pos_info['unrealized_pl_pct']
@@ -1049,11 +1074,28 @@ def search_symbols(query: str):
 
 @app.post("/api/bots/create")
 async def create_bot(data: dict):
-    """Creates a new active bot (adds to watchlist and tradelist)."""
+    """Creates a new active bot with custom settings (adds to watchlist, tradelist, and TICKER_SETTINGS)."""
     symbol = data.get("symbol", "").upper().strip()
     if not symbol:
         return {"status": "error", "message": "Symbol is required"}
         
+    # Apply custom settings
+    if symbol not in config.TICKER_SETTINGS:
+        config.TICKER_SETTINGS[symbol] = {}
+        
+    if "capital" in data:
+        config.TICKER_SETTINGS[symbol]["amount"] = float(data["capital"])
+        
+    if "threshold" in data:
+        config.TICKER_SETTINGS[symbol]["min_buy_signals"] = int(data["threshold"])
+        config.TICKER_SETTINGS[symbol]["min_sell_signals"] = int(data["threshold"])
+        
+    if "sell_mode" in data:
+        config.TICKER_SETTINGS[symbol]["sell_mode"] = data["sell_mode"]
+        
+    if "indicators" in data and isinstance(data["indicators"], list):
+        config.TICKER_SETTINGS[symbol]["indicators"] = data["indicators"]
+
     # Ensure it's in watchlist to be scanned
     if symbol not in config.WATCHLIST:
         config.WATCHLIST.append(symbol)
@@ -1061,12 +1103,13 @@ async def create_bot(data: dict):
     # Add to tradelist to activate the bot
     if symbol not in config.TRADELIST:
         config.TRADELIST.append(symbol)
-        print(f"[settings] Launched new bot for {symbol}")
+        print(f"[settings] Launched new bot for {symbol} with custom settings")
         
     # Save settings to cloud (runs in background)
     asyncio.create_task(save_settings_to_cloud())
     
-    return {"status": "success", "symbol": symbol, "watchlist": config.WATCHLIST, "tradelist": config.TRADELIST}
+    return {"status": "success", "symbol": symbol, "watchlist": config.WATCHLIST, "tradelist": config.TRADELIST, "settings": config.TICKER_SETTINGS[symbol]}
+
 
 
 

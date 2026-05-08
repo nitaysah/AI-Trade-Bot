@@ -834,14 +834,41 @@ function selectSearchResult(item) {
     tvContainer.appendChild(script);
 }
 
-document.getElementById('launchBotBtn')?.addEventListener('click', async () => {
+document.getElementById('launchBotBtn')?.addEventListener('click', () => {
     if (!currentSelectedBot) return;
+    openDeployModal();
+});
+
+window.openDeployModal = function() {
+    const symbol = currentSelectedBot;
+    document.getElementById('deployModalSymbolLabel').textContent = symbol;
+    document.getElementById('deployBotModal').classList.remove('hidden');
+};
+
+window.closeDeployModal = function() {
+    document.getElementById('deployBotModal').classList.add('hidden');
+};
+
+window.confirmAndDeployBot = async function() {
+    if (!currentSelectedBot) return;
+    
+    // Gather Settings
+    const capital = document.getElementById('deployCapital').value;
+    const threshold = document.getElementById('deployThreshold').value;
+    const sellMode = document.getElementById('deploySellMode').value;
+    
+    // Gather Indicators
+    const indicators = [];
+    document.querySelectorAll('.deploy-indicator-check').forEach(chk => {
+        if (chk.checked) indicators.push(chk.value);
+    });
 
     // Optimistic UI Update
     const symbol = currentSelectedBot;
     const container = document.getElementById('tradelistContainer');
     
-    // Hide preview
+    // Close Modal & Hide preview
+    closeDeployModal();
     document.getElementById('botPreviewContainer').classList.add('hidden');
     currentSelectedBot = null;
     
@@ -870,7 +897,13 @@ document.getElementById('launchBotBtn')?.addEventListener('click', async () => {
         const response = await fetch(`${API_BASE}/api/bots/create`, {
             method: 'POST',
             headers: headers,
-            body: JSON.stringify({ symbol })
+            body: JSON.stringify({ 
+                symbol,
+                capital: parseFloat(capital),
+                threshold: parseInt(threshold),
+                sell_mode: sellMode,
+                indicators: indicators
+            })
         });
         
         if (response.ok) {
@@ -885,7 +918,7 @@ document.getElementById('launchBotBtn')?.addEventListener('click', async () => {
         console.error('[launch] Error:', e);
         tempDiv.remove();
     }
-});
+};
 
 // ──────────────────────────────────────────────
 // Init

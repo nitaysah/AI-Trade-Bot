@@ -357,49 +357,20 @@ class AlpacaBroker:
             return []
 
     def search_assets(self, query: str) -> list:
-        """Searches for assets matching the query. Proxies to Alpaca if live, else Yahoo."""
+        """Searches for assets matching the query. Proxies to Yahoo Finance for speed."""
         import requests
-        if self.simulation_mode or not self.client:
-            # Fallback to Yahoo Finance for simulation
-            try:
-                url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}"
-                headers = {'User-Agent': 'Mozilla/5.0'}
-                res = requests.get(url, headers=headers, timeout=5).json()
-                results = []
-                for quote in res.get('quotes', []):
-                    if quote.get('quoteType') in ['EQUITY', 'CRYPTOCURRENCY', 'ETF']:
-                        results.append({
-                            "symbol": quote.get('symbol'),
-                            "name": quote.get('shortname', quote.get('longname', quote.get('symbol')))
-                        })
-                return results[:10]
-            except Exception as e:
-                print(f"[broker] Sim search error: {e}")
-                return []
-                
         try:
-            from alpaca.trading.requests import GetAssetsRequest
-            from alpaca.trading.enums import AssetClass, AssetStatus
-            # Fetch all active US equities and Crypto (Alpaca doesn't have a direct search endpoint)
-            # To optimize, we fetch once and cache, but for simplicity here we just fetch or rely on Yahoo
-            # Actually, Yahoo Finance is much faster for interactive search. We'll use Yahoo directly
-            # but wrap it here to fulfill the modular broker interface requirement.
-            try:
-                url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}"
-                headers = {'User-Agent': 'Mozilla/5.0'}
-                res = requests.get(url, headers=headers, timeout=5).json()
-                results = []
-                for quote in res.get('quotes', []):
-                    if quote.get('quoteType') in ['EQUITY', 'CRYPTOCURRENCY', 'ETF']:
-                        results.append({
-                            "symbol": quote.get('symbol'),
-                            "name": quote.get('shortname', quote.get('longname', quote.get('symbol')))
-                        })
-                return results[:10]
-            except Exception as e:
-                print(f"[broker] Alpaca/Yahoo search error: {e}")
-                return []
+            url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}"
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            res = requests.get(url, headers=headers, timeout=5).json()
+            results = []
+            for quote in res.get('quotes', []):
+                if quote.get('quoteType') in ['EQUITY', 'CRYPTOCURRENCY', 'ETF']:
+                    results.append({
+                        "symbol": quote.get('symbol'),
+                        "name": quote.get('shortname', quote.get('longname', quote.get('symbol')))
+                    })
+            return results[:10]
         except Exception as e:
-            print(f"[broker] Error searching assets: {e}")
+            print(f"[broker] Search error: {e}")
             return []
-

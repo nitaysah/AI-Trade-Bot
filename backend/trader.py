@@ -50,9 +50,17 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
     bearish_count = 0
 
     # 1. Process Technical Indicators
+    t_settings = getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {})
+    ticker_enabled_indicators = t_settings.get('indicators', None)
+
     for name, data in raw_signals.items():
         toggle_key = SIGNAL_TO_TOGGLE.get(name)
-        is_enabled = getattr(config, toggle_key, True) if toggle_key else True
+        
+        # If per-ticker indicators are set, use them. Otherwise fallback to global config.
+        if ticker_enabled_indicators is not None:
+            is_enabled = name in ticker_enabled_indicators
+        else:
+            is_enabled = getattr(config, toggle_key, True) if toggle_key else True
         
         # Add to output signals with enabled status
         filtered_signals[name] = {**data, 'enabled': is_enabled}

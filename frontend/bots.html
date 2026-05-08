@@ -451,6 +451,136 @@
         </div>
     </div>
 
+    <!-- Deploy Bot Modal Overlay -->
+    <div id="deployBotModal" class="fixed inset-0 z-[60] hidden flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-indigo-950/40 backdrop-blur-sm" onclick="closeDeployModal()"></div>
+        <div class="relative w-full max-w-2xl bg-white/95 backdrop-blur-xl rounded-[2.5rem] shadow-2xl border border-indigo-50 overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-300">
+            <!-- Modal Header -->
+            <div class="panel-top-bar bg-gradient-to-r from-blue-400 to-indigo-500"></div>
+            <div class="p-8 pb-4 flex justify-between items-center relative z-10">
+                <div>
+                    <h2 class="text-2xl font-black text-indigo-950 uppercase tracking-tight">Deploy Strategy Settings</h2>
+                    <p class="text-[0.65rem] font-bold text-indigo-400 uppercase tracking-widest mt-1">Configure bot parameters for <span id="deployModalSymbolLabel" class="text-indigo-600 font-black"></span></p>
+                </div>
+                <button onclick="closeDeployModal()" class="w-10 h-10 flex items-center justify-center rounded-xl bg-slate-100 text-slate-500 hover:bg-slate-200 transition-all">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Modal Body -->
+            <div class="p-8 overflow-y-auto space-y-8 custom-scrollbar">
+                
+                <!-- Capital & Aggressiveness -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div class="space-y-2">
+                        <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Initial Capital ($)</label>
+                        <input type="number" id="deployCapital" class="w-full bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-lg font-black text-indigo-900 shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none" value="100">
+                    </div>
+                    <div class="space-y-2 flex flex-col justify-center">
+                        <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Aggressive vs Quality</label>
+                        <input type="range" id="deployThreshold" min="1" max="8" value="4" class="w-full h-2 bg-indigo-50 rounded-full appearance-none cursor-pointer accent-indigo-600" oninput="document.getElementById('deployThresholdLabel').textContent = this.value + ' Signals Required'">
+                        <div class="text-center mt-1">
+                            <span id="deployThresholdLabel" class="text-[0.65rem] font-black px-3 py-1 rounded-full bg-indigo-50 text-indigo-600 uppercase tracking-wider">4 Signals Required</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Sell Mode Strategy -->
+                <div class="space-y-2">
+                    <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Exit Strategy (Sell Mode)</label>
+                    <select id="deploySellMode" class="w-full bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-sm font-black text-indigo-900 shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none cursor-pointer appearance-none">
+                        <option value="indicator">Indicator Signals (Dynamic) - Sells when Bearish Signals hit Threshold</option>
+                        <option value="sltp">Stop-Loss & Take-Profit (Fixed) - Ignores Signals, Relies on ATR target</option>
+                        <option value="hybrid">Hybrid (Both) - Sells whichever hits first</option>
+                    </select>
+                </div>
+
+                <!-- Indicators Selection (Copied from backtest) -->
+                <div class="space-y-4">
+                    <div class="flex items-center gap-3">
+                        <div class="h-5 w-1.5 bg-gradient-to-b from-blue-400 to-indigo-500 rounded-full"></div>
+                        <label class="text-sm font-black text-indigo-900 uppercase tracking-widest">Enable Strategy Indicators</label>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <!-- RSI -->
+                        <label class="indicator-card group p-4 border rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between">
+                            <div class="flex flex-col">
+                                <span class="font-black text-indigo-900">RSI</span>
+                                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Momentum</span>
+                            </div>
+                            <input type="checkbox" class="deploy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="RSI" checked>
+                        </label>
+                        <!-- MACD -->
+                        <label class="indicator-card group p-4 border rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between">
+                            <div class="flex flex-col">
+                                <span class="font-black text-indigo-900">MACD</span>
+                                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Trend</span>
+                            </div>
+                            <input type="checkbox" class="deploy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="MACD" checked>
+                        </label>
+                        <!-- EMA Cross -->
+                        <label class="indicator-card group p-4 border rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between">
+                            <div class="flex flex-col">
+                                <span class="font-black text-indigo-900">EMA Cross</span>
+                                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Moving Avg</span>
+                            </div>
+                            <input type="checkbox" class="deploy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="EMA Cross" checked>
+                        </label>
+                        <!-- Supertrend -->
+                        <label class="indicator-card group p-4 border rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between">
+                            <div class="flex flex-col">
+                                <span class="font-black text-indigo-900">Supertrend</span>
+                                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Volatility</span>
+                            </div>
+                            <input type="checkbox" class="deploy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="Supertrend" checked>
+                        </label>
+                        <!-- Bollinger -->
+                        <label class="indicator-card group p-4 border rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between">
+                            <div class="flex flex-col">
+                                <span class="font-black text-indigo-900">Bollinger</span>
+                                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Deviation</span>
+                            </div>
+                            <input type="checkbox" class="deploy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="Bollinger" checked>
+                        </label>
+                        <!-- VWAP -->
+                        <label class="indicator-card group p-4 border rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between">
+                            <div class="flex flex-col">
+                                <span class="font-black text-indigo-900">VWAP</span>
+                                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Volume</span>
+                            </div>
+                            <input type="checkbox" class="deploy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="VWAP" checked>
+                        </label>
+                        <!-- Mystic Pulse -->
+                        <label class="indicator-card group p-4 border rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between">
+                            <div class="flex flex-col">
+                                <span class="font-black text-indigo-900">Mystic Pulse</span>
+                                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Proprietary</span>
+                            </div>
+                            <input type="checkbox" class="deploy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="Mystic Pulse" checked>
+                        </label>
+                        <!-- Candle Patterns -->
+                        <label class="indicator-card group p-4 border rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between">
+                            <div class="flex flex-col">
+                                <span class="font-black text-indigo-900">Candle Patterns</span>
+                                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Price Action</span>
+                            </div>
+                            <input type="checkbox" class="deploy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="Candle Patterns" checked>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Action Button -->
+            <div class="p-8 pt-4 bg-white border-t border-indigo-50">
+                <button onclick="confirmAndDeployBot()" class="w-full bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-black py-4 rounded-2xl hover:shadow-lg hover:shadow-emerald-500/30 transition-all active:scale-[0.98] uppercase tracking-[0.2em] shadow-md flex items-center justify-center gap-2">
+                    Deploy Strategy 🚀
+                </button>
+            </div>
+        </div>
+    </div>
+
     <script src="bots.js"></script>
 </body>
 
