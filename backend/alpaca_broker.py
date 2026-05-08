@@ -337,7 +337,7 @@ class AlpacaBroker:
             from alpaca.trading.enums import OrderStatus
             
             # Fetch closed orders to find recent fills
-            req = GetOrdersRequest(status=OrderStatus.CLOSED, limit=limit, nested=True)
+            req = GetOrdersRequest(status="closed", limit=limit, nested=True)
             orders = self.client.get_orders(filter=req)
             
             trades = []

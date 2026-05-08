@@ -140,31 +140,6 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
 function selectTicker(ticker) {
     selectedTicker = ticker;
     fetchBotsData();
-
-    // Trigger fresh scan for the strategy matrix
-    const scanData = (window.lastBotsData?.watchlistScans || {})[ticker];
-    if (scanData) {
-        showStrategyMatrix(ticker, scanData);
-    }
-    // Also fetch on-demand at the matrix's current timeframe
-    fetchMatrixScan(ticker);
-}
-
-async function fetchMatrixScan(ticker) {
-    const loader = document.getElementById('matrixLoading');
-    if (loader) loader.classList.remove('hidden');
-    try {
-        const tf = document.getElementById('matrixTimeframe')?.value || matrixTimeframe;
-        const headers = await getAuthHeaders();
-        const res = await fetch(`${API_BASE}/api/scan/${ticker}?timeframe=${tf}`, { headers });
-        const data = await res.json();
-        matrixScanData = data;
-        showStrategyMatrix(ticker, data);
-    } catch (e) {
-        console.error('[matrix] Fetch scan error:', e);
-    } finally {
-        if (loader) loader.classList.add('hidden');
-    }
 }
 
 async function removeFromTradelist(ticker) {
@@ -312,25 +287,7 @@ function changeLogPage(delta) {
 // ──────────────────────────────────────────────
 // Position Sizing Panel
 // ──────────────────────────────────────────────
-function updateSizingPanel(scan) {
-    const panel = document.getElementById('sizingPanel');
-    if (!panel) return;
-    if (!scan || !scan.position_sizing || scan.action === 'HOLD') {
-        panel.style.display = 'none';
-        return;
-    }
 
-    panel.style.display = 'block';
-    const sz = scan.position_sizing;
-    document.getElementById('sizingNotional').textContent = `$${sz.notional?.toFixed(2) || '0.00'}`;
-    document.getElementById('sizingShares').textContent = sz.shares?.toFixed(4) || '0';
-    document.getElementById('sizingStop').textContent = `$${sz.stop_loss?.toFixed(2) || '0.00'}`;
-    document.getElementById('sizingTarget').textContent = `$${sz.take_profit?.toFixed(2) || '0.00'}`;
-
-    const rr = document.getElementById('sizingRR');
-    if (rr) rr.textContent = scan.is_custom ? 'CUSTOM OVERRIDE ACTIVE' : `1:${sz.risk_reward_ratio || '1.5'}`;
-    if (rr) rr.className = scan.is_custom ? 'font-black text-[0.6rem] text-amber-500 animate-pulse' : 'font-bold';
-}
 
 // ──────────────────────────────────────────────
 // Ticker Settings Modal
@@ -487,10 +444,17 @@ async function fetchBotsData() {
         }
         if (document.getElementById('dailyPL')) {
             const plEl = document.getElementById('dailyPL');
-            plEl.textContent = data.dailyPL || '$0.00';
+            plEl.textContent = data.dailyPL || '$0.00 (0.0%)';
             plEl.classList.remove('animate-pulse');
             const plVal = parseFloat((data.dailyPL || '').replace(/[^-\d.]/g, ''));
             plEl.className = `card-value ${plVal >= 0 ? 'text-emerald-600' : 'text-red-500'}`;
+        }
+        if (document.getElementById('totalProfit')) {
+            const tpEl = document.getElementById('totalProfit');
+            tpEl.textContent = data.totalProfit || '$0.00 (0.0%)';
+            tpEl.classList.remove('animate-pulse');
+            const tpVal = parseFloat((data.totalProfit || '').replace(/[^-\d.]/g, ''));
+            tpEl.className = `card-value ${tpVal >= 0 ? 'text-emerald-600' : 'text-red-500'}`;
         }
 
         // Last scan time
@@ -509,21 +473,6 @@ async function fetchBotsData() {
         // Auto-select first active bot if none selected
         if (!selectedTicker && data.tradelist && data.tradelist.length > 0) {
             selectedTicker = data.tradelist[0];
-            const scanData = (data.watchlistScans || {})[selectedTicker];
-            if (scanData) {
-                showStrategyMatrix(selectedTicker, scanData);
-            }
-            fetchMatrixScan(selectedTicker);
-        }
-
-        // Position sizing for selected ticker
-        if (selectedTicker && data.watchlistScans?.[selectedTicker]) {
-            updateSizingPanel(data.watchlistScans[selectedTicker]);
-            // Auto-refresh strategy matrix if visible
-            const matrixPanel = document.getElementById('strategyMatrixPanel');
-            if (matrixPanel && matrixPanel.style.display !== 'none') {
-                renderIndicatorGrid(data.watchlistScans[selectedTicker]);
-            }
         }
 
         // AI Summary
@@ -573,181 +522,7 @@ const INDICATOR_META = {
     'Candle Patterns': { key: 'ENABLE_CANDLE_PATTERNS',desc: 'Reversal Detection',  icon: '🕯️' },
     'News Sentiment':  { key: 'ENABLE_AI_SENTIMENT',   desc: 'AI News Analysis',    icon: '🧠' },
 };
-let matrixTimeframe = '5Min';
-let matrixScanData = null;  // Cache latest scan response for the selected ticker
 
-function showStrategyMatrix(ticker, scanData) {
-    const panel = document.getElementById('strategyMatrixPanel');
-    const emptyState = document.getElementById('strategyMatrixEmpty');
-    
-    if (emptyState) emptyState.style.display = 'none';
-    if (!panel) return;
-    panel.style.display = 'block';
-
-    document.getElementById('matrixTickerName').textContent = ticker;
-
-    // Sync timeframe dropdown to ticker's configured TF
-    const tickerTf = (window.lastBotsData?.ticker_settings || {})[ticker]?.timeframe;
-    const tf = tickerTf || window.lastBotsData?.strategyTimeframe || '5Min';
-    matrixTimeframe = tf;
-    const sel = document.getElementById('matrixTimeframe');
-    if (sel) sel.value = tf;
-
-    matrixScanData = scanData;
-    renderIndicatorGrid(scanData);
-}
-
-function hideStrategyMatrix() {
-    const panel = document.getElementById('strategyMatrixPanel');
-    const emptyState = document.getElementById('strategyMatrixEmpty');
-    
-    if (panel) panel.style.display = 'none';
-    if (emptyState) emptyState.style.display = 'block';
-}
-
-function renderIndicatorGrid(scanData) {
-    const grid = document.getElementById('matrixIndicatorGrid');
-    if (!grid) return;
-    grid.innerHTML = '';
-
-    const signals = scanData?.signals || {};
-    const globalToggles = window.lastBotsData?.indicator_settings || {};
-
-    let bullish = 0, bearish = 0, neutral = 0;
-
-    Object.entries(INDICATOR_META).forEach(([name, meta]) => {
-        const sig = signals[name] || {};
-        const isEnabled = sig.enabled !== undefined ? sig.enabled : (globalToggles[meta.key] !== false);
-        const signal = sig.signal || 'NEUTRAL';
-        const reason = sig.reason || '—';
-
-        // Count only enabled signals
-        if (isEnabled) {
-            if (signal === 'BULLISH') bullish++;
-            else if (signal === 'BEARISH') bearish++;
-            else neutral++;
-        }
-
-        // Card styling based on signal
-        let cardBorder, cardBg, signalPill, signalColor;
-        if (!isEnabled) {
-            cardBorder = 'border-slate-200';
-            cardBg = 'bg-slate-50/50';
-            signalPill = 'DISABLED';
-            signalColor = 'bg-slate-100 text-slate-400 border-slate-200';
-        } else if (signal === 'BULLISH') {
-            cardBorder = 'border-emerald-200';
-            cardBg = 'bg-emerald-50/50';
-            signalPill = '▲ BUY';
-            signalColor = 'bg-emerald-100 text-emerald-700 border-emerald-300';
-        } else if (signal === 'BEARISH') {
-            cardBorder = 'border-red-200';
-            cardBg = 'bg-red-50/50';
-            signalPill = '▼ SELL';
-            signalColor = 'bg-red-100 text-red-700 border-red-300';
-        } else {
-            cardBorder = 'border-indigo-100';
-            cardBg = 'bg-white';
-            signalPill = '— HOLD';
-            signalColor = 'bg-indigo-50 text-indigo-400 border-indigo-200';
-        }
-
-        const card = document.createElement('div');
-        card.className = `p-3 rounded-xl border ${cardBorder} ${cardBg} transition-all duration-300 cursor-pointer hover:shadow-md ${!isEnabled ? 'opacity-50' : ''}`;
-        card.onclick = () => toggleMatrixIndicator(name, meta.key, isEnabled);
-        card.innerHTML = `
-            <div class="flex items-center justify-between mb-1.5">
-                <div class="flex items-center gap-1.5">
-                    <span class="text-sm">${meta.icon}</span>
-                    <span class="font-black text-[0.65rem] text-indigo-950 uppercase tracking-wider">${name}</span>
-                </div>
-                <div class="relative">
-                    <div class="w-8 h-4 rounded-full transition-all duration-300 ${isEnabled ? 'bg-violet-500' : 'bg-slate-300'}">
-                        <div class="absolute top-0.5 ${isEnabled ? 'right-0.5' : 'left-0.5'} w-3 h-3 bg-white rounded-full shadow-sm transition-all duration-300"></div>
-                    </div>
-                </div>
-            </div>
-            <p class="text-[0.55rem] text-slate-400 font-medium mb-2">${meta.desc}</p>
-            <div class="flex items-center justify-between">
-                <span class="text-[0.55rem] font-black px-2 py-0.5 rounded-full border ${signalColor} uppercase tracking-widest">${signalPill}</span>
-                <span class="text-[0.5rem] text-slate-400 italic truncate max-w-[80px]" title="${reason}">${isEnabled ? reason : ''}</span>
-            </div>
-        `;
-        grid.appendChild(card);
-    });
-
-    // Update summary counters
-    document.getElementById('matrixBullCount').textContent = bullish;
-    document.getElementById('matrixBearCount').textContent = bearish;
-    document.getElementById('matrixNeutralCount').textContent = neutral;
-
-    // Update verdict
-    const verdictEl = document.getElementById('matrixVerdict');
-    const verdictText = document.getElementById('matrixVerdictText');
-    const action = scanData?.action || 'HOLD';
-    if (action === 'BUY') {
-        verdictEl.className = 'mb-4 p-3 rounded-xl border text-center bg-emerald-50 border-emerald-200';
-        verdictText.className = 'font-black text-sm uppercase tracking-widest text-emerald-700';
-        verdictText.textContent = `▲ BUY SIGNAL — ${bullish}B / ${bearish}S`;
-    } else if (action === 'SELL') {
-        verdictEl.className = 'mb-4 p-3 rounded-xl border text-center bg-red-50 border-red-200';
-        verdictText.className = 'font-black text-sm uppercase tracking-widest text-red-700';
-        verdictText.textContent = `▼ SELL SIGNAL — ${bullish}B / ${bearish}S`;
-    } else {
-        verdictEl.className = 'mb-4 p-3 rounded-xl border text-center bg-slate-50 border-slate-200';
-        verdictText.className = 'font-black text-sm uppercase tracking-widest text-slate-500';
-        verdictText.textContent = `— HOLD — ${bullish}B / ${bearish}S`;
-    }
-}
-
-async function onMatrixTimeframeChange() {
-    if (!selectedTicker) return;
-    const sel = document.getElementById('matrixTimeframe');
-    matrixTimeframe = sel.value;
-
-    // Show loading
-    const loader = document.getElementById('matrixLoading');
-    if (loader) loader.classList.remove('hidden');
-
-    try {
-        const headers = await getAuthHeaders();
-        const res = await fetch(`${API_BASE}/api/scan/${selectedTicker}?timeframe=${matrixTimeframe}`, { headers });
-        const data = await res.json();
-        matrixScanData = data;
-        renderIndicatorGrid(data);
-    } catch (e) {
-        console.error('[matrix] Timeframe scan error:', e);
-    } finally {
-        if (loader) loader.classList.add('hidden');
-    }
-}
-
-async function toggleMatrixIndicator(name, configKey, currentState) {
-    // Toggle the indicator globally via the backend
-    try {
-        const headers = await getAuthHeaders();
-        const newState = !currentState;
-        await fetch(`${API_BASE}/api/settings/indicators`, {
-            method: 'POST',
-            headers: headers,
-            body: JSON.stringify({ [configKey]: newState })
-        });
-
-        // Optimistically update the local cached scan data
-        if (matrixScanData?.signals?.[name]) {
-            matrixScanData.signals[name].enabled = newState;
-        }
-
-        // Update the global indicator_settings cache
-        if (window.lastBotsData?.indicator_settings) {
-            window.lastBotsData.indicator_settings[configKey] = newState;
-        }
-
-        renderIndicatorGrid(matrixScanData);
-    } catch (e) {
-        console.error('[matrix] Toggle indicator error:', e);
-    }
-}
 
 // ──────────────────────────────────────────────
 // Bot Creation & Search
@@ -809,11 +584,14 @@ function selectSearchResult(item) {
     document.getElementById('botSearchInput').value = '';
     
     currentSelectedBot = item.symbol;
-    document.getElementById('previewSymbol').textContent = item.symbol;
-    document.getElementById('previewName').textContent = item.name;
-    document.getElementById('botPreviewContainer').classList.remove('hidden');
+    openDeployModal(item.symbol, item.name);
+}
 
-    // Load TradingView Mini Chart
+window.openDeployModal = function(symbol, name) {
+    document.getElementById('deployModalSymbolLabel').textContent = symbol + (name ? ` (${name})` : '');
+    document.getElementById('deployBotModal').classList.remove('hidden');
+
+    // Load TradingView Mini Chart inside Modal
     const tvContainer = document.getElementById('tv_mini_chart');
     tvContainer.innerHTML = '';
     
@@ -821,7 +599,7 @@ function selectSearchResult(item) {
     script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js';
     script.async = true;
     script.innerHTML = JSON.stringify({
-        "symbol": item.symbol.includes('USD') && !item.symbol.includes('^') ? `CRYPTO:${item.symbol}` : item.symbol,
+        "symbol": symbol.includes('USD') && !symbol.includes('^') ? `CRYPTO:${symbol}` : symbol,
         "width": "100%",
         "height": "100%",
         "locale": "en",
@@ -832,17 +610,6 @@ function selectSearchResult(item) {
         "largeChartUrl": ""
     });
     tvContainer.appendChild(script);
-}
-
-document.getElementById('launchBotBtn')?.addEventListener('click', () => {
-    if (!currentSelectedBot) return;
-    openDeployModal();
-});
-
-window.openDeployModal = function() {
-    const symbol = currentSelectedBot;
-    document.getElementById('deployModalSymbolLabel').textContent = symbol;
-    document.getElementById('deployBotModal').classList.remove('hidden');
 };
 
 window.closeDeployModal = function() {
@@ -867,9 +634,8 @@ window.confirmAndDeployBot = async function() {
     const symbol = currentSelectedBot;
     const container = document.getElementById('tradelistContainer');
     
-    // Close Modal & Hide preview
+    // Close Modal
     closeDeployModal();
-    document.getElementById('botPreviewContainer').classList.add('hidden');
     currentSelectedBot = null;
     
     // Remove "No active bots" text if present

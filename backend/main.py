@@ -293,9 +293,6 @@ async def trading_loop():
                 print(f"[scheduler] Setting baseline equity: ${equity:.2f}")
                 risk_mgr.set_daily_equity(equity)
             
-            # Refresh history from cloud every cycle to ensure all instances are in sync
-            await load_all_from_cloud()
-            
             # Get all open positions and pending orders once per cycle
             all_positions = broker.get_positions()
             all_orders = broker.get_open_orders()
@@ -330,6 +327,11 @@ async def trading_loop():
             except Exception as e:
                 print(f"[scheduler] Reconciliation error: {e}")
 
+            print(f"\n{'='*60}")
+            print(f"[scheduler] Starting scan cycle at {get_now()}")
+            print(f"[scheduler] Active Bots (TRADELIST): {config.TRADELIST}")
+            print(f"[scheduler] Watchlist: {config.WATCHLIST}")
+            print(f"{'='*60}")
             for ticker in config.WATCHLIST:
                 try:
                     # ── SAFETY CHECK 1: Per-Ticker Pause ──
@@ -340,7 +342,8 @@ async def trading_loop():
 
                     # ── SAFETY CHECK 2: Market Hours Filter (Stocks only) ──
                     clean_ticker = ticker.upper().replace("/", "")
-                    is_crypto = any(clean_ticker.endswith(base) for base in ["USD", "USDT", "USDC"])
+                    is_crypto = any(clean_ticker.endswith(base) for base in ["USD", "USDT", "USDC"]) or \
+                                ticker.upper() in ["BTC", "ETH", "XRP", "DOGE", "LTC", "ADA", "SOL"]
                     
                     if not is_crypto and getattr(config, 'MARKET_HOURS_ONLY', True):
                         import pytz
@@ -348,7 +351,9 @@ async def trading_loop():
                         market_open = et_now.replace(hour=9, minute=30, second=0, microsecond=0)
                         market_close = et_now.replace(hour=16, minute=0, second=0, microsecond=0)
                         if et_now < market_open or et_now > market_close or et_now.weekday() >= 5:
-                            # Outside market hours — skip stock evaluation
+                            is_active = ticker in config.TRADELIST
+                            log_prefix = "[BOT-SKIP]" if is_active else "[WATCH-SKIP]"
+                            print(f"{log_prefix} {ticker}: Market Closed (9:30 AM - 4:00 PM ET)")
                             continue
 
                     # ── SAFETY CHECK 3: Cooldown Timer ──
@@ -369,7 +374,7 @@ async def trading_loop():
                     )
                     if result:
                         is_active = ticker in config.TRADELIST
-                        log_prefix = "[trader]" if is_active else "[scan]"
+                        log_prefix = "[BOT]" if is_active else "[WATCH]"
                         print(f"{log_prefix} {ticker}: ${result['price_raw']} | Signal: {result['action']} | Sent: {result['sentiment_score']}")
                         
                         latest_scans[ticker] = result
@@ -463,7 +468,7 @@ async def trading_loop():
 
                                         # Enhance reason with execution info — using 6 decimal places
                                         result['reason'] = f"✅ BOUGHT {result['qty']:.6f} shares at {result['price']}: {result['reason']}"
-                                        print(f"[ACTION] BUY {ticker}: Executing trade for ${sizing['notional']:.2f}")
+                                        print(f"[BOT-ACTION] BUY {ticker}: Executing trade for ${sizing['notional']:.2f}")
                                         last_trade_timestamps[ticker] = datetime.now(pytz.timezone(config.TIMEZONE))
                                 elif has_this_pos:
                                     result['action'] = 'HOLD'
@@ -518,7 +523,7 @@ async def trading_loop():
                                             result['reason'] = f"✅ SOLD at {result['price']} (Entry: ${entry_price:.4f}): {result['reason']}"
                                         else:
                                             result['reason'] = f"✅ SOLD at {result['price']}: {result['reason']}"
-                                        print(f"[ACTION] SELL {ticker}: Closed position, P/L: {result.get('pl', 0)}")
+                                        print(f"[BOT-ACTION] SELL {ticker}: Closed position, P/L: {result.get('pl', 0)}")
                                         last_trade_timestamps[ticker] = datetime.now(pytz.timezone(config.TIMEZONE))
                                     else:
                                         print(f"[trader] FAILED SELL {ticker}: {order_result.get('error', 'Unknown Error')}")
@@ -529,27 +534,27 @@ async def trading_loop():
                                     result['reason'] = "Signal SELL ignored: No open position detected."
                         
                         # 4. Dashboard / Log Management
-                        # STRICT: Only log active bots (TRADELIST)
-                        if ticker in config.TRADELIST:
-                            # Use 1-minute resolution for the duplicate check key
-                            # This prevents multiple logs for the same stock in the same minute
-                            log_time_min = get_now().strftime("%Y-%m-%dT%H:%M")
-                            log_key = f"{log_time_min}_{ticker}_{result['action']}"
+                        is_active = ticker in config.TRADELIST
+                        result['log_type'] = "Active Bot" if is_active else "Watchlist"
+
+                        # Use 1-minute resolution for the duplicate check key
+                        # This prevents multiple logs for the same stock in the same minute
+                        log_time_min = get_now().strftime("%Y-%m-%dT%H:%M")
+                        log_key = f"{log_time_min}_{ticker}_{result['action']}"
+                        
+                        def _get_log_key(log_entry):
+                            try:
+                                t_str = datetime.fromisoformat(log_entry.get('time', '')).strftime('%Y-%m-%dT%H:%M')
+                                return f"{t_str}_{log_entry.get('ticker','')}_{log_entry.get('action','')}"
+                            except: return ""
                             
-                            # Check if we already have this stock/action logged for this minute
-                            def _get_log_key(log_entry):
-                                try:
-                                    t_str = datetime.fromisoformat(log_entry.get('time', '')).strftime('%Y-%m-%dT%H:%M')
-                                    return f"{t_str}_{log_entry.get('ticker','')}_{log_entry.get('action','')}"
-                                except: return ""
-                                
-                            if not any(_get_log_key(log) == log_key for log in trade_log):
-                                trade_log.insert(0, result)
-                                
-                                # If it was a real execution, save to permanent ledger
-                                if trade_executed:
-                                    executed_trades.insert(0, result)
-                                    await save_history_to_cloud()
+                        if not any(_get_log_key(log) == log_key for log in trade_log):
+                            trade_log.insert(0, result)
+                            
+                            # If it was a real execution (must be an active bot), save to permanent ledger
+                            if trade_executed and is_active:
+                                executed_trades.insert(0, result)
+                                await save_history_to_cloud()
 
 
                 except Exception as e:
@@ -559,9 +564,11 @@ async def trading_loop():
             # Bound history size
             if len(trade_log) > 200:
                 trade_log = trade_log[:200]
+            if len(executed_trades) > 200:
+                executed_trades = executed_trades[:200]
 
             last_scan_time = get_now().isoformat()
-            print(f"[scheduler] Scan complete at {last_scan_time}")
+            print(f"[scheduler] Cycle complete at {last_scan_time}\n{'='*60}")
             
             # Periodically sync scan log to cloud even if no trade executed
             # This ensures logs survive Cloud Run container restarts
@@ -716,6 +723,7 @@ def get_dashboard(ticker: str = None, timeframe: str = None):
         "openPositions": str(len(positions)),
         "positionsList": ", ".join(p['symbol'] for p in positions) if positions else "No positions",
         "dailyPL": f"{pl_sign}${pl:.2f} ({pl_sign}{pl_pct:.1f}%)",
+        "totalProfit": f"{pl_sign}${pl:.2f} ({pl_sign}{pl_pct:.1f}%)",
         "aiSentiment": f"{sentiment_label} ({sentiment_score})",
         "sentiment_confidence": sentiment_confidence,
         "sentiment_summary": primary_scan.get("sentiment_summary", ""),
@@ -1108,6 +1116,10 @@ async def create_bot(data: dict):
     # Save settings to cloud (runs in background)
     asyncio.create_task(save_settings_to_cloud())
     
+    # Trigger immediate scan so user sees results right away
+    if force_scan_trigger:
+        force_scan_trigger.set()
+    
     return {"status": "success", "symbol": symbol, "watchlist": config.WATCHLIST, "tradelist": config.TRADELIST, "settings": config.TICKER_SETTINGS[symbol]}
 
 
@@ -1242,6 +1254,7 @@ def _format_trade_for_ui(trade: dict) -> dict:
         "bearish_count": trade.get("bearish_count", 0),
         "total_signals": trade.get("total_signals", 0),
         "timeframe": trade.get("timeframe", config.DEFAULT_TIMEFRAME),
+        "log_type": trade.get("log_type", "Active Bot"),
     }
 
 
