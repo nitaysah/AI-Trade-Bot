@@ -159,7 +159,8 @@ async def save_settings_to_cloud():
             "tradelist": config.TRADELIST,
             "strategy_timeframe": config.DEFAULT_TIMEFRAME,
             "ticker_settings": getattr(config, 'TICKER_SETTINGS', {}),
-            "toggles": {k: getattr(config, k) for k in dir(config) if k.startswith("ENABLE_")}
+            "toggles": {k: getattr(config, k) for k in dir(config) if k.startswith("ENABLE_")},
+            "parameters": {k: getattr(config, k) for k in dir(config) if k.isupper() and not k.startswith("_") and not isinstance(getattr(config, k), (list, dict)) and k not in ["ALPACA_API_KEY", "ALPACA_SECRET_KEY", "GROQ_API_KEY", "FERNET_KEY"]}
         }
         db.collection("settings").document("ui").set(data)
     except Exception as e:
@@ -219,7 +220,14 @@ async def load_all_from_cloud():
                 toggles = ui.get("toggles", {})
                 for k, v in toggles.items():
                     if hasattr(config, k): setattr(config, k, v)
-                print("[vault] Restored UI settings and watchlist.")
+
+                # Restore parameters
+                params = ui.get("parameters", {})
+                for k, v in params.items():
+                    if hasattr(config, k):
+                        setattr(config, k, v)
+                
+                print("[vault] Restored UI settings, parameters and watchlist.")
         except Exception as e:
             print(f"[vault] WARNING: Could not fetch UI settings from cloud: {e}")
 
@@ -902,6 +910,7 @@ async def get_dashboard(ticker: str = None, timeframe: str = None):
         "botRunning": bot_running,
         "lastScan": last_scan_time or "Starting...",
         "indicator_settings": {k: getattr(config, k, True) for k in dir(config) if k.startswith("ENABLE_")},
+        "indicator_parameters": {k: getattr(config, k) for k in dir(config) if k.isupper() and not k.startswith("_") and k not in ["ALPACA_API_KEY", "ALPACA_SECRET_KEY", "GROQ_API_KEY", "FERNET_KEY"]},
         "strategyTimeframe": config.DEFAULT_TIMEFRAME,
         "watchlist": config.WATCHLIST,
         "tradelist": config.TRADELIST,
@@ -1291,15 +1300,27 @@ async def create_bot(data: dict):
 
 @app.post("/api/settings/indicators")
 async def update_indicators(updates: dict):
-    """Toggle one or more indicators on or off. Instant in-memory + persists to Firestore."""
-    # Update in memory immediately (instant)
+    """Update indicator toggles or parameters dynamically. Instant in-memory + persists to Firestore."""
     for k, v in updates.items():
-        if hasattr(config, k) and k.startswith("ENABLE_"):
-            setattr(config, k, bool(v))
+        if hasattr(config, k):
+            if k.startswith("ENABLE_"):
+                setattr(config, k, bool(v))
+            else:
+                try:
+                    current_val = getattr(config, k)
+                    if isinstance(current_val, int):
+                        setattr(config, k, int(v))
+                    elif isinstance(current_val, float):
+                        setattr(config, k, float(v))
+                    else:
+                        setattr(config, k, v)
+                except Exception as e:
+                    print(f"[settings] Type conversion error for {k}: {e}")
+                    setattr(config, k, v)
 
     # Save to Firestore (Does not trigger uvicorn reload)
     await save_settings_to_cloud()
-    print(f"[settings] Updated indicator toggles: {', '.join(updates.keys())}")
+    print(f"[settings] Updated indicator settings: {', '.join(updates.keys())}")
     return {"status": "success"}
 
 
