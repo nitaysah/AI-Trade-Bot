@@ -3,6 +3,7 @@ Centralized configuration for the AI Trading Bot.
 All strategy parameters, risk rules, and API keys in one place.
 """
 import os
+# pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
 
 load_dotenv()
