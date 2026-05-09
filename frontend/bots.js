@@ -59,23 +59,75 @@ function formatLocalTime(isoString) {
 // ──────────────────────────────────────────────
 // Render Active Bots List
 // ──────────────────────────────────────────────
+let currentBotTab = 'all';
+
+function isCrypto(ticker) {
+    if (!ticker) return false;
+    return ticker.includes('USD') || ['BTC', 'ETH', 'LTC', 'SOL', 'DOGE', 'ADA', 'DOT', 'SHIB', 'AVAX'].some(c => ticker.startsWith(c));
+}
+
+function setBotTab(tab) {
+    currentBotTab = tab;
+    // Update button styles
+    const allBtn = document.getElementById('tabBotsAll');
+    const stocksBtn = document.getElementById('tabBotsStocks');
+    const cryptoBtn = document.getElementById('tabBotsCrypto');
+    
+    [allBtn, stocksBtn, cryptoBtn].forEach(btn => {
+        if (btn) btn.className = "px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600";
+    });
+    
+    const activeBtn = document.getElementById(`tabBots${tab.charAt(0).toUpperCase() + tab.slice(1)}`);
+    if (activeBtn) {
+        activeBtn.className = "px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all bg-white text-indigo-600 shadow-sm border border-indigo-100";
+    }
+    
+    if (window.lastBotsData) {
+        renderTradelist(window.lastBotsData.scans, window.lastBotsData.tradelist, window.lastBotsData.tickerAmounts);
+    }
+}
+
 function renderTradelist(scans, tradelist, tickerAmounts = {}) {
     const container = document.getElementById('tradelistContainer');
     if (!container) return;
     container.innerHTML = '';
 
-    // Update active bot count card
+    // Update active bot count card with breakdown
     const countEl = document.getElementById('activeBotCount');
     const subEl = document.getElementById('botStatusSub');
-    if (countEl) countEl.textContent = (tradelist || []).length;
-    if (subEl) subEl.textContent = tradelist && tradelist.length > 0 ? `${tradelist.length} bot(s) running` : 'No bots running';
+    
+    const totalCount = (tradelist || []).length;
+    const pausedCount = tradelist ? tradelist.filter(t => (window.lastBotsData?.ticker_settings || {})[t]?.paused).length : 0;
+    const runningCount = totalCount - pausedCount;
+
+    if (countEl) countEl.textContent = totalCount;
+    if (subEl) {
+        if (totalCount > 0) {
+            subEl.innerHTML = `<span class="text-emerald-500">${runningCount} Active</span> • <span class="text-amber-500">${pausedCount} Paused</span>`;
+        } else {
+            subEl.textContent = 'No bots running';
+        }
+    }
 
     if (!tradelist || tradelist.length === 0) {
         container.innerHTML = '<p class="text-center text-purple-400 text-[0.65rem] py-4">No active bots. Add from watchlist on the Dashboard.</p>';
         return;
     }
 
-    tradelist.forEach(ticker => {
+    // Filter by Tab
+    let filteredTradelist = tradelist;
+    if (currentBotTab === 'stocks') {
+        filteredTradelist = tradelist.filter(t => !isCrypto(t));
+    } else if (currentBotTab === 'crypto') {
+        filteredTradelist = tradelist.filter(t => isCrypto(t));
+    }
+
+    if (filteredTradelist.length === 0) {
+        container.innerHTML = `<p class="text-center text-purple-400 text-[0.65rem] py-4">No ${currentBotTab} bots active.</p>`;
+        return;
+    }
+
+    filteredTradelist.forEach(ticker => {
         const scan = (scans || {})[ticker];
         const item = document.createElement('div');
         item.className = `watchlist-item group active-bot ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2 flex flex-col gap-2`;
@@ -83,14 +135,14 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         const action = scan?.action || '—';
         const price = scan?.price ? `$${parseFloat(scan.price.toString().replace('$', '')).toFixed(2)}` : '---';
         const actionColor = action === 'BUY' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : action === 'SELL' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-400 border-slate-100';
-        
+
         const bullish = scan?.bullish_count ?? 0;
         const bearish = scan?.bearish_count ?? 0;
         const tickerTf = (window.lastBotsData?.ticker_settings || {})[ticker]?.timeframe || '';
         const tfLabel = tickerTf || (window.lastBotsData?.strategyTimeframe || '5Min');
         const isPaused = (window.lastBotsData?.ticker_settings || {})[ticker]?.paused || false;
-        const dotClass = isPaused 
-            ? 'h-2 w-2 bg-slate-300 rounded-full' 
+        const dotClass = isPaused
+            ? 'h-2 w-2 bg-slate-300 rounded-full'
             : 'h-2 w-2 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]';
 
         item.innerHTML = `
@@ -100,7 +152,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         <div class="${dotClass}"></div>
                         <span class="font-black text-sm ${isPaused ? 'text-slate-400' : 'text-indigo-950'} tracking-tight">${ticker}</span>
                         <span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-400 border border-indigo-100">${tfLabel}</span>
-                        ${isPaused ? '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-500 border border-amber-200">PAUSED</span>' : ''}
+                        ${isPaused ? '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-500 border border-amber-200">PAUSED</span>' : '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-100">ACTIVE</span>'}
                     </div>
                     
                     <div class="flex items-center gap-1.5">
@@ -110,7 +162,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
 
                     <div class="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
                         <button class="p-1.5 rounded hover:bg-indigo-50 text-indigo-400 transition-all" 
-                            onclick="event.stopPropagation(); openTickerModal('${ticker}')">
+                            onclick="event.stopPropagation(); openStrategyModal('${ticker}', 'edit')">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -292,87 +344,136 @@ function changeLogPage(delta) {
 // ──────────────────────────────────────────────
 // Ticker Settings Modal
 // ──────────────────────────────────────────────
-let currentEditingTicker = null;
+// ──────────────────────────────────────────────
+// Unified Bot Strategy Modal
+// ──────────────────────────────────────────────
+let currentStrategySymbol = null;
+let strategyModalMode = 'deploy'; // 'deploy' or 'edit'
 
-function openTickerModal(ticker) {
-    currentEditingTicker = ticker.toUpperCase();
-    const modal = document.getElementById('tickerModal');
-    const nameEl = document.getElementById('modalTickerName');
-    if (!modal || !nameEl) return;
+window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
+    currentStrategySymbol = symbol.toUpperCase();
+    strategyModalMode = mode;
+    
+    const modal = document.getElementById('botStrategyModal');
+    const titleEl = document.getElementById('strategyModalTitle');
+    const subtitleEl = document.getElementById('strategyModalSubtitle');
+    const actionBtn = document.getElementById('strategyActionButton');
+    
+    if (!modal) return;
 
-    nameEl.textContent = `${currentEditingTicker} Settings`;
+    // UI State based on Mode
+    if (mode === 'deploy') {
+        titleEl.textContent = `Deploy ${currentStrategySymbol}`;
+        subtitleEl.textContent = name ? `Configure parameters for ${name}` : 'Set initial strategy parameters';
+        actionBtn.textContent = 'Deploy Strategy 🚀';
+        actionBtn.className = "w-full bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-black py-4 rounded-2xl hover:shadow-lg hover:shadow-emerald-500/30 transition-all active:scale-[0.98] uppercase tracking-[0.2em] shadow-md flex items-center justify-center gap-2";
+        
+        // Defaults for deployment
+        document.getElementById('strategyCapital').value = 100;
+        document.getElementById('strategyThreshold').value = 4;
+        document.getElementById('strategyThresholdLabel').textContent = "4 Signals Required";
+        document.getElementById('strategyTimeframe').value = "4Hour";
+        document.getElementById('strategySellMode').value = "indicator";
+        window._strategyPaused = false;
+        
+        // Reset Indicators
+        document.querySelectorAll('.strategy-indicator-check').forEach(chk => chk.checked = true);
+    } else {
+        titleEl.textContent = `${currentStrategySymbol} Settings`;
+        subtitleEl.textContent = 'Adjust active bot strategy parameters';
+        actionBtn.textContent = 'Save Settings 💾';
+        actionBtn.className = "w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-black py-4 rounded-2xl hover:shadow-lg hover:shadow-indigo-500/30 transition-all active:scale-[0.98] uppercase tracking-[0.2em] shadow-md flex items-center justify-center gap-2";
+        
+        // Load existing settings
+        const settings = (window.lastBotsData?.ticker_settings || {})[currentStrategySymbol] || {};
+        document.getElementById('strategyCapital').value = settings.amount || '';
+        const thresh = settings.min_buy_signals || 4;
+        document.getElementById('strategyThreshold').value = thresh;
+        document.getElementById('strategyThresholdLabel').textContent = `${thresh} Signals Required`;
+        document.getElementById('strategyTimeframe').value = settings.timeframe || '4Hour';
+        document.getElementById('strategySellMode').value = settings.sell_mode || 'indicator';
+        window._strategyPaused = settings.paused || false;
+        
+        const enabledIndicators = settings.indicators || ['RSI', 'MACD', 'EMA Cross', 'Supertrend', 'Bollinger', 'VWAP', 'Mystic Pulse', 'Candle Patterns'];
+        document.querySelectorAll('.strategy-indicator-check').forEach(chk => {
+            chk.checked = enabledIndicators.includes(chk.value);
+        });
+    }
+
+    updateStrategyPauseButton();
     modal.classList.remove('hidden');
 
-    const settings = (window.lastBotsData?.ticker_settings || {})[currentEditingTicker] || {};
+    // Load TV Chart
+    const tvContainer = document.getElementById('tv_strategy_chart');
+    if (tvContainer) {
+        tvContainer.innerHTML = '';
+        const script = document.createElement('script');
+        script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js';
+        script.async = true;
+        script.innerHTML = JSON.stringify({
+            "symbol": currentStrategySymbol.includes('USD') && !currentStrategySymbol.includes('^') ? `CRYPTO:${currentStrategySymbol}` : currentStrategySymbol,
+            "width": "100%",
+            "height": "100%",
+            "locale": "en",
+            "dateRange": "1D",
+            "colorTheme": "light",
+            "isTransparent": true,
+            "autosize": true,
+            "largeChartUrl": ""
+        });
+        tvContainer.appendChild(script);
+    }
+};
 
-    const amountInput = document.getElementById('modalAmount');
-    const riskInput = document.getElementById('modalRisk');
-    const atrInput = document.getElementById('modalAtrStop');
-    const tpInput = document.getElementById('modalTpMult');
+window.closeStrategyModal = function () {
+    document.getElementById('botStrategyModal').classList.add('hidden');
+    currentStrategySymbol = null;
+};
 
-    amountInput.placeholder = "Enter Budget (e.g. 500)";
-    riskInput.placeholder = "Enter Risk % (e.g. 2.5)";
-    atrInput.placeholder = "Enter ATR Mult (e.g. 2.0)";
-    tpInput.placeholder = "Enter TP Mult (e.g. 1.5)";
+window.togglePauseInStrategyModal = function () {
+    window._strategyPaused = !window._strategyPaused;
+    updateStrategyPauseButton();
+};
 
-    amountInput.value = settings.amount || '';
-    riskInput.value = settings.risk_per_trade ? settings.risk_per_trade * 100 : '';
-    atrInput.value = settings.atr_stop_multiplier || '';
-    tpInput.value = settings.take_profit_multiplier || '';
-    
-    const tfSelect = document.getElementById('modalTimeframe');
-    if (tfSelect) tfSelect.value = settings.timeframe || '';
-
-    // Signal Thresholds
-    const minBuyEl = document.getElementById('modalMinBuy');
-    const minSellEl = document.getElementById('modalMinSell');
-    if (minBuyEl) minBuyEl.value = settings.min_buy_signals || '';
-    if (minSellEl) minSellEl.value = settings.min_sell_signals || '';
-
-    // Pause State
-    window._modalPaused = settings.paused || false;
-    updatePauseButton();
-}
-
-function updatePauseButton() {
-    const btn = document.getElementById('modalPauseBtn');
+function updateStrategyPauseButton() {
+    const btn = document.getElementById('strategyPauseBtn');
     if (!btn) return;
-    if (window._modalPaused) {
+    if (window._strategyPaused) {
         btn.textContent = '⏸ Paused';
-        btn.className = 'px-4 py-2 rounded-lg font-black text-xs uppercase tracking-wider transition-all bg-amber-100 text-amber-700 border border-amber-300';
+        btn.className = 'px-6 py-2 rounded-xl font-black text-xs uppercase tracking-wider transition-all bg-amber-100 text-amber-700 border border-amber-300';
     } else {
         btn.textContent = '▶ Active';
-        btn.className = 'px-4 py-2 rounded-lg font-black text-xs uppercase tracking-wider transition-all bg-emerald-100 text-emerald-700 border border-emerald-300';
+        btn.className = 'px-6 py-2 rounded-xl font-black text-xs uppercase tracking-wider transition-all bg-emerald-100 text-emerald-700 border border-emerald-300';
     }
 }
 
-function togglePauseInModal() {
-    window._modalPaused = !window._modalPaused;
-    updatePauseButton();
-}
-
-function closeTickerModal() {
-    document.getElementById('tickerModal').classList.add('hidden');
-    currentEditingTicker = null;
-}
+window.handleStrategyAction = async function() {
+    if (strategyModalMode === 'deploy') {
+        await confirmAndDeployBot();
+    } else {
+        await saveTickerSettings();
+    }
+};
 
 async function saveTickerSettings() {
-    if (!currentEditingTicker) return;
+    if (!currentStrategySymbol) return;
 
-    const minBuyVal = parseInt(document.getElementById('modalMinBuy')?.value);
-    const minSellVal = parseInt(document.getElementById('modalMinSell')?.value);
+    const thresholdVal = parseInt(document.getElementById('strategyThreshold').value);
+    const indicators = [];
+    document.querySelectorAll('.strategy-indicator-check:checked').forEach(check => {
+        indicators.push(check.value);
+    });
 
     const data = {
-        ticker: currentEditingTicker,
+        ticker: currentStrategySymbol,
         settings: {
-            amount: parseFloat(document.getElementById('modalAmount').value) || null,
-            risk_per_trade: parseFloat(document.getElementById('modalRisk').value) / 100 || null,
-            atr_stop_multiplier: parseFloat(document.getElementById('modalAtrStop').value) || null,
-            take_profit_multiplier: parseFloat(document.getElementById('modalTpMult').value) || null,
-            timeframe: document.getElementById('modalTimeframe').value || null,
-            min_buy_signals: isNaN(minBuyVal) ? null : minBuyVal,
-            min_sell_signals: isNaN(minSellVal) ? null : minSellVal,
-            paused: window._modalPaused || false
+            amount: parseFloat(document.getElementById('strategyCapital').value) || null,
+            timeframe: document.getElementById('strategyTimeframe').value || null,
+            min_buy_signals: thresholdVal,
+            min_sell_signals: thresholdVal,
+            sell_mode: document.getElementById('strategySellMode').value,
+            indicators: indicators,
+            paused: window._strategyPaused || false
         }
     };
 
@@ -384,8 +485,7 @@ async function saveTickerSettings() {
             body: JSON.stringify(data)
         });
         if (response.ok) {
-            console.log(`[settings] Saved settings for ${currentEditingTicker}`);
-            closeTickerModal();
+            closeStrategyModal();
             fetchBotsData();
         }
     } catch (e) {
@@ -393,22 +493,22 @@ async function saveTickerSettings() {
     }
 }
 
-async function resetTickerSettings() {
-    if (!currentEditingTicker) return;
-    if (!confirm(`Reset ${currentEditingTicker} to global defaults?`)) return;
+window.resetTickerSettings = async function() {
+    if (!currentStrategySymbol) return;
+    if (!confirm(`Reset ${currentStrategySymbol} to global defaults?`)) return;
 
     try {
         const headers = await getAuthHeaders();
-        await fetch(`${API_BASE}/api/settings/ticker/${currentEditingTicker}`, {
+        await fetch(`${API_BASE}/api/settings/ticker/${currentStrategySymbol}`, {
             method: 'DELETE',
             headers: headers
         });
-        closeTickerModal();
+        closeStrategyModal();
         fetchBotsData();
     } catch (e) {
         console.error('Error resetting ticker settings:', e);
     }
-}
+};
 
 // ──────────────────────────────────────────────
 // Main Fetch Loop
@@ -458,9 +558,6 @@ async function fetchBotsData() {
         }
 
         // Last scan time
-        if (document.getElementById('lastScanTime')) {
-            document.getElementById('lastScanTime').textContent = data.lastScan ? formatLocalTime(data.lastScan) : '—';
-        }
 
         // Strategy timeframe sync
         if (data.strategyTimeframe) {
@@ -494,6 +591,7 @@ function updateAlpacaStatus(isLinked) {
     const statusEl = document.getElementById('alpacaLinkStatus');
     const dotEl = document.getElementById('alpacaStatusDot');
     const textEl = document.getElementById('alpacaStatusText');
+    const btnUnlink = document.getElementById('btnUnlinkAlpaca');
 
     if (!statusEl || !dotEl || !textEl) return;
 
@@ -501,10 +599,12 @@ function updateAlpacaStatus(isLinked) {
         statusEl.className = 'flex items-center text-sm font-black px-8 py-3 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider bg-emerald-50 text-emerald-700 border-emerald-200';
         dotEl.className = 'h-2.5 w-2.5 rounded-full mr-2.5 bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]';
         textEl.textContent = 'LIVE';
+        if (btnUnlink) btnUnlink.classList.remove('hidden');
     } else {
         statusEl.className = 'flex items-center text-sm font-black px-8 py-3 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider bg-amber-50 text-amber-700 border-amber-200';
         dotEl.className = 'h-2.5 w-2.5 rounded-full mr-2.5 bg-amber-500 animate-pulse';
         textEl.textContent = 'SIMULATION';
+        if (btnUnlink) btnUnlink.classList.add('hidden');
     }
 }
 
@@ -512,15 +612,15 @@ function updateAlpacaStatus(isLinked) {
 // Live Strategy Matrix
 // ──────────────────────────────────────────────
 const INDICATOR_META = {
-    'RSI':             { key: 'ENABLE_RSI',            desc: 'Momentum Oscillator', icon: '📊' },
-    'MACD':            { key: 'ENABLE_MACD',           desc: 'Trend Momentum',      icon: '📈' },
-    'EMA Cross':       { key: 'ENABLE_EMA',            desc: '9/21 EMA Crossover',  icon: '✂️' },
-    'Supertrend':      { key: 'ENABLE_SUPERTREND',     desc: 'ATR Trend Follower',  icon: '🚀' },
-    'Bollinger':       { key: 'ENABLE_BOLLINGER',      desc: 'Volatility Bands',    icon: '🎯' },
-    'VWAP':            { key: 'ENABLE_VWAP',           desc: 'Volume Weighted Avg',  icon: '⚖️' },
-    'Mystic Pulse':    { key: 'ENABLE_MYSTIC_PULSE',   desc: 'Trend Persistence',   icon: '🔮' },
-    'Candle Patterns': { key: 'ENABLE_CANDLE_PATTERNS',desc: 'Reversal Detection',  icon: '🕯️' },
-    'News Sentiment':  { key: 'ENABLE_AI_SENTIMENT',   desc: 'AI News Analysis',    icon: '🧠' },
+    'RSI': { key: 'ENABLE_RSI', desc: 'Momentum Oscillator', icon: '📊' },
+    'MACD': { key: 'ENABLE_MACD', desc: 'Trend Momentum', icon: '📈' },
+    'EMA Cross': { key: 'ENABLE_EMA', desc: '9/21 EMA Crossover', icon: '✂️' },
+    'Supertrend': { key: 'ENABLE_SUPERTREND', desc: 'ATR Trend Follower', icon: '🚀' },
+    'Bollinger': { key: 'ENABLE_BOLLINGER', desc: 'Volatility Bands', icon: '🎯' },
+    'VWAP': { key: 'ENABLE_VWAP', desc: 'Volume Weighted Avg', icon: '⚖️' },
+    'Mystic Pulse': { key: 'ENABLE_MYSTIC_PULSE', desc: 'Trend Persistence', icon: '🔮' },
+    'Candle Patterns': { key: 'ENABLE_CANDLE_PATTERNS', desc: 'Reversal Detection', icon: '🕯️' },
+    'News Sentiment': { key: 'ENABLE_AI_SENTIMENT', desc: 'AI News Analysis', icon: '🧠' },
 };
 
 
@@ -533,7 +633,7 @@ let currentSelectedBot = null;
 document.getElementById('botSearchInput')?.addEventListener('input', (e) => {
     const query = e.target.value.trim();
     const resultsContainer = document.getElementById('botSearchResults');
-    
+
     if (query.length < 2) {
         resultsContainer.classList.add('hidden');
         return;
@@ -545,7 +645,7 @@ document.getElementById('botSearchInput')?.addEventListener('input', (e) => {
             const headers = await getAuthHeaders();
             const res = await fetch(`${API_BASE}/api/search/${encodeURIComponent(query)}`, { headers });
             const data = await res.json();
-            
+
             resultsContainer.innerHTML = '';
             if (data && data.length > 0) {
                 data.forEach(item => {
@@ -582,62 +682,34 @@ document.addEventListener('click', (e) => {
 function selectSearchResult(item) {
     document.getElementById('botSearchResults').classList.add('hidden');
     document.getElementById('botSearchInput').value = '';
-    
+
     currentSelectedBot = item.symbol;
-    openDeployModal(item.symbol, item.name);
+    openStrategyModal(item.symbol, 'deploy', item.name);
 }
 
-window.openDeployModal = function(symbol, name) {
-    document.getElementById('deployModalSymbolLabel').textContent = symbol + (name ? ` (${name})` : '');
-    document.getElementById('deployBotModal').classList.remove('hidden');
 
-    // Load TradingView Mini Chart inside Modal
-    const tvContainer = document.getElementById('tv_mini_chart');
-    tvContainer.innerHTML = '';
-    
-    const script = document.createElement('script');
-    script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js';
-    script.async = true;
-    script.innerHTML = JSON.stringify({
-        "symbol": symbol.includes('USD') && !symbol.includes('^') ? `CRYPTO:${symbol}` : symbol,
-        "width": "100%",
-        "height": "100%",
-        "locale": "en",
-        "dateRange": "1D",
-        "colorTheme": "light",
-        "isTransparent": true,
-        "autosize": true,
-        "largeChartUrl": ""
-    });
-    tvContainer.appendChild(script);
-};
+window.confirmAndDeployBot = async function () {
+    if (!currentStrategySymbol) return;
 
-window.closeDeployModal = function() {
-    document.getElementById('deployBotModal').classList.add('hidden');
-};
-
-window.confirmAndDeployBot = async function() {
-    if (!currentSelectedBot) return;
-    
     // Gather Settings
-    const capital = document.getElementById('deployCapital').value;
-    const threshold = document.getElementById('deployThreshold').value;
-    const sellMode = document.getElementById('deploySellMode').value;
-    
+    const capital = document.getElementById('strategyCapital').value;
+    const threshold = document.getElementById('strategyThreshold').value;
+    const sellMode = document.getElementById('strategySellMode').value;
+    const timeframe = document.getElementById('strategyTimeframe').value;
+
     // Gather Indicators
     const indicators = [];
-    document.querySelectorAll('.deploy-indicator-check').forEach(chk => {
+    document.querySelectorAll('.strategy-indicator-check').forEach(chk => {
         if (chk.checked) indicators.push(chk.value);
     });
 
     // Optimistic UI Update
-    const symbol = currentSelectedBot;
+    const symbol = currentStrategySymbol;
     const container = document.getElementById('tradelistContainer');
-    
+
     // Close Modal
-    closeDeployModal();
-    currentSelectedBot = null;
-    
+    closeStrategyModal();
+
     // Remove "No active bots" text if present
     if (container.querySelector('p')) {
         container.innerHTML = '';
@@ -663,15 +735,17 @@ window.confirmAndDeployBot = async function() {
         const response = await fetch(`${API_BASE}/api/bots/create`, {
             method: 'POST',
             headers: headers,
-            body: JSON.stringify({ 
+            body: JSON.stringify({
                 symbol,
                 capital: parseFloat(capital),
                 threshold: parseInt(threshold),
                 sell_mode: sellMode,
-                indicators: indicators
+                indicators: indicators,
+                timeframe: timeframe,
+                paused: window._strategyPaused || false
             })
         });
-        
+
         if (response.ok) {
             // Force an immediate refresh to sync real data
             await fetchBotsData();
@@ -685,6 +759,30 @@ window.confirmAndDeployBot = async function() {
         tempDiv.remove();
     }
 };
+
+async function unlinkAlpaca() {
+    if (!confirm("Are you sure you want to unlink your Alpaca account? The bot will switch back to simulation mode.")) return;
+
+    try {
+        const headers = await getAuthHeaders();
+        const response = await fetch(`${API_BASE}/api/alpaca_config`, {
+            method: 'DELETE',
+            headers: headers
+        });
+        const data = await response.json();
+        if (data.status === 'success') {
+            alert(data.message);
+            // Refresh based on which page we are on
+            if (typeof fetchDashboard === 'function') fetchDashboard();
+            else if (typeof fetchBotsData === 'function') fetchBotsData();
+        } else {
+            alert("Error unlinking account.");
+        }
+    } catch (err) {
+        console.error(err);
+        alert("Backend communication error.");
+    }
+}
 
 // ──────────────────────────────────────────────
 // Init

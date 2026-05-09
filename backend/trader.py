@@ -17,7 +17,19 @@ from risk_manager import RiskManager
 import config
 
 
+from concurrent.futures import ThreadPoolExecutor
+
 risk_mgr = RiskManager()
+executor = ThreadPoolExecutor(max_workers=10) # Dedicated pool for parallel analysis
+
+import time
+
+# --- Evaluation Cache ---
+# Stores full trade evaluation results to prevent redundant heavy API calls
+# within short windows (e.g. while user is navigating or UI is refreshing)
+EVALUATION_CACHE = {} 
+EVAL_CACHE_TTL = 15 # seconds
+
 def get_now():
     """Returns current time in the configured timezone."""
     tz = pytz.timezone(config.TIMEZONE)
@@ -51,17 +63,18 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
 
     # 1. Process Technical Indicators
     t_settings = getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {})
-    ticker_enabled_indicators = t_settings.get('indicators', None)
+    allowed_indicators = t_settings.get('indicators') # List of names if overridden
 
     for name, data in raw_signals.items():
-        toggle_key = SIGNAL_TO_TOGGLE.get(name)
-        
-        # If per-ticker indicators are set, use them. Otherwise fallback to global config.
-        if ticker_enabled_indicators is not None:
-            is_enabled = name in ticker_enabled_indicators
+        # If allowed_indicators is set, only include those. Otherwise use config.ENABLE_X toggles.
+        is_enabled = False
+        if allowed_indicators is not None:
+            is_enabled = name in allowed_indicators
         else:
+            # Fallback to global config toggles (e.g. EMA Cross -> ENABLE_EMA_CROSS)
+            toggle_key = SIGNAL_TO_TOGGLE.get(name)
             is_enabled = getattr(config, toggle_key, True) if toggle_key else True
-        
+
         # Add to output signals with enabled status
         filtered_signals[name] = {**data, 'enabled': is_enabled}
         
@@ -114,7 +127,20 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
     action = "HOLD"
     reason = "Neutral"
 
-    if bullish_count >= min_buy:
+    if bullish_count >= min_buy and bearish_count >= min_sell:
+        # Both thresholds met: pick the stronger one
+        if bullish_count > bearish_count:
+            action = "BUY"
+            bullish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BULLISH' and v.get('enabled')]
+            reason = f"BUY Triggered (Conflict Resolved): {bullish_count}B > {bearish_count}S. Signals: {', '.join(bullish_names)}"
+        elif bearish_count > bullish_count:
+            action = "SELL"
+            bearish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BEARISH' and v.get('enabled')]
+            reason = f"SELL Triggered (Conflict Resolved): {bearish_count}S > {bullish_count}B. Signals: {', '.join(bearish_names)}"
+        else:
+            action = "HOLD"
+            reason = f"HOLD (Conflict Tie): Bullish ({bullish_count}) and Bearish ({bearish_count}) signals are equal and above threshold."
+    elif bullish_count >= min_buy:
         action = "BUY"
         bullish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BULLISH' and v.get('enabled')]
         reason = f"BUY Triggered: {bullish_count} bullish signals ({', '.join(bullish_names)})"
@@ -147,8 +173,24 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         ticker_settings = getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {})
         timeframe = ticker_settings.get('timeframe', config.DEFAULT_TIMEFRAME)
 
-    # 1. Get technical analysis
-    analysis = get_full_analysis(ticker, timeframe=timeframe)
+    # --- Check Evaluation Cache ---
+    cache_key = (ticker.upper(), timeframe.upper())
+    now_ts = time.time()
+    if cache_key in EVALUATION_CACHE:
+        entry = EVALUATION_CACHE[cache_key]
+        if now_ts - entry['timestamp'] < EVAL_CACHE_TTL:
+            # print(f"[trader] Using cached evaluation for {ticker} ({timeframe})")
+            return entry['data']
+
+    # 1. Start both Technical Analysis and AI Sentiment IN PARALLEL
+    # This prevents AI analysis (slow) from blocking technical signals
+    tech_future = executor.submit(get_full_analysis, ticker, timeframe=timeframe)
+    ai_future = executor.submit(get_ai_sentiment, ticker)
+
+    # 2. Wait for results
+    analysis = tech_future.result()
+    ai_data = ai_future.result()
+
     if not analysis:
         print(f"[trader] WARNING: No technical analysis data for {ticker}")
         return {
@@ -159,9 +201,6 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
             "price_history": [],
             "timeframe": timeframe
         }
-
-    # 2. Get AI sentiment
-    ai_data = get_ai_sentiment(ticker)
 
     # 3. Get decision from confluence logic
     decision = get_confluence_decision(
@@ -181,7 +220,7 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
             entry_price=analysis['price'],
             account_equity=account_equity,
             available_cash=available_cash,
-            atr=analysis.get('indicators', {}).get('ATR', 0)
+            atr=analysis.get('atr', 0)
         )
 
     # 6. Check daily drawdown
@@ -190,7 +229,7 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         action = "HOLD"
         reason = f"Trading halted: {risk_mgr.halt_reason}"
 
-    return {
+    result = {
         "time": get_now().isoformat(),
         "action": action,
         "ticker": ticker,
@@ -213,6 +252,13 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         "is_custom": (ticker.upper() in getattr(config, 'TICKER_AMOUNTS', {})),
         "timeframe": timeframe
     }
+
+    # Save to cache
+    EVALUATION_CACHE[cache_key] = {
+        "data": result,
+        "timestamp": time.time()
+    }
+    return result
 
 
 def get_risk_manager():

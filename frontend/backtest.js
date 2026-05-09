@@ -36,7 +36,51 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initial slider sync
     syncBacktestSliderRange();
     console.log('[backtest] Center Initialized.');
+
+    // Start Alpaca Status Polling
+    pollAlpacaStatus();
+    setInterval(pollAlpacaStatus, 30000); // Check every 30s
 });
+
+async function pollAlpacaStatus() {
+    const statusPill = document.getElementById('alpacaLinkStatus');
+    const statusDot = document.getElementById('alpacaStatusDot');
+    const statusText = document.getElementById('alpacaStatusText');
+    if (!statusPill) return;
+
+    try {
+        const headers = await getAuthHeaders();
+        const response = await fetch(`${API_BASE}/api/dashboard`, { headers });
+        const data = await response.json();
+
+        if (data.simulation) {
+            if (data.has_keys) {
+                statusPill.className = "flex items-center text-sm font-black px-8 py-3 rounded-full bg-amber-50 text-amber-600 border-2 border-amber-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
+                statusDot.className = "h-2.5 w-2.5 rounded-full mr-2.5 bg-amber-500 animate-pulse";
+                statusText.textContent = "Connection Failed (Retrying...)";
+            } else {
+                statusPill.className = "flex items-center text-sm font-black px-8 py-3 rounded-full bg-rose-50 text-rose-600 border-2 border-rose-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
+                statusDot.className = "h-2.5 w-2.5 rounded-full mr-2.5 bg-rose-500 animate-pulse";
+                statusText.textContent = "Alpaca Not Linked";
+            }
+        } else {
+            statusPill.className = "flex items-center text-sm font-black px-8 py-3 rounded-full bg-emerald-50 text-emerald-600 border-2 border-emerald-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
+            statusDot.className = "h-2.5 w-2.5 rounded-full mr-2.5 bg-emerald-500 animate-pulse";
+            statusText.textContent = "Alpaca Live";
+        }
+    } catch (e) {
+        console.error('[backtest] Alpaca status check failed:', e);
+    }
+}
+
+window.logoutCommander = async () => {
+    const auth = window.auth;
+    if (auth) {
+        const { signOut } = await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js");
+        await signOut(auth);
+    }
+    window.location.href = "index.html";
+};
 
 // 2. Strategy Execution
 async function runBacktest() {

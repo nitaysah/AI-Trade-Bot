@@ -44,7 +44,7 @@ WATCHLIST = ["TSLA", "AAPL", "MSFT", "AMZN", "BTCUSD"]
 # Trade List — Tickers the bot is allowed to trade
 # ──────────────────────────────────────────────
 TRADELIST = ["BTCUSD"]
-DEFAULT_TIMEFRAME = "5Min"
+DEFAULT_TIMEFRAME = "4Hour"
 SCAN_INTERVAL_SECONDS = 60
 
 # ──────────────────────────────────────────────

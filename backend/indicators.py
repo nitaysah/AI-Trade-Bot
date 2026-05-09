@@ -47,20 +47,33 @@ def _get_mystic_v2_presets(timeframe):
     if timeframe == '1Min': key = '1m'
     elif timeframe == '5Min': key = '5m'
     elif timeframe == '15Min': key = '15m'
+    elif timeframe == '30Min': key = '30m'
     elif timeframe == '1Hour': key = '1h'
+    elif timeframe == '4Hour': key = '4h'
     elif timeframe == '1Day': key = '1d'
     return defaults.get(key, defaults['1h'])
 
 # Alpaca clients (Dynamic access)
 # ---------------------------------------------------------------------------
+_stock_client = None
+_crypto_client = None
+
 def get_alpaca_clients():
-    """Returns initialized Alpaca clients using the latest config keys."""
+    """Returns initialized Alpaca clients using the latest config keys (cached)."""
+    global _stock_client, _crypto_client
+    
     if not config.ALPACA_API_KEY or config.ALPACA_API_KEY == "your_alpaca_api_key_here":
         return None, None
     
-    s_client = StockHistoricalDataClient(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY)
-    c_client = CryptoHistoricalDataClient(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY)
-    return s_client, c_client
+    if _stock_client is None:
+        print("[indicators] Initializing Alpaca Stock client...")
+        _stock_client = StockHistoricalDataClient(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY)
+    
+    if _crypto_client is None:
+        print("[indicators] Initializing Alpaca Crypto client...")
+        _crypto_client = CryptoHistoricalDataClient(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY)
+        
+    return _stock_client, _crypto_client
 
 _data_cache = {}
 
@@ -107,10 +120,10 @@ def get_full_analysis(ticker, timeframe="5Min"):
         tf_str = timeframe.upper()
         if tf_str == "1MIN":
             tf_obj = TimeFrame.Minute
-            lookback_days = 1
+            lookback_days = 2 # Enough for weekend
         elif tf_str == "5MIN":
             tf_obj = TimeFrame(5, TimeFrameUnit.Minute)
-            lookback_days = 3
+            lookback_days = 4
         elif tf_str == "15MIN":
             tf_obj = TimeFrame(15, TimeFrameUnit.Minute)
             lookback_days = 7
@@ -128,7 +141,7 @@ def get_full_analysis(ticker, timeframe="5Min"):
             lookback_days = 365
         else:
             tf_obj = TimeFrame(5, TimeFrameUnit.Minute)
-            lookback_days = 7
+            lookback_days = 5
 
         # Incremental cache
         if cache_key in _data_cache:
@@ -475,7 +488,16 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
                 1 for s in signals.values() if s["signal"] == "BEARISH"
             ),
             "signals": signals,
-            "price_history": [],
+            "price_history": [
+                {
+                    "time": str(t),
+                    "open": float(row["Open"]),
+                    "high": float(row["High"]),
+                    "low": float(row["Low"]),
+                    "close": float(row["Close"]),
+                    "volume": float(row["Volume"])
+                } for t, row in df.tail(100).iterrows()
+            ],
             "df": df,
         }
 

@@ -77,12 +77,20 @@ class RiskManager:
         risk_pct = t_settings.get('risk_per_trade', self.risk_per_trade)
         stop_mult = t_settings.get('atr_stop_multiplier', self.atr_stop_multiplier)
 
+        # Determine Sell Mode for cleaner logging
+        sell_mode = t_settings.get('sell_mode', 'indicator')
+
         if custom_amount is not None:
-            # Fixed Amount Sizing - Bypass the % cap if explicitly set
+            # Fixed Amount Sizing
             notional = float(custom_amount)
             stop_distance = atr * stop_mult
             shares = notional / entry_price
-            print(f"[risk] Using custom profile for {ticker}: ${notional}, stop_mult={stop_mult}")
+            
+            # Context-aware logging
+            log_msg = f"[risk] {ticker}: Allocating ${notional:.2f}"
+            if sell_mode in ['sltp', 'hybrid']:
+                log_msg += f" (SL Mult: {stop_mult})"
+            print(log_msg)
         else:
             # 1. Default fixed sizing (Requested by user: $100 default)
             notional = float(getattr(config, 'DEFAULT_TRADE_AMOUNT', 100.0))

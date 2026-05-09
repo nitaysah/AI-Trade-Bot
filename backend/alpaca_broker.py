@@ -168,6 +168,31 @@ class AlpacaBroker:
             print(f"[broker] Error getting open orders: {e}")
             return []
 
+    def cancel_orders_for_ticker(self, ticker: str, side_filter: str = None) -> dict:
+        """Cancels all pending orders for a specific ticker. Optionally filter by side ('buy' or 'sell')."""
+        if self.simulation_mode:
+            return {'success': True, 'cancelled': 0}
+
+        try:
+            orders = self.client.get_orders(filter=None)
+            ticker_norm = ticker.replace("/", "").upper()
+            cancelled = 0
+            for o in orders:
+                order_symbol = o.symbol.replace("/", "").upper()
+                if order_symbol == ticker_norm:
+                    if side_filter and o.side.value.lower() != side_filter.lower():
+                        continue
+                    try:
+                        self.client.cancel_order_by_id(str(o.id))
+                        cancelled += 1
+                        print(f"[broker] Cancelled stale {o.side.value} order for {ticker_norm} (ID: {o.id})")
+                    except Exception as e:
+                        print(f"[broker] Failed to cancel order {o.id}: {e}")
+            return {'success': True, 'cancelled': cancelled}
+        except Exception as e:
+            print(f"[broker] Error cancelling orders for {ticker}: {e}")
+            return {'success': False, 'error': str(e)}
+
     def place_order(self, symbol: str, notional: float, side: str = 'buy',
                     stop_loss: float = 0, take_profit: float = 0) -> dict:
         """
@@ -249,7 +274,12 @@ class AlpacaBroker:
                 try:
                     order = self.client.close_position(sym)
                     print(f"[broker] Successfully closed position for {sym}")
-                    return {'success': True, 'symbol': sym, 'qty': float(order.qty) if order.qty else 0}
+                    return {
+                        'success': True, 
+                        'symbol': sym, 
+                        'qty': float(order.qty) if order.qty else 0,
+                        'order_id': str(order.id)
+                    }
                 except Exception as e:
                     last_err = str(e)
                     if "not found" in last_err.lower():
@@ -366,9 +396,12 @@ class AlpacaBroker:
             results = []
             for quote in res.get('quotes', []):
                 if quote.get('quoteType') in ['EQUITY', 'CRYPTOCURRENCY', 'ETF']:
+                    raw_symbol = quote.get('symbol', '')
+                    # Normalize crypto symbols (e.g. BTC-USD -> BTCUSD)
+                    symbol = raw_symbol.replace("-", "") if quote.get('quoteType') == 'CRYPTOCURRENCY' else raw_symbol
                     results.append({
-                        "symbol": quote.get('symbol'),
-                        "name": quote.get('shortname', quote.get('longname', quote.get('symbol')))
+                        "symbol": symbol,
+                        "name": quote.get('shortname', quote.get('longname', symbol))
                     })
             return results[:10]
         except Exception as e:

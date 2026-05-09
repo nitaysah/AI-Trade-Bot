@@ -77,11 +77,13 @@ function initChart(ticker = "AAPL", tf = "1D") {
     if (!container) return;
 
     let interval = "5";
-    if (tf === "1Min") interval = "1";
-    if (tf === "5Min") interval = "5";
-    if (tf === "15Min") interval = "15";
-    if (tf === "1Hour") interval = "60";
-    if (tf === "1D" || tf === "1Day") interval = "D";
+    if (tf === "1Min" || tf === "1M") interval = "1";
+    if (tf === "5Min" || tf === "5M") interval = "5";
+    if (tf === "15Min" || tf === "15M") interval = "15";
+    if (tf === "30Min" || tf === "30M") interval = "30";
+    if (tf === "1Hour" || tf === "1H") interval = "60";
+    if (tf === "4Hour" || tf === "4H") interval = "240";
+    if (tf === "1Day" || tf === "1D" || tf === "D") interval = "D";
 
     // Format crypto for TradingView if needed (e.g. BTCUSD -> CRYPTO:BTCUSD)
     let tvSymbol = ticker;
@@ -115,7 +117,30 @@ function initChart(ticker = "AAPL", tf = "1D") {
 function updateChart(priceHistory, ticker, signals) {
     // The TradingView widget handles its own data fetching directly from TradingView.
     // We only need to update the label.
-    document.getElementById('chartTickerLabel').textContent = ticker;
+    const labelEl = document.getElementById('chartTickerLabel');
+    if (labelEl) labelEl.textContent = ticker;
+}
+
+// ──────────────────────────────────────────────
+// 2.5 Synchronize Chart Symbol & Timeframe
+// ──────────────────────────────────────────────
+function syncChart() {
+    if (!selectedTicker) return;
+    
+    // Format crypto for TradingView if needed (e.g. BTCUSD -> CRYPTO:BTCUSD)
+    let tvSymbol = selectedTicker;
+    if (selectedTicker.includes("USD") && selectedTicker.length >= 6) {
+        tvSymbol = `BITSTAMP:${selectedTicker}`; 
+    }
+
+    const needsRefresh = !tvWidget || window.lastChartTicker !== selectedTicker || window.lastChartTf !== currentBackendTf;
+    
+    if (needsRefresh) {
+        console.log(`[chart] Syncing chart for ${selectedTicker} (${currentBackendTf})`);
+        window.lastChartTicker = selectedTicker;
+        window.lastChartTf = currentBackendTf;
+        initChart(selectedTicker, currentBackendTf);
+    }
 }
 
 // ──────────────────────────────────────────────
@@ -194,14 +219,15 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
 // ──────────────────────────────────────────────
 // 4. Render Watchlist
 // ──────────────────────────────────────────────
-function renderWatchlist(scans, watchlist, tradelist = []) {
+function renderWatchlist(scans, watchlist, tradelist = [], botScans = {}) {
     const container = document.getElementById('watchlistContainer');
     container.innerHTML = '';
 
     const tickers = watchlist || Object.keys(scans || {});
 
     tickers.forEach(ticker => {
-        const scan = (scans || {})[ticker];
+        // Prioritize botScans for active bots, otherwise use general scans
+        const scan = (botScans || {})[ticker] || (scans || {})[ticker];
         const item = document.createElement('div');
         item.className = `watchlist-item group ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2 flex flex-col gap-2`;
 
@@ -222,13 +248,7 @@ function renderWatchlist(scans, watchlist, tradelist = []) {
                     </div>
                     
                     <div class="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
-                        <button class="p-1.5 rounded hover:bg-indigo-50 ${isBotActive ? 'text-indigo-600' : 'text-indigo-300'}" 
-                            title="${isBotActive ? 'Bot Active' : 'Activate Bot'}"
-                            onclick="event.stopPropagation(); addToTradelist('${ticker}')">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="${isBotActive ? 'currentColor' : 'none'}" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                            </svg>
-                        </button>
+
                         <button class="p-1.5 rounded hover:bg-rose-50 text-rose-300 hover:text-rose-400 transition-all" 
                             title="Remove from Watchlist"
                             onclick="event.stopPropagation(); removeFromWatchlist('${ticker}')">
@@ -241,9 +261,11 @@ function renderWatchlist(scans, watchlist, tradelist = []) {
 
                 <!-- Bottom Layer: Price, Signal Count & Action -->
                 <div class="flex items-center justify-between border-t border-slate-50 pt-2 cursor-pointer" onclick="selectTicker('${ticker}')">
-                    <div class="flex flex-col">
                         <span class="text-xs font-black text-slate-500 font-mono tracking-tight">${price}</span>
-                        <span class="text-[0.6rem] text-slate-400 font-bold uppercase tracking-tighter">${bullish}/${total} Signals</span>
+                        <div class="flex items-center gap-1.5 mt-1">
+                            <span class="text-[0.6rem] font-bold text-emerald-600 bg-emerald-50 px-1 rounded border border-emerald-100">${bullish}B</span>
+                            <span class="text-[0.6rem] font-bold text-red-600 bg-red-50 px-1 rounded border border-red-100">${scan?.bearish_count || 0}S</span>
+                        </div>
                     </div>
                     <div class="px-2 py-0.5 rounded border ${actionColor} shadow-sm min-w-[50px] text-center">
                         <span class="font-black text-[0.65rem] tracking-widest">${action}</span>
@@ -272,10 +294,34 @@ function renderWatchlist(scans, watchlist, tradelist = []) {
 }
 
 function selectTicker(ticker) {
+    if (selectedTicker === ticker) return;
     selectedTicker = ticker;
-    document.getElementById('chartTickerLabel').textContent = selectedTicker;
-    initChart(selectedTicker, "1D");
-    fetchDashboard(); // Refresh with new ticker context
+    
+    // Update label immediately for visual feedback
+    const labelEl = document.getElementById('chartTickerLabel');
+    if (labelEl) labelEl.textContent = selectedTicker;
+    
+    // Optimization: Check if we have cached signals for this ticker in the current dashboard data
+    const cachedScan = (window.lastDashboardData?.watchlistScans || {})[ticker];
+    if (cachedScan) {
+        renderSignals(
+            cachedScan.signals, 
+            cachedScan.action, 
+            cachedScan.reason, 
+            cachedScan.bullish_count, 
+            cachedScan.bearish_count
+        );
+        updateSizingPanel(cachedScan);
+    } else {
+        // Clear signals and show loader only if we don't have cached data
+        const grid = document.getElementById('signalGrid');
+        const loading = document.getElementById('gridLoading');
+        if (grid) grid.innerHTML = '';
+        if (loading) loading.classList.remove('hidden');
+    }
+
+    syncChart(); // Load chart in parallel
+    fetchDashboard(); // Get fresh data
 }
 
 async function removeFromWatchlist(ticker) {
@@ -385,10 +431,11 @@ async function updateTickerAmount(ticker, amount) {
 async function addToTradelist(ticker) {
     try {
         const headers = await getAuthHeaders();
+        const timeframe = document.getElementById('strategyTimeframe')?.value || '4Hour';
         const response = await fetch(`${API_BASE}/api/tradelist`, {
             method: 'POST',
             headers: headers,
-            body: JSON.stringify({ ticker: ticker })
+            body: JSON.stringify({ ticker: ticker, timeframe: timeframe })
         });
         if (response.ok) fetchDashboard();
     } catch (e) {
@@ -869,16 +916,7 @@ async function fetchDashboard() {
         // Get selected ticker scan
         const activeScan = data.watchlistScans?.[selectedTicker];
 
-        // Chart update logic
-        if (!tvWidget && selectedTicker) {
-            initChart(selectedTicker, currentBackendTf);
-        } else if (tvWidget && data.priceHistory && data.priceHistory.length > 0) {
-            // Priority: Use the price history that came directly from the dashboard call
-            updateChart(data.priceHistory, selectedTicker, activeScan?.signals || data.signals);
-        } else if (tvWidget && activeScan) {
-            // Fallback: If dashboard was empty but we have an active scan, fetch history manually
-            fetchTickerChart(selectedTicker, activeScan.signals);
-        }
+
 
         // Signals
         if (activeScan) {
@@ -896,7 +934,7 @@ async function fetchDashboard() {
 
         // Watchlist & Tradelist
         renderTradelist(data.watchlistScans, data.tradelist, data.tickerAmounts);
-        renderWatchlist(data.watchlistScans, data.watchlist, data.tradelist);
+        renderWatchlist(data.watchlistScans, data.watchlist, data.tradelist, data.botScans);
         
         // Cache data for settings modals to access
         window.lastDashboardData = data;
@@ -942,25 +980,67 @@ async function fetchTickerChart(ticker, signals) {
 // 9. Event Listeners (attached in DOMContentLoaded below)
 // ──────────────────────────────────────────────
 function attachEventListeners() {
+    // Setup ticker search (Rich Dropdown)
     const tickerSearch = document.getElementById('tickerSearch');
+    let dashboardSearchTimeout = null;
+    
     if (tickerSearch) {
-        // Handle selecting from dropdown or pressing Enter
-        tickerSearch.addEventListener('change', (e) => {
-            const val = e.target.value.trim().toUpperCase();
-            if (val && val !== selectedTicker) {
-                selectedTicker = val;
-                document.getElementById('chartTickerLabel').textContent = selectedTicker;
-                initChart(selectedTicker, "1D");
-                fetchTickerChart(selectedTicker);
-                updateFavoriteIcon();
+        tickerSearch.addEventListener('input', (e) => {
+            const query = e.target.value.trim();
+            const resultsContainer = document.getElementById('tickerSearchResults');
+
+            if (query.length < 2) {
+                resultsContainer.classList.add('hidden');
+                return;
             }
+
+            clearTimeout(dashboardSearchTimeout);
+            dashboardSearchTimeout = setTimeout(async () => {
+                try {
+                    const headers = await getAuthHeaders();
+                    const res = await fetch(`${API_BASE}/api/search/${encodeURIComponent(query)}`, { headers });
+                    const data = await res.json();
+
+                    resultsContainer.innerHTML = '';
+                    if (data && data.length > 0) {
+                        data.forEach(item => {
+                            const div = document.createElement('div');
+                            div.className = "p-3 hover:bg-indigo-50 cursor-pointer border-b border-indigo-50 last:border-0 transition-colors flex justify-between items-center";
+                            div.innerHTML = `
+                                <div class="flex flex-col">
+                                    <span class="font-black text-indigo-900">${item.symbol}</span>
+                                    <span class="text-[0.65rem] text-indigo-400 font-medium truncate w-40">${item.name}</span>
+                                </div>
+                                <span class="text-[0.6rem] bg-indigo-100 text-indigo-500 px-2 py-0.5 rounded uppercase font-bold tracking-widest">+ View</span>
+                            `;
+                            div.onclick = () => {
+                                resultsContainer.classList.add('hidden');
+                                tickerSearch.value = item.symbol;
+                                
+                                // Set active ticker and update UI
+                                selectedTicker = item.symbol;
+                                document.getElementById('chartTickerLabel').textContent = selectedTicker;
+                                initChart(selectedTicker, "1D");
+                                fetchTickerChart(selectedTicker);
+                                updateFavoriteIcon();
+                            };
+                            resultsContainer.appendChild(div);
+                        });
+                        resultsContainer.classList.remove('hidden');
+                    } else {
+                        resultsContainer.innerHTML = '<div class="p-3 text-center text-xs text-indigo-400 font-medium">No assets found</div>';
+                        resultsContainer.classList.remove('hidden');
+                    }
+                } catch (e) {
+                    console.error('[search] Error fetching results:', e);
+                }
+            }, 300); // 300ms debounce
         });
 
-        // Ensure Enter key triggers the change if it didn't automatically
-        tickerSearch.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                tickerSearch.blur(); // Triggers change event
+        // Close search dropdown on click outside
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('#tickerSearch') && !e.target.closest('#tickerSearchResults')) {
+                document.getElementById('tickerSearchResults')?.classList.add('hidden');
             }
         });
     }
@@ -970,10 +1050,8 @@ function attachEventListeners() {
         favoriteBtn.addEventListener('click', async () => {
             if (!selectedTicker) return;
 
-            // Toggle in backend
-            const datalist = document.getElementById('watchlistData');
-            const currentWatchlist = Array.from(datalist?.options || []).map(o => o.value);
-
+            // Check current active watchlist from cache
+            const currentWatchlist = window.lastDashboardData?.watchlist || [];
             const isRemoving = currentWatchlist.includes(selectedTicker);
 
             try {
@@ -983,23 +1061,17 @@ function attachEventListeners() {
                         method: 'DELETE',
                         headers: headers
                     });
+                    window.lastDashboardData.watchlist = currentWatchlist.filter(t => t !== selectedTicker);
                 } else {
                     await fetch(`${API_BASE}/api/watchlist`, {
                         method: 'POST',
                         headers: headers,
                         body: JSON.stringify({ ticker: selectedTicker })
                     });
+                    window.lastDashboardData.watchlist.push(selectedTicker);
                 }
 
-                // Sync local storage for faster UI feedback and fallback
-                let favorites = JSON.parse(localStorage.getItem('userFavorites')) || currentWatchlist;
-                if (isRemoving) {
-                    favorites = favorites.filter(t => t !== selectedTicker);
-                } else {
-                    if (!favorites.includes(selectedTicker)) favorites.push(selectedTicker);
-                }
-                localStorage.setItem('userFavorites', JSON.stringify(favorites));
-
+                updateFavoriteIcon();
                 fetchDashboard(); // Trigger UI update
             } catch (e) {
                 console.error('Error toggling favorite:', e);
@@ -1012,9 +1084,8 @@ function updateFavoriteIcon() {
     const icon = document.getElementById('favIcon');
     if (!icon || !selectedTicker) return;
 
-    // Check current datalist (which represents the active watchlist)
-    const datalist = document.getElementById('watchlistData');
-    const currentWatchlist = Array.from(datalist?.options || []).map(o => o.value);
+    // Check current active watchlist from cache
+    const currentWatchlist = window.lastDashboardData?.watchlist || [];
 
     if (currentWatchlist.includes(selectedTicker)) {
         icon.setAttribute('fill', 'currentColor');
@@ -1060,8 +1131,9 @@ async function updateStrategyTf(newTf) {
             console.log(`[settings] Timeframe updated to ${newTf}`);
             // Update global state so future chart/dashboard calls use it
             currentBackendTf = newTf;
-            // Force a refresh to update everything with new timeframe
-            fetchDashboard();
+            
+            syncChart(); // Load chart in parallel
+            fetchDashboard(); // Refresh data
         }
     } catch (e) {
         console.error('Error updating timeframe:', e);

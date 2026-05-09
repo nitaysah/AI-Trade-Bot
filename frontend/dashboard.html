@@ -52,7 +52,7 @@
         class="fixed inset-0 z-[-1] bg-[radial-gradient(ellipse_at_bottom_right,_var(--tw-gradient-stops))] from-indigo-200/30 via-transparent to-transparent">
     </div>
 
-    <main class="max-w-3xl mx-auto px-4 py-8">
+    <main class="max-w-5xl mx-auto px-4 py-8">
 
         <!-- ═══════════════ HEADER ═══════════════ -->
         <header class="flex flex-col items-center text-center mb-10 gap-8 border-b border-purple-200/80 pb-8">
@@ -67,8 +67,10 @@
             </div>
 
             <div class="flex flex-wrap justify-center items-center gap-3 md:gap-4 w-full">
+
+
                 <a href="bots.html"
-                    class="flex items-center text-sm font-black bg-emerald-50 text-emerald-700 border-2 border-emerald-200 rounded-full px-8 py-3 hover:bg-emerald-600 hover:text-white hover:border-emerald-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
+                    class="flex items-center text-sm font-black bg-purple-50 text-indigo-600 border-2 border-purple-100 rounded-full px-8 py-3 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
                     🤖 Active Bots
                 </a>
 
@@ -81,14 +83,11 @@
                     class="flex items-center text-sm font-black px-8 py-3 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider">
                     <span class="h-2.5 w-2.5 rounded-full mr-2.5" id="alpacaStatusDot"></span>
                     <span id="alpacaStatusText">Checking...</span>
-                </span>
-
-                <div id="alpacaActionContainer">
-                    <button onclick="unlinkAlpaca()" id="btnUnlinkAlpaca"
-                        class="hidden flex items-center text-sm font-black bg-rose-50 text-rose-600 border-2 border-rose-100 rounded-full px-8 py-3 hover:bg-rose-600 hover:text-white transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
-                        ✂️ Unlink
+                    <button id="btnUnlinkAlpaca" onclick="unlinkAlpaca()" 
+                        class="hidden ml-4 px-3 py-1 bg-rose-500 text-white rounded-full text-[10px] hover:bg-rose-600 transition-all uppercase tracking-tighter">
+                        Unlink
                     </button>
-                </div>
+                </span>
 
                 <button onclick="logoutCommander()"
                     class="flex items-center text-sm font-black bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white transition-all px-8 py-3 rounded-full border-2 border-rose-100 shadow-sm whitespace-nowrap uppercase tracking-wider">
@@ -193,9 +192,9 @@
                                     id="chartTickerLabel">Syncing...</span></h2>
                             <div class="flex items-center gap-2">
 
-                                <div class="relative flex items-center">
-                                    <input type="text" id="tickerSearch" list="watchlistData" placeholder="Search..."
-                                        class="bg-white/80 text-indigo-900 border border-purple-300 rounded-l-lg px-3 py-1.5 w-32 text-sm uppercase focus:outline-none focus:ring-2 focus:ring-purple-400 transition-all font-medium">
+                                <div class="relative flex items-center z-50">
+                                    <input type="text" id="tickerSearch" autocomplete="off" placeholder="Search..."
+                                        class="bg-white/80 text-indigo-900 border border-purple-300 rounded-l-lg px-3 py-1.5 w-48 text-sm uppercase focus:outline-none focus:ring-2 focus:ring-purple-400 transition-all font-medium">
                                     <button id="favoriteBtn"
                                         class="bg-white/80 text-gray-400 border border-l-0 border-purple-300 rounded-r-lg px-2 py-1.5 hover:text-yellow-500 transition-colors"
                                         title="Toggle Favorite">
@@ -205,7 +204,9 @@
                                                 d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
                                         </svg>
                                     </button>
-                                    <datalist id="watchlistData"></datalist>
+                                    <div id="tickerSearchResults"
+                                        class="absolute top-full right-0 mt-2 bg-white rounded-xl shadow-2xl border border-indigo-100 overflow-hidden hidden max-h-60 overflow-y-auto z-50 w-64">
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -291,13 +292,19 @@
 
         </div>
 
-        <!-- Footer -->
-        <footer class="mt-8 text-center text-xs text-purple-400 pb-4">
-            <p>⚠️ Algorithmic trading involves significant risk. This is for educational purposes only.</p>
-            <p class="mt-1">AI Trader BOT v2.0 — Built with FastAPI, Gemini AI & Alpaca</p>
+        <!-- ═══════════════ FOOTER ═══════════════ -->
+        <footer class="mt-20 text-center text-[0.7rem] text-purple-400 font-black uppercase tracking-[0.3em] pb-12 border-t border-purple-100 pt-12">
+            <div class="flex flex-col items-center gap-4">
+                <div class="flex items-center gap-2">
+                    <span class="h-1.5 w-1.5 rounded-full bg-purple-400 opacity-50"></span>
+                    <p>AI Trading Bot — Sentient Performance Engine v2.0</p>
+                    <span class="h-1.5 w-1.5 rounded-full bg-purple-400 opacity-50"></span>
+                </div>
+                <p class="text-[0.6rem] text-rose-400/80 max-w-md">⚠️ Algorithmic trading involves significant risk. This is for educational purposes only and does not guarantee future results.</p>
+            </div>
         </footer>
 
-        </div>
+    </main>
 
         <!-- Ticker Settings Modal -->
 
