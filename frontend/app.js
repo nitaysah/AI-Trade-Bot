@@ -72,74 +72,82 @@ function formatLocalTime(isoString) {
 // ──────────────────────────────────────────────
 // 1. Initialize Chart (TradingView Advanced Widget)
 // ──────────────────────────────────────────────
-function initChart(ticker = "AAPL", tf = "1D") {
+let lwChart = null;
+let candleSeries = null;
+
+function initChart() {
     const container = document.getElementById('tradingChart');
     if (!container) return;
 
-    let interval = "5";
-    if (tf === "1Min" || tf === "1M") interval = "1";
-    if (tf === "5Min" || tf === "5M") interval = "5";
-    if (tf === "15Min" || tf === "15M") interval = "15";
-    if (tf === "30Min" || tf === "30M") interval = "30";
-    if (tf === "1Hour" || tf === "1H") interval = "60";
-    if (tf === "4Hour" || tf === "4H") interval = "240";
-    if (tf === "1Day" || tf === "1D" || tf === "D") interval = "D";
-
-    // Format crypto for TradingView if needed (e.g. BTCUSD -> CRYPTO:BTCUSD)
-    let tvSymbol = ticker;
-    if (ticker.includes("USD") && ticker.length >= 6) {
-        tvSymbol = `BITSTAMP:${ticker}`; // Bitstamp is a very stable feed for TV widget
-    }
-
     container.innerHTML = '';
-
-    tvWidget = new TradingView.widget({
-        "autosize": true,
-        "symbol": tvSymbol,
-        "interval": interval,
-        "timezone": "America/Chicago",
-        "theme": "light",
-        "style": "1",
-        "locale": "en",
-        "enable_publishing": false,
-        "backgroundColor": "rgba(255, 255, 255, 1)",
-        "gridColor": "rgba(168, 85, 247, 0.1)",
-        "hide_top_toolbar": false,
-        "hide_legend": false,
-        "save_image": false,
-        "container_id": "tradingChart"
+    
+    lwChart = LightweightCharts.createChart(container, {
+        layout: {
+            background: { color: '#ffffff' },
+            textColor: '#334155',
+        },
+        grid: {
+            vertLines: { color: 'rgba(168, 85, 247, 0.05)' },
+            horzLines: { color: 'rgba(168, 85, 247, 0.05)' },
+        },
+        crosshair: {
+            mode: LightweightCharts.CrosshairMode.Normal,
+        },
+        rightPriceScale: {
+            borderColor: 'rgba(197, 203, 206, 0.8)',
+        },
+        timeScale: {
+            borderColor: 'rgba(197, 203, 206, 0.8)',
+            timeVisible: true,
+            secondsVisible: false,
+        },
     });
+
+    candleSeries = lwChart.addCandlestickSeries({
+        upColor: '#10b981',
+        downColor: '#ef4444',
+        borderVisible: false,
+        wickUpColor: '#10b981',
+        wickDownColor: '#ef4444',
+    });
+
+    const resizeObserver = new ResizeObserver(entries => {
+        if (entries.length === 0 || !entries[0].contentRect) return;
+        const { width, height } = entries[0].contentRect;
+        lwChart.applyOptions({ width, height });
+    });
+    resizeObserver.observe(container);
 }
 
-// ──────────────────────────────────────────────
-// 2. Update Chart
-// ──────────────────────────────────────────────
-function updateChart(priceHistory, ticker, signals) {
-    // The TradingView widget handles its own data fetching directly from TradingView.
-    // We only need to update the label.
+function updateChart(priceHistory, ticker) {
+    if (!lwChart || !candleSeries) {
+        initChart();
+    }
+
     const labelEl = document.getElementById('chartTickerLabel');
     if (labelEl) labelEl.textContent = ticker;
+
+    if (!priceHistory || priceHistory.length === 0) return;
+
+    // Convert format to Lightweight Charts expected format
+    const chartData = priceHistory.map(bar => ({
+        time: bar.time, // already in seconds
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+    })).sort((a, b) => a.time - b.time);
+
+    candleSeries.setData(chartData);
+    lwChart.timeScale().fitContent();
 }
 
-// ──────────────────────────────────────────────
-// 2.5 Synchronize Chart Symbol & Timeframe
-// ──────────────────────────────────────────────
 function syncChart() {
-    if (!selectedTicker) return;
-    
-    // Format crypto for TradingView if needed (e.g. BTCUSD -> CRYPTO:BTCUSD)
-    let tvSymbol = selectedTicker;
-    if (selectedTicker.includes("USD") && selectedTicker.length >= 6) {
-        tvSymbol = `BITSTAMP:${selectedTicker}`; 
-    }
-
-    const needsRefresh = !tvWidget || window.lastChartTicker !== selectedTicker || window.lastChartTf !== currentBackendTf;
-    
-    if (needsRefresh) {
-        console.log(`[chart] Syncing chart for ${selectedTicker} (${currentBackendTf})`);
-        window.lastChartTicker = selectedTicker;
-        window.lastChartTf = currentBackendTf;
-        initChart(selectedTicker, currentBackendTf);
+    // With Lightweight Charts, sync is handled by fetchDashboard updating the data.
+    // We only need to ensure the label is correct if we switch tickers before data arrives.
+    if (selectedTicker) {
+        const labelEl = document.getElementById('chartTickerLabel');
+        if (labelEl) labelEl.textContent = selectedTicker;
     }
 }
 
@@ -346,7 +354,8 @@ function selectTicker(ticker) {
     }
 
     syncChart(); // Load chart in parallel
-    fetchDashboard(); // Get fresh data
+    fetchDashboard('fast');
+    fetchDashboard('heavy'); // Get fresh data
 }
 
 async function removeFromWatchlist(ticker) {
@@ -362,7 +371,8 @@ async function removeFromWatchlist(ticker) {
             favorites = favorites.filter(t => t !== ticker);
             localStorage.setItem('userFavorites', JSON.stringify(favorites));
 
-            fetchDashboard(); // Refresh UI
+            fetchDashboard('fast');
+            fetchDashboard('heavy'); // Refresh UI
         }
     } catch (e) {
         console.error('Error removing from watchlist:', e);
@@ -462,7 +472,10 @@ async function addToTradelist(ticker) {
             headers: headers,
             body: JSON.stringify({ ticker: ticker, timeframe: timeframe })
         });
-        if (response.ok) fetchDashboard();
+        if (response.ok) {
+            fetchDashboard('fast');
+            fetchDashboard('heavy');
+        }
     } catch (e) {
         console.error('Error adding to tradelist:', e);
     }
@@ -475,7 +488,10 @@ async function removeFromTradelist(ticker) {
             method: 'DELETE',
             headers: headers
         });
-        if (response.ok) fetchDashboard();
+        if (response.ok) {
+            fetchDashboard('fast');
+            fetchDashboard('heavy');
+        }
     } catch (e) {
         console.error('Error removing from tradelist:', e);
     }
@@ -722,7 +738,8 @@ async function saveTickerSettings() {
         if (response.ok) {
             console.log(`[settings] Saved settings for ${currentEditingTicker}`);
             closeTickerModal();
-            fetchDashboard(); // Refresh to show changes
+            fetchDashboard('fast');
+            fetchDashboard('heavy'); // Refresh to show changes
         }
     } catch (e) {
         console.error('Error saving ticker settings:', e);
@@ -740,7 +757,8 @@ async function resetTickerSettings() {
             headers: headers
         });
         closeTickerModal();
-        fetchDashboard();
+        fetchDashboard('fast');
+        fetchDashboard('heavy');
     } catch (e) {
         console.error('Error resetting ticker settings:', e);
     }
@@ -749,11 +767,11 @@ async function resetTickerSettings() {
 // ──────────────────────────────────────────────
 // 8. Main Fetch Loop
 // ──────────────────────────────────────────────
-async function fetchDashboard() {
+async function fetchDashboard(mode = 'heavy') {
     try {
         const url = selectedTicker
-            ? `${API_BASE}/api/dashboard?ticker=${selectedTicker}&timeframe=${currentBackendTf}`
-            : `${API_BASE}/api/dashboard`;
+            ? `${API_BASE}/api/dashboard?ticker=${selectedTicker}&timeframe=${currentBackendTf}&mode=${mode}`
+            : `${API_BASE}/api/dashboard?mode=${mode}`;
 
         const headers = await getAuthHeaders();
         // Removed redundant header log
@@ -936,6 +954,11 @@ async function fetchDashboard() {
         if (selectedTicker) {
             const labelEl = document.getElementById('chartTickerLabel');
             if (labelEl) labelEl.textContent = selectedTicker;
+            
+            // Push data to Lightweight Charts
+            if (data.priceHistory) {
+                updateChart(data.priceHistory, selectedTicker);
+            }
         }
 
         // Get selected ticker scan
@@ -944,7 +967,7 @@ async function fetchDashboard() {
 
 
         // Signals
-        if (activeScan) {
+        if (activeScan && mode !== 'fast') {
             renderSignals(
                 activeScan.signals,
                 activeScan.action,
@@ -953,7 +976,7 @@ async function fetchDashboard() {
                 activeScan.bearish_count
             );
             updateSizingPanel(activeScan);
-        } else if (data.signals) {
+        } else if (data.signals && mode !== 'fast') {
             renderSignals(data.signals, 'HOLD', 'Waiting for scan...', 0, 0);
         }
 
@@ -968,6 +991,19 @@ async function fetchDashboard() {
         latestScanHistory = data.recentTrades || [];
         latestExecutedTrades = data.executedTrades || [];
         renderTradeLog(latestScanHistory, latestExecutedTrades);
+
+        // Update Performance Panel
+        if (data.performance) {
+            const dashboardMs = document.getElementById('perfDashboardMs');
+            const evalMs = document.getElementById('perfEvalMs');
+            const cacheStatus = document.getElementById('perfCache');
+            const perfUpdated = document.getElementById('perfUpdated');
+            
+            if (dashboardMs) dashboardMs.textContent = `${Math.round(data.performance.total_ms || 0)}ms`;
+            if (evalMs) evalMs.textContent = `${Math.round(data.performance.eval_ms || 0)}ms`;
+            if (cacheStatus) cacheStatus.textContent = data.performance.cached ? 'HIT' : 'MISS';
+            if (perfUpdated) perfUpdated.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        }
 
     } catch (error) {
         console.error('[dashboard] Fetch error:', error);
@@ -1097,7 +1133,8 @@ function attachEventListeners() {
                 }
 
                 updateFavoriteIcon();
-                fetchDashboard(); // Trigger UI update
+                fetchDashboard('fast');
+                fetchDashboard('heavy'); // Trigger UI update
             } catch (e) {
                 console.error('Error toggling favorite:', e);
             }
@@ -1133,7 +1170,8 @@ async function toggleIndicator(key, value) {
             body: JSON.stringify({ [key]: value })
         });
 
-        fetchDashboard(); // Refresh chart and dashboard immediately
+        fetchDashboard('fast');
+        fetchDashboard('heavy'); // Refresh chart and dashboard immediately
     } catch (e) {
         console.error('Error saving setting:', e);
     }
@@ -1141,9 +1179,18 @@ async function toggleIndicator(key, value) {
 
 async function updateStrategyTf(newTf) {
     try {
+        currentBackendTf = newTf;
+        if (window.lastDashboardData) {
+            window.lastDashboardData.watchlistScans = {};
+            window.lastDashboardData.botScans = {};
+            window.lastDashboardData.signals = {};
+        }
+
         // Show loader immediately
         const loading = document.getElementById('gridLoading');
         if (loading) loading.classList.remove('hidden');
+        const grid = document.getElementById('signalGrid');
+        if (grid) grid.innerHTML = '';
 
         const headers = await getAuthHeaders();
         const response = await fetch(`${API_BASE}/api/settings/timeframe`, {
@@ -1154,11 +1201,10 @@ async function updateStrategyTf(newTf) {
 
         if (response.ok) {
             console.log(`[settings] Timeframe updated to ${newTf}`);
-            // Update global state so future chart/dashboard calls use it
-            currentBackendTf = newTf;
             
             syncChart(); // Load chart in parallel
-            fetchDashboard(); // Refresh data
+            fetchDashboard('fast');
+            fetchDashboard('heavy'); // Refresh data
         }
     } catch (e) {
         console.error('Error updating timeframe:', e);
@@ -1181,8 +1227,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const checkAuth = setInterval(() => {
         if (window.auth && window.auth.currentUser) {
             console.log('[dashboard] Auth ready. Starting data stream.');
-            fetchDashboard();
-            setInterval(fetchDashboard, REFRESH_INTERVAL);
+            fetchDashboard('fast');
+            fetchDashboard('heavy');
+            setInterval(() => {
+                fetchDashboard('fast');
+                fetchDashboard('heavy');
+            }, REFRESH_INTERVAL);
             clearInterval(checkAuth);
         }
     }, 500);
@@ -1555,7 +1605,10 @@ async function unlinkAlpaca() {
         const data = await response.json();
         if (data.status === 'success') {
             alert(data.message);
-            if (typeof fetchDashboard === 'function') fetchDashboard();
+            if (typeof fetchDashboard === 'function') {
+                fetchDashboard('fast');
+                fetchDashboard('heavy');
+            }
         } else {
             alert("Error unlinking account.");
         }
@@ -1640,7 +1693,8 @@ async function saveIndicatorSettings() {
             console.log(`[settings] Updated settings for ${currentEditingIndicator}`);
             closeIndicatorSettings();
             // Fetch dashboard to see effects (calculating with new params)
-            fetchDashboard();
+            fetchDashboard('fast');
+            fetchDashboard('heavy');
         } else {
             alert("Error saving indicator settings.");
         }

@@ -457,6 +457,54 @@ class WebullBroker:
             print(f"[webull] Search error: {e}")
             return []
 
+    def get_bars(self, symbol: str, timespan: str = "m5", count: int = 200) -> list:
+        """
+        Fetches historical OHLCV bars from Webull.
+        Timespan mapping: m1, m2, m5, m15, m30, h1, h2, h4, d1, w1
+        """
+        if self.market_client is None:
+            return []
+
+        try:
+            # Step 1: Normalize symbol and determine category
+            clean_symbol = symbol.upper().replace("/", "")
+            is_crypto = any(clean_symbol.endswith(b) for b in ["USD", "USDT", "USDC"])
+            category = "CRYPTO" if is_crypto else "STOCK"
+
+            # Step 2: Request bars
+            # Note: Method names in the official SDK: market_data.get_history_bar
+            res = self._retry_request(
+                self.market_client.get_history_bar,
+                clean_symbol,
+                category=category,
+                timespan=timespan,
+                count=count
+            )
+
+            if res.status_code == 200:
+                data = res.json()
+                bars = []
+                for b in data:
+                    # Webull returns timestamp in seconds or milliseconds
+                    ts = b.get('time')
+                    if ts and ts > 10**10: ts = ts / 1000 # convert ms to s
+                    
+                    bars.append({
+                        'time': ts,
+                        'open': float(b.get('open', 0)),
+                        'high': float(b.get('high', 0)),
+                        'low': float(b.get('low', 0)),
+                        'close': float(b.get('close', 0)),
+                        'volume': float(b.get('volume', 0))
+                    })
+                return bars
+            else:
+                print(f"[webull] Error fetching bars: {res.status_code} {res.text}")
+                return []
+        except Exception as e:
+            print(f"[webull] Error fetching bars: {e}")
+            return []
+
     # ──────────────────────────────────────────────
     # Helpers
     # ──────────────────────────────────────────────

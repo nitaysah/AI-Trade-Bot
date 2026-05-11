@@ -18,6 +18,7 @@ import config
 
 
 from concurrent.futures import ThreadPoolExecutor
+import threading
 
 risk_mgr = RiskManager()
 executor = ThreadPoolExecutor(max_workers=10) # Dedicated pool for parallel analysis
@@ -28,7 +29,25 @@ import time
 # Stores full trade evaluation results to prevent redundant heavy API calls
 # within short windows (e.g. while user is navigating or UI is refreshing)
 EVALUATION_CACHE = {} 
-EVAL_CACHE_TTL = 15 # seconds
+EVAL_CACHE_TTL = 45 # seconds
+IN_FLIGHT_EVALS = {}
+IN_FLIGHT_LOCK = threading.Lock()
+
+def clear_evaluation_cache(ticker: str = None, timeframe: str = None):
+    """Clear cached trade evaluations, optionally scoped by ticker/timeframe."""
+    if ticker is None and timeframe is None:
+        EVALUATION_CACHE.clear()
+        return
+
+    ticker_key = ticker.upper() if ticker else None
+    timeframe_key = timeframe.upper() if timeframe else None
+    for cache_key in list(EVALUATION_CACHE.keys()):
+        cached_ticker, cached_timeframe = cache_key
+        if ticker_key and cached_ticker != ticker_key:
+            continue
+        if timeframe_key and cached_timeframe != timeframe_key:
+            continue
+        EVALUATION_CACHE.pop(cache_key, None)
 
 def get_now():
     """Returns current time in the configured timezone."""
@@ -161,39 +180,51 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
     }
 
 
-def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash: float = None, timeframe: str = None):
+def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash: float = None, timeframe: str = None, data_source: str = "alpaca"):
     """
     Full evaluation pipeline for a single ticker.
     Combines technical signals + AI sentiment + risk management.
-    
-    Returns a comprehensive trade decision dict.
     """
-    # Priority: 1. Argument, 2. Ticker-specific setting, 3. Global default
     if timeframe is None:
         ticker_settings = getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {})
         timeframe = ticker_settings.get('timeframe', config.DEFAULT_TIMEFRAME)
 
     # --- Check Evaluation Cache ---
-    cache_key = (ticker.upper(), timeframe.upper())
+    ticker_key = ticker.upper()
+    timeframe_key = timeframe.upper()
+    cache_key = (ticker_key, timeframe_key, data_source)
     now_ts = time.time()
     if cache_key in EVALUATION_CACHE:
         entry = EVALUATION_CACHE[cache_key]
         if now_ts - entry['timestamp'] < EVAL_CACHE_TTL:
-            # print(f"[trader] Using cached evaluation for {ticker} ({timeframe})")
             return entry['data']
 
-    # 1. Start both Technical Analysis and AI Sentiment IN PARALLEL
-    # This prevents AI analysis (slow) from blocking technical signals
-    tech_future = executor.submit(get_full_analysis, ticker, timeframe=timeframe)
-    ai_future = executor.submit(get_ai_sentiment, ticker)
+    start_ts = time.perf_counter()
+    analysis = None
+    ai_data = {"score": 0.0, "confidence": 0.0}
 
-    # 2. Wait for results
-    analysis = tech_future.result()
-    ai_data = ai_future.result()
+    def _compute():
+        # 1. Start both Technical Analysis and AI Sentiment IN PARALLEL
+        tech_future = executor.submit(get_full_analysis, ticker_key, timeframe=timeframe, data_source=data_source)
+        ai_future = executor.submit(get_ai_sentiment, ticker_key)
+        return tech_future.result(), ai_future.result()
+
+    with IN_FLIGHT_LOCK:
+        shared_future = IN_FLIGHT_EVALS.get(cache_key)
+        if shared_future is None:
+            shared_future = executor.submit(_compute)
+            IN_FLIGHT_EVALS[cache_key] = shared_future
+
+    try:
+        analysis, ai_data = shared_future.result()
+    finally:
+        with IN_FLIGHT_LOCK:
+            if IN_FLIGHT_EVALS.get(cache_key) is shared_future:
+                IN_FLIGHT_EVALS.pop(cache_key, None)
 
     if not analysis:
         print(f"[trader] WARNING: No technical analysis data for {ticker}")
-        return {
+        out = {
             "ticker": ticker,
             "action": "HOLD",
             "reason": "Indicator data missing",
@@ -201,6 +232,8 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
             "price_history": [],
             "timeframe": timeframe
         }
+        print(f"[perf] evaluate_trade {ticker_key} {timeframe_key}: {(time.perf_counter() - start_ts) * 1000:.1f}ms (no analysis)")
+        return out
 
     # 3. Get decision from confluence logic
     decision = get_confluence_decision(
@@ -258,6 +291,7 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         "data": result,
         "timestamp": time.time()
     }
+    print(f"[perf] evaluate_trade {ticker_key} {timeframe_key}: {(time.perf_counter() - start_ts) * 1000:.1f}ms")
     return result
 
 

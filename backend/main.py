@@ -28,9 +28,10 @@ from firebase_admin import auth, credentials, firestore
 from cryptography.fernet import Fernet
 import base64
 import hashlib
+import time
 
 # pyrefly: ignore [missing-import]
-from trader import evaluate_trade, get_risk_manager
+from trader import evaluate_trade, get_risk_manager, clear_evaluation_cache
 # pyrefly: ignore [missing-import]
 from broker_factory import create_broker
 from backtester import Backtester
@@ -282,12 +283,14 @@ broker = create_broker()
 trade_log = []      # In-memory history for all scans (HOLD/WATCH/BUY/SELL)
 executed_trades = [] # Persistent history for successful BUY/SELL orders only
 latest_scans = {}   # {ticker: latest_evaluation_result}
+latest_scans_by_tf = {}  # {timeframe: {ticker: latest_evaluation_result}}
 last_trade_timestamps = {}  # {ticker: datetime} — Cooldown tracking
 bot_running = False
 last_scan_time = None
 force_scan_trigger = None
 last_scan_timestamps = {}
 bot_scans = {}
+bot_scans_by_tf = {}  # {timeframe: {ticker: latest_evaluation_result}}
 cloud_restore_log = [] # Capture startup events for debugging
 
 class AlpacaConfig(BaseModel):
@@ -303,6 +306,78 @@ def get_now():
     """Returns current time in the configured timezone (Central Time by default)."""
     tz = pytz.timezone(config.TIMEZONE)
     return datetime.now(tz)
+
+def _record_scan(result: dict):
+    """Record a scan in both flat and timeframe-indexed stores."""
+    if not result:
+        return
+    ticker = result.get("ticker", "").upper()
+    timeframe = result.get("timeframe", config.DEFAULT_TIMEFRAME)
+    if not ticker:
+        return
+    latest_scans[ticker] = result
+    tf_bucket = latest_scans_by_tf.setdefault(timeframe, {})
+    tf_bucket[ticker] = result
+
+def _record_bot_scan(result: dict):
+    if not result:
+        return
+    ticker = result.get("ticker", "").upper()
+    timeframe = result.get("timeframe", config.DEFAULT_TIMEFRAME)
+    if not ticker:
+        return
+    bot_scans[ticker] = result
+    tf_bucket = bot_scans_by_tf.setdefault(timeframe, {})
+    tf_bucket[ticker] = result
+
+def _pick_scan(ticker: str, timeframe: str, prefer_bot: bool = True):
+    ticker = ticker.upper()
+    if prefer_bot:
+        scan = bot_scans_by_tf.get(timeframe, {}).get(ticker)
+        if scan:
+            return scan
+    scan = latest_scans_by_tf.get(timeframe, {}).get(ticker)
+    if scan:
+        return scan
+    if prefer_bot:
+        scan = bot_scans.get(ticker)
+        if scan and scan.get("timeframe") == timeframe:
+            return scan
+    scan = latest_scans.get(ticker)
+    if scan and scan.get("timeframe") == timeframe:
+        return scan
+    return None
+
+async def _warm_timeframe_scans(timeframe: str, primary_ticker: str = None, limit: int = 4):
+    """Warm cache for target timeframe in the background."""
+    if not config.WATCHLIST:
+        return
+    ordered = [t.upper() for t in config.WATCHLIST]
+    if primary_ticker and primary_ticker.upper() in ordered:
+        ordered.remove(primary_ticker.upper())
+        ordered.insert(0, primary_ticker.upper())
+    targets = ordered[:max(1, limit)]
+    account = broker.get_account_info()
+    if account.get('simulation', True):
+        return
+    for ticker in targets:
+        if _pick_scan(ticker, timeframe, prefer_bot=False):
+            continue
+        is_crypto = any(c in ticker for c in ["BTC", "ETH", "LTC", "SOL", "DOGE"]) or "USD" in ticker
+        avail_cash = account.get('non_marginable_buying_power', account['cash']) if is_crypto else account['cash']
+        try:
+            warmed = await asyncio.to_thread(
+                evaluate_trade,
+                ticker,
+                account_equity=account['equity'],
+                available_cash=avail_cash,
+                timeframe=timeframe
+            )
+            _record_scan(warmed)
+            if ticker in config.TRADELIST:
+                _record_bot_scan(warmed)
+        except Exception as exc:
+            print(f"[warmup] {ticker} {timeframe} failed: {exc}")
 
 def is_market_open():
     """Checks if US stock market is open (9:30 AM - 4:00 PM ET, Mon-Fri)."""
@@ -495,8 +570,8 @@ async def trading_loop():
                         log_prefix = "[BOT]" if is_active else "[WATCH]"
                         print(f"{log_prefix} {ticker}: ${result['price_raw']} | Signal: {result['action']} | Sent: {result['sentiment_score']}")
                         
-                        bot_scans[ticker] = result
-                        latest_scans[ticker] = result # Still keep for fallback
+                        _record_bot_scan(result)
+                        _record_scan(result)
                         trade_executed = False
 
                         # 3. Auto-execute trades ONLY if ticker is in TRADELIST
@@ -798,15 +873,16 @@ def unlink_alpaca():
     # Clear config module state
     config.ALPACA_API_KEY = ""
     config.ALPACA_SECRET_KEY = ""
-    
     return {"status": "success", "message": "Alpaca account unlinked. Switched to simulation mode."}
-
-
+    
 @app.get("/api/dashboard")
-async def get_dashboard(ticker: str = None, timeframe: str = None):
+async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "heavy"):
     """
     Main dashboard endpoint — returns everything the UI needs in one call.
     """
+    overall_start = time.perf_counter()
+    started = time.perf_counter()
+    mode = (mode or "heavy").lower()
     if timeframe is None:
         timeframe = config.DEFAULT_TIMEFRAME
         
@@ -825,9 +901,8 @@ async def get_dashboard(ticker: str = None, timeframe: str = None):
     # ─── FRESH ANALYSIS ───
     # If it's an active bot, we prioritize the background scan to avoid conflicts
     is_active_bot = primary_ticker in config.TRADELIST
-    primary_scan = bot_scans.get(primary_ticker) if is_active_bot else None
-
-    if not primary_scan:
+    primary_scan = _pick_scan(primary_ticker, timeframe, prefer_bot=is_active_bot)
+    if mode != "fast" and not primary_scan:
         # Use settled cash (non-marginable) for crypto
         is_crypto = any(c in primary_ticker for c in ["BTC", "ETH", "LTC", "SOL", "DOGE"]) or "USD" in primary_ticker
         avail_cash = account.get('non_marginable_buying_power', account['cash']) if is_crypto else account['cash']
@@ -837,13 +912,16 @@ async def get_dashboard(ticker: str = None, timeframe: str = None):
             primary_ticker, 
             account_equity=account['equity'], 
             available_cash=avail_cash,
-            timeframe=timeframe
+            timeframe=timeframe,
+            data_source="webull"  # Dashboard always uses Webull for higher fidelity research
         )
         if primary_scan:
-            latest_scans[primary_ticker] = primary_scan
+            _record_scan(primary_scan)
+            if is_active_bot:
+                _record_bot_scan(primary_scan)
     
     if not primary_scan:
-        primary_scan = latest_scans.get(primary_ticker, {})
+        primary_scan = _pick_scan(primary_ticker, timeframe, prefer_bot=is_active_bot) or {}
     sentiment_score = primary_scan.get('sentiment_score', 0)
     sentiment_confidence = primary_scan.get('sentiment_confidence', 0)
 
@@ -873,7 +951,7 @@ async def get_dashboard(ticker: str = None, timeframe: str = None):
     total_profit_pct = (total_profit / initial_est * 100) if initial_est > 0 else 0
     total_pl_sign = "+" if total_profit >= 0 else ""
 
-    return {
+    payload = {
         # Portfolio Summary Cards
         "capital": f"${account['equity']:.2f}",
         "cash": f"${account['cash']:.2f}",
@@ -896,11 +974,11 @@ async def get_dashboard(ticker: str = None, timeframe: str = None):
         "executedTrades": [_format_trade_for_ui(t) for t in executed_trades],
         "watchlistScans": {
             ticker: _format_scan_for_ui(scan)
-            for ticker, scan in latest_scans.items()
+            for ticker, scan in latest_scans_by_tf.get(timeframe, {}).items()
         },
         "botScans": {
             ticker: _format_scan_for_ui(scan)
-            for ticker, scan in bot_scans.items()
+            for ticker, scan in bot_scans_by_tf.get(timeframe, {}).items()
         },
 
         # Strategy Signals (primary ticker)
@@ -920,6 +998,13 @@ async def get_dashboard(ticker: str = None, timeframe: str = None):
         "strategyTimeframe": config.DEFAULT_TIMEFRAME,
         "watchlist": config.WATCHLIST,
         "tradelist": config.TRADELIST,
+
+        # Performance Timings
+        "performance": {
+            "total_ms": (time.perf_counter() - overall_start) * 1000,
+            "eval_ms": primary_scan.get('perf_ms', 0),
+            "cached": primary_scan.get('cached', False)
+        },
         "scanInterval": config.SCAN_INTERVAL_SECONDS,
 
         # Safety Controls
@@ -929,6 +1014,36 @@ async def get_dashboard(ticker: str = None, timeframe: str = None):
 
         "debug_logs": cloud_restore_log
     }
+    if mode == "fast":
+        payload["signals"] = {}
+        payload["priceHistory"] = []
+        payload["watchlistScans"] = {
+            k: {
+                "ticker": v.get("ticker", ""),
+                "price": v.get("price", ""),
+                "action": v.get("action", "HOLD"),
+                "reason": v.get("reason", ""),
+                "bullish_count": v.get("bullish_count", 0),
+                "bearish_count": v.get("bearish_count", 0),
+                "total_signals": v.get("total_signals", 0),
+                "signals": {}
+            } for k, v in payload["watchlistScans"].items()
+        }
+        payload["botScans"] = {
+            k: {
+                "ticker": v.get("ticker", ""),
+                "price": v.get("price", ""),
+                "action": v.get("action", "HOLD"),
+                "reason": v.get("reason", ""),
+                "bullish_count": v.get("bullish_count", 0),
+                "bearish_count": v.get("bearish_count", 0),
+                "total_signals": v.get("total_signals", 0),
+                "signals": {}
+            } for k, v in payload["botScans"].items()
+        }
+        asyncio.create_task(_warm_timeframe_scans(timeframe, primary_ticker=primary_ticker, limit=5))
+    print(f"[perf] /api/dashboard mode={mode} {primary_ticker} {timeframe}: {(time.perf_counter() - started) * 1000:.1f}ms")
+    return payload
 
 
 @app.get("/api/scan/{ticker}")
@@ -941,7 +1056,7 @@ def scan_ticker(ticker: str, timeframe: str = "4Hour"):
         return {"error": "Alpaca connection required for scanning."}
     # ─── CACHING ───
     now = datetime.now()
-    cached_scan = latest_scans.get(ticker.upper())
+    cached_scan = _pick_scan(ticker.upper(), timeframe, prefer_bot=False)
     is_recent = False
     if cached_scan and cached_scan.get('timeframe') == timeframe:
         try:
@@ -964,7 +1079,7 @@ def scan_ticker(ticker: str, timeframe: str = "4Hour"):
         timeframe=timeframe
     )
     if result:
-        latest_scans[ticker.upper()] = result
+        _record_scan(result)
         return _format_scan_for_ui(result)
     return {"error": f"Could not analyze {ticker}"}
 
@@ -1131,14 +1246,29 @@ async def update_ticker_amount(data: dict):
 @app.post("/api/settings/timeframe")
 async def update_timeframe(data: dict):
     """Updates the default trading timeframe and triggers a re-scan."""
-    global latest_scans
+    global latest_scans, bot_scans, latest_scans_by_tf, bot_scans_by_tf
     new_tf = data.get("timeframe")
     if new_tf in ["1Min", "5Min", "15Min", "30Min", "1Hour", "4Hour", "1Day"]:
         config.DEFAULT_TIMEFRAME = new_tf
-        # Clear stale scans and indicator cache
-        latest_scans = {}
-        from indicators import _data_cache
-        _data_cache.clear()
+        # Clear stale UI/evaluation scans for the previous timeframe while keeping
+        # raw indicator bar caches available per (ticker, timeframe).
+        latest_scans = {
+            ticker: scan for ticker, scan in latest_scans.items()
+            if scan.get('timeframe') == new_tf
+        }
+        bot_scans = {
+            ticker: scan for ticker, scan in bot_scans.items()
+            if scan.get('timeframe') == new_tf
+        }
+        latest_scans_by_tf = {
+            tf: scans for tf, scans in latest_scans_by_tf.items()
+            if tf == new_tf
+        }
+        bot_scans_by_tf = {
+            tf: scans for tf, scans in bot_scans_by_tf.items()
+            if tf == new_tf
+        }
+        clear_evaluation_cache()
         
         await save_settings_to_cloud()
         print(f"[settings] Global Timeframe synced to {new_tf}. Triggering immediate scan.")
@@ -1148,6 +1278,7 @@ async def update_timeframe(data: dict):
             force_scan_trigger.set()
         else:
             print("[settings] Trigger skip: loop not started.")
+        asyncio.create_task(_warm_timeframe_scans(new_tf, limit=5))
         
         return {"status": "success", "timeframe": new_tf}
     return {"status": "error", "message": "Invalid timeframe"}

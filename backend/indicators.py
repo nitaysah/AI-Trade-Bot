@@ -14,7 +14,11 @@ import config
 from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+from broker_factory import get_alpaca_clients
+from webull_broker import WebullBroker
 
+# Shared Webull instance for data only
+wb_data_provider = WebullBroker()
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
@@ -77,147 +81,133 @@ def get_alpaca_clients():
 
 _data_cache = {}
 
-# ---------------------------------------------------------------------------
-# Public API: get_full_analysis
-# ---------------------------------------------------------------------------
-def get_full_analysis(ticker, timeframe="5Min"):
+def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca"):
     """
-    Fetch live data from Alpaca, compute indicators, and return a result dict.
+    Fetch live data from Alpaca or Webull, compute indicators, and return a result dict.
     Supports both Stocks and Crypto.
     """
     try:
-        # 1. Initialize clients with LATEST keys from config
-        stock_client, crypto_client = get_alpaca_clients()
-        
-        # Detect if it's crypto (standard Alpaca crypto pairs)
-        clean_ticker = ticker.upper().replace("/", "")
-        is_crypto = any(clean_ticker.endswith(base) for base in ["USD", "USDT", "USDC"])
-        
-        request_ticker = ticker
-        if is_crypto:
-            # Format as BASE/QUOTE (e.g., BTC/USD)
-            for base in ["USDT", "USDC", "USD"]:
-                if clean_ticker.endswith(base):
-                    request_ticker = clean_ticker.replace(base, f"/{base}")
-                    break
+        df = None
 
-        if is_crypto:
-            client = crypto_client
-            request_class = CryptoBarsRequest
-        else:
-            client = stock_client
-            request_class = StockBarsRequest
+        # --- Mode 1: Webull Data (High Fidelity for Dashboard) ---
+        if data_source == "webull":
+            tf_map = {
+                "1Min": "m1", "5Min": "m5", "15Min": "m15", "30Min": "m30",
+                "1Hour": "h1", "2Hour": "h2", "4Hour": "h4", "1Day": "d1"
+            }
+            wb_tf = tf_map.get(timeframe, "m5")
+            bars = wb_data_provider.get_bars(ticker, timespan=wb_tf, count=200)
+            if bars:
+                import pandas as pd
+                df = pd.DataFrame(bars)
+                df['timestamp'] = pd.to_datetime(df['time'], unit='s', utc=True)
+                df.set_index('timestamp', inplace=True)
+                df.columns = [c.capitalize() for c in df.columns]
+            else:
+                print(f"[indicators] Webull data failed for {ticker}. Falling back to Alpaca.")
+                data_source = "alpaca"
 
-        if not client:
-            print(f"[indicators] ERROR: Alpaca client not initialized. Check your API keys.")
-            return None
-            return None
-
-        end_date = datetime.now()
-        cache_key = (ticker, timeframe)
-
-        # Timeframe -> Alpaca object + lookback
-        tf_str = timeframe.upper()
-        if tf_str == "1MIN":
-            tf_obj = TimeFrame.Minute
-            lookback_days = 2 # Enough for weekend
-        elif tf_str == "5MIN":
-            tf_obj = TimeFrame(5, TimeFrameUnit.Minute)
-            lookback_days = 4
-        elif tf_str == "15MIN":
-            tf_obj = TimeFrame(15, TimeFrameUnit.Minute)
-            lookback_days = 7
-        elif tf_str == "30MIN":
-            tf_obj = TimeFrame(30, TimeFrameUnit.Minute)
-            lookback_days = 14
-        elif tf_str in ["1HOUR", "60MIN"]:
-            tf_obj = TimeFrame.Hour
-            lookback_days = 30
-        elif tf_str == "4HOUR":
-            tf_obj = TimeFrame(4, TimeFrameUnit.Hour)
-            lookback_days = 60
-        elif tf_str in ["1D", "1DAY"]:
-            tf_obj = TimeFrame.Day
-            lookback_days = 365
-        else:
-            tf_obj = TimeFrame(5, TimeFrameUnit.Minute)
-            lookback_days = 5
-
-        # Incremental cache
-        if cache_key in _data_cache:
-            last_bar_time, cached_df = _data_cache[cache_key]
-            start_date = last_bar_time
-        else:
-            start_date = end_date - timedelta(days=lookback_days)
-            cached_df = None
-
-        request_params = request_class(
-            symbol_or_symbols=request_ticker,
-            timeframe=tf_obj,
-            start=start_date,
-            end=end_date,
-        )
-        
-        # Stocks need a feed, Crypto does not
-        if not is_crypto:
-            request_params.feed = "iex"
-
-        try:
+        # --- Mode 2: Alpaca Data (Execution Feed) ---
+        if data_source == "alpaca":
+            # Initialize clients
+            stock_client, crypto_client = get_alpaca_clients()
+            
+            clean_ticker = ticker.upper().replace("/", "")
+            is_crypto = any(clean_ticker.endswith(base) for base in ["USD", "USDT", "USDC"])
+            
+            request_ticker = ticker
             if is_crypto:
-                print(f"[indicators] Fetching Crypto Bars for {request_ticker} ({timeframe})")
-                bars = client.get_crypto_bars(request_params)
-            else:
-                print(f"[indicators] Fetching Stock Bars for {request_ticker} ({timeframe})")
-                bars = client.get_stock_bars(request_params)
-                
-            if bars.df.empty:
-                print(f"[indicators] WARNING: Bars DF is EMPTY for {ticker}")
-                new_df = pd.DataFrame()
-            else:
-                # Handle MultiIndex if necessary, or just extract the ticker
-                if isinstance(bars.df.index, pd.MultiIndex):
-                    if request_ticker in bars.df.index.levels[0]:
-                        new_df = bars.df.loc[request_ticker].copy()
-                    else:
-                        print(f"[indicators] Ticker {request_ticker} not found in MultiIndex")
-                        new_df = pd.DataFrame()
-                else:
-                    new_df = bars.df.copy()
-                
-                print(f"[indicators] Processed {len(new_df)} bars for {ticker}")
-        except Exception as e:
-            print(f"[indicators] Request error for {request_ticker}: {e}")
-            new_df = pd.DataFrame()
+                for base in ["USDT", "USDC", "USD"]:
+                    if clean_ticker.endswith(base):
+                        request_ticker = clean_ticker.replace(base, f"/{base}")
+                        break
 
-        # Merge with cache
-        if cached_df is not None:
-            if not new_df.empty:
-                df = pd.concat([cached_df, new_df])
-                df = df[~df.index.duplicated(keep="last")].sort_index()
-                max_bars = 1300 if timeframe == "1Day" else 1000
-                df = df.tail(max_bars)
+            if is_crypto:
+                client = crypto_client
+                request_class = CryptoBarsRequest
             else:
-                df = cached_df.copy()
-        else:
-            if new_df.empty:
+                client = stock_client
+                request_class = StockBarsRequest
+
+            if not client:
+                print(f"[indicators] ERROR: Alpaca client not initialized.")
                 return None
-            df = new_df.copy().sort_index()
 
-        _data_cache[cache_key] = (df.index[-1], df.copy())
+            end_date = datetime.now()
+            cache_key = (ticker.upper(), timeframe.upper())
+
+            # Timeframe -> Alpaca object + lookback
+            tf_str = timeframe.upper()
+            if tf_str == "1MIN":
+                tf_obj = TimeFrame.Minute
+                lookback_days = 2
+            elif tf_str == "5MIN":
+                tf_obj = TimeFrame(5, TimeFrameUnit.Minute)
+                lookback_days = 4
+            elif tf_str == "15MIN":
+                tf_obj = TimeFrame(15, TimeFrameUnit.Minute)
+                lookback_days = 7
+            elif tf_str == "30MIN":
+                tf_obj = TimeFrame(30, TimeFrameUnit.Minute)
+                lookback_days = 14
+            elif tf_str in ["1HOUR", "60MIN"]:
+                tf_obj = TimeFrame.Hour
+                lookback_days = 30
+            elif tf_str == "4HOUR":
+                tf_obj = TimeFrame(4, TimeFrameUnit.Hour)
+                lookback_days = 60
+            elif tf_str in ["1D", "1DAY"]:
+                tf_obj = TimeFrame.Day
+                lookback_days = 365
+            else:
+                tf_obj = TimeFrame(5, TimeFrameUnit.Minute)
+                lookback_days = 5
+
+            # Incremental cache
+            if cache_key in _data_cache:
+                last_bar_time, cached_df = _data_cache[cache_key]
+                start_date = last_bar_time
+            else:
+                start_date = end_date - timedelta(days=lookback_days)
+                cached_df = None
+
+            request_params = request_class(
+                symbol_or_symbols=request_ticker,
+                timeframe=tf_obj,
+                start=start_date,
+                end=end_date,
+            )
+            
+            if not is_crypto:
+                request_params.feed = "iex"
+
+            bars = client.get_stock_bars(request_params) if not is_crypto else client.get_crypto_bars(request_params)
+            df = bars.df
+            if df is not None and not df.empty:
+                if isinstance(df.index, pd.MultiIndex):
+                    df = df.xs(request_ticker, level=0)
+                
+                if cached_df is not None:
+                    df = pd.concat([cached_df, df])
+                    df = df[~df.index.duplicated(keep='last')]
+                
+                df = df.sort_index()
+                _data_cache[cache_key] = (df.index[-1], df)
+
+        if df is None or df.empty:
+            return None
+
+        # --- Indicator Calculations ---
+        # Standardise column names (Webull/Alpaca fallback)
+        df.columns = [c.capitalize() for c in df.columns]
+        close = df["Close"]
+        high = df["High"]
+        low = df["Low"]
+        open_ = df["Open"]
+        volume = df["Volume"]
 
         if len(df) < 30:
             return None
-
-        # Alpaca columns are lowercase; standardise to Title-case
-        df = df.rename(
-            columns={
-                "close": "Close",
-                "high": "High",
-                "low": "Low",
-                "open": "Open",
-                "volume": "Volume",
-            }
-        )
 
         return calculate_indicators_for_df(df, timeframe, ticker)
 
