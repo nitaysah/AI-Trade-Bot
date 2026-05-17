@@ -25,3 +25,18 @@ def create_broker():
         from alpaca_broker import AlpacaBroker
         print(f"[factory] Initializing AlpacaBroker...")
         return AlpacaBroker()
+
+
+def get_alpaca_clients():
+    """Returns (StockHistoricalDataClient, CryptoHistoricalDataClient) for data fetching."""
+    from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
+    
+    api_key = getattr(config, 'ALPACA_API_KEY', '').strip()
+    secret_key = getattr(config, 'ALPACA_SECRET_KEY', '').strip()
+    
+    if not api_key or api_key == "your_alpaca_api_key_here":
+        return None, None
+        
+    s_client = StockHistoricalDataClient(api_key, secret_key)
+    c_client = CryptoHistoricalDataClient(api_key, secret_key)
+    return s_client, c_client

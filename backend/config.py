@@ -14,8 +14,6 @@ load_dotenv()
 TIMEZONE = "US/Central"
 
 # ──────────────────────────────────────────────
-# Broker Selection
-# ──────────────────────────────────────────────
 BROKER_TYPE = os.getenv("BROKER_TYPE", "alpaca")  # "alpaca" or "webull"
 
 # ──────────────────────────────────────────────
@@ -34,7 +32,7 @@ ALPACA_PAPER = True
 WEBULL_APP_KEY = os.getenv("WEBULL_APP_KEY", "")
 WEBULL_APP_SECRET = os.getenv("WEBULL_APP_SECRET", "")
 WEBULL_ACCOUNT_ID = os.getenv("WEBULL_ACCOUNT_ID", "")  # Auto-discovered if blank
-WEBULL_TEST_MODE = os.getenv("WEBULL_TEST_MODE", "true").lower() == "true"
+WEBULL_DATA_ONLY = os.getenv("WEBULL_DATA_ONLY", "false").lower() == "true"  # If True, skip trading/account calls
 
 # ──────────────────────────────────────────────
 # Watchlist — Tickers to scan

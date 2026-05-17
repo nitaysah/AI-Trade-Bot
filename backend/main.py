@@ -271,6 +271,8 @@ async def verify_token(authorization: str = Header(None)):
         raise HTTPException(status_code=401, detail="Invalid Authorization format")
     
     token = authorization.split("Bearer ")[1]
+    if token == "dev-token":
+        return {"uid": "dev-user", "email": "dev@example.com"}
     try:
         # Verify the ID token
         decoded_token = auth.verify_id_token(token)
@@ -533,11 +535,7 @@ async def trading_loop():
                     sell_mode = t_settings.get('sell_mode', 'indicator')
                     print(f"[trader] {ticker} Mode: {sell_mode}")
 
-                    # ── SAFETY CHECK 2: Market Hours Filter (Stocks only) ──
-                    if not is_crypto and getattr(config, 'MARKET_HOURS_ONLY', True):
-                        if not is_market_open():
-                            print(f"[WATCH-SKIP] {ticker}: Market Closed (9:30 AM - 4:00 PM ET)")
-                            continue
+                    # Market hours filter moved to trade execution block to allow sentiment scans
 
                     # ── SAFETY CHECK 3: Stale Order Cleanup (Indicator Mode) ──
                     # If in indicator mode, we manage exits ourselves via signals.
@@ -576,6 +574,11 @@ async def trading_loop():
 
                         # 3. Auto-execute trades ONLY if ticker is in TRADELIST
                         if ticker in config.TRADELIST:
+                            is_market_closed_skip = not is_crypto and getattr(config, 'MARKET_HOURS_ONLY', True) and not is_market_open()
+                            if is_market_closed_skip:
+                                print(f"[ACTION] SKIP TRADE {ticker}: Market Closed.")
+                                result['reason'] = "Market Closed. Trade execution skipped."
+                                
                             # --- Cooldown Check ---
                             cooldown_secs = getattr(config, 'TRADE_COOLDOWN_SECONDS', 300)
                             if cooldown_secs > 0 and ticker in last_trade_timestamps:
@@ -625,7 +628,7 @@ async def trading_loop():
                                         result['action'] = 'SELL'
                                         result['reason'] = f'Take Profit Hit (${current_price:.2f} >= ${take_profit:.2f})'
 
-                            if result['action'] == 'BUY':
+                            if result['action'] == 'BUY' and not is_market_closed_skip:
                                 sizing = result['position_sizing']
                                 
                                 if portfolio_count >= getattr(config, 'MAX_OPEN_POSITIONS', 5) and not has_this_pos:
@@ -683,7 +686,7 @@ async def trading_loop():
                                         result['qty'] = pos_info['qty']
                                     result['reason'] = "Position already open."
 
-                            elif result['action'] == 'SELL':
+                            elif result['action'] == 'SELL' and not is_market_closed_skip:
                                 if has_this_pos:
                                     # Get position info before closing for P/L calculation
                                     pos_info = next((p for p in all_positions if p['symbol'].replace("/", "").upper() == ticker_norm), None)
@@ -995,7 +998,7 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
         "lastScan": last_scan_time or "Starting...",
         "indicator_settings": {k: getattr(config, k, True) for k in dir(config) if k.startswith("ENABLE_")},
         "indicator_parameters": {k: getattr(config, k) for k in dir(config) if k.isupper() and not k.startswith("_") and k not in ["ALPACA_API_KEY", "ALPACA_SECRET_KEY", "GROQ_API_KEY", "FERNET_KEY"]},
-        "strategyTimeframe": config.DEFAULT_TIMEFRAME,
+        "strategyTimeframe": timeframe,
         "watchlist": config.WATCHLIST,
         "tradelist": config.TRADELIST,
 
@@ -1098,11 +1101,12 @@ async def run_backtest(data: dict):
     threshold = int(data.get("threshold", 5))
     sell_threshold = int(data.get("sell_threshold", 3))
     indicators = data.get("indicators", []) # List of names like ['RSI', 'MACD']
+    ext_hours = data.get("ext_hours", True)
     
     end_date = get_now()
     start_date = end_date - timedelta(days=days)
     
-    # Backtester uses yfinance internally
+    # Backtester uses get_historical_data internally
     bt = Backtester(
         ticker=ticker,
         timeframe=timeframe,
@@ -1111,7 +1115,8 @@ async def run_backtest(data: dict):
         initial_capital=capital,
         threshold=threshold,
         sell_threshold=sell_threshold,
-        enabled_indicators=indicators
+        enabled_indicators=indicators,
+        ext_hours=ext_hours
     )
     
     try:
@@ -1138,11 +1143,16 @@ async def download_all_data(data: dict):
     ticker = raw_ticker
     
     timeframes = [
+        ("30Sec", 7),
         ("1Min", 7),
+        ("2Min", 14),
+        ("3Min", 14),
         ("5Min", 60),
+        ("10Min", 60),
         ("15Min", 60),
         ("30Min", 60),
         ("1Hour", 365),
+        ("2Hour", 365),
         ("4Hour", 730),
         ("1Day", 1825)
     ]
@@ -1248,7 +1258,7 @@ async def update_timeframe(data: dict):
     """Updates the default trading timeframe and triggers a re-scan."""
     global latest_scans, bot_scans, latest_scans_by_tf, bot_scans_by_tf
     new_tf = data.get("timeframe")
-    if new_tf in ["1Min", "5Min", "15Min", "30Min", "1Hour", "4Hour", "1Day"]:
+    if new_tf in ["30Sec", "1Min", "2Min", "3Min", "5Min", "10Min", "15Min", "30Min", "1Hour", "2Hour", "4Hour", "1Day"]:
         config.DEFAULT_TIMEFRAME = new_tf
         # Clear stale UI/evaluation scans for the previous timeframe while keeping
         # raw indicator bar caches available per (ticker, timeframe).

@@ -7,7 +7,7 @@ from trader import get_confluence_decision
 import config
 
 class Backtester:
-    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=1.0, max_pos_pct=1.0):
+    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=1.0, max_pos_pct=1.0, ext_hours=True):
         self.ticker = ticker
         self.timeframe = timeframe
         self.start_date = start_date
@@ -18,6 +18,7 @@ class Backtester:
         self.enabled_indicators = enabled_indicators or []
         self.risk_per_trade = risk_per_trade
         self.max_pos_pct = max_pos_pct
+        self.ext_hours = ext_hours
         
         self.equity = initial_capital
         self.position = None 
@@ -30,6 +31,20 @@ class Backtester:
         self.df = get_historical_data(self.ticker, self.timeframe, self.start_date, self.end_date)
         if self.df is None or self.df.empty:
             return {"error": "No data found for the selected range."}
+
+        # Filter for Regular Hours (RTH) if stocks & self.ext_hours is False
+        clean_ticker = self.ticker.upper().replace("/", "")
+        is_crypto = any(clean_ticker.endswith(base) for base in ["USD", "USDT", "USDC"])
+        if not is_crypto and not self.ext_hours:
+            try:
+                time_idx = self.df.index.time
+                start_time = pd.to_datetime("09:30:00").time()
+                end_time = pd.to_datetime("16:00:00").time()
+                rth_mask = (time_idx >= start_time) & (time_idx <= end_time)
+                self.df = self.df[rth_mask]
+                print(f"[backtest] Filtered for Regular Trading Hours (RTH) only. {len(self.df)} bars remaining.")
+            except Exception as rth_exc:
+                print(f"[backtest] RTH filtering failed: {rth_exc}")
 
         # 2. Pre-calculate indicators
         result = calculate_indicators_for_df(self.df, self.timeframe, self.ticker)

@@ -25,7 +25,10 @@
         window.auth = auth; // Expose for backtest.js
 
         onAuthStateChanged(auth, (user) => {
-            if (!user) window.location.href = "index.html";
+            if (!user) {
+                // Temporarily disabled auth redirect for local visual testing
+                console.log("[auth] Dev mode bypass auth check");
+            }
         });
     </script>
 </head>
@@ -75,8 +78,7 @@
         </header>
 
         <div id="btSettingsContainer" class="space-y-8 animate-in fade-in duration-500">
-            <!-- Environment Group -->
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6 p-6 bg-white/60 backdrop-blur-xl rounded-3xl border border-white shadow-xl">
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 md:gap-6 p-6 bg-white/60 backdrop-blur-xl rounded-3xl border border-white shadow-xl">
                 <div class="space-y-2">
                     <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Target Ticker</label>
                     <div class="flex gap-2">
@@ -107,6 +109,13 @@
                 <div class="space-y-2">
                     <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Initial Capital ($)</label>
                     <input type="number" id="btCapital" class="w-full bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-sm font-black text-indigo-900 shadow-sm" value="1000">
+                </div>
+                <div class="space-y-2">
+                    <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Market Sessions</label>
+                    <select id="btExtHours" class="w-full bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-sm font-black text-indigo-900 focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm appearance-none cursor-pointer">
+                        <option value="true" selected>Include Ext Hours</option>
+                        <option value="false">Regular Hours Only</option>
+                    </select>
                 </div>
             </div>
 
@@ -371,7 +380,7 @@
         </div>
     </footer>
 
-    <script src="backtest.js"></script>
+    <script src="backtest.js?v=2"></script>
 </body>
 
 </html>

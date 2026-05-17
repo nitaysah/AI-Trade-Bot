@@ -49,10 +49,14 @@ def _get_mystic_v2_presets(timeframe):
     }
     key = '1h'
     if timeframe == '1Min': key = '1m'
+    elif timeframe == '2Min': key = '5m'
+    elif timeframe == '3Min': key = '5m'
     elif timeframe == '5Min': key = '5m'
+    elif timeframe == '10Min': key = '15m'
     elif timeframe == '15Min': key = '15m'
     elif timeframe == '30Min': key = '30m'
     elif timeframe == '1Hour': key = '1h'
+    elif timeframe == '2Hour': key = '1h'
     elif timeframe == '4Hour': key = '4h'
     elif timeframe == '1Day': key = '1d'
     return defaults.get(key, defaults['1h'])
@@ -92,17 +96,37 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca"):
         # --- Mode 1: Webull Data (High Fidelity for Dashboard) ---
         if data_source == "webull":
             tf_map = {
-                "1Min": "m1", "5Min": "m5", "15Min": "m15", "30Min": "m30",
-                "1Hour": "h1", "2Hour": "h2", "4Hour": "h4", "1Day": "d1"
+                "30Sec": "s30", "1Min": "m1", "2Min": "m2", "3Min": "m3",
+                "5Min": "m5", "10Min": "m10", "15Min": "m15", "30Min": "m30",
+                "1Hour": "m60", "2Hour": "m120", "4Hour": "m240", "1Day": "D"
             }
             wb_tf = tf_map.get(timeframe, "m5")
-            bars = wb_data_provider.get_bars(ticker, timespan=wb_tf, count=200)
+            bars = wb_data_provider.get_bars(ticker, timespan=wb_tf, count=1200)
             if bars:
-                import pandas as pd
+                if isinstance(bars, list) and len(bars) > 0:
+                    # Check for dummy bar with None time
+                    if isinstance(bars[0], dict) and bars[0].get('time') is None:
+                        print(f"[indicators] Webull returned dummy bar for {ticker}. Falling back to Alpaca.")
+                        bars = None
+                
+            if bars: # Check again after potential fallback
+                # Handle crypto response structure: [{'symbol': '...', 'result': [...]}]
+                if isinstance(bars, list) and len(bars) > 0 and isinstance(bars[0], dict) and 'result' in bars[0]:
+                    bars = bars[0]['result']
+                    print(f"[indicators] Extracted result list. New len: {len(bars)}")
+                
                 df = pd.DataFrame(bars)
-                df['timestamp'] = pd.to_datetime(df['time'], unit='s', utc=True)
+                
+                # Handle both string and numeric timestamps
+                if pd.api.types.is_numeric_dtype(df['time']):
+                    df['timestamp'] = pd.to_datetime(df['time'], unit='s', utc=True)
+                else:
+                    df['timestamp'] = pd.to_datetime(df['time'], utc=True)
+                    
                 df.set_index('timestamp', inplace=True)
                 df.columns = [c.capitalize() for c in df.columns]
+                df = df.sort_index() # Ensure chronological order for indicators
+                print(f"[indicators] Webull bars fetched for {ticker}: {len(df)} rows. First time: {df.index[0]}, Last time: {df.index[-1]}")
             else:
                 print(f"[indicators] Webull data failed for {ticker}. Falling back to Alpaca.")
                 data_source = "alpaca"
@@ -138,12 +162,21 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca"):
 
             # Timeframe -> Alpaca object + lookback
             tf_str = timeframe.upper()
-            if tf_str == "1MIN":
+            if tf_str in ["30SEC", "1MIN"]:
                 tf_obj = TimeFrame.Minute
                 lookback_days = 2
+            elif tf_str == "2MIN":
+                tf_obj = TimeFrame(2, TimeFrameUnit.Minute)
+                lookback_days = 3
+            elif tf_str == "3MIN":
+                tf_obj = TimeFrame(3, TimeFrameUnit.Minute)
+                lookback_days = 3
             elif tf_str == "5MIN":
                 tf_obj = TimeFrame(5, TimeFrameUnit.Minute)
                 lookback_days = 4
+            elif tf_str == "10MIN":
+                tf_obj = TimeFrame(10, TimeFrameUnit.Minute)
+                lookback_days = 5
             elif tf_str == "15MIN":
                 tf_obj = TimeFrame(15, TimeFrameUnit.Minute)
                 lookback_days = 7
@@ -153,6 +186,9 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca"):
             elif tf_str in ["1HOUR", "60MIN"]:
                 tf_obj = TimeFrame.Hour
                 lookback_days = 30
+            elif tf_str == "2HOUR":
+                tf_obj = TimeFrame(2, TimeFrameUnit.Hour)
+                lookback_days = 45
             elif tf_str == "4HOUR":
                 tf_obj = TimeFrame(4, TimeFrameUnit.Hour)
                 lookback_days = 60
@@ -184,13 +220,14 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca"):
             bars = client.get_stock_bars(request_params) if not is_crypto else client.get_crypto_bars(request_params)
             df = bars.df
             if df is not None and not df.empty:
+                df = df[~df.index.duplicated(keep='last')] # Remove duplicates immediately
                 if isinstance(df.index, pd.MultiIndex):
                     df = df.xs(request_ticker, level=0)
                 
                 if cached_df is not None:
                     df = pd.concat([cached_df, df])
-                    df = df[~df.index.duplicated(keep='last')]
                 
+                df = df[~df.index.duplicated(keep='last')]
                 df = df.sort_index()
                 _data_cache[cache_key] = (df.index[-1], df)
 
@@ -265,10 +302,15 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
         df["BOLL_Lower"] = boll_ind.bollinger_lband()
         df["BOLL_Middle"] = boll_ind.bollinger_mavg()
 
-        # --- Supertrend ----------------------------------------------------
-        st_atr = ta_lib.volatility.average_true_range(
-            high, low, close, window=config.SUPERTREND_PERIOD
-        )
+        # --- Supertrend (Webull/TradingView Compatible Wilder's Smoothing) ---
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        
+        # Wilder's Smoothing (Exponential Moving Average with alpha = 1/N)
+        st_atr = tr.ewm(alpha=1/config.SUPERTREND_PERIOD, min_periods=config.SUPERTREND_PERIOD, adjust=False).mean()
+        
         hl2 = (high + low) / 2.0
         st_mult = config.SUPERTREND_MULTIPLIER
         basic_ub = hl2 + st_mult * st_atr
@@ -285,12 +327,25 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
         bub = basic_ub.to_numpy()
         blb = basic_lb.to_numpy()
 
-        final_ub[0] = bub[0]
-        final_lb[0] = blb[0]
-        trend[0] = True
-        st_vals[0] = blb[0]
+        # Find first non-NaN index to start calculation
+        start_idx = 0
+        for idx, val in enumerate(bub):
+            if not np.isnan(val):
+                start_idx = idx
+                break
 
-        for i in range(1, n):
+        final_ub[:] = np.nan
+        final_lb[:] = np.nan
+        trend[:] = True
+        st_vals[:] = np.nan
+
+        if start_idx < n:
+            final_ub[start_idx] = bub[start_idx]
+            final_lb[start_idx] = blb[start_idx]
+            trend[start_idx] = True
+            st_vals[start_idx] = blb[start_idx]
+
+        for i in range(start_idx + 1, n):
             # Upper band
             if bub[i] < final_ub[i - 1] or close_arr[i - 1] > final_ub[i - 1]:
                 final_ub[i] = bub[i]
@@ -324,10 +379,8 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
         except Exception:
             df["VWAP"] = close.copy()
 
-        # --- ATR -----------------------------------------------------------
-        df["ATR"] = ta_lib.volatility.average_true_range(
-            high, low, close, window=config.ATR_PERIOD
-        )
+        # --- ATR (Wilder's Smoothing) --------------------------------------
+        df["ATR"] = tr.ewm(alpha=1/config.ATR_PERIOD, min_periods=config.ATR_PERIOD, adjust=False).mean()
 
         # --- Mystic Pulse V2.0 (Adaptive DMI + Persistence Engine) ----------
         presets = _get_mystic_v2_presets(timeframe)
@@ -437,18 +490,68 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
                        (df["Close"] < df["Open"]) & \
                        (df["Close"] < (df["Open"].shift(2) + df["Close"].shift(2)) / 2)
 
-        df["cdl_bullish"] = bull_eng | hammer | bull_marubozu | morning_star
-        df["cdl_bearish"] = bear_eng | shooting_star | bear_marubozu | evening_star
+        # Hanging Man & Inverted Hammer
+        # Note: Hanging Man is a hammer at a swing high, Inverted Hammer is a shooting star at a swing low
+        uptrend = df["Close"] > df["Close"].shift(5)
+        downtrend = df["Close"] < df["Close"].shift(5)
+        
+        hanging_man = hammer & uptrend
+        inverted_hammer = shooting_star & downtrend
+        
+        # Override basic hammer/shooting star if trend context applies
+        hammer = hammer & downtrend
+        shooting_star = shooting_star & uptrend
+
+        # Piercing Line (Bullish Reversal)
+        piercing_line = (df["Close"].shift(1) < df["Open"].shift(1)) & \
+                        (df["Open"] < df["Low"].shift(1)) & \
+                        (df["Close"] > (df["Open"].shift(1) + df["Close"].shift(1)) / 2) & \
+                        (df["Close"] < df["Open"].shift(1))
+
+        # Dark Cloud Cover (Bearish Reversal)
+        dark_cloud = (df["Close"].shift(1) > df["Open"].shift(1)) & \
+                     (df["Open"] > df["High"].shift(1)) & \
+                     (df["Close"] < (df["Open"].shift(1) + df["Close"].shift(1)) / 2) & \
+                     (df["Close"] > df["Open"].shift(1))
+
+        # Three White Soldiers (Strong Bullish)
+        three_white_soldiers = (df["Close"] > df["Open"]) & (df["Close"].shift(1) > df["Open"].shift(1)) & (df["Close"].shift(2) > df["Open"].shift(2)) & \
+                               (df["Close"] > df["Close"].shift(1)) & (df["Close"].shift(1) > df["Close"].shift(2)) & \
+                               (df["Open"] > df["Open"].shift(1)) & (df["Open"] < df["Close"].shift(1)) & \
+                               (upper_wick < body * 0.2) & (df["High"].shift(1) - df[["Open", "Close"]].shift(1).max(axis=1) < (df["Close"].shift(1) - df["Open"].shift(1)) * 0.2)
+
+        # Three Black Crows (Strong Bearish)
+        three_black_crows = (df["Close"] < df["Open"]) & (df["Close"].shift(1) < df["Open"].shift(1)) & (df["Close"].shift(2) < df["Open"].shift(2)) & \
+                            (df["Close"] < df["Close"].shift(1)) & (df["Close"].shift(1) < df["Close"].shift(2)) & \
+                            (df["Open"] < df["Open"].shift(1)) & (df["Open"] > df["Close"].shift(1)) & \
+                            (lower_wick < body * 0.2) & (df[["Open", "Close"]].shift(1).min(axis=1) - df["Low"].shift(1) < (df["Open"].shift(1) - df["Close"].shift(1)) * 0.2)
+
+        # Specialized Dojis
+        dragonfly_doji = doji & (lower_wick > body * 3) & (upper_wick < body)
+        gravestone_doji = doji & (upper_wick > body * 3) & (lower_wick < body)
+
+        df["cdl_bullish"] = bull_eng | hammer | inverted_hammer | bull_marubozu | morning_star | piercing_line | three_white_soldiers | dragonfly_doji
+        df["cdl_bearish"] = bear_eng | shooting_star | hanging_man | bear_marubozu | evening_star | dark_cloud | three_black_crows | gravestone_doji
         df["cdl_name"] = "Neutral"
-        df.loc[bull_eng, "cdl_name"] = "Bullish Engulfing"
-        df.loc[hammer, "cdl_name"] = "Hammer"
-        df.loc[bear_eng, "cdl_name"] = "Bearish Engulfing"
-        df.loc[shooting_star, "cdl_name"] = "Shooting Star"
-        df.loc[doji, "cdl_name"] = "Doji (Indecision)"
+        
+        # Apply labels (order matters for precedence if multiple match, lower = higher precedence)
+        df.loc[doji, "cdl_name"] = "Doji"
         df.loc[bull_marubozu, "cdl_name"] = "Bull Marubozu"
         df.loc[bear_marubozu, "cdl_name"] = "Bear Marubozu"
+        df.loc[hammer, "cdl_name"] = "Hammer"
+        df.loc[inverted_hammer, "cdl_name"] = "Inverted Hammer"
+        df.loc[shooting_star, "cdl_name"] = "Shooting Star"
+        df.loc[hanging_man, "cdl_name"] = "Hanging Man"
+        df.loc[dragonfly_doji, "cdl_name"] = "Dragonfly Doji"
+        df.loc[gravestone_doji, "cdl_name"] = "Gravestone Doji"
+        df.loc[bull_eng, "cdl_name"] = "Bull Engulfing"
+        df.loc[bear_eng, "cdl_name"] = "Bear Engulfing"
+        df.loc[piercing_line, "cdl_name"] = "Piercing Line"
+        df.loc[dark_cloud, "cdl_name"] = "Dark Cloud Cover"
         df.loc[morning_star, "cdl_name"] = "Morning Star"
         df.loc[evening_star, "cdl_name"] = "Evening Star"
+        df.loc[three_white_soldiers, "cdl_name"] = "3 White Soldiers"
+        df.loc[three_black_crows, "cdl_name"] = "3 Black Crows"
 
         # --- Build result --------------------------------------------------
         # Forward-fill then back-fill any remaining NaN from warm-up period
@@ -466,6 +569,14 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
         prev = df.iloc[-2]
         signals = _generate_signals(latest, prev)
 
+        def _safe(val):
+            """Return float or None, never NaN/Inf."""
+            try:
+                v = float(val)
+                return None if (v != v or v == float('inf') or v == float('-inf')) else v
+            except Exception:
+                return None
+
         return {
             "ticker": ticker,
             "price": float(latest["Close"]),
@@ -480,13 +591,29 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
             "signals": signals,
             "price_history": [
                 {
-                    "time": str(t),
-                    "open": float(row["Open"]),
-                    "high": float(row["High"]),
-                    "low": float(row["Low"]),
-                    "close": float(row["Close"]),
-                    "volume": float(row["Volume"])
-                } for t, row in df.tail(100).iterrows()
+                    "time": int(t.timestamp()),
+                    "open": _safe(row["Open"]),
+                    "high": _safe(row["High"]),
+                    "low": _safe(row["Low"]),
+                    "close": _safe(row["Close"]),
+                    "volume": _safe(row["Volume"]),
+                    # Overlay indicators (drawn on price chart)
+                    "ema_fast":      _safe(row.get("EMA_Fast")),
+                    "ema_slow":      _safe(row.get("EMA_Slow")),
+                    "vwap":          _safe(row.get("VWAP")),
+                    "supertrend":    _safe(row.get("Supertrend")),
+                    "supertrend_up": bool(row.get("Supertrend_Trend", True)),
+                    "boll_upper":    _safe(row.get("BOLL_Upper")),
+                    "boll_middle":   _safe(row.get("BOLL_Middle")),
+                    "boll_lower":    _safe(row.get("BOLL_Lower")),
+                    # Oscillators (drawn in sub-pane)
+                    "rsi":           _safe(row.get("RSI")),
+                    "macd_line":     _safe(row.get("MACD_Line")),
+                    "macd_signal":   _safe(row.get("MACD_Signal")),
+                    "macd_hist":     _safe(row.get("MACD_Hist")),
+                    "mystic_bull":   _safe(row.get("Bull_Pulse")),
+                    "mystic_bear":   _safe(row.get("Bear_Pulse")),
+                } for t, row in df.iterrows()
             ],
             "df": df,
         }

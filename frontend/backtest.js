@@ -33,6 +33,23 @@ document.addEventListener('DOMContentLoaded', () => {
         cb.addEventListener('change', syncBacktestSliderRange);
     });
 
+    // Sync timeframe select change to days input value dynamically
+    const btTfSelect = document.getElementById('btTimeframe');
+    const btDaysInput = document.getElementById('btDays');
+    if (btTfSelect && btDaysInput) {
+        const updateDaysVal = () => {
+            const tf = btTfSelect.value;
+            if (tf === '1Min') btDaysInput.value = 7;
+            else if (['5Min', '15Min', '30Min'].includes(tf)) btDaysInput.value = 60;
+            else if (tf === '1Hour') btDaysInput.value = 365;
+            else if (tf === '4Hour') btDaysInput.value = 730;
+            else if (tf === '1Day') btDaysInput.value = 1825;
+        };
+        btTfSelect.addEventListener('change', updateDaysVal);
+        // Trigger initially so it matches the default selected dropdown value
+        updateDaysVal();
+    }
+
     // Initial slider sync
     syncBacktestSliderRange();
     console.log('[backtest] Center Initialized.');
@@ -91,6 +108,8 @@ async function runBacktest() {
     const threshold = document.getElementById('btThreshold').value;
     const sellThreshold = document.getElementById('btSellThreshold').value;
 
+    const extHoursVal = document.getElementById('btExtHours') ? (document.getElementById('btExtHours').value === 'true') : true;
+
     // Collect checked indicators
     const indicators = Array.from(document.querySelectorAll('.bt-indicator-check:checked'))
         .map(cb => cb.value);
@@ -118,7 +137,8 @@ async function runBacktest() {
                 capital: parseFloat(capital),
                 threshold: parseInt(threshold),
                 sell_threshold: parseInt(sellThreshold),
-                indicators: indicators 
+                indicators: indicators,
+                ext_hours: extHoursVal
             })
         });
 

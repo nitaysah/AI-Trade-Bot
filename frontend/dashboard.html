@@ -10,12 +10,12 @@
     <link rel="icon"
         href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔮</text></svg>">
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
         rel="stylesheet">
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=31">
     <!-- Firebase Sentinel (Auth Guard) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
@@ -29,6 +29,10 @@
 
         onAuthStateChanged(auth, (user) => {
             if (!user) {
+                if (localStorage.getItem('dev_mode') === 'true') {
+                    console.log("[auth] Dev mode bypass active.");
+                    return;
+                }
                 // Now requiring auth everywhere for a consistent experience
                 window.location.href = "index.html";
             }
@@ -83,7 +87,7 @@
                     class="flex items-center text-sm font-black px-8 py-3 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider">
                     <span class="h-2.5 w-2.5 rounded-full mr-2.5" id="alpacaStatusDot"></span>
                     <span id="alpacaStatusText">Checking...</span>
-                    <button id="btnUnlinkAlpaca" onclick="unlinkAlpaca()" 
+                    <button id="btnUnlinkAlpaca" onclick="unlinkAlpaca()"
                         class="hidden ml-4 px-3 py-1 bg-rose-500 text-white rounded-full text-[10px] hover:bg-rose-600 transition-all uppercase tracking-tighter">
                         Unlink
                     </button>
@@ -162,19 +166,109 @@
                     <p class="card-value animate-pulse" id="dailyPL">---</p>
                     <span class="card-sub">Daily performance</span>
                 </div>
-                <!-- News Sentiment -->
-                <div class="card-glass group" id="cardSentiment">
+                <!-- Market Sentiment -->
+                <div class="card-glass group flex flex-col items-center p-5 cursor-pointer hover:ring-2 hover:ring-indigo-400 transition-all overflow-hidden"
+                    id="cardSentiment" onclick="openFngModal()">
                     <div class="card-glow"></div>
-                    <h3 class="card-label">News Sentiment</h3>
-                    <p class="card-value text-fuchsia-600 animate-pulse" id="aiSentiment">---</p>
-                    <div class="mt-1">
-                        <div class="w-full bg-purple-100 rounded-full h-1.5">
-                            <div class="h-1.5 rounded-full bg-gradient-to-r from-red-400 via-amber-400 to-emerald-400 transition-all duration-500"
-                                id="sentimentBar" style="width: 50%"></div>
+                    <h3
+                        class="card-label absolute top-4 left-4 w-full text-left uppercase tracking-widest text-[10px] font-black text-slate-400">
+                        Fear & Greed Index</h3>
+                    <div class="absolute top-4 right-4 text-slate-300 group-hover:text-indigo-400 transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                            <path
+                                d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z" />
+                            <path
+                                d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z" />
+                        </svg>
+                    </div>
+
+                    <div class="relative w-64 h-32 mt-6 flex items-end justify-center">
+                        <svg viewBox="0 0 100 52" class="w-full h-full absolute bottom-0 overflow-visible">
+                            <!-- Definitions for paths and gradients -->
+                            <defs>
+                                <path id="fngLabelPath" d="M 20 50 A 30 30 0 0 1 80 50" />
+                                <filter id="fngMute">
+                                    <feColorMatrix type="matrix"
+                                        values="0.3333 0.3333 0.3333 0 0 0.3333 0.3333 0.3333 0 0 0.3333 0.3333 0.3333 0 0 0 0 0 0.4 0" />
+                                </filter>
+                            </defs>
+
+                            <!-- Gauge Segments (IDs for highlighting in JS) -->
+                            <path id="fng-seg-0" d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="#10b981"
+                                stroke-width="14" stroke-dasharray="24.13, 101.53" stroke-dashoffset="0"
+                                class="transition-all duration-500" />
+                            <path id="fng-seg-1" d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="#84cc16"
+                                stroke-width="14" stroke-dasharray="24.13, 101.53" stroke-dashoffset="-25.13"
+                                class="transition-all duration-500" />
+                            <path id="fng-seg-2" d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="#eab308"
+                                stroke-width="14" stroke-dasharray="24.13, 101.53" stroke-dashoffset="-50.26"
+                                class="transition-all duration-500" />
+                            <path id="fng-seg-3" d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="#f97316"
+                                stroke-width="14" stroke-dasharray="24.13, 101.53" stroke-dashoffset="-75.39"
+                                class="transition-all duration-500" />
+                            <path id="fng-seg-4" d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="#ef4444"
+                                stroke-width="14" stroke-dasharray="24.13, 101.53" stroke-dashoffset="-100.52"
+                                class="transition-all duration-500" />
+
+                            <!-- Curved Labels (Aligned mathematically along concentric semi-circle of radius 30) -->
+                            <text class="font-black text-[2.6px] fill-slate-500 uppercase tracking-tighter"
+                                text-anchor="middle">
+                                <textPath href="#fngLabelPath" startOffset="12%">Extreme Fear</textPath>
+                                <textPath href="#fngLabelPath" startOffset="31%">Fear</textPath>
+                                <textPath href="#fngLabelPath" startOffset="50%">Neutral</textPath>
+                                <textPath href="#fngLabelPath" startOffset="69%">Greed</textPath>
+                                <textPath href="#fngLabelPath" startOffset="88%">Extreme Greed</textPath>
+                            </text>
+
+                            <!-- Numerical Markers (Concentric around the needle pivot cy=42 with radius 34) -->
+                            <text x="16" y="42" class="fill-slate-400 font-bold text-[4px]" text-anchor="middle">0</text>
+                            <text x="26" y="18" class="fill-slate-400 font-bold text-[4px]" text-anchor="middle">25</text>
+                            <text x="50" y="8" class="fill-slate-400 font-bold text-[4px]" text-anchor="middle">50</text>
+                            <text x="74" y="18" class="fill-slate-400 font-bold text-[4px]" text-anchor="middle">75</text>
+                            <text x="84" y="42" class="fill-slate-400 font-bold text-[4px]" text-anchor="middle">100</text>
+                        </svg>
+
+                        <!-- Needle/Pointer (z-20) -->
+                        <div id="fgNeedle"
+                            class="absolute bottom-0 w-full h-full transition-transform duration-1000 ease-out z-20"
+                            style="transform-origin: 50% 80.77%; transform: rotate(-90deg);">
+                            <svg viewBox="0 0 100 52" class="w-full h-full absolute bottom-0 overflow-visible">
+                                <!-- Tapered Needle -->
+                                <polygon points="49.2,38 50.8,38 50,10" fill="#334155" />
+                            </svg>
+                        </div>
+
+                        <!-- Center Hub and Score Text (Stationary at z-30, sitting perfectly on top) -->
+                        <div class="absolute bottom-0 w-full h-full pointer-events-none z-30">
+                            <svg viewBox="0 0 100 52" class="w-full h-full absolute bottom-0 overflow-visible">
+                                <defs>
+                                    <filter id="hubShadow" x="-50%" y="-50%" width="200%" height="200%">
+                                        <feGaussianBlur in="SourceAlpha" stdDeviation="1" />
+                                        <feOffset dx="0" dy="1" result="offsetblur" />
+                                        <feComponentTransfer>
+                                            <feFuncA type="linear" slope="0.3" />
+                                        </feComponentTransfer>
+                                        <feMerge>
+                                            <feMergeNode />
+                                            <feMergeNode in="SourceGraphic" />
+                                        </feMerge>
+                                    </filter>
+                                </defs>
+                                <!-- Center Hub -->
+                                <circle cx="50" cy="42" r="8" fill="#334155" filter="url(#hubShadow)" />
+                                <circle cx="50" cy="42" r="6.8" fill="#1e293b" />
+                                <!-- Score Text -->
+                                <text id="fgScore" x="50" y="42.5" text-anchor="middle" dominant-baseline="middle"
+                                    class="fill-white font-black text-[7.5px] tracking-tighter">--</text>
+                            </svg>
+                        </div>
+
+                        <!-- Sentiment Status Label (Aligned horizontally with 0 & 100 markers, directly centered below the pivot hub) -->
+                        <div class="absolute bottom-[-8px] left-0 right-0 flex justify-center z-30 pointer-events-none">
+                            <p class="text-xs font-black uppercase tracking-[0.2em] text-slate-400 transition-colors duration-500"
+                                id="fgLabel">Fetching...</p>
                         </div>
                     </div>
-                    <p class="mt-2 text-[10px] text-slate-500 italic line-clamp-2" id="sentimentSummary">Fetching latest
-                        market news...</p>
                 </div>
             </div>
 
@@ -184,33 +278,147 @@
                 <!-- LEFT: Chart + Signals (2 cols) -->
                 <div class="lg:col-span-2 space-y-6">
 
-                    <!-- Price Chart -->
+                    <!-- Price Chart — Webull Style -->
                     <div class="panel-glass relative">
                         <div class="panel-top-bar bg-gradient-to-r from-indigo-400 to-purple-500"></div>
-                        <div class="flex justify-between items-center mb-4">
-                            <h2 class="text-lg font-bold text-indigo-900">Price Chart — <span
-                                    id="chartTickerLabel">Syncing...</span></h2>
-                            <div class="flex items-center gap-2">
 
-                                <div class="relative flex items-center z-50">
-                                    <input type="text" id="tickerSearch" autocomplete="off" placeholder="Search..."
-                                        class="bg-white/80 text-indigo-900 border border-purple-300 rounded-l-lg px-3 py-1.5 w-48 text-sm uppercase focus:outline-none focus:ring-2 focus:ring-purple-400 transition-all font-medium">
-                                    <button id="favoriteBtn"
-                                        class="bg-white/80 text-gray-400 border border-l-0 border-purple-300 rounded-r-lg px-2 py-1.5 hover:text-yellow-500 transition-colors"
-                                        title="Toggle Favorite">
-                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none"
-                                            viewBox="0 0 24 24" stroke="currentColor" id="favIcon">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-                                                d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
-                                        </svg>
-                                    </button>
-                                    <div id="tickerSearchResults"
-                                        class="absolute top-full right-0 mt-2 bg-white rounded-xl shadow-2xl border border-indigo-100 overflow-hidden hidden max-h-60 overflow-y-auto z-50 w-64">
-                                    </div>
+                        <!-- Chart Header: Ticker + Search + Star -->
+                        <div class="flex items-start justify-between mb-1">
+                            <div>
+                                <div class="flex items-baseline gap-2">
+                                    <span class="text-base font-black text-indigo-900" id="chartTickerLabel">---</span>
+                                    <span class="text-lg font-bold" id="chartPrice">---</span>
+                                    <span class="text-sm font-semibold" id="chartPriceChange">---</span>
+                                </div>
+                            </div>
+                            <!-- Search + Star -->
+                            <div class="relative flex items-center z-50 gap-1">
+                                <input type="text" id="tickerSearch" autocomplete="off" placeholder="Search ticker…"
+                                    class="bg-white/80 text-indigo-900 border border-purple-200 rounded-lg px-3 py-1.5 w-36 text-xs uppercase focus:outline-none focus:ring-2 focus:ring-purple-400 transition-all font-bold"
+                                    oninput="onTickerSearchInput(this.value)" onkeydown="onTickerSearchKey(event)">
+                                <button id="favoriteBtn" onclick="toggleWatchlistStar()"
+                                    class="p-1.5 rounded-lg border border-purple-200 bg-white/80 hover:bg-yellow-50 transition-colors"
+                                    title="Add/Remove from Watchlist">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" id="favIcon" fill="none"
+                                        viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                            d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+                                    </svg>
+                                </button>
+                                <div id="tickerSearchResults"
+                                    class="absolute top-full right-0 mt-1 bg-white rounded-xl shadow-2xl border border-indigo-100 overflow-hidden hidden max-h-64 overflow-y-auto z-50 w-56">
                                 </div>
                             </div>
                         </div>
-                        <div class="h-[300px] md:h-[450px] w-full" id="tradingChart"></div>
+
+                        <!-- Webull-style interval bar -->
+                        <div class="chart-control-row chart-interval-row" id="chartTfBar">
+                            <button class="chart-tf-btn" onclick="setChartTimeframe('30Sec')"
+                                data-tf="30Sec">30s</button>
+                            <button class="chart-tf-btn chart-tf-active" onclick="setChartTimeframe('1Min')"
+                                data-tf="1Min">1m</button>
+                            <button class="chart-tf-btn" onclick="setChartTimeframe('2Min')" data-tf="2Min">2m</button>
+                            <button class="chart-tf-btn" onclick="setChartTimeframe('3Min')" data-tf="3Min">3m</button>
+                            <button class="chart-tf-btn" onclick="setChartTimeframe('5Min')" data-tf="5Min">5m</button>
+                            <button class="chart-tf-btn" onclick="setChartTimeframe('10Min')"
+                                data-tf="10Min">10m</button>
+                            <button class="chart-tf-btn" onclick="setChartTimeframe('15Min')"
+                                data-tf="15Min">15m</button>
+                            <button class="chart-tf-btn" onclick="setChartTimeframe('30Min')"
+                                data-tf="30Min">30m</button>
+                            <button class="chart-tf-btn" onclick="setChartTimeframe('1Hour')"
+                                data-tf="1Hour">1h</button>
+                            <button class="chart-tf-btn" onclick="setChartTimeframe('2Hour')"
+                                data-tf="2Hour">2h</button>
+                            <button class="chart-tf-btn" onclick="setChartTimeframe('4Hour')"
+                                data-tf="4Hour">4h</button>
+                        </div>
+
+                        <!-- OHLCV Crosshair Bar -->
+                        <div id="chartOhlcvBar"
+                            class="chart-ohlcv-bar mb-1 text-[0.65rem] font-mono text-slate-500 flex gap-3 flex-wrap">
+                            <span>O: <span id="ohlcvO" class="text-slate-700 font-bold">—</span></span>
+                            <span>H: <span id="ohlcvH" class="text-emerald-600 font-bold">—</span></span>
+                            <span>L: <span id="ohlcvL" class="text-red-500 font-bold">—</span></span>
+                            <span>C: <span id="ohlcvC" class="text-slate-700 font-bold">—</span></span>
+                            <span>Vol: <span id="ohlcvV" class="text-purple-600 font-bold">—</span></span>
+                        </div>
+
+                        <!-- Chart canvas -->
+                        <div class="chart-stage">
+                            <div class="chart-meta-strip">
+                                <span id="chartSessionStatus">Regular Hours</span>
+                                <span id="chartLastBarInfo">Last ticker/day: —</span>
+                            </div>
+                            <div class="w-full webull-main-chart" id="tradingChart"></div>
+                        </div>
+                        <!-- Oscillator sub-panes -->
+                        <div class="relative">
+                            <div class="chart-osc-label" id="rsiLabel">RSI (14)</div>
+                            <div class="chart-osc-pane" id="oscChart_rsi"></div>
+                        </div>
+                        <div class="relative group">
+                            <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
+                                onclick="openIndicatorSettings('MACD')" id="macdLabel">
+                                MACD (12, 26, 9)
+                                <svg class="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" fill="none"
+                                    stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
+                                    </path>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                </svg>
+                            </div>
+                            <div class="chart-osc-pane" id="oscChart_macd"></div>
+                        </div>
+                        <div class="relative group">
+                            <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
+                                onclick="openIndicatorSettings('Mystic Pulse')" id="mysticPulseLabel">
+                                Mystic Pulse
+                                <svg class="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" fill="none"
+                                    stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
+                                    </path>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                </svg>
+                            </div>
+                            <div class="chart-osc-pane" id="oscChart_mystic"></div>
+                        </div>
+
+                        <!-- Webull-style range/session/footer row -->
+                        <div class="chart-bottom-bar">
+                            <div class="chart-control-row chart-range-row" id="chartRangeBar">
+                                <button class="chart-range-btn chart-range-active" onclick="setChartRange('1D')"
+                                    data-range="1D">1D</button>
+                                <button class="chart-range-btn" onclick="setChartRange('5D')"
+                                    data-range="5D">5D</button>
+                                <button class="chart-range-btn" onclick="setChartRange('1M')"
+                                    data-range="1M">1M</button>
+                                <button class="chart-range-btn" onclick="setChartRange('3M')"
+                                    data-range="3M">3M</button>
+                                <button class="chart-range-btn" onclick="setChartRange('6M')"
+                                    data-range="6M">6M</button>
+                                <button class="chart-range-btn" onclick="setChartRange('YTD')"
+                                    data-range="YTD">YTD</button>
+                                <button class="chart-range-btn" onclick="setChartRange('1Y')"
+                                    data-range="1Y">1Y</button>
+                                <button class="chart-range-btn" onclick="setChartRange('5Y')"
+                                    data-range="5Y">5Y</button>
+                                <button class="chart-range-btn" onclick="setChartRange('MAX')"
+                                    data-range="MAX">Max</button>
+                            </div>
+                            <div class="chart-session-controls">
+                                <button id="regularHoursBtn" class="chart-session-btn chart-session-active"
+                                    onclick="setChartSession('regular')">Regular</button>
+                                <button id="extendedHoursBtn" class="chart-session-btn"
+                                    onclick="setChartSession('extended')">Ext.</button>
+                                <button id="cryptoLiveBtn" class="chart-session-btn hidden"
+                                    onclick="setChartSession('crypto24')">24h Live</button>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Signal Confluence Panel -->
@@ -219,16 +427,6 @@
                         <div class="flex justify-between items-center mb-4">
                             <div class="flex items-center gap-3">
                                 <h2 class="text-lg font-bold text-indigo-900">Signal Confluence</h2>
-                                <select id="strategyTf" onchange="updateStrategyTf(this.value)"
-                                    class="bg-indigo-50 text-indigo-600 text-[0.65rem] font-black uppercase px-2 py-0.5 rounded border border-indigo-100 focus:outline-none cursor-pointer hover:bg-indigo-100 transition-colors">
-                                    <option value="1Min">1m</option>
-                                    <option value="5Min" selected>5m</option>
-                                    <option value="15Min">15m</option>
-                                    <option value="30Min">30m</option>
-                                    <option value="1Hour">1h</option>
-                                    <option value="4Hour">4h</option>
-                                    <option value="1Day">1d</option>
-                                </select>
                             </div>
                             <div class="flex items-center gap-3">
                                 <span
@@ -236,10 +434,15 @@
                                     id="bullCount">0 Bullish</span>
                                 <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700"
                                     id="bearCount">0 Bearish</span>
-                                <button onclick="openIndicatorSettings('Strategy Confidence')" class="ml-1 p-1 rounded hover:bg-emerald-50 text-emerald-600 transition-colors" title="Global Strategy Settings">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                <button onclick="openIndicatorSettings('Strategy Confidence')"
+                                    class="ml-1 p-1 rounded hover:bg-emerald-50 text-emerald-600 transition-colors"
+                                    title="Global Strategy Settings">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none"
+                                        viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                            d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                                     </svg>
                                 </button>
                             </div>
@@ -267,7 +470,21 @@
                         </div>
                     </div>
 
+                    <!-- AI Sentiment Analysis Panel -->
+                    <div class="panel-glass relative">
+                        <div class="panel-top-bar bg-gradient-to-r from-fuchsia-500 to-purple-600"></div>
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-lg font-bold text-indigo-900" id="aiAnalysisHeader">✦ AI Sentiment Analysis
+                            </h2>
+                        </div>
+                        <div class="p-4 bg-white/40 rounded-xl border border-purple-100 text-xs text-indigo-800 italic leading-relaxed"
+                            id="aiSummary">
+                            Waiting for scan analysis...
+                        </div>
+                    </div>
+
                 </div>
+
 
                 <!-- RIGHT: Sidebar (1 col) -->
                 <div class="space-y-6">
@@ -275,19 +492,26 @@
                     <!-- Watchlist -->
                     <div class="panel-glass relative">
                         <div class="panel-top-bar bg-gradient-to-r from-cyan-400 to-blue-400"></div>
-                        <h2 class="text-lg font-bold text-indigo-900 mb-3">My Watchlist</h2>
+                        <div class="flex flex-col mb-4">
+                            <h2 class="text-lg font-bold text-indigo-900 mb-2">My Watchlist</h2>
+                            <div
+                                class="flex bg-slate-100/60 backdrop-blur-sm p-1 rounded-lg border border-purple-100/50 w-full text-xs">
+                                <button id="wlTabAll" onclick="setWatchlistTab('all')"
+                                    class="flex-1 py-1.5 text-center rounded-md font-bold transition-all text-indigo-900 bg-white shadow-sm">
+                                    All
+                                </button>
+                                <button id="wlTabStocks" onclick="setWatchlistTab('stocks')"
+                                    class="flex-1 py-1.5 text-center rounded-md font-bold transition-all text-slate-500 hover:text-indigo-900">
+                                    Stocks
+                                </button>
+                                <button id="wlTabCrypto" onclick="setWatchlistTab('crypto')"
+                                    class="flex-1 py-1.5 text-center rounded-md font-bold transition-all text-slate-500 hover:text-indigo-900">
+                                    Crypto
+                                </button>
+                            </div>
+                        </div>
                         <div id="watchlistContainer" class="space-y-2">
                             <!-- Watchlist items injected by JS -->
-                        </div>
-                    </div>
-
-                    <!-- AI Analysis Summary -->
-                    <div class="panel-glass relative">
-                        <div class="panel-top-bar bg-gradient-to-r from-fuchsia-400 to-purple-500"></div>
-                        <h2 class="text-lg font-bold text-indigo-900 mb-3">AI Analysis</h2>
-                        <div class="p-3 bg-white/40 rounded-lg border border-purple-100 text-xs text-indigo-800 italic leading-relaxed"
-                            id="aiSummary">
-                            Waiting for scan analysis...
                         </div>
                     </div>
 
@@ -299,347 +523,384 @@
         </div>
 
         <!-- ═══════════════ FOOTER ═══════════════ -->
-        <footer class="mt-20 text-center text-[0.7rem] text-purple-400 font-black uppercase tracking-[0.3em] pb-12 border-t border-purple-100 pt-12">
+        <footer
+            class="mt-20 text-center text-[0.7rem] text-purple-400 font-black uppercase tracking-[0.3em] pb-12 border-t border-purple-100 pt-12">
             <div class="flex flex-col items-center gap-4">
                 <div class="flex items-center gap-2">
                     <span class="h-1.5 w-1.5 rounded-full bg-purple-400 opacity-50"></span>
                     <p>AI Trading Bot — Sentient Performance Engine v2.0</p>
                     <span class="h-1.5 w-1.5 rounded-full bg-purple-400 opacity-50"></span>
                 </div>
-                <p class="text-[0.6rem] text-rose-400/80 max-w-md">⚠️ Algorithmic trading involves significant risk. This is for educational purposes only and does not guarantee future results.</p>
+                <p class="text-[0.6rem] text-rose-400/80 max-w-md">⚠️ Algorithmic trading involves significant risk.
+                    This is for educational purposes only and does not guarantee future results.</p>
             </div>
         </footer>
 
     </main>
 
-        <!-- Ticker Settings Modal -->
+    <!-- Ticker Settings Modal -->
 
-        <!-- Ticker Settings Modal -->
-        <div id="tickerModal"
-            class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden z-50 flex items-center justify-center p-4">
+    <!-- Ticker Settings Modal -->
+    <div id="tickerModal"
+        class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden z-50 flex items-center justify-center p-4">
+        <div
+            class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
             <div
-                class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
-                <div
-                    class="bg-gradient-to-r from-indigo-600 to-purple-600 p-4 flex justify-between items-center text-white">
-                    <h3 class="font-bold text-lg" id="modalTickerName">BTCUSD Settings</h3>
-                    <button onclick="closeTickerModal()" class="hover:rotate-90 transition-all duration-300">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                d="M6 18L18 6M6 6l12 12">
-                            </path>
-                        </svg>
-                    </button>
-                </div>
-                <div class="p-6 space-y-4">
-                    <div class="space-y-1">
-                        <div class="flex items-center gap-1 mb-1">
-                            <label class="text-xs font-bold text-slate-500 uppercase">Trade Amount ($)</label>
-                            <div class="group relative">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-slate-400 cursor-help"
-                                    fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                </svg>
-                                <div
-                                    class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-white text-[0.65rem] rounded-lg shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 leading-relaxed">
-                                    Total capital allocated to this specific ticker. Overrides global defaults.
-                                </div>
-                            </div>
-                        </div>
-                        <input type="number" id="modalAmount"
-                            class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                            placeholder="Manual Entry Required">
-                    </div>
-                    <div class="grid grid-cols-2 gap-4">
-                        <div class="space-y-1">
-                            <div class="flex items-center gap-1 mb-1">
-                                <label class="text-xs font-bold text-slate-500 uppercase">Risk / Trade (%)</label>
-                                <div class="group relative">
-                                    <svg xmlns="http://www.w3.org/2000/svg"
-                                        class="h-3.5 w-3.5 text-slate-400 cursor-help" fill="none" viewBox="0 0 24 24"
-                                        stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    <div
-                                        class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-white text-[0.65rem] rounded-lg shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 leading-relaxed">
-                                        % of your budget to risk on each trade based on stop loss distance.
-                                    </div>
-                                </div>
-                            </div>
-                            <input type="number" id="modalRisk"
-                                class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                                placeholder="Enter Risk %" step="0.1">
-                        </div>
-                        <div class="space-y-1">
-                            <div class="flex items-center gap-1 mb-1">
-                                <label class="text-xs font-bold text-slate-500 uppercase">ATR Stop Mult</label>
-                                <div class="group relative">
-                                    <svg xmlns="http://www.w3.org/2000/svg"
-                                        class="h-3.5 w-3.5 text-slate-400 cursor-help" fill="none" viewBox="0 0 24 24"
-                                        stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    <div
-                                        class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-white text-[0.65rem] rounded-lg shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 leading-relaxed">
-                                        Multiplier for ATR to set stop loss distance. Higher = wider stops.
-                                    </div>
-                                </div>
-                            </div>
-                            <input type="number" id="modalAtrStop"
-                                class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                                placeholder="Enter ATR Mult" step="0.1">
-                        </div>
-                    </div>
-                    <div class="space-y-1">
-                        <div class="flex items-center gap-1 mb-1">
-                            <label class="text-xs font-bold text-slate-500 uppercase">Take Profit Mult</label>
-                            <div class="group relative">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-slate-400 cursor-help"
-                                    fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                </svg>
-                                <div
-                                    class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-white text-[0.65rem] rounded-lg shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 leading-relaxed">
-                                    Multiplier for your risk distance to set the target. e.g. 1.5 = 1.5x risk.
-                                </div>
-                            </div>
-                        </div>
-                        <input type="number" id="modalTpMult"
-                            class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                            placeholder="Enter TP Mult" step="0.1">
-                    </div>
-
-                    <div class="space-y-1">
-                        <label class="text-xs font-bold text-slate-500 uppercase">Trading Timeframe</label>
-                        <select id="modalTimeframe"
-                            class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none appearance-none cursor-pointer">
-                            <option value="">Use Global Strategy Default</option>
-                            <option value="1Min">1 Minute (Scalp)</option>
-                            <option value="5Min">5 Minutes (Intraday)</option>
-                            <option value="15Min">15 Minutes (Active)</option>
-                            <option value="1Hour">1 Hour (Swing)</option>
-                            <option value="1Day">1 Day (Long Term)</option>
-                        </select>
-                    </div>
-
-                    <div class="pt-6 flex gap-4">
-                        <button onclick="saveTickerSettings()"
-                            class="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 hover:shadow-indigo-500/20 hover:shadow-xl text-white font-black py-4 rounded-xl shadow-lg transition-all active:scale-95 uppercase tracking-widest text-sm">Save
-                            Settings</button>
-                        <button onclick="resetTickerSettings()"
-                            class="px-6 bg-slate-100 hover:bg-slate-200 text-slate-500 font-black py-4 rounded-xl transition-all uppercase tracking-widest text-sm">Reset</button>
-                    </div>
-                </div>
+                class="bg-gradient-to-r from-indigo-600 to-purple-600 p-4 flex justify-between items-center text-white">
+                <h3 class="font-bold text-lg" id="modalTickerName">BTCUSD Settings</h3>
+                <button onclick="closeTickerModal()" class="hover:rotate-90 transition-all duration-300">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12">
+                        </path>
+                    </svg>
+                </button>
             </div>
-        </div>
-
-        <!-- Alpaca Connection Modal -->
-        <div id="alpacaModal"
-            class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden z-50 flex items-center justify-center p-4">
-            <div
-                class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200 border border-indigo-100">
-                <div
-                    class="bg-gradient-to-r from-emerald-600 to-indigo-600 p-5 flex justify-between items-center text-white">
-                    <div>
-                        <h3 class="font-black text-lg uppercase tracking-tight">Alpaca Integration</h3>
-                        <p class="text-[0.65rem] font-bold text-emerald-100 uppercase tracking-widest opacity-80">Secure
-                            Account Bridge</p>
-                    </div>
-                    <button onclick="closeAlpacaModal()"
-                        class="w-8 h-8 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 transition-all">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                d="M6 18L18 6M6 6l12 12"></path>
-                        </svg>
-                    </button>
-                </div>
-                <div class="p-8 space-y-6">
-                    <div class="space-y-2">
-                        <label class="text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Alpaca API
-                            Key</label>
-                        <input type="text" id="alpacaKey"
-                            class="w-full bg-indigo-50/50 border border-indigo-100 rounded-xl px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none placeholder:text-indigo-200"
-                            placeholder="PK...">
-                    </div>
-                    <div class="space-y-2">
-                        <label class="text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Alpaca Secret
-                            Key</label>
-                        <input type="password" id="alpacaSecret"
-                            class="w-full bg-indigo-50/50 border border-indigo-100 rounded-xl px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none placeholder:text-indigo-200"
-                            placeholder="••••••••••••••••">
-                    </div>
-                    <div
-                        class="flex items-center justify-between p-4 bg-indigo-50/50 rounded-xl border border-indigo-100">
-                        <div class="space-y-0.5">
-                            <p class="text-xs font-black text-indigo-900 uppercase">Trading Environment</p>
-                            <p class="text-[0.6rem] font-bold text-indigo-400 uppercase tracking-tighter" id="envLabel">
-                                Paper Trading Enabled</p>
-                        </div>
-                        <label class="relative inline-flex items-center cursor-pointer">
-                            <input type="checkbox" id="alpacaPaper" class="sr-only peer" checked
-                                onchange="document.getElementById('envLabel').textContent = this.checked ? 'Paper Trading Enabled' : 'LIVE TRADING ENABLED'">
-                            <div
-                                class="w-11 h-6 bg-indigo-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500">
-                            </div>
-                        </label>
-                    </div>
-
-                    <div class="pt-2">
-                        <button onclick="submitAlpacaConfig()" id="alpacaSubmitBtn"
-                            class="w-full bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 hover:shadow-purple-500/30 hover:shadow-2xl text-white font-black py-5 rounded-2xl transition-all active:scale-[0.98] uppercase tracking-[0.25em] text-sm shadow-xl">
-                            Establish Connection
-                        </button>
-                        <div class="mt-4 flex flex-col items-center gap-3">
-                            <p
-                                class="text-[0.6rem] text-indigo-300 font-bold uppercase tracking-tighter italic text-center">
-                                Fully Encrypted. Your API keys are stored locally and remain private.</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Integration & Paper Trading Guide Modal -->
-        <div id="guideModal"
-            class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden z-[60] flex items-center justify-center p-4">
-            <div
-                class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden animate-in fade-in slide-in-from-bottom-8 duration-300">
-                <div class="bg-indigo-950 p-6 flex justify-between items-center text-white border-b border-white/10">
-                    <div class="flex items-center gap-3">
-                        <div
-                            class="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/20">
-                            <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div class="p-6 space-y-4">
+                <div class="space-y-1">
+                    <div class="flex items-center gap-1 mb-1">
+                        <label class="text-xs font-bold text-slate-500 uppercase">Trade Amount ($)</label>
+                        <div class="group relative">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-slate-400 cursor-help"
+                                fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                    d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                             </svg>
-                        </div>
-                        <div>
-                            <h3 class="font-black text-lg uppercase tracking-tight">Onboarding Guide</h3>
-                            <p class="text-[0.6rem] font-bold text-emerald-400 uppercase tracking-widest">Master the AI
-                                Trader Setup</p>
+                            <div
+                                class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-white text-[0.65rem] rounded-lg shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 leading-relaxed">
+                                Total capital allocated to this specific ticker. Overrides global defaults.
+                            </div>
                         </div>
                     </div>
-                    <button onclick="closeGuideModal()"
-                        class="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/10 transition-all">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                d="M6 18L18 6M6 6l12 12"></path>
-                        </svg>
-                    </button>
+                    <input type="number" id="modalAmount"
+                        class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                        placeholder="Manual Entry Required">
                 </div>
-                <div class="p-8 grid grid-cols-1 md:grid-cols-2 gap-8 overflow-y-auto max-h-[70vh]">
-                    <!-- Step 1 & Recommendation -->
-                    <div class="space-y-6">
-                        <div class="bg-emerald-50 border border-emerald-100 p-5 rounded-2xl">
-                            <span
-                                class="px-3 py-1 bg-emerald-500 text-white text-[0.6rem] font-black rounded-full uppercase tracking-widest">Recommendation</span>
-                            <h4 class="text-emerald-900 font-black mt-3 uppercase text-xs">Start with Paper Trading</h4>
-                            <p class="text-xs text-emerald-700 font-medium mt-2 leading-relaxed">We strongly recommend
-                                all beginners start with a **Paper Account**. This uses $100,000 of "fake money" to
-                                simulate real market conditions without risking your capital.</p>
-                        </div>
-
-                        <div class="space-y-4">
-                            <div class="flex gap-4">
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="space-y-1">
+                        <div class="flex items-center gap-1 mb-1">
+                            <label class="text-xs font-bold text-slate-500 uppercase">Risk / Trade (%)</label>
+                            <div class="group relative">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-slate-400 cursor-help"
+                                    fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
                                 <div
-                                    class="flex-shrink-0 w-8 h-8 bg-indigo-100 text-indigo-600 font-black rounded-full flex items-center justify-center text-xs">
-                                    1</div>
-                                <div>
-                                    <h5 class="text-indigo-900 font-black text-xs uppercase">Create Alpaca Account</h5>
-                                    <p class="text-[0.7rem] text-indigo-400 font-bold mt-1">Sign up at <a
-                                            href="https://alpaca.markets" target="_blank"
-                                            class="text-indigo-600 underline">Alpaca.markets</a> and verify your email.
-                                    </p>
-                                </div>
-                            </div>
-                            <div class="flex gap-4">
-                                <div
-                                    class="flex-shrink-0 w-8 h-8 bg-indigo-100 text-indigo-600 font-black rounded-full flex items-center justify-center text-xs">
-                                    2</div>
-                                <div>
-                                    <h5 class="text-indigo-900 font-black text-xs uppercase">Choose Environment</h5>
-                                    <p class="text-[0.7rem] text-indigo-400 font-bold mt-1">In your Alpaca dashboard,
-                                        toggle to **"Paper Trading"** in the sidebar.</p>
+                                    class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-white text-[0.65rem] rounded-lg shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 leading-relaxed">
+                                    % of your budget to risk on each trade based on stop loss distance.
                                 </div>
                             </div>
                         </div>
+                        <input type="number" id="modalRisk"
+                            class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                            placeholder="Enter Risk %" step="0.1">
                     </div>
-
-                    <!-- Step 3 & 4 -->
-                    <div class="space-y-6">
-                        <div class="space-y-4">
-                            <div class="flex gap-4">
+                    <div class="space-y-1">
+                        <div class="flex items-center gap-1 mb-1">
+                            <label class="text-xs font-bold text-slate-500 uppercase">ATR Stop Mult</label>
+                            <div class="group relative">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-slate-400 cursor-help"
+                                    fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
                                 <div
-                                    class="flex-shrink-0 w-8 h-8 bg-indigo-100 text-indigo-600 font-black rounded-full flex items-center justify-center text-xs">
-                                    3</div>
-                                <div>
-                                    <h5 class="text-indigo-900 font-black text-xs uppercase">Generate API Keys</h5>
-                                    <p class="text-[0.7rem] text-indigo-400 font-bold mt-1">Look for the **"API Keys"**
-                                        section and click "Generate New Key". You will get an **API Key ID** and a
-                                        **Secret Key**.</p>
-                                </div>
-                            </div>
-                            <div class="flex gap-4">
-                                <div
-                                    class="flex-shrink-0 w-8 h-8 bg-indigo-100 text-indigo-600 font-black rounded-full flex items-center justify-center text-xs">
-                                    4</div>
-                                <div>
-                                    <h5 class="text-indigo-900 font-black text-xs uppercase">Connect to Bot</h5>
-                                    <p class="text-[0.7rem] text-indigo-400 font-bold mt-1">Paste those keys into the
-                                        "Link Account" window here. Make sure the "Paper Trading" toggle matches your
-                                        Alpaca dashboard setting.</p>
+                                    class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-white text-[0.65rem] rounded-lg shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 leading-relaxed">
+                                    Multiplier for ATR to set stop loss distance. Higher = wider stops.
                                 </div>
                             </div>
                         </div>
-
-                        <div class="p-5 bg-indigo-50 rounded-2xl border border-indigo-100">
-                            <h4 class="text-indigo-900 font-black uppercase text-xs">Why Paper First?</h4>
-                            <ul class="mt-3 space-y-2">
-                                <li class="flex items-start gap-2 text-[0.65rem] text-indigo-500 font-bold">
-                                    <span class="text-emerald-500">✔</span> master indicator confluence
-                                </li>
-                                <li class="flex items-start gap-2 text-[0.65rem] text-indigo-500 font-bold">
-                                    <span class="text-emerald-500">✔</span> test different timeframes
-                                </li>
-                                <li class="flex items-start gap-2 text-[0.65rem] text-indigo-500 font-bold">
-                                    <span class="text-emerald-500">✔</span> build confidence in AI signals
-                                </li>
-                            </ul>
-                        </div>
+                        <input type="number" id="modalAtrStop"
+                            class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                            placeholder="Enter ATR Mult" step="0.1">
                     </div>
                 </div>
-                <div class="p-8 bg-slate-50 flex justify-center border-t border-slate-100">
-                    <button onclick="closeGuideModal(); openAlpacaModal();"
-                        class="px-12 py-5 bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 text-white font-black rounded-full hover:shadow-purple-500/40 hover:shadow-2xl transition-all shadow-xl uppercase tracking-[0.2em] text-sm active:scale-95">
-                        I'm Ready to Link Account
-                    </button>
+                <div class="space-y-1">
+                    <div class="flex items-center gap-1 mb-1">
+                        <label class="text-xs font-bold text-slate-500 uppercase">Take Profit Mult</label>
+                        <div class="group relative">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-slate-400 cursor-help"
+                                fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            <div
+                                class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-white text-[0.65rem] rounded-lg shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 leading-relaxed">
+                                Multiplier for your risk distance to set the target. e.g. 1.5 = 1.5x risk.
+                            </div>
+                        </div>
+                    </div>
+                    <input type="number" id="modalTpMult"
+                        class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                        placeholder="Enter TP Mult" step="0.1">
+                </div>
+
+                <div class="space-y-1">
+                    <label class="text-xs font-bold text-slate-500 uppercase">Trading Timeframe</label>
+                    <select id="modalTimeframe"
+                        class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none appearance-none cursor-pointer">
+                        <option value="">Use Global Strategy Default</option>
+                        <option value="1Min">1 Minute (Scalp)</option>
+                        <option value="5Min">5 Minutes (Intraday)</option>
+                        <option value="15Min">15 Minutes (Active)</option>
+                        <option value="1Hour">1 Hour (Swing)</option>
+                        <option value="1Day">1 Day (Long Term)</option>
+                    </select>
+                </div>
+
+                <div class="pt-6 flex gap-4">
+                    <button onclick="saveTickerSettings()"
+                        class="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 hover:shadow-indigo-500/20 hover:shadow-xl text-white font-black py-4 rounded-xl shadow-lg transition-all active:scale-95 uppercase tracking-widest text-sm">Save
+                        Settings</button>
+                    <button onclick="resetTickerSettings()"
+                        class="px-6 bg-slate-100 hover:bg-slate-200 text-slate-500 font-black py-4 rounded-xl transition-all uppercase tracking-widest text-sm">Reset</button>
                 </div>
             </div>
         </div>
-        <script src="app.js"></script>
+    </div>
+
+    <!-- Alpaca Connection Modal -->
+    <div id="alpacaModal"
+        class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden z-50 flex items-center justify-center p-4">
+        <div
+            class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200 border border-indigo-100">
+            <div
+                class="bg-gradient-to-r from-emerald-600 to-indigo-600 p-5 flex justify-between items-center text-white">
+                <div>
+                    <h3 class="font-black text-lg uppercase tracking-tight">Alpaca Integration</h3>
+                    <p class="text-[0.65rem] font-bold text-emerald-100 uppercase tracking-widest opacity-80">Secure
+                        Account Bridge</p>
+                </div>
+                <button onclick="closeAlpacaModal()"
+                    class="w-8 h-8 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 transition-all">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                            d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+            <div class="p-8 space-y-6">
+                <div class="space-y-2">
+                    <label class="text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Alpaca API
+                        Key</label>
+                    <input type="text" id="alpacaKey"
+                        class="w-full bg-indigo-50/50 border border-indigo-100 rounded-xl px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none placeholder:text-indigo-200"
+                        placeholder="PK...">
+                </div>
+                <div class="space-y-2">
+                    <label class="text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Alpaca Secret
+                        Key</label>
+                    <input type="password" id="alpacaSecret"
+                        class="w-full bg-indigo-50/50 border border-indigo-100 rounded-xl px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none placeholder:text-indigo-200"
+                        placeholder="••••••••••••••••">
+                </div>
+                <div class="flex items-center justify-between p-4 bg-indigo-50/50 rounded-xl border border-indigo-100">
+                    <div class="space-y-0.5">
+                        <p class="text-xs font-black text-indigo-900 uppercase">Trading Environment</p>
+                        <p class="text-[0.6rem] font-bold text-indigo-400 uppercase tracking-tighter" id="envLabel">
+                            Paper Trading Enabled</p>
+                    </div>
+                    <label class="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" id="alpacaPaper" class="sr-only peer" checked
+                            onchange="document.getElementById('envLabel').textContent = this.checked ? 'Paper Trading Enabled' : 'LIVE TRADING ENABLED'">
+                        <div
+                            class="w-11 h-6 bg-indigo-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500">
+                        </div>
+                    </label>
+                </div>
+
+                <div class="pt-2">
+                    <button onclick="submitAlpacaConfig()" id="alpacaSubmitBtn"
+                        class="w-full bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 hover:shadow-purple-500/30 hover:shadow-2xl text-white font-black py-5 rounded-2xl transition-all active:scale-[0.98] uppercase tracking-[0.25em] text-sm shadow-xl">
+                        Establish Connection
+                    </button>
+                    <div class="mt-4 flex flex-col items-center gap-3">
+                        <p
+                            class="text-[0.6rem] text-indigo-300 font-bold uppercase tracking-tighter italic text-center">
+                            Fully Encrypted. Your API keys are stored locally and remain private.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Integration & Paper Trading Guide Modal -->
+    <div id="guideModal"
+        class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden z-[60] flex items-center justify-center p-4">
+        <div
+            class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden animate-in fade-in slide-in-from-bottom-8 duration-300">
+            <div class="bg-indigo-950 p-6 flex justify-between items-center text-white border-b border-white/10">
+                <div class="flex items-center gap-3">
+                    <div
+                        class="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/20">
+                        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                        </svg>
+                    </div>
+                    <div>
+                        <h3 class="font-black text-lg uppercase tracking-tight">Onboarding Guide</h3>
+                        <p class="text-[0.6rem] font-bold text-emerald-400 uppercase tracking-widest">Master the AI
+                            Trader Setup</p>
+                    </div>
+                </div>
+                <button onclick="closeGuideModal()"
+                    class="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/10 transition-all">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                            d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+            <div class="p-8 grid grid-cols-1 md:grid-cols-2 gap-8 overflow-y-auto max-h-[70vh]">
+                <!-- Step 1 & Recommendation -->
+                <div class="space-y-6">
+                    <div class="bg-emerald-50 border border-emerald-100 p-5 rounded-2xl">
+                        <span
+                            class="px-3 py-1 bg-emerald-500 text-white text-[0.6rem] font-black rounded-full uppercase tracking-widest">Recommendation</span>
+                        <h4 class="text-emerald-900 font-black mt-3 uppercase text-xs">Start with Paper Trading</h4>
+                        <p class="text-xs text-emerald-700 font-medium mt-2 leading-relaxed">We strongly recommend
+                            all beginners start with a **Paper Account**. This uses $100,000 of "fake money" to
+                            simulate real market conditions without risking your capital.</p>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="flex gap-4">
+                            <div
+                                class="flex-shrink-0 w-8 h-8 bg-indigo-100 text-indigo-600 font-black rounded-full flex items-center justify-center text-xs">
+                                1</div>
+                            <div>
+                                <h5 class="text-indigo-900 font-black text-xs uppercase">Create Alpaca Account</h5>
+                                <p class="text-[0.7rem] text-indigo-400 font-bold mt-1">Sign up at <a
+                                        href="https://alpaca.markets" target="_blank"
+                                        class="text-indigo-600 underline">Alpaca.markets</a> and verify your email.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex gap-4">
+                            <div
+                                class="flex-shrink-0 w-8 h-8 bg-indigo-100 text-indigo-600 font-black rounded-full flex items-center justify-center text-xs">
+                                2</div>
+                            <div>
+                                <h5 class="text-indigo-900 font-black text-xs uppercase">Choose Environment</h5>
+                                <p class="text-[0.7rem] text-indigo-400 font-bold mt-1">In your Alpaca dashboard,
+                                    toggle to **"Paper Trading"** in the sidebar.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 3 & 4 -->
+                <div class="space-y-6">
+                    <div class="space-y-4">
+                        <div class="flex gap-4">
+                            <div
+                                class="flex-shrink-0 w-8 h-8 bg-indigo-100 text-indigo-600 font-black rounded-full flex items-center justify-center text-xs">
+                                3</div>
+                            <div>
+                                <h5 class="text-indigo-900 font-black text-xs uppercase">Generate API Keys</h5>
+                                <p class="text-[0.7rem] text-indigo-400 font-bold mt-1">Look for the **"API Keys"**
+                                    section and click "Generate New Key". You will get an **API Key ID** and a
+                                    **Secret Key**.</p>
+                            </div>
+                        </div>
+                        <div class="flex gap-4">
+                            <div
+                                class="flex-shrink-0 w-8 h-8 bg-indigo-100 text-indigo-600 font-black rounded-full flex items-center justify-center text-xs">
+                                4</div>
+                            <div>
+                                <h5 class="text-indigo-900 font-black text-xs uppercase">Connect to Bot</h5>
+                                <p class="text-[0.7rem] text-indigo-400 font-bold mt-1">Paste those keys into the
+                                    "Link Account" window here. Make sure the "Paper Trading" toggle matches your
+                                    Alpaca dashboard setting.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="p-5 bg-indigo-50 rounded-2xl border border-indigo-100">
+                        <h4 class="text-indigo-900 font-black uppercase text-xs">Why Paper First?</h4>
+                        <ul class="mt-3 space-y-2">
+                            <li class="flex items-start gap-2 text-[0.65rem] text-indigo-500 font-bold">
+                                <span class="text-emerald-500">✔</span> master indicator confluence
+                            </li>
+                            <li class="flex items-start gap-2 text-[0.65rem] text-indigo-500 font-bold">
+                                <span class="text-emerald-500">✔</span> test different timeframes
+                            </li>
+                            <li class="flex items-start gap-2 text-[0.65rem] text-indigo-500 font-bold">
+                                <span class="text-emerald-500">✔</span> build confidence in AI signals
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div class="p-8 bg-slate-50 flex justify-center border-t border-slate-100">
+                <button onclick="closeGuideModal(); openAlpacaModal();"
+                    class="px-12 py-5 bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 text-white font-black rounded-full hover:shadow-purple-500/40 hover:shadow-2xl transition-all shadow-xl uppercase tracking-[0.2em] text-sm active:scale-95">
+                    I'm Ready to Link Account
+                </button>
+            </div>
+        </div>
+    </div>
+    <script src="app.js?v=58"></script>
+
+    <!-- Fear & Greed Sub-Components Modal -->
+    <div id="fngModal"
+        class="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[200] hidden flex items-center justify-center p-4">
+        <div
+            class="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-4xl border border-white/50 flex flex-col max-h-[90vh]">
+            <div
+                class="px-6 py-5 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white/95 backdrop-blur-xl z-10 rounded-t-2xl">
+                <h3 class="text-xl font-black text-slate-800 tracking-tight flex items-center gap-2">
+                    Fear & Greed Indicators
+                    <span
+                        class="text-xs font-bold bg-indigo-100 text-indigo-600 px-2 py-1 rounded-md uppercase tracking-widest ml-2">Live
+                        Data</span>
+                </h3>
+                <button onclick="document.getElementById('fngModal').classList.add('hidden')"
+                    class="text-slate-400 hover:text-slate-700 transition-colors p-2 hover:bg-slate-100 rounded-full">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd"
+                            d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                            clip-rule="evenodd" />
+                    </svg>
+                </button>
+            </div>
+            <div class="p-6 overflow-y-auto custom-scrollbar">
+                <p class="text-sm text-slate-500 mb-6 font-medium">This grid represents the core market components used
+                    to calculate the overall Fear & Greed index.</p>
+                <div id="fngComponentsGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- Indicator Settings Modal -->
-    <div id="indicatorSettingsModal" class="fixed inset-0 bg-indigo-950/40 backdrop-blur-sm z-[200] hidden flex items-center justify-center p-4">
-        <div class="bg-white/90 backdrop-blur-md rounded-2xl shadow-2xl w-full max-w-md border border-white/50 overflow-hidden transform transition-all">
+    <div id="indicatorSettingsModal"
+        class="fixed inset-0 bg-indigo-950/40 backdrop-blur-sm z-[200] hidden flex items-center justify-center p-4">
+        <div
+            class="bg-white/90 backdrop-blur-md rounded-2xl shadow-2xl w-full max-w-md border border-white/50 overflow-hidden transform transition-all">
             <div class="bg-gradient-to-r from-indigo-600 to-purple-600 px-6 py-4 flex items-center justify-between">
                 <h3 class="text-white font-bold tracking-tight" id="indicatorModalTitle">Indicator Settings</h3>
                 <button onclick="closeIndicatorSettings()" class="text-white/60 hover:text-white transition-colors">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                        <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+                        <path fill-rule="evenodd"
+                            d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                            clip-rule="evenodd" />
                     </svg>
                 </button>
             </div>
-            
+
             <div class="p-6 space-y-4" id="indicatorModalContent">
                 <!-- Inputs injected by JS -->
             </div>
 
             <div class="px-6 py-4 bg-slate-50 flex items-center justify-end gap-3 border-t border-slate-100">
-                <button onclick="closeIndicatorSettings()" class="px-4 py-2 text-sm font-bold text-slate-500 hover:text-indigo-600 transition-colors">Cancel</button>
-                <button onclick="saveIndicatorSettings()" class="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-bold shadow-lg shadow-indigo-200 transition-all">Apply Settings</button>
+                <button onclick="closeIndicatorSettings()"
+                    class="px-4 py-2 text-sm font-bold text-slate-500 hover:text-indigo-600 transition-colors">Cancel</button>
+                <button onclick="saveIndicatorSettings()"
+                    class="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-bold shadow-lg shadow-indigo-200 transition-all">Apply
+                    Settings</button>
             </div>
         </div>
     </div>

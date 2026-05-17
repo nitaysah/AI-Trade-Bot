@@ -18,7 +18,7 @@ import config
 try:
     from webull.core.client import ApiClient
     from webull.trade.trade_client import TradeClient
-    from webull.market.market_client import MarketClient
+    from webull.data.data_client import DataClient
     WEBULL_AVAILABLE = True
 except ImportError:
     WEBULL_AVAILABLE = False
@@ -26,21 +26,12 @@ except ImportError:
 
 
 # ──────────────────────────────────────────────
-# Webull API Endpoints
+# Webull API Endpoints (Production Only)
 # ──────────────────────────────────────────────
 ENDPOINTS = {
-    "trade": {
-        True:  "us-openapi-alb.uat.webullbroker.com",   # Test/Paper
-        False: "api.webull.com",                          # Production
-    },
-    "market_data": {
-        True:  "us-openapi-alb.uat.webullbroker.com",
-        False: "data-api.webull.com",
-    },
-    "events": {
-        True:  "us-openapi-events.uat.webullbroker.com",
-        False: "events-api.webull.com",
-    },
+    "trade": "api.webull.com",
+    "market_data": "api.webull.com",
+    "events": "events-api.webull.com",
 }
 
 
@@ -64,11 +55,14 @@ class WebullBroker:
         app_key = getattr(config, 'WEBULL_APP_KEY', '')
         app_secret = getattr(config, 'WEBULL_APP_SECRET', '')
         if app_key and app_key != "your_webull_app_key_here":
-            test_mode = getattr(config, 'WEBULL_TEST_MODE', True)
-            self.connect(app_key, app_secret, test_mode)
+            data_only = getattr(config, 'WEBULL_DATA_ONLY', False)
+            self.connect(app_key, app_secret, data_only=data_only)
 
-    def connect(self, app_key: str, app_secret: str, test_mode: bool = True) -> bool:
-        """Connects to Webull using App Key + App Secret (HMAC-SHA1 signed)."""
+    def connect(self, app_key: str, app_secret: str, test_mode: bool = False, data_only: bool = False) -> bool:
+        """Connects to Webull using App Key + App Secret (HMAC-SHA1 signed).
+        
+        data_only=True: initialise only the market data client (no trading, no account calls).
+        """
         if not WEBULL_AVAILABLE:
             print("[webull] SDK not installed. Cannot connect.")
             return False
@@ -76,23 +70,24 @@ class WebullBroker:
         try:
             app_key = app_key.strip()
             app_secret = app_secret.strip()
+            mode_label = "Data-Only" if data_only else "Prod"
+            print(f"[webull] Connecting ({mode_label})...")
 
-            print(f"[webull] Attempting connection (Test={test_mode})...")
+            # ── Market data client (always needed) ──────────────────────────
+            market_api = ApiClient(app_key, app_secret, "us")
+            market_api.add_endpoint("us", ENDPOINTS["market_data"])
+            self.market_client = DataClient(market_api)
 
-            # Initialize the official SDK client
+            if data_only:
+                # Skip trade client and account verification entirely
+                self.simulation_mode = True  # no real trading through this broker
+                print("[webull] Data-only mode: market data client ready. Trading disabled.")
+                return True
+
+            # ── Trade client (only when trading is enabled) ─────────────────
             self.api_client = ApiClient(app_key, app_secret, "us")
-            self.api_client.add_endpoint("us", ENDPOINTS["trade"][test_mode])
-
-            # Initialize trade + market clients
+            self.api_client.add_endpoint("us", ENDPOINTS["trade"])
             self.trade_client = TradeClient(self.api_client)
-
-            try:
-                market_api = ApiClient(app_key, app_secret, "us")
-                market_api.add_endpoint("us", ENDPOINTS["market_data"][test_mode])
-                self.market_client = MarketClient(market_api)
-            except Exception as e:
-                print(f"[webull] Market client init warning: {e}")
-                self.market_client = None
 
             # Retrieve account ID (required for all trading calls)
             account_id = getattr(config, 'WEBULL_ACCOUNT_ID', '')
@@ -460,7 +455,7 @@ class WebullBroker:
     def get_bars(self, symbol: str, timespan: str = "m5", count: int = 200) -> list:
         """
         Fetches historical OHLCV bars from Webull.
-        Timespan mapping: m1, m2, m5, m15, m30, h1, h2, h4, d1, w1
+        Timespan mapping: s30, m1, m2, m3, m5, m10, m15, m30, h1, h2, h4, d1, w1
         """
         if self.market_client is None:
             return []
@@ -469,25 +464,40 @@ class WebullBroker:
             # Step 1: Normalize symbol and determine category
             clean_symbol = symbol.upper().replace("/", "")
             is_crypto = any(clean_symbol.endswith(b) for b in ["USD", "USDT", "USDC"])
-            category = "CRYPTO" if is_crypto else "STOCK"
+            category = "US_CRYPTO" if is_crypto else "US_STOCK"
 
             # Step 2: Request bars
-            # Note: Method names in the official SDK: market_data.get_history_bar
-            res = self._retry_request(
-                self.market_client.get_history_bar,
-                clean_symbol,
-                category=category,
-                timespan=timespan,
-                count=count
-            )
+            if is_crypto:
+                res = self._retry_request(
+                    self.market_client.crypto_market_data.get_crypto_history_bar,
+                    [clean_symbol],
+                    category,
+                    timespan.upper(),
+                    count=str(count)
+                )
+            else:
+                res = self._retry_request(
+                    self.market_client.market_data.get_history_bar,
+                    clean_symbol,
+                    category,
+                    timespan.upper(),
+                    count=str(count),
+                    trading_sessions="RTH,PRE,ATH"
+                )
 
             if res.status_code == 200:
                 data = res.json()
+                
+                # Crypto response is usually wrapped: [{"symbol": "BTCUSD", "result": [...]}]
+                if is_crypto and isinstance(data, list) and len(data) > 0 and 'result' in data[0]:
+                    data = data[0]['result']
+                    
                 bars = []
                 for b in data:
+                    if not isinstance(b, dict): continue
                     # Webull returns timestamp in seconds or milliseconds
                     ts = b.get('time')
-                    if ts and ts > 10**10: ts = ts / 1000 # convert ms to s
+                    if ts and isinstance(ts, (int, float)) and ts > 10**10: ts = ts / 1000 # convert ms to s
                     
                     bars.append({
                         'time': ts,
@@ -517,7 +527,9 @@ class WebullBroker:
 
         try:
             clean = symbol.upper().replace("/", "")
-            res = self._retry_request(self.market_client.get_snapshot, [clean])
+            is_crypto = any(clean.endswith(b) for b in ["USD", "USDT", "USDC"])
+            category = "US_CRYPTO" if is_crypto else "US_STOCK"
+            res = self._retry_request(self.market_client.market_data.get_snapshot, [clean], category)
             if res.status_code == 200:
                 data = res.json()
                 if data:

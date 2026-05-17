@@ -180,7 +180,7 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
     }
 
 
-def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash: float = None, timeframe: str = None, data_source: str = "alpaca"):
+def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash: float = None, timeframe: str = None, data_source: str = "webull"):
     """
     Full evaluation pipeline for a single ticker.
     Combines technical signals + AI sentiment + risk management.
@@ -225,12 +225,27 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
     if not analysis:
         print(f"[trader] WARNING: No technical analysis data for {ticker}")
         out = {
+            "time": get_now().isoformat(),
             "ticker": ticker,
             "action": "HOLD",
+            "price": "$0.00",
+            "price_raw": 0.0,
             "reason": "Indicator data missing",
             "signals": {},
             "price_history": [],
-            "timeframe": timeframe
+            "timeframe": timeframe,
+            "sentiment_score": 0.0,
+            "sentiment_confidence": 0.0,
+            "sentiment_summary": "",
+            "sentiment_key_factor": "",
+            "bullish_count": 0,
+            "bearish_count": 0,
+            "total_signals": 0,
+            "atr": 0.0,
+            "rsi": 50.0,
+            "position_sizing": {},
+            "risk_status": {},
+            "is_custom": False
         }
         print(f"[perf] evaluate_trade {ticker_key} {timeframe_key}: {(time.perf_counter() - start_ts) * 1000:.1f}ms (no analysis)")
         return out
