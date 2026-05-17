@@ -50,6 +50,64 @@ document.addEventListener('DOMContentLoaded', () => {
         updateDaysVal();
     }
 
+    // Setup Ticker Search Dropdown
+    const btTickerInput = document.getElementById('btTicker');
+    const btResultsContainer = document.getElementById('btTickerSearchResults');
+    let btSearchTimeout = null;
+
+    if (btTickerInput && btResultsContainer) {
+        btTickerInput.addEventListener('input', (e) => {
+            const query = e.target.value.trim();
+
+            if (query.length < 2) {
+                btResultsContainer.classList.add('hidden');
+                return;
+            }
+
+            clearTimeout(btSearchTimeout);
+            btSearchTimeout = setTimeout(async () => {
+                try {
+                    const headers = await getAuthHeaders();
+                    const res = await fetch(`${API_BASE}/api/search/${encodeURIComponent(query)}`, { headers });
+                    const data = await res.json();
+
+                    btResultsContainer.innerHTML = '';
+                    if (data && data.length > 0) {
+                        data.forEach(item => {
+                            const div = document.createElement('div');
+                            div.className = "p-3 hover:bg-indigo-50 cursor-pointer border-b border-indigo-50 last:border-0 transition-colors flex justify-between items-center";
+                            div.innerHTML = `
+                                <div class="flex flex-col text-left">
+                                    <span class="font-black text-indigo-900">${item.symbol}</span>
+                                    <span class="text-[0.65rem] text-indigo-400 font-medium truncate w-40">${item.name}</span>
+                                </div>
+                                <span class="text-[0.6rem] bg-indigo-100 text-indigo-500 px-2 py-0.5 rounded uppercase font-bold tracking-widest">+ Select</span>
+                            `;
+                            div.onclick = () => {
+                                btTickerInput.value = item.symbol;
+                                btResultsContainer.classList.add('hidden');
+                            };
+                            btResultsContainer.appendChild(div);
+                        });
+                        btResultsContainer.classList.remove('hidden');
+                    } else {
+                        btResultsContainer.innerHTML = '<div class="p-3 text-center text-xs text-indigo-400 font-medium">No assets found</div>';
+                        btResultsContainer.classList.remove('hidden');
+                    }
+                } catch (err) {
+                    console.error('[backtest-search] Error:', err);
+                }
+            }, 300);
+        });
+
+        // Hide dropdown when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!btTickerInput.contains(e.target) && !btResultsContainer.contains(e.target)) {
+                btResultsContainer.classList.add('hidden');
+            }
+        });
+    }
+
     // Initial slider sync
     syncBacktestSliderRange();
     console.log('[backtest] Center Initialized.');

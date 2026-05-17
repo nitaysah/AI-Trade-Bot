@@ -81,13 +81,16 @@
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 md:gap-6 p-6 bg-white/60 backdrop-blur-xl rounded-3xl border border-white shadow-xl">
                 <div class="space-y-2">
                     <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Target Ticker</label>
-                    <div class="flex gap-2">
-                        <input type="text" id="btTicker" class="flex-1 bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-sm uppercase font-black text-indigo-900 focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all" value="BTCUSD">
+                    <div class="flex gap-2 relative">
+                        <input type="text" id="btTicker" autocomplete="off" class="flex-1 bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-sm uppercase font-black text-indigo-900 focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all" value="BTCUSD">
                         <button onclick="bulkDownloadTicker()" class="px-3 bg-indigo-50 border border-indigo-100 rounded-2xl text-indigo-600 hover:bg-indigo-600 hover:text-white transition-all shadow-sm">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10" />
                             </svg>
                         </button>
+                        <!-- Ticker Search Results Dropdown -->
+                        <div id="btTickerSearchResults" class="absolute top-full left-0 right-0 mt-1 bg-white rounded-2xl shadow-2xl border border-indigo-100 overflow-hidden hidden max-h-64 overflow-y-auto z-[999] w-full">
+                        </div>
                     </div>
                 </div>
                 <div class="space-y-2">
@@ -380,7 +383,7 @@
         </div>
     </footer>
 
-    <script src="backtest.js?v=2"></script>
+    <script src="backtest.js?v=3"></script>
 </body>
 
 </html>
