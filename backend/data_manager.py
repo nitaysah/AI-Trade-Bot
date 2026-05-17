@@ -36,8 +36,17 @@ def get_historical_data(ticker, timeframe, start_date, end_date):
     *end_date*.  Uses a local CSV cache; downloads from Webull (if configured)
     or Yahoo Finance on a cache miss.
     """
-    filename = f"{ticker}_{timeframe}.csv"
-    filepath = os.path.join(DATA_DIR, filename)
+    import re
+    # Strict sanitization to prevent path traversal
+    safe_ticker = re.sub(r'[^A-Za-z0-9.\-]', '', ticker).upper()
+    safe_timeframe = re.sub(r'[^A-Za-z0-9]', '', timeframe)
+    filename = f"{safe_ticker}_{safe_timeframe}.csv"
+    
+    # Resolve absolute path and restrict to DATA_DIR
+    filepath = os.path.abspath(os.path.join(DATA_DIR, filename))
+    if not filepath.startswith(os.path.abspath(DATA_DIR)):
+        print(f"[security] Blocked path traversal attempt: {filepath}")
+        return None
 
     # Force naive datetimes internally
     if hasattr(start_date, "tzinfo") and start_date.tzinfo is not None:

@@ -279,7 +279,7 @@ async def verify_token(authorization: str = Header(None)):
         return decoded_token
     except Exception as e:
         print(f"[security] Token verification failed: {str(e)}")
-        raise HTTPException(status_code=401, detail=f"Token verification failed: {str(e)}")
+        raise HTTPException(status_code=401, detail="Invalid or expired authentication credentials")
 
 broker = create_broker()
 trade_log = []      # In-memory history for all scans (HOLD/WATCH/BUY/SELL)
@@ -1172,11 +1172,12 @@ async def download_all_data(data: dict):
         t = yf.Ticker(ticker)
         info = t.info
         
-        # Security: Canonicalize path and verify it stays inside data/
+        # Security: Sanitize ticker to be strictly alphanumeric and verify path confinement
+        safe_ticker = re.sub(r'[^A-Z0-9]', '', ticker)
         data_dir = os.path.realpath(os.path.join(os.path.dirname(__file__), "data"))
         if not os.path.exists(data_dir): os.makedirs(data_dir)
         
-        info_path = os.path.realpath(os.path.join(data_dir, f"{ticker}_info.json"))
+        info_path = os.path.realpath(os.path.join(data_dir, f"{safe_ticker}_info.json"))
         if os.path.commonpath([data_dir, info_path]) != data_dir:
             return {"error": "Invalid ticker path"}
             
@@ -1184,7 +1185,8 @@ async def download_all_data(data: dict):
             json.dump(info, f, indent=4)
         log.append("Metadata: Saved")
     except Exception as e:
-        log.append(f"Metadata Error: {e}")
+        print(f"[api] Metadata extraction error: {e}")
+        log.append("Metadata Error: Could not save metadata securely")
         
     return {"ticker": ticker, "status": log}
 
