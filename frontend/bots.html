@@ -239,6 +239,8 @@
                         </button>
                     </div>
                 </div>
+            </div>
+        </div>
     </main>
 
     <!-- ═══════════════ FOOTER ═══════════════ -->
@@ -328,62 +330,110 @@
                     </div>
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3" id="indicatorChecksContainer">
                         <!-- Dynamic checkboxes will go here -->
-                        <label class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm">
+                        <div class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm" onclick="toggleIndicatorCard(this, event)">
                             <div class="flex flex-col">
                                 <span class="font-black text-indigo-900 uppercase">RSI</span>
                                 <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Momentum</span>
                             </div>
-                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="RSI" checked>
-                        </label>
-                        <label class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm">
+                            <div class="flex items-center gap-2">
+                                <button onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('RSI')" class="opacity-0 group-hover:opacity-40 hover:!opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" title="RSI Settings">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                    </svg>
+                                </button>
+                                <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="RSI" checked onclick="event.stopPropagation()">
+                            </div>
+                        </div>
+                        <div class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm" onclick="toggleIndicatorCard(this, event)">
                             <div class="flex flex-col">
                                 <span class="font-black text-indigo-900 uppercase">MACD</span>
                                 <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Trend</span>
                             </div>
-                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="MACD" checked>
-                        </label>
-                        <label class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm">
+                            <div class="flex items-center gap-2">
+                                <button onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('MACD')" class="opacity-0 group-hover:opacity-40 hover:!opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" title="MACD Settings">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                    </svg>
+                                </button>
+                                <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="MACD" checked onclick="event.stopPropagation()">
+                            </div>
+                        </div>
+                        <div class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm" onclick="toggleIndicatorCard(this, event)">
                             <div class="flex flex-col">
                                 <span class="font-black text-indigo-900 uppercase">EMA Cross</span>
                                 <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Moving Avg</span>
                             </div>
-                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="EMA Cross" checked>
-                        </label>
-                        <label class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm">
+                            <div class="flex items-center gap-2">
+                                <button onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('EMA Cross')" class="opacity-0 group-hover:opacity-40 hover:!opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" title="EMA Cross Settings">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                    </svg>
+                                </button>
+                                <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="EMA Cross" checked onclick="event.stopPropagation()">
+                            </div>
+                        </div>
+                        <div class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm" onclick="toggleIndicatorCard(this, event)">
                             <div class="flex flex-col">
                                 <span class="font-black text-indigo-900 uppercase">Supertrend</span>
                                 <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Volatility</span>
                             </div>
-                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="Supertrend" checked>
-                        </label>
-                        <label class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm">
+                            <div class="flex items-center gap-2">
+                                <button onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('Supertrend')" class="opacity-0 group-hover:opacity-40 hover:!opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" title="Supertrend Settings">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                    </svg>
+                                </button>
+                                <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="Supertrend" checked onclick="event.stopPropagation()">
+                            </div>
+                        </div>
+                        <div class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm" onclick="toggleIndicatorCard(this, event)">
                             <div class="flex flex-col">
                                 <span class="font-black text-indigo-900 uppercase">Bollinger</span>
                                 <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Deviation</span>
                             </div>
-                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="Bollinger" checked>
-                        </label>
-                        <label class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm">
+                            <div class="flex items-center gap-2">
+                                <button onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('Bollinger')" class="opacity-0 group-hover:opacity-40 hover:!opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" title="Bollinger Settings">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                    </svg>
+                                </button>
+                                <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="Bollinger" checked onclick="event.stopPropagation()">
+                            </div>
+                        </div>
+                        <div class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm" onclick="toggleIndicatorCard(this, event)">
                             <div class="flex flex-col">
                                 <span class="font-black text-indigo-900 uppercase">VWAP</span>
                                 <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Volume</span>
                             </div>
-                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="VWAP" checked>
-                        </label>
-                        <label class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm">
+                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="VWAP" checked onclick="event.stopPropagation()">
+                        </div>
+                        <div class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm" onclick="toggleIndicatorCard(this, event)">
                             <div class="flex flex-col">
                                 <span class="font-black text-indigo-900 uppercase">Mystic Pulse</span>
                                 <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Proprietary</span>
                             </div>
-                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="Mystic Pulse" checked>
-                        </label>
-                        <label class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm">
+                            <div class="flex items-center gap-2">
+                                <button onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('Mystic Pulse')" class="opacity-0 group-hover:opacity-40 hover:!opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" title="Mystic Pulse Settings">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                    </svg>
+                                </button>
+                                <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="Mystic Pulse" checked onclick="event.stopPropagation()">
+                            </div>
+                        </div>
+                        <div class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm" onclick="toggleIndicatorCard(this, event)">
                             <div class="flex flex-col">
                                 <span class="font-black text-indigo-900 uppercase">Candle Patterns</span>
                                 <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Price Action</span>
                             </div>
-                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="Candle Patterns" checked>
-                        </label>
+                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="Candle Patterns" checked onclick="event.stopPropagation()">
+                        </div>
                     </div>
                 </div>
 
@@ -406,6 +456,40 @@
                     class="w-full bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-black py-4 rounded-2xl hover:shadow-lg hover:shadow-emerald-500/30 transition-all active:scale-[0.98] uppercase tracking-[0.2em] shadow-md flex items-center justify-center gap-2">
                     Deploy Strategy 🚀
                 </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Indicator Settings Modal -->
+    <div id="indicatorSettingsModal"
+        class="fixed inset-0 bg-indigo-950/40 backdrop-blur-sm z-[200] hidden flex items-center justify-center p-4">
+        <div
+            class="bg-white/90 backdrop-blur-md rounded-3xl shadow-2xl w-full max-w-md border border-white/50 overflow-hidden transform transition-all">
+            <div class="bg-gradient-to-r from-indigo-600 to-purple-600 px-6 py-4 flex items-center justify-between">
+                <h3 class="text-white font-bold tracking-tight" id="indicatorModalTitle">Indicator Settings</h3>
+                <button onclick="closeIndicatorSettings()" class="text-white/60 hover:text-white transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd"
+                            d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                            clip-rule="evenodd" />
+                    </svg>
+                </button>
+            </div>
+
+            <div class="p-6 space-y-4" id="indicatorModalContent">
+                <!-- Inputs injected by JS -->
+            </div>
+
+            <div class="px-6 py-4 bg-slate-50 flex items-center justify-between border-t border-slate-100">
+                <button onclick="resetIndicatorSettingsToDefaults()"
+                    class="px-4 py-2 text-sm font-bold text-rose-500 hover:text-rose-700 transition-colors mr-auto" title="Reset all fields to industry default values">Reset to Defaults</button>
+                <div class="flex items-center gap-3">
+                    <button onclick="closeIndicatorSettings()"
+                        class="px-4 py-2 text-sm font-bold text-slate-500 hover:text-indigo-600 transition-colors">Cancel</button>
+                    <button onclick="saveIndicatorSettings()"
+                        class="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-bold shadow-lg shadow-indigo-200 transition-all">Apply
+                        Settings</button>
+                </div>
             </div>
         </div>
     </div>

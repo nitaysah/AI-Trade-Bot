@@ -894,6 +894,31 @@ const INDICATOR_CONFIG_MAP = {
     'Sentiment AI': ['SENTIMENT_BULLISH_THRESHOLD', 'SENTIMENT_BEARISH_THRESHOLD']
 };
 
+// Industry Defaults for indicators based on config.py
+const INDICATOR_DEFAULTS = {
+    'RSI_PERIOD': 14,
+    'RSI_OVERBOUGHT': 70,
+    'RSI_OVERSOLD': 30,
+    'EMA_FAST': 9,
+    'EMA_SLOW': 21,
+    'MACD_FAST': 12,
+    'MACD_SLOW': 26,
+    'MACD_SIGNAL': 9,
+    'BOLL_PERIOD': 20,
+    'BOLL_STD_DEV': 2.0,
+    'SUPERTREND_PERIOD': 10,
+    'SUPERTREND_MULTIPLIER': 3.0,
+    'MYSTIC_PULSE_THRESHOLD': 5,
+    'ATR_PERIOD': 14,
+    'ATR_STOP_MULTIPLIER': 2.0,
+    'ATR_TRAIL_MULTIPLIER': 3.0,
+    'ATR_TAKE_PROFIT_MULTIPLIER': 4.0,
+    'MIN_BULLISH_SIGNALS': 4,
+    'MIN_BEARISH_SIGNALS': 4,
+    'SENTIMENT_BULLISH_THRESHOLD': 0.5,
+    'SENTIMENT_BEARISH_THRESHOLD': -0.5
+};
+
 let currentEditingIndicator = null;
 
 // ──────────────────────────────────────────────
@@ -2459,13 +2484,17 @@ function openIndicatorSettings(indicatorName) {
     const currentParams = window.lastDashboardData?.indicator_parameters || {};
 
     configKeys.forEach(key => {
-        const val = currentParams[key] || '';
+        const hasValue = currentParams[key] !== undefined && currentParams[key] !== null && currentParams[key] !== '';
+        const val = hasValue ? currentParams[key] : (INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : '');
         const label = key.replace(/_/g, ' ').toLowerCase();
 
         const div = document.createElement('div');
         div.className = 'flex flex-col gap-1.5';
         div.innerHTML = `
-            <label class="text-[0.65rem] font-black text-indigo-950 uppercase tracking-widest opacity-60">${label}</label>
+            <div class="flex justify-between items-center mb-0.5">
+                <label class="text-[0.65rem] font-black text-indigo-950 uppercase tracking-widest opacity-60">${label}</label>
+                ${!hasValue ? '<span class="text-[0.55rem] font-extrabold text-emerald-500 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded-md">System Default</span>' : ''}
+            </div>
             <input type="number" step="any" data-key="${key}" value="${val}" 
                 class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-bold text-indigo-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all">
         `;
@@ -2478,6 +2507,27 @@ function openIndicatorSettings(indicatorName) {
 function closeIndicatorSettings() {
     document.getElementById('indicatorSettingsModal').classList.add('hidden');
     currentEditingIndicator = null;
+}
+
+function resetIndicatorSettingsToDefaults() {
+    if (!currentEditingIndicator) return;
+    const inputs = document.querySelectorAll('#indicatorModalContent input');
+    inputs.forEach(input => {
+        const key = input.dataset.key;
+        if (INDICATOR_DEFAULTS[key] !== undefined) {
+            input.value = INDICATOR_DEFAULTS[key];
+            const container = input.closest('.flex-col');
+            if (container) {
+                const header = container.querySelector('.flex.justify-between.items-center');
+                if (header) {
+                    const badge = header.querySelector('span');
+                    if (!badge) {
+                        header.insertAdjacentHTML('beforeend', '<span class="text-[0.55rem] font-extrabold text-emerald-500 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded-md">System Default</span>');
+                    }
+                }
+            }
+        }
+    });
 }
 
 async function saveIndicatorSettings() {
