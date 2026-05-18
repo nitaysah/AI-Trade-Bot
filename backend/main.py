@@ -1106,6 +1106,13 @@ async def run_backtest(data: dict):
     end_date = get_now()
     start_date = end_date - timedelta(days=days)
     
+    sell_mode = data.get("sell_mode", "indicator")
+    risk_per_trade = float(data.get("risk_per_trade", 0.02))
+    max_pos_pct = float(data.get("max_position_pct", 0.25))
+    atr_stop_multiplier = float(data.get("atr_stop_multiplier", 2.0))
+    atr_trail_multiplier = float(data.get("atr_trail_multiplier", 3.0))
+    atr_take_profit_multiplier = float(data.get("atr_take_profit_multiplier", 4.0))
+    
     # Backtester uses get_historical_data internally
     bt = Backtester(
         ticker=ticker,
@@ -1116,7 +1123,13 @@ async def run_backtest(data: dict):
         threshold=threshold,
         sell_threshold=sell_threshold,
         enabled_indicators=indicators,
-        ext_hours=ext_hours
+        risk_per_trade=risk_per_trade,
+        max_pos_pct=max_pos_pct,
+        ext_hours=ext_hours,
+        sell_mode=sell_mode,
+        atr_stop_multiplier=atr_stop_multiplier,
+        atr_trail_multiplier=atr_trail_multiplier,
+        atr_take_profit_multiplier=atr_take_profit_multiplier
     )
     
     try:
@@ -1203,6 +1216,8 @@ def get_indicator_settings():
             "ENABLE_EMA": {"label": "EMA Cross", "description": "Exponential Moving Average Crossover (9/21)", "enabled": getattr(config, "ENABLE_EMA", True)},
             "ENABLE_SUPERTREND": {"label": "Supertrend", "description": "Supertrend Indicator (10, 3)", "enabled": getattr(config, "ENABLE_SUPERTREND", True)},
             "ENABLE_BOLLINGER": {"label": "Bollinger", "description": "Bollinger Bands (20, 2σ)", "enabled": getattr(config, "ENABLE_BOLLINGER", True)},
+            "ENABLE_ADX_TREND": {"label": "ADX Trend", "description": "Wilder's ADX (14-period) Trend Strength Filter", "enabled": getattr(config, "ENABLE_ADX_TREND", True)},
+            "ENABLE_SMA": {"label": "SMA 200", "description": "Simple Moving Average (200-period) institutional filter", "enabled": getattr(config, "ENABLE_SMA", True)},
         },
         "Volume": {
             "ENABLE_VWAP": {"label": "VWAP", "description": "Volume Weighted Average Price", "enabled": getattr(config, "ENABLE_VWAP", True)},
@@ -1421,6 +1436,11 @@ async def create_bot(data: dict):
     if "indicators" in data and isinstance(data["indicators"], list):
         config.TICKER_SETTINGS[symbol]["indicators"] = data["indicators"]
 
+    # Risk Management overrides
+    for rk in ["risk_per_trade", "max_daily_drawdown", "max_position_pct", "atr_stop_multiplier", "atr_trail_multiplier", "take_profit_multiplier"]:
+        if rk in data:
+            config.TICKER_SETTINGS[symbol][rk] = float(data[rk])
+
     # Ensure it's in watchlist to be scanned
     if symbol not in config.WATCHLIST:
         config.WATCHLIST.append(symbol)
@@ -1610,6 +1630,8 @@ def _format_scan_for_ui(scan: dict) -> dict:
         'Mystic Pulse': 'ENABLE_MYSTIC_PULSE',
         'News Sentiment': 'ENABLE_AI_SENTIMENT',
         'Candle Patterns': 'ENABLE_CANDLE_PATTERNS',
+        'ADX Trend': 'ENABLE_ADX_TREND',
+        'SMA': 'ENABLE_SMA',
     }
 
     raw_signals = scan.get("signals", {})
@@ -1619,8 +1641,8 @@ def _format_scan_for_ui(scan: dict) -> dict:
         enabled = getattr(config, toggle_key, True) if toggle_key else True
         all_signals[name] = {**data, 'enabled': enabled, 'toggle_key': toggle_key}
 
-    bullish = sum(1 for s in all_signals.values() if s.get('signal') == 'BULLISH' and s.get('enabled'))
-    bearish = sum(1 for s in all_signals.values() if s.get('signal') == 'BEARISH' and s.get('enabled'))
+    bullish = sum(s.get('weight', 1) for s in all_signals.values() if s.get('signal') == 'BULLISH' and s.get('enabled'))
+    bearish = sum(s.get('weight', 1) for s in all_signals.values() if s.get('signal') == 'BEARISH' and s.get('enabled'))
     active_count = sum(1 for s in all_signals.values() if s.get('enabled'))
 
     return {

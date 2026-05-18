@@ -376,6 +376,18 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategySellMode').value = "indicator";
         window._strategyPaused = false;
         
+        // Reset Risk Overrides to defaults
+        document.getElementById('strategyRiskPerTrade').value = 2.0;
+        document.getElementById('strategyMaxDailyDrawdown').value = 5.0;
+        document.getElementById('strategyMaxPositionPct').value = 25.0;
+        document.getElementById('strategyAtrStopMult').value = 2.0;
+        document.getElementById('strategyAtrTrailMult').value = 3.0;
+        document.getElementById('strategyAtrTpMult').value = 4.0;
+        
+        // Ensure collapsed on open
+        document.getElementById('riskControlsContent').classList.add('hidden');
+        document.getElementById('riskArrowIcon').classList.remove('rotate-180');
+        
         // Reset Indicators
         document.querySelectorAll('.strategy-indicator-check').forEach(chk => chk.checked = true);
     } else {
@@ -393,6 +405,18 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyTimeframe').value = settings.timeframe || '4Hour';
         document.getElementById('strategySellMode').value = settings.sell_mode || 'indicator';
         window._strategyPaused = settings.paused || false;
+        
+        // Load Risk Overrides
+        document.getElementById('strategyRiskPerTrade').value = settings.risk_per_trade !== undefined ? (settings.risk_per_trade * 100).toFixed(1) : 2.0;
+        document.getElementById('strategyMaxDailyDrawdown').value = settings.max_daily_drawdown !== undefined ? (settings.max_daily_drawdown * 100).toFixed(1) : 5.0;
+        document.getElementById('strategyMaxPositionPct').value = settings.max_position_pct !== undefined ? (settings.max_position_pct * 100).toFixed(1) : 25.0;
+        document.getElementById('strategyAtrStopMult').value = settings.atr_stop_multiplier !== undefined ? settings.atr_stop_multiplier : 2.0;
+        document.getElementById('strategyAtrTrailMult').value = settings.atr_trail_multiplier !== undefined ? settings.atr_trail_multiplier : 3.0;
+        document.getElementById('strategyAtrTpMult').value = settings.take_profit_multiplier !== undefined ? settings.take_profit_multiplier : 4.0;
+        
+        // Ensure collapsed on open
+        document.getElementById('riskControlsContent').classList.add('hidden');
+        document.getElementById('riskArrowIcon').classList.remove('rotate-180');
         
         const enabledIndicators = settings.indicators || ['RSI', 'MACD', 'EMA Cross', 'Supertrend', 'Bollinger', 'VWAP', 'Mystic Pulse', 'Candle Patterns'];
         document.querySelectorAll('.strategy-indicator-check').forEach(chk => {
@@ -428,6 +452,18 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
 window.closeStrategyModal = function () {
     document.getElementById('botStrategyModal').classList.add('hidden');
     currentStrategySymbol = null;
+};
+
+window.toggleRiskSection = function() {
+    const content = document.getElementById('riskControlsContent');
+    const arrow = document.getElementById('riskArrowIcon');
+    if (content.classList.contains('hidden')) {
+        content.classList.remove('hidden');
+        arrow.classList.add('rotate-180');
+    } else {
+        content.classList.add('hidden');
+        arrow.classList.remove('rotate-180');
+    }
 };
 
 window.togglePauseInStrategyModal = function () {
@@ -473,7 +509,13 @@ async function saveTickerSettings() {
             min_sell_signals: thresholdVal,
             sell_mode: document.getElementById('strategySellMode').value,
             indicators: indicators,
-            paused: window._strategyPaused || false
+            paused: window._strategyPaused || false,
+            risk_per_trade: parseFloat(document.getElementById('strategyRiskPerTrade').value) / 100.0,
+            max_daily_drawdown: parseFloat(document.getElementById('strategyMaxDailyDrawdown').value) / 100.0,
+            max_position_pct: parseFloat(document.getElementById('strategyMaxPositionPct').value) / 100.0,
+            atr_stop_multiplier: parseFloat(document.getElementById('strategyAtrStopMult').value),
+            atr_trail_multiplier: parseFloat(document.getElementById('strategyAtrTrailMult').value),
+            take_profit_multiplier: parseFloat(document.getElementById('strategyAtrTpMult').value)
         }
     };
 
@@ -597,13 +639,13 @@ function updateAlpacaStatus(isLinked) {
     if (!statusEl || !dotEl || !textEl) return;
 
     if (isLinked) {
-        statusEl.className = 'flex items-center text-sm font-black px-8 py-3 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider bg-emerald-50 text-emerald-700 border-emerald-200';
-        dotEl.className = 'h-2.5 w-2.5 rounded-full mr-2.5 bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]';
-        textEl.textContent = 'LIVE';
+        statusEl.className = 'flex items-center justify-center h-9 text-xs font-black px-5 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider bg-emerald-50 text-emerald-600 border-emerald-100';
+        dotEl.className = 'h-2 w-2 rounded-full mr-2 bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]';
+        textEl.textContent = 'Alpaca';
         if (btnUnlink) btnUnlink.classList.remove('hidden');
     } else {
-        statusEl.className = 'flex items-center text-sm font-black px-8 py-3 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider bg-amber-50 text-amber-700 border-amber-200';
-        dotEl.className = 'h-2.5 w-2.5 rounded-full mr-2.5 bg-amber-500 animate-pulse';
+        statusEl.className = 'flex items-center justify-center h-9 text-xs font-black px-5 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider bg-amber-50 text-amber-600 border-amber-100';
+        dotEl.className = 'h-2 w-2 rounded-full mr-2 bg-amber-500 animate-pulse';
         textEl.textContent = 'SIMULATION';
         if (btnUnlink) btnUnlink.classList.add('hidden');
     }
@@ -743,7 +785,13 @@ window.confirmAndDeployBot = async function () {
                 sell_mode: sellMode,
                 indicators: indicators,
                 timeframe: timeframe,
-                paused: window._strategyPaused || false
+                paused: window._strategyPaused || false,
+                risk_per_trade: parseFloat(document.getElementById('strategyRiskPerTrade').value) / 100.0,
+                max_daily_drawdown: parseFloat(document.getElementById('strategyMaxDailyDrawdown').value) / 100.0,
+                max_position_pct: parseFloat(document.getElementById('strategyMaxPositionPct').value) / 100.0,
+                atr_stop_multiplier: parseFloat(document.getElementById('strategyAtrStopMult').value),
+                atr_trail_multiplier: parseFloat(document.getElementById('strategyAtrTrailMult').value),
+                take_profit_multiplier: parseFloat(document.getElementById('strategyAtrTpMult').value)
             })
         });
 
@@ -809,6 +857,8 @@ const INDICATOR_CONFIG_MAP = {
     'Supertrend': ['SUPERTREND_PERIOD', 'SUPERTREND_MULTIPLIER'],
     'Bollinger': ['BOLL_PERIOD', 'BOLL_STD_DEV'],
     'Mystic Pulse': ['MYSTIC_PULSE_THRESHOLD'],
+    'ADX Trend': ['ADX_PERIOD', 'ADX_TRENDING_THRESHOLD'],
+    'SMA': ['SMA_PERIOD'],
     'ATR Volatility': ['ATR_PERIOD', 'ATR_STOP_MULTIPLIER', 'ATR_TRAIL_MULTIPLIER', 'ATR_TAKE_PROFIT_MULTIPLIER'],
     'Strategy Confidence': ['MIN_BULLISH_SIGNALS', 'MIN_BEARISH_SIGNALS'],
     'Sentiment AI': ['SENTIMENT_BULLISH_THRESHOLD', 'SENTIMENT_BEARISH_THRESHOLD']
@@ -828,6 +878,9 @@ const INDICATOR_DEFAULTS = {
     'SUPERTREND_PERIOD': 10,
     'SUPERTREND_MULTIPLIER': 3.0,
     'MYSTIC_PULSE_THRESHOLD': 5,
+    'ADX_PERIOD': 14,
+    'ADX_TRENDING_THRESHOLD': 25,
+    'SMA_PERIOD': 200,
     'ATR_PERIOD': 14,
     'ATR_STOP_MULTIPLIER': 2.0,
     'ATR_TRAIL_MULTIPLIER': 3.0,

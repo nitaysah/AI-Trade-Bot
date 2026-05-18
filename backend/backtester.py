@@ -7,7 +7,7 @@ from trader import get_confluence_decision
 import config
 
 class Backtester:
-    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=1.0, max_pos_pct=1.0, ext_hours=True):
+    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=0.02, max_pos_pct=0.25, ext_hours=True, sell_mode="indicator", atr_stop_multiplier=2.0, atr_trail_multiplier=3.0, atr_take_profit_multiplier=4.0):
         self.ticker = ticker
         self.timeframe = timeframe
         self.start_date = start_date
@@ -19,6 +19,10 @@ class Backtester:
         self.risk_per_trade = risk_per_trade
         self.max_pos_pct = max_pos_pct
         self.ext_hours = ext_hours
+        self.sell_mode = sell_mode
+        self.atr_stop_multiplier = atr_stop_multiplier
+        self.atr_trail_multiplier = atr_trail_multiplier
+        self.atr_take_profit_multiplier = atr_take_profit_multiplier
         
         self.equity = initial_capital
         self.position = None 
@@ -54,8 +58,6 @@ class Backtester:
         self.df = result['df']
         
         # 3. Simulate bar-by-bar
-        # Indicators need warm-up. We start evaluation after the first 30 bars, 
-        # but the Buy & Hold return is calculated from the very first bar (iloc[0]).
         for i in range(len(self.df)):
             current_bar = self.df.iloc[i]
             timestamp = self.df.index[i]
@@ -65,10 +67,26 @@ class Backtester:
                 continue
 
             prev_bar = self.df.iloc[i-1]
+            current_price = current_bar['Close']
             
-            # Check for SL / TP if in position (DISABLED by user request)
-            # if self.position:
-            #     self._check_exit_conditions(current_bar, timestamp)
+            # Check for SL / TP if in position and using sltp/hybrid sell mode
+            if self.position and self.sell_mode in ["sltp", "hybrid"]:
+                atr = current_bar['ATR']
+                trail_distance = atr * self.atr_trail_multiplier
+                
+                # Dynamic Trailing Stop movement
+                if self.position.get('qty', 0) > 0:
+                    new_stop = current_price - trail_distance
+                    if new_stop > self.position['stop_loss']:
+                        self.position['stop_loss'] = round(new_stop, 2)
+                
+                # Check exit hits
+                if current_bar['Low'] <= self.position['stop_loss']:
+                    self._exit_trade(current_bar, timestamp, f"Stop Loss Hit (${self.position['stop_loss']:.2f})", exit_price_override=self.position['stop_loss'])
+                    continue
+                elif current_bar['High'] >= self.position['take_profit']:
+                    self._exit_trade(current_bar, timestamp, f"Take Profit Hit (${self.position['take_profit']:.2f})", exit_price_override=self.position['take_profit'])
+                    continue
 
             # Get Strategy Decision
             signals = _generate_signals(current_bar, prev_bar)
@@ -77,8 +95,8 @@ class Backtester:
             filtered_signals = {k: v for k, v in signals.items() if k in self.enabled_indicators}
             
             analysis = {
-                'bullish_count': sum(1 for s in filtered_signals.values() if s['signal'] == 'BULLISH'),
-                'bearish_count': sum(1 for s in filtered_signals.values() if s['signal'] == 'BEARISH'),
+                'bullish_count': sum(s.get('weight', 1) for s in filtered_signals.values() if s['signal'] == 'BULLISH'),
+                'bearish_count': sum(s.get('weight', 1) for s in filtered_signals.values() if s['signal'] == 'BEARISH'),
                 'signals': filtered_signals
             }
             
@@ -90,9 +108,11 @@ class Backtester:
                 names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
                 reason = f"{analysis['bullish_count']} signals ({', '.join(names)})"
             elif analysis['bearish_count'] >= self.sell_threshold:
-                action = "SELL"
-                names = [k for k, v in filtered_signals.items() if v['signal'] == 'BEARISH']
-                reason = f"Manual Sell: {analysis['bearish_count']} signals ({', '.join(names)})"
+                # Dynamic exits hit only if sell mode supports indicators
+                if self.sell_mode in ["indicator", "hybrid"]:
+                    action = "SELL"
+                    names = [k for k, v in filtered_signals.items() if v['signal'] == 'BEARISH']
+                    reason = f"Dynamic Sell: {analysis['bearish_count']} signals ({', '.join(names)})"
 
             if action == 'BUY' and not self.position:
                 self._enter_trade(current_bar, timestamp, reason)
@@ -115,7 +135,7 @@ class Backtester:
         price = bar['Close']
         atr = bar['ATR']
         risk_amount = self.equity * self.risk_per_trade
-        stop_dist = atr * config.ATR_STOP_MULTIPLIER
+        stop_dist = atr * self.atr_stop_multiplier
         if stop_dist == 0: return
 
         qty = risk_amount / stop_dist
@@ -123,24 +143,35 @@ class Backtester:
         if (qty * price) > max_notional:
             qty = max_notional / price
 
+        # Volatility Regime Sizing Filter: Scale down quantity by 50% if volatility (ATR / Price) is hyper-extended (> 3.0%)
+        volatility_ratio = atr / price
+        if volatility_ratio > 0.03:
+            qty *= 0.5
+            reason += " (Volatility Protection Active)"
+
+        stop_loss = round(price - stop_dist, 2)
+        take_profit = round(price + (atr * self.atr_take_profit_multiplier), 2)
+
         self.position = {
             'qty': qty,
             'entry_price': price,
             'entry_time': timestamp,
-            'stop_loss': 0, 
-            'take_profit': 9999999, 
+            'stop_loss': stop_loss, 
+            'take_profit': take_profit, 
             'reason': reason
         }
-        print(f"[{timestamp.strftime('%Y-%m-%d %H:%M')}] BUY  {self.ticker} @ ${price:.2f} | Qty: {qty:.4f} | Reason: {reason}")
+        print(f"[{timestamp.strftime('%Y-%m-%d %H:%M')}] BUY  {self.ticker} @ ${price:.2f} | Stop: ${stop_loss:.2f} | Target: ${take_profit:.2f} | Reason: {reason}")
 
-    def _exit_trade(self, bar, timestamp, reason):
+    def _exit_trade(self, bar, timestamp, reason, exit_price_override=None):
         if not self.position: return
-        exit_price = bar['Close']
+        exit_price = exit_price_override if exit_price_override is not None else bar['Close']
         entry_cost = self.position['qty'] * self.position['entry_price']
         exit_value = self.position['qty'] * exit_price
         
-        # 0.1% Fee per side (Entry + Exit)
-        fee = round((entry_cost + exit_value) * 0.001, 2)
+        # 0.1% Fee per side for Crypto (Entry + Exit), 0.0% for Stocks
+        clean_ticker = self.ticker.upper().replace("/", "")
+        is_crypto = any(clean_ticker.endswith(base) for base in ["USD", "USDT", "USDC"])
+        fee = round((entry_cost + exit_value) * 0.001, 2) if is_crypto else 0.0
         pl = (exit_price - self.position['entry_price']) * self.position['qty'] - fee
         pl_pct = (pl / entry_cost) * 100
         self.equity += (exit_value - entry_cost - fee)

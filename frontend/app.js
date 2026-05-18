@@ -889,6 +889,8 @@ const INDICATOR_CONFIG_MAP = {
     'Supertrend': ['SUPERTREND_PERIOD', 'SUPERTREND_MULTIPLIER'],
     'Bollinger': ['BOLL_PERIOD', 'BOLL_STD_DEV'],
     'Mystic Pulse': ['MYSTIC_PULSE_THRESHOLD'],
+    'ADX Trend': ['ADX_PERIOD', 'ADX_TRENDING_THRESHOLD'],
+    'SMA': ['SMA_PERIOD'],
     'ATR Volatility': ['ATR_PERIOD', 'ATR_STOP_MULTIPLIER', 'ATR_TRAIL_MULTIPLIER', 'ATR_TAKE_PROFIT_MULTIPLIER'],
     'Strategy Confidence': ['MIN_BULLISH_SIGNALS', 'MIN_BEARISH_SIGNALS'],
     'Sentiment AI': ['SENTIMENT_BULLISH_THRESHOLD', 'SENTIMENT_BEARISH_THRESHOLD']
@@ -909,6 +911,9 @@ const INDICATOR_DEFAULTS = {
     'SUPERTREND_PERIOD': 10,
     'SUPERTREND_MULTIPLIER': 3.0,
     'MYSTIC_PULSE_THRESHOLD': 5,
+    'ADX_PERIOD': 14,
+    'ADX_TRENDING_THRESHOLD': 25,
+    'SMA_PERIOD': 200,
     'ATR_PERIOD': 14,
     'ATR_STOP_MULTIPLIER': 2.0,
     'ATR_TRAIL_MULTIPLIER': 3.0,
@@ -1643,20 +1648,20 @@ async function fetchDashboard(mode = 'heavy') {
             if (data.simulation) {
                 isAlpacaLinked = false;
                 if (data.has_keys) {
-                    statusPill.className = "flex items-center text-sm font-black px-8 py-3 rounded-full bg-amber-50 text-amber-600 border-2 border-amber-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
-                    statusDot.className = "h-2.5 w-2.5 rounded-full mr-2.5 bg-amber-500 animate-pulse";
-                    statusText.textContent = "Connection Failed (Retrying...)";
+                    statusPill.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-amber-50 text-amber-600 border-2 border-amber-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
+                    statusDot.className = "h-2 w-2 rounded-full mr-2 bg-amber-500 animate-pulse";
+                    statusText.textContent = "RETRYING...";
                 } else {
-                    statusPill.className = "flex items-center text-sm font-black px-8 py-3 rounded-full bg-rose-50 text-rose-600 border-2 border-rose-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
-                    statusDot.className = "h-2.5 w-2.5 rounded-full mr-2.5 bg-rose-500 animate-pulse";
-                    statusText.textContent = "Alpaca Not Linked";
+                    statusPill.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-rose-50 text-rose-600 border-2 border-rose-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
+                    statusDot.className = "h-2 w-2 rounded-full mr-2 bg-rose-500 animate-pulse";
+                    statusText.textContent = "SIMULATION";
                 }
                 if (btnUnlink) btnUnlink.classList.add('hidden');
             } else {
                 isAlpacaLinked = true;
-                statusPill.className = "flex items-center text-sm font-black px-8 py-3 rounded-full bg-emerald-50 text-emerald-600 border-2 border-emerald-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
-                statusDot.className = "h-2.5 w-2.5 rounded-full mr-2.5 bg-emerald-500 animate-pulse";
-                statusText.textContent = "Alpaca Live";
+                statusPill.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-emerald-50 text-emerald-600 border-2 border-emerald-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
+                statusDot.className = "h-2 w-2 rounded-full mr-2 bg-emerald-500 animate-pulse";
+                statusText.textContent = "Alpaca";
                 if (btnUnlink) btnUnlink.classList.remove('hidden');
             }
         }

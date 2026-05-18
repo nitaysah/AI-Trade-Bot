@@ -62,7 +62,6 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
     Pure decision logic based on technical and AI signals.
     Respects global ENABLE_ toggles for technical indicators.
     """
-    # Map Signal Names to Config Keys
     SIGNAL_TO_TOGGLE = {
         'RSI': 'ENABLE_RSI',
         'MACD': 'ENABLE_MACD',
@@ -72,6 +71,8 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
         'VWAP': 'ENABLE_VWAP',
         'Mystic Pulse': 'ENABLE_MYSTIC_PULSE',
         'Candle Patterns': 'ENABLE_CANDLE_PATTERNS',
+        'ADX Trend': 'ENABLE_ADX_TREND',
+        'SMA': 'ENABLE_SMA',
     }
 
     raw_signals = analysis_results.get('signals', {})
@@ -99,10 +100,11 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
         
         # Only count towards decision if enabled
         if is_enabled:
+            weight = data.get('weight', 1)
             if data.get('signal') == 'BULLISH':
-                bullish_count += 1
+                bullish_count += weight
             elif data.get('signal') == 'BEARISH':
-                bearish_count += 1
+                bearish_count += weight
 
     # 2. Factor in AI sentiment as a signal (only if enabled)
     if getattr(config, 'ENABLE_AI_SENTIMENT', True):

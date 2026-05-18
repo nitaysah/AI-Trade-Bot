@@ -122,6 +122,7 @@ async function pollAlpacaStatus() {
     const statusPill = document.getElementById('alpacaLinkStatus');
     const statusDot = document.getElementById('alpacaStatusDot');
     const statusText = document.getElementById('alpacaStatusText');
+    const btnUnlink = document.getElementById('btnUnlinkAlpaca');
     if (!statusPill) return;
 
     try {
@@ -132,23 +133,47 @@ async function pollAlpacaStatus() {
 
         if (data.simulation) {
             if (data.has_keys) {
-                statusPill.className = "flex items-center text-sm font-black px-8 py-3 rounded-full bg-amber-50 text-amber-600 border-2 border-amber-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
-                statusDot.className = "h-2.5 w-2.5 rounded-full mr-2.5 bg-amber-500 animate-pulse";
-                statusText.textContent = "Connection Failed (Retrying...)";
+                statusPill.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-amber-50 text-amber-600 border-2 border-amber-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
+                statusDot.className = "h-2 w-2 rounded-full mr-2 bg-amber-500 animate-pulse";
+                statusText.textContent = "RETRYING...";
             } else {
-                statusPill.className = "flex items-center text-sm font-black px-8 py-3 rounded-full bg-rose-50 text-rose-600 border-2 border-rose-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
-                statusDot.className = "h-2.5 w-2.5 rounded-full mr-2.5 bg-rose-500 animate-pulse";
-                statusText.textContent = "Alpaca Not Linked";
+                statusPill.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-rose-50 text-rose-600 border-2 border-rose-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
+                statusDot.className = "h-2 w-2 rounded-full mr-2 bg-rose-500 animate-pulse";
+                statusText.textContent = "SIMULATION";
             }
+            if (btnUnlink) btnUnlink.classList.add('hidden');
         } else {
-            statusPill.className = "flex items-center text-sm font-black px-8 py-3 rounded-full bg-emerald-50 text-emerald-600 border-2 border-emerald-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
-            statusDot.className = "h-2.5 w-2.5 rounded-full mr-2.5 bg-emerald-500 animate-pulse";
-            statusText.textContent = "Alpaca Live";
+            statusPill.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-emerald-50 text-emerald-600 border-2 border-emerald-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
+            statusDot.className = "h-2 w-2 rounded-full mr-2 bg-emerald-500 animate-pulse";
+            statusText.textContent = "Alpaca";
+            if (btnUnlink) btnUnlink.classList.remove('hidden');
         }
     } catch (e) {
         console.error('[backtest] Alpaca status check failed:', e);
     }
 }
+
+window.unlinkAlpaca = async () => {
+    if (!confirm("Are you sure you want to unlink your Alpaca account? The bot will switch back to simulation mode.")) return;
+
+    try {
+        const headers = await getAuthHeaders();
+        const response = await fetch(`${API_BASE}/api/alpaca_config`, {
+            method: 'DELETE',
+            headers: headers
+        });
+        const data = await response.json();
+        if (data.status === 'success') {
+            alert(data.message);
+            pollAlpacaStatus();
+        } else {
+            alert("Error unlinking account.");
+        }
+    } catch (err) {
+        console.error(err);
+        alert("Backend communication error.");
+    }
+};
 
 window.logoutCommander = async () => {
     const auth = window.auth;
@@ -169,6 +194,14 @@ async function runBacktest() {
     const sellThreshold = document.getElementById('btSellThreshold').value;
 
     const extHoursVal = document.getElementById('btExtHours') ? (document.getElementById('btExtHours').value === 'true') : true;
+
+    // Gather exit strategy and risk controls
+    const sellMode = document.getElementById('btSellMode').value;
+    const riskPerTrade = parseFloat(document.getElementById('btRiskPerTrade').value) / 100.0;
+    const maxPositionPct = parseFloat(document.getElementById('btMaxPositionPct').value) / 100.0;
+    const atrStopMult = parseFloat(document.getElementById('btAtrStopMult').value);
+    const atrTrailMult = parseFloat(document.getElementById('btAtrTrailMult').value);
+    const atrTpMult = parseFloat(document.getElementById('btAtrTpMult').value);
 
     // Collect checked indicators
     const indicators = Array.from(document.querySelectorAll('.bt-indicator-check:checked'))
@@ -198,7 +231,13 @@ async function runBacktest() {
                 threshold: parseInt(threshold),
                 sell_threshold: parseInt(sellThreshold),
                 indicators: indicators,
-                ext_hours: extHoursVal
+                ext_hours: extHoursVal,
+                sell_mode: sellMode,
+                risk_per_trade: riskPerTrade,
+                max_position_pct: maxPositionPct,
+                atr_stop_multiplier: atrStopMult,
+                atr_trail_multiplier: atrTrailMult,
+                take_profit_multiplier: atrTpMult
             })
         });
 
@@ -244,11 +283,11 @@ function displayResults(res) {
 
     // Color logic for ROI
     const roiEl = document.getElementById('resRoi');
-    roiEl.className = `text-4xl font-black tracking-tighter ${s.roi_pct >= 0 ? 'text-emerald-500' : 'text-rose-500'}`;
+    roiEl.className = `text-2xl font-black tracking-tight ${s.roi_pct >= 0 ? 'text-emerald-500' : 'text-rose-500'}`;
 
     const holdRoiEl = document.getElementById('resHoldRoi');
     const holdColor = s.buy_hold_roi_pct >= 0 ? 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20' : 'text-rose-400 bg-rose-400/10 border-rose-400/20';
-    holdRoiEl.className = `text-[0.7rem] font-black uppercase tracking-widest px-4 py-1.5 rounded-full inline-block mt-3 border transition-all ${holdColor}`;
+    holdRoiEl.className = `text-[0.65rem] font-black uppercase tracking-widest px-3 py-1 rounded-full inline-block mt-2 border transition-all ${holdColor}`;
 
     // Trade Log
     allBtTrades = res.trades || [];
@@ -270,7 +309,7 @@ function renderBtTradesPage() {
         document.getElementById('btPageInfoTop').textContent = `Showing ${start + 1}-${Math.min(end, allBtTrades.length)} of ${allBtTrades.length} trades`;
     } else {
         document.getElementById('btPagination').classList.add('hidden');
-        tbody.innerHTML = '<tr><td colspan="7" class="py-12 text-center text-purple-400 text-xs md:text-sm font-medium italic">No strategy executions detected with current parameters.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="py-6 text-center text-purple-400 text-xs md:text-sm font-medium italic">No strategy executions detected with current parameters.</td></tr>';
         return;
     }
 
@@ -278,19 +317,19 @@ function renderBtTradesPage() {
         const plClass = t.pl_pct >= 0 ? 'text-emerald-600 font-bold' : 'text-red-500 font-bold';
         const row = `
             <tr class="border-b border-purple-100 hover:bg-purple-50/30 transition-colors">
-                <td class="py-3 px-4">
+                <td class="py-2 px-3">
                     <div class="text-xs font-semibold text-indigo-950">${formatDate(t.entry_time)}</div>
                     <div class="text-[0.6rem] text-purple-400 font-medium mt-0.5">Entry @ $${t.entry_price.toFixed(2)}</div>
                 </td>
-                <td class="py-3 px-4">
+                <td class="py-2 px-3">
                     <div class="text-xs font-semibold text-indigo-950">${formatDate(t.exit_time)}</div>
                     <div class="text-[0.6rem] text-purple-400 font-medium mt-0.5">Exit @ $${t.exit_price.toFixed(2)}</div>
                 </td>
-                <td class="py-3 px-4 text-center text-xs font-bold text-indigo-900">${t.qty.toFixed(4)}</td>
-                <td class="py-3 px-4 text-center text-xs font-medium text-indigo-700">$${t.entry_cost.toFixed(2)}</td>
-                <td class="py-3 px-4 text-center text-xs font-bold text-indigo-950">$${t.exit_value.toFixed(2)}</td>
-                <td class="py-3 px-4 text-center text-[0.65rem] text-purple-400 font-mono">$${(t.fees || 0).toFixed(2)}</td>
-                <td class="py-3 px-4 text-center text-xs ${plClass}">${t.pl_pct >= 0 ? '+' : ''}${t.pl_pct.toFixed(2)}%</td>
+                <td class="py-2 px-3 text-center text-xs font-bold text-indigo-900">${t.qty.toFixed(4)}</td>
+                <td class="py-2 px-3 text-center text-xs font-medium text-indigo-700">$${t.entry_cost.toFixed(2)}</td>
+                <td class="py-2 px-3 text-center text-xs font-bold text-indigo-950">$${t.exit_value.toFixed(2)}</td>
+                <td class="py-2 px-3 text-center text-[0.65rem] text-purple-400 font-mono">$${(t.fees || 0).toFixed(2)}</td>
+                <td class="py-2 px-3 text-center text-xs ${plClass}">${t.pl_pct >= 0 ? '+' : ''}${t.pl_pct.toFixed(2)}%</td>
             </tr>
         `;
         tbody.insertAdjacentHTML('beforeend', row);
@@ -427,6 +466,8 @@ const INDICATOR_CONFIG_MAP = {
     'Supertrend': ['SUPERTREND_PERIOD', 'SUPERTREND_MULTIPLIER'],
     'Bollinger': ['BOLL_PERIOD', 'BOLL_STD_DEV'],
     'Mystic Pulse': ['MYSTIC_PULSE_THRESHOLD'],
+    'ADX Trend': ['ADX_PERIOD', 'ADX_TRENDING_THRESHOLD'],
+    'SMA': ['SMA_PERIOD'],
     'ATR Volatility': ['ATR_PERIOD', 'ATR_STOP_MULTIPLIER', 'ATR_TRAIL_MULTIPLIER', 'ATR_TAKE_PROFIT_MULTIPLIER'],
     'Strategy Confidence': ['MIN_BULLISH_SIGNALS', 'MIN_BEARISH_SIGNALS'],
     'Sentiment AI': ['SENTIMENT_BULLISH_THRESHOLD', 'SENTIMENT_BEARISH_THRESHOLD']
@@ -447,6 +488,9 @@ const INDICATOR_DEFAULTS = {
     'SUPERTREND_PERIOD': 10,
     'SUPERTREND_MULTIPLIER': 3.0,
     'MYSTIC_PULSE_THRESHOLD': 5,
+    'ADX_PERIOD': 14,
+    'ADX_TRENDING_THRESHOLD': 25,
+    'SMA_PERIOD': 200,
     'ATR_PERIOD': 14,
     'ATR_STOP_MULTIPLIER': 2.0,
     'ATR_TRAIL_MULTIPLIER': 3.0,
@@ -570,3 +614,15 @@ function toggleIndicatorCard(card, event) {
         checkbox.dispatchEvent(new Event('change', { bubbles: true }));
     }
 }
+
+window.toggleRiskSection = function() {
+    const content = document.getElementById('riskControlsContent');
+    const arrow = document.getElementById('riskArrowIcon');
+    if (content.classList.contains('hidden')) {
+        content.classList.remove('hidden');
+        arrow.classList.add('rotate-180');
+    } else {
+        content.classList.add('hidden');
+        arrow.classList.remove('rotate-180');
+    }
+};

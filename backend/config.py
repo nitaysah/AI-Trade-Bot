@@ -75,6 +75,8 @@ ENABLE_VWAP = True
 ENABLE_MYSTIC_PULSE = True
 ENABLE_AI_SENTIMENT = True
 ENABLE_CANDLE_PATTERNS = True
+ENABLE_ADX_TREND = True
+ENABLE_SMA = True
 
 # ──────────────────────────────────────────────
 # Technical Indicator Parameters
@@ -93,7 +95,12 @@ SUPERTREND_PERIOD = 10
 SUPERTREND_MULTIPLIER = 3.0
 ATR_PERIOD = 14
 DMI_PERIOD = 14
+ADX_PERIOD = 14
+ADX_TRENDING_THRESHOLD = 25
 MYSTIC_PULSE_THRESHOLD = 5
+VOL_MA_PERIOD = 20
+VOL_SPIKE_MULTIPLIER = 1.5
+SMA_PERIOD = 200
 
 # ──────────────────────────────────────────────
 # Strategy — Signal Confluence Thresholds

@@ -56,13 +56,13 @@
         class="fixed inset-0 z-[-1] bg-[radial-gradient(ellipse_at_bottom_right,_var(--tw-gradient-stops))] from-indigo-200/30 via-transparent to-transparent">
     </div>
 
-    <main class="max-w-5xl mx-auto px-4 py-8">
+    <main class="max-w-5xl mx-auto px-4 py-4">
 
         <!-- ═══════════════ HEADER ═══════════════ -->
-        <header class="flex flex-col items-center text-center mb-10 gap-8 border-b border-purple-200/80 pb-8">
-            <div class="space-y-2">
+        <header class="flex flex-col items-center text-center mb-6 gap-4 border-b border-purple-200/80 pb-4">
+            <div class="space-y-1">
                 <h1
-                    class="text-3xl md:text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 leading-tight">
+                    class="text-2xl md:text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 leading-tight">
                     ✦ AI Trader BOT
                 </h1>
                 <p class="text-purple-500 text-xs md:text-sm font-black uppercase tracking-[0.2em] opacity-80">
@@ -70,31 +70,31 @@
                 </p>
             </div>
 
-            <div class="flex flex-wrap justify-center items-center gap-3 md:gap-4 w-full">
+            <div class="flex flex-wrap justify-center items-center gap-2 md:gap-3 w-full">
 
 
                 <a href="bots.html"
-                    class="flex items-center text-sm font-black bg-purple-50 text-indigo-600 border-2 border-purple-100 rounded-full px-8 py-3 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
+                    class="flex items-center justify-center h-9 text-xs font-black bg-purple-50 text-indigo-600 border-2 border-purple-100 rounded-full px-5 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
                     🤖 Active Bots
                 </a>
 
                 <a href="backtest.html"
-                    class="flex items-center text-sm font-black bg-purple-50 text-indigo-600 border-2 border-purple-100 rounded-full px-8 py-3 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
+                    class="flex items-center justify-center h-9 text-xs font-black bg-purple-50 text-indigo-600 border-2 border-purple-100 rounded-full px-5 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
                     📊 Backtest Center
                 </a>
 
                 <span id="alpacaLinkStatus"
-                    class="flex items-center text-sm font-black px-8 py-3 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider">
-                    <span class="h-2.5 w-2.5 rounded-full mr-2.5" id="alpacaStatusDot"></span>
+                    class="flex items-center justify-center h-9 text-xs font-black px-5 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider">
+                    <span class="h-2 w-2 rounded-full mr-2" id="alpacaStatusDot"></span>
                     <span id="alpacaStatusText">Checking...</span>
                     <button id="btnUnlinkAlpaca" onclick="unlinkAlpaca()"
-                        class="hidden ml-4 px-3 py-1 bg-rose-500 text-white rounded-full text-[10px] hover:bg-rose-600 transition-all uppercase tracking-tighter">
+                        class="hidden ml-3 px-2 py-0.5 bg-rose-500 text-white rounded-full text-[9px] hover:bg-rose-600 transition-all uppercase tracking-tighter">
                         Unlink
                     </button>
                 </span>
 
                 <button onclick="logoutCommander()"
-                    class="flex items-center text-sm font-black bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white transition-all px-8 py-3 rounded-full border-2 border-rose-100 shadow-sm whitespace-nowrap uppercase tracking-wider">
+                    class="flex items-center justify-center h-9 text-xs font-black bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white transition-all px-5 rounded-full border-2 border-rose-100 shadow-sm whitespace-nowrap uppercase tracking-wider">
                     Logout
                 </button>
             </div>
@@ -143,7 +143,7 @@
         </div>
 
         <!-- ═══════════════ PORTFOLIO CARDS ═══════════════ -->
-        <div id="dashboardContent" class="hidden space-y-8 animate-in fade-in duration-700">
+        <div id="dashboardContent" class="hidden space-y-4 animate-in fade-in duration-700">
             <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-6">
                 <!-- Total Equity -->
                 <div class="card-glass group" id="cardEquity">
@@ -171,7 +171,7 @@
                     id="cardSentiment" onclick="openFngModal()">
                     <div class="card-glow"></div>
                     <h3
-                        class="card-label absolute top-4 left-4 w-full text-left uppercase tracking-widest text-[10px] font-black text-slate-400">
+                        class="card-label absolute top-4 left-4 right-4 text-left uppercase tracking-widest text-[10px] font-black text-slate-400">
                         Fear & Greed Index</h3>
                     <div class="absolute top-4 right-4 text-slate-300 group-hover:text-indigo-400 transition-colors">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
@@ -182,7 +182,7 @@
                         </svg>
                     </div>
 
-                    <div class="relative w-64 h-32 mt-6 flex items-end justify-center">
+                    <div class="relative w-full max-w-[200px] sm:max-w-[240px] aspect-[2/1] mt-6 flex items-end justify-center">
                         <svg viewBox="0 0 100 52" class="w-full h-full absolute bottom-0 overflow-visible">
                             <!-- Definitions for paths and gradients -->
                             <defs>
@@ -195,19 +195,19 @@
 
                             <!-- Gauge Segments (IDs for highlighting in JS) -->
                             <path id="fng-seg-0" d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="#10b981"
-                                stroke-width="14" stroke-dasharray="24.13, 101.53" stroke-dashoffset="0"
+                                stroke-width="8" stroke-dasharray="24.13, 101.53" stroke-dashoffset="0"
                                 class="transition-all duration-500" />
                             <path id="fng-seg-1" d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="#84cc16"
-                                stroke-width="14" stroke-dasharray="24.13, 101.53" stroke-dashoffset="-25.13"
+                                stroke-width="8" stroke-dasharray="24.13, 101.53" stroke-dashoffset="-25.13"
                                 class="transition-all duration-500" />
                             <path id="fng-seg-2" d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="#eab308"
-                                stroke-width="14" stroke-dasharray="24.13, 101.53" stroke-dashoffset="-50.26"
+                                stroke-width="8" stroke-dasharray="24.13, 101.53" stroke-dashoffset="-50.26"
                                 class="transition-all duration-500" />
                             <path id="fng-seg-3" d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="#f97316"
-                                stroke-width="14" stroke-dasharray="24.13, 101.53" stroke-dashoffset="-75.39"
+                                stroke-width="8" stroke-dasharray="24.13, 101.53" stroke-dashoffset="-75.39"
                                 class="transition-all duration-500" />
                             <path id="fng-seg-4" d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="#ef4444"
-                                stroke-width="14" stroke-dasharray="24.13, 101.53" stroke-dashoffset="-100.52"
+                                stroke-width="8" stroke-dasharray="24.13, 101.53" stroke-dashoffset="-100.52"
                                 class="transition-all duration-500" />
 
                             <!-- Curved Labels (Aligned mathematically along concentric semi-circle of radius 30) -->
@@ -273,10 +273,10 @@
             </div>
 
             <!-- ═══════════════ MAIN GRID ═══════════════ -->
-            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
 
                 <!-- LEFT: Chart + Signals (2 cols) -->
-                <div class="lg:col-span-2 space-y-6">
+                <div class="lg:col-span-2 space-y-4">
 
                     <!-- Price Chart — Webull Style -->
                     <div class="panel-glass relative">
@@ -487,7 +487,7 @@
 
 
                 <!-- RIGHT: Sidebar (1 col) -->
-                <div class="space-y-6">
+                <div class="space-y-4">
 
                     <!-- Watchlist -->
                     <div class="panel-glass relative">
@@ -835,7 +835,7 @@
             </div>
             <div class="p-8 bg-slate-50 flex justify-center border-t border-slate-100">
                 <button onclick="closeGuideModal(); openAlpacaModal();"
-                    class="px-12 py-5 bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 text-white font-black rounded-full hover:shadow-purple-500/40 hover:shadow-2xl transition-all shadow-xl uppercase tracking-[0.2em] text-sm active:scale-95">
+                    class="w-full sm:w-auto px-6 sm:px-12 py-4 sm:py-5 bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 text-white font-black rounded-full hover:shadow-purple-500/40 hover:shadow-2xl transition-all shadow-xl uppercase tracking-[0.2em] text-xs sm:text-sm active:scale-95 text-center">
                     I'm Ready to Link Account
                 </button>
             </div>
@@ -895,14 +895,14 @@
                 <!-- Inputs injected by JS -->
             </div>
 
-            <div class="px-6 py-4 bg-slate-50 flex items-center justify-between border-t border-slate-100">
+            <div class="px-4 sm:px-6 py-4 bg-slate-50 flex flex-col sm:flex-row items-stretch sm:items-center gap-3 sm:justify-between border-t border-slate-100">
                 <button onclick="resetIndicatorSettingsToDefaults()"
-                    class="px-4 py-2 text-sm font-bold text-rose-500 hover:text-rose-700 transition-colors mr-auto" title="Reset all fields to industry default values">Reset to Defaults</button>
-                <div class="flex items-center gap-3">
+                    class="px-4 py-2 text-sm font-bold text-rose-500 hover:text-rose-700 transition-colors text-center sm:text-left" title="Reset all fields to industry default values">Reset to Defaults</button>
+                <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
                     <button onclick="closeIndicatorSettings()"
-                        class="px-4 py-2 text-sm font-bold text-slate-500 hover:text-indigo-600 transition-colors">Cancel</button>
+                        class="px-4 py-2 text-sm font-bold text-slate-500 hover:text-indigo-600 transition-colors rounded-lg border border-slate-200 sm:border-0 py-2 sm:py-0">Cancel</button>
                     <button onclick="saveIndicatorSettings()"
-                        class="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-bold shadow-lg shadow-indigo-200 transition-all">Apply
+                        class="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-bold shadow-lg shadow-indigo-200 transition-all text-center">Apply
                         Settings</button>
                 </div>
             </div>

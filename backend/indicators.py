@@ -275,6 +275,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
         close = df["Close"]
         high = df["High"]
         low = df["Low"]
+        volume = df["Volume"]
 
         # --- RSI -----------------------------------------------------------
         df["RSI"] = ta_lib.momentum.rsi(close, window=config.RSI_PERIOD)
@@ -282,6 +283,9 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
         # --- EMA -----------------------------------------------------------
         df["EMA_Fast"] = ta_lib.trend.ema_indicator(close, window=config.EMA_FAST)
         df["EMA_Slow"] = ta_lib.trend.ema_indicator(close, window=config.EMA_SLOW)
+
+        # --- SMA -----------------------------------------------------------
+        df["SMA"] = ta_lib.trend.sma_indicator(close, window=getattr(config, "SMA_PERIOD", 200))
 
         # --- MACD ----------------------------------------------------------
         macd_ind = ta_lib.trend.MACD(
@@ -369,18 +373,68 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
         df["Supertrend"] = st_vals
         df["Supertrend_Trend"] = trend
 
-        # --- VWAP (daily session reset) ------------------------------------
+        # ---------------------------------------------------------
+        # 4. AUTO-ANCHORED VWAP (Institutional Smart Line - Rolling Model)
+        # ---------------------------------------------------------
         try:
-            pv = df["Close"] * df["Volume"]
-            cum_pv = pv.groupby(df.index.date).cumsum()
-            cum_vol = df["Volume"].groupby(df.index.date).cumsum()
-            # Avoid division by zero
-            df["VWAP"] = np.where(cum_vol > 0, cum_pv / cum_vol, close)
-        except Exception:
+            # Calculate typical price and PV across the whole DataFrame
+            typical_price = (df["High"] + df["Low"] + df["Close"]) / 3
+            pv = typical_price * df["Volume"]
+            
+            # Pre-calculate Cumulative sums for O(1) interval summation
+            cpv = pv.cumsum()
+            cvol = df["Volume"].cumsum()
+            
+            # Find the Volume Spike indices (institutions entering)
+            vol_ma = df["Volume"].rolling(window=getattr(config, 'VOL_MA_PERIOD', 20), min_periods=1).mean()
+            spike_condition = df["Volume"] > (vol_ma * getattr(config, 'VOL_SPIKE_MULTIPLIER', 1.5))
+            
+            # Create a forward-filled Series of the most recent spike's integer index
+            int_indices = pd.Series(range(len(df)), index=df.index)
+            spike_int_indices = int_indices.where(spike_condition)
+            current_anchor_idx = spike_int_indices.ffill()
+            
+            # Calculate rolling AVWAP for all rows
+            avwap_vals = []
+            for t_idx in range(len(df)):
+                a_idx = current_anchor_idx.iloc[t_idx]
+                if pd.isna(a_idx):
+                    # Before the first anchor, fall back to standard daily VWAP
+                    date_val = df.index[t_idx].date()
+                    day_mask = df.index.date == date_val
+                    day_df = df[day_mask]
+                    day_pv = ( (day_df["High"] + day_df["Low"] + day_df["Close"]) / 3 * day_df["Volume"] ).cumsum()
+                    day_vol = day_df["Volume"].cumsum()
+                    
+                    # Align index
+                    current_time = df.index[t_idx]
+                    day_val_pv = day_pv.loc[current_time]
+                    day_val_vol = day_vol.loc[current_time]
+                    avwap_vals.append(day_val_pv / day_val_vol if day_val_vol > 0 else close.iloc[t_idx])
+                else:
+                    a_idx = int(a_idx)
+                    sum_pv = cpv.iloc[t_idx] - (cpv.iloc[a_idx - 1] if a_idx > 0 else 0)
+                    sum_vol = cvol.iloc[t_idx] - (cvol.iloc[a_idx - 1] if a_idx > 0 else 0)
+                    avwap_vals.append(sum_pv / sum_vol if sum_vol > 0 else close.iloc[t_idx])
+            
+            df["VWAP"] = avwap_vals
+            df["Anchor_Date"] = current_anchor_idx.map(lambda idx: df.index[int(idx)] if not pd.isna(idx) else pd.NaT)
+
+        except Exception as e:
+            print(f"[indicators] VWAP Calc Error: {e}")
             df["VWAP"] = close.copy()
+            df["Anchor_Date"] = pd.NaT
 
         # --- ATR (Wilder's Smoothing) --------------------------------------
         df["ATR"] = tr.ewm(alpha=1/config.ATR_PERIOD, min_periods=config.ATR_PERIOD, adjust=False).mean()
+
+        # --- ADX (Standard Welles Wilder ADX / DI+ / DI-) -------------------
+        adx_ind = ta_lib.trend.ADXIndicator(
+            high=high, low=low, close=close, window=getattr(config, "ADX_PERIOD", 14)
+        )
+        df["ADX"] = adx_ind.adx()
+        df["DI_Plus"] = adx_ind.adx_pos()
+        df["DI_Minus"] = adx_ind.adx_neg()
 
         # --- Mystic Pulse V2.0 (Adaptive DMI + Persistence Engine) ----------
         presets = _get_mystic_v2_presets(timeframe)
@@ -556,10 +610,11 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
         # --- Build result --------------------------------------------------
         # Forward-fill then back-fill any remaining NaN from warm-up period
         indicator_cols = [
-            "RSI", "EMA_Fast", "EMA_Slow",
+            "RSI", "EMA_Fast", "EMA_Slow", "SMA",
             "MACD_Line", "MACD_Signal", "MACD_Hist",
             "BOLL_Upper", "BOLL_Lower", "BOLL_Middle",
             "Supertrend", "ATR", "VWAP",
+            "ADX", "DI_Plus", "DI_Minus",
         ]
         for col in indicator_cols:
             if col in df.columns:
@@ -583,10 +638,10 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
             "atr": round(float(latest["ATR"]), 4),
             "rsi": round(float(latest["RSI"]), 2),
             "bullish_count": sum(
-                1 for s in signals.values() if s["signal"] == "BULLISH"
+                s.get("weight", 1) for s in signals.values() if s["signal"] == "BULLISH"
             ),
             "bearish_count": sum(
-                1 for s in signals.values() if s["signal"] == "BEARISH"
+                s.get("weight", 1) for s in signals.values() if s["signal"] == "BEARISH"
             ),
             "signals": signals,
             "price_history": [
@@ -600,6 +655,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
                     # Overlay indicators (drawn on price chart)
                     "ema_fast":      _safe(row.get("EMA_Fast")),
                     "ema_slow":      _safe(row.get("EMA_Slow")),
+                    "sma":           _safe(row.get("SMA")),
                     "vwap":          _safe(row.get("VWAP")),
                     "supertrend":    _safe(row.get("Supertrend")),
                     "supertrend_up": bool(row.get("Supertrend_Trend", True)),
@@ -639,12 +695,39 @@ def _generate_signals(latest, prev):
         price = float(latest["Close"])
         boll_lo = float(latest["BOLL_Lower"])
         boll_hi = float(latest["BOLL_Upper"])
-        vwap = float(latest["VWAP"])
         bull_p = int(latest["Bull_Pulse"])
         bear_p = int(latest["Bear_Pulse"])
 
-        # Pulse threshold (from config or default 5)
-        pulse_thresh = getattr(config, "MYSTIC_PULSE_THRESHOLD", 5)
+        # Smart AVWAP Dynamics
+        vwap = float(latest["VWAP"])
+        prev_vwap = float(prev.get("VWAP", vwap))
+        is_near_vwap = abs(price - vwap) / vwap < 0.015  # Price is within 1.5% of the Anchor Line
+        bull_candle = bool(latest.get("cdl_bullish", False))
+        prev_close = float(prev.get("Close", price))
+
+        sma_val = float(latest.get("SMA", price))
+
+        adx_val = float(latest.get("ADX", 0))
+        di_plus = float(latest.get("DI_Plus", 0))
+        di_minus = float(latest.get("DI_Minus", 0))
+
+        # Check if trend strength exists (> 25)
+        is_trending = adx_val > getattr(config, "ADX_TRENDING_THRESHOLD", 25)
+
+        # ADX Trend signal generator
+        if is_trending:
+            if di_plus > di_minus:
+                adx_signal = "BULLISH"
+                adx_reason = f"DI+ ({di_plus:.1f}) > DI- ({di_minus:.1f}) | Trend Strong ({adx_val:.1f})"
+            elif di_minus > di_plus:
+                adx_signal = "BEARISH"
+                adx_reason = f"DI- ({di_minus:.1f}) > DI+ ({di_plus:.1f}) | Trend Strong ({adx_val:.1f})"
+            else:
+                adx_signal = "NEUTRAL"
+                adx_reason = f"DI Neutral | Trend Strong ({adx_val:.1f})"
+        else:
+            adx_signal = "NEUTRAL"
+            adx_reason = f"Flat/Choppy Market (ADX: {adx_val:.1f})"
 
         return {
             "RSI": {
@@ -658,6 +741,7 @@ def _generate_signals(latest, prev):
                     else f"Overbought {rsi_val:.1f}" if rsi_val > config.RSI_OVERBOUGHT
                     else f"Neutral {rsi_val:.1f}"
                 ),
+                "weight": 1,
             },
             "MACD": {
                 "signal": (
@@ -671,14 +755,22 @@ def _generate_signals(latest, prev):
                     else f"Rising {macd_h:.2f}" if macd_h > 0
                     else f"Falling {macd_h:.2f}"
                 ),
+                "weight": 1,
             },
             "EMA Cross": {
-                "signal": "BULLISH" if ema_f > ema_s else "BEARISH",
-                "reason": f"{ema_f:.1f} vs {ema_s:.1f}",
+                "signal": ("BULLISH" if ema_f > ema_s else "BEARISH") if is_trending else "NEUTRAL",
+                "reason": f"{ema_f:.1f} vs {ema_s:.1f} (ADX: {adx_val:.1f})" if is_trending else f"Ignored: Choppy Market (ADX {adx_val:.1f})",
+                "weight": 2,
+            },
+            "ADX Trend": {
+                "signal": adx_signal,
+                "reason": adx_reason,
+                "weight": 2,
             },
             "Supertrend": {
                 "signal": "BULLISH" if st_bull else "BEARISH",
                 "reason": f"{'Above' if st_bull else 'Below'} {float(latest['Supertrend']):.1f}",
+                "weight": 1,
             },
             "Bollinger": {
                 "signal": (
@@ -691,10 +783,28 @@ def _generate_signals(latest, prev):
                     else f"Near High {boll_hi:.1f}" if price >= (boll_hi - (boll_hi - boll_lo) * 0.2)
                     else "In Channel"
                 ),
+                "weight": 1,
             },
             "VWAP": {
-                "signal": "BULLISH" if price > vwap else "BEARISH",
-                "reason": f"Price > {vwap:.1f}" if price > vwap else f"Price < {vwap:.1f}",
+                "signal": (
+                    # BUY: Price breaks above AVWAP or holds support with a bullish candle
+                    "BULLISH" if (price >= vwap and prev_close < prev_vwap) or (price >= vwap and is_near_vwap and bull_candle)
+                    # SELL: Price collapses below AVWAP (distribution)
+                    else "BEARISH" if price < vwap
+                    else "NEUTRAL"
+                ),
+                "reason": (
+                    f"AVWAP Breakout ({vwap:.1f})" if (price >= vwap and prev_close < prev_vwap)
+                    else f"Bounce off AVWAP ({vwap:.1f})" if (price >= vwap and is_near_vwap and bull_candle)
+                    else f"Below AVWAP ({vwap:.1f})" if price < vwap
+                    else f"Holding above AVWAP ({vwap:.1f})"
+                ),
+                "weight": 1
+            },
+            "SMA": {
+                "signal": "BULLISH" if price >= sma_val else "BEARISH",
+                "reason": f"Above SMA ({sma_val:.1f})" if price >= sma_val else f"Below SMA ({sma_val:.1f})",
+                "weight": 1,
             },
             "Mystic Pulse": {
                 "signal": (
@@ -703,6 +813,7 @@ def _generate_signals(latest, prev):
                     else "NEUTRAL"
                 ),
                 "reason": f"Strength {int(bull_p if bull_p > bear_p else bear_p)}/5",
+                "weight": 1,
             },
             "Candle Patterns": {
                 "signal": (
@@ -711,6 +822,7 @@ def _generate_signals(latest, prev):
                     else "NEUTRAL"
                 ),
                 "reason": f"Pattern: {latest.get('cdl_name', 'None')}",
+                "weight": 1,
             },
         }
 
