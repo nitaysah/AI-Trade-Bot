@@ -1154,12 +1154,14 @@ async def download_all_data(data: dict):
         info = t.info
         
         # Security: Sanitize ticker to be strictly alphanumeric and verify path confinement
-        safe_ticker = re.sub(r'[^A-Z0-9]', '', ticker)
-        data_dir = os.path.realpath(os.path.join(os.path.dirname(__file__), "data"))
-        if not os.path.exists(data_dir): os.makedirs(data_dir)
+        clean_ticker = re.sub(r'[^A-Z0-9]', '', ticker)
+        safe_ticker = os.path.basename(clean_ticker)
+        data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "data"))
+        if not os.path.exists(data_dir): 
+            os.makedirs(data_dir)
         
-        info_path = os.path.realpath(os.path.join(data_dir, f"{safe_ticker}_info.json"))
-        if os.path.commonpath([data_dir, info_path]) != data_dir:
+        info_path = os.path.abspath(os.path.join(data_dir, f"{safe_ticker}_info.json"))
+        if not info_path.startswith(data_dir + os.sep):
             return {"error": "Invalid ticker path"}
             
         with open(info_path, "w") as f:

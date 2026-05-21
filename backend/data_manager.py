@@ -38,13 +38,13 @@ def get_historical_data(ticker, timeframe, start_date, end_date):
     """
     import re
     # Strict sanitization to prevent path traversal
-    safe_ticker = re.sub(r'[^A-Za-z0-9.\-]', '', ticker).upper()
-    safe_timeframe = re.sub(r'[^A-Za-z0-9]', '', timeframe)
-    filename = f"{safe_ticker}_{safe_timeframe}.csv"
+    clean_ticker = re.sub(r'[^A-Za-z0-9.\-]', '', ticker).upper()
+    clean_timeframe = re.sub(r'[^A-Za-z0-9]', '', timeframe)
+    filename = os.path.basename(f"{clean_ticker}_{clean_timeframe}.csv")
     
     # Resolve absolute path and restrict to DATA_DIR
     filepath = os.path.abspath(os.path.join(DATA_DIR, filename))
-    if not filepath.startswith(os.path.abspath(DATA_DIR)):
+    if not filepath.startswith(os.path.abspath(DATA_DIR) + os.sep):
         print(f"[security] Blocked path traversal attempt: {filepath}")
         return None
 
