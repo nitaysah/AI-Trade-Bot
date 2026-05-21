@@ -449,7 +449,7 @@ async def trading_loop():
             try:
                 pass # Replaced by live Alpaca API data fetching on-demand
             except Exception as e:
-                print(f"[scheduler] Sync error: {e}")
+                print("[scheduler] Sync error: Unable to sync data.")
 
 
             # Scan priority: 1. Dashboard primary (what user sees), 2. Active Bots, 3. Watchlist
@@ -729,7 +729,7 @@ async def trading_loop():
 
 
                 except Exception as e:
-                    print(f"[scheduler] Error scanning {ticker}: {e}")
+                    print(f"[scheduler] Error scanning {ticker}: Unable to scan ticker.")
 
             # 4. Post-Cycle Cleanup & Sync
             # Bound history size
@@ -744,7 +744,7 @@ async def trading_loop():
             await save_history_to_cloud()
 
         except Exception as e:
-            print(f"[scheduler] Loop error: {e}")
+            print("[scheduler] Loop error: An unexpected error occurred.")
 
         try:
             # Wait for interval OR force trigger
