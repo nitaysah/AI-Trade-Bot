@@ -13,8 +13,8 @@ import config
 
 try:
     from alpaca.trading.client import TradingClient
-    from alpaca.trading.requests import MarketOrderRequest
-    from alpaca.trading.enums import OrderSide, TimeInForce
+    from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
+    from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
     ALPACA_AVAILABLE = True
 except ImportError:
     ALPACA_AVAILABLE = False
@@ -144,6 +144,37 @@ class AlpacaBroker:
             print(f"[broker] Error getting positions: {e}")
             return []
 
+    def get_order_history(self) -> list:
+        """Returns list of all historical orders (filled, rejected, cancelled)."""
+        if self.simulation_mode:
+            return self.sim_orders  # Contains historical orders if in sim
+
+        try:
+            req = GetOrdersRequest(status=QueryOrderStatus.ALL)
+            orders = self.client.get_orders(filter=req)
+            history_list = []
+            for o in orders:
+                history_list.append({
+                    'id': str(o.id),
+                    'symbol': o.symbol.replace("/", "").upper(),
+                    'side': o.side.value.lower(),
+                    'status': str(o.status),
+                    'qty': float(o.qty) if o.qty else 0,
+                    'filled_qty': float(o.filled_qty) if o.filled_qty else 0,
+                    'filled_avg_price': float(o.filled_avg_price) if o.filled_avg_price else 0,
+                    'notional': float(o.notional) if o.notional else 0,
+                    'created_at': str(o.created_at) if o.created_at else None,
+                    'filled_at': str(o.filled_at) if o.filled_at else None,
+                    'type': str(o.order_type.value) if o.order_type else "unknown"
+                })
+            # Sort newest first
+            history_list.sort(key=lambda x: x['created_at'] or "", reverse=True)
+            print(f"[broker] Fetched {len(history_list)} historical orders from Alpaca")
+            return history_list
+        except Exception as e:
+            print(f"[broker] Error getting order history: {e}")
+            return []
+
     def get_open_orders(self) -> list:
         """Returns list of currently open (pending) orders."""
         if self.simulation_mode:
@@ -151,7 +182,8 @@ class AlpacaBroker:
 
         try:
             # Get only open orders
-            orders = self.client.get_orders(filter=None) # Default filter is open orders
+            req = GetOrdersRequest(status=QueryOrderStatus.OPEN)
+            orders = self.client.get_orders(filter=req)
             open_list = []
             for o in orders:
                 open_list.append({
@@ -161,12 +193,27 @@ class AlpacaBroker:
                     'status': str(o.status),
                     'qty': float(o.qty) if o.qty else 0,
                     'notional': float(o.notional) if o.notional else 0,
+                    'created_at': str(o.created_at) if o.created_at else None,
+                    'type': str(o.order_type.value) if o.order_type else "unknown"
                 })
             print(f"[broker] Fetched {len(open_list)} open orders from Alpaca")
             return open_list
         except Exception as e:
             print(f"[broker] Error getting open orders: {e}")
             return []
+
+    def cancel_order_by_id(self, order_id: str) -> dict:
+        """Cancels a specific working order by its ID."""
+        if self.simulation_mode:
+            return {'success': False, 'error': 'Cannot cancel orders in simple simulation mode.'}
+
+        try:
+            self.client.cancel_order_by_id(order_id)
+            print(f"[broker] Cancelled order {order_id}")
+            return {'success': True}
+        except Exception as e:
+            print(f"[broker] Failed to cancel order {order_id}: {e}")
+            return {'success': False, 'error': str(e)}
 
     def cancel_orders_for_ticker(self, ticker: str, side_filter: str = None) -> dict:
         """Cancels all pending orders for a specific ticker. Optionally filter by side ('buy' or 'sell')."""

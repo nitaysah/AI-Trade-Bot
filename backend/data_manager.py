@@ -115,7 +115,10 @@ def get_historical_data(ticker, timeframe, start_date, end_date):
                 "1Day": 1,
             }
             count = (diff_days * multiplier_map.get(timeframe, 1)) + 30
-            count = max(100, min(int(count), 1200))
+            if count > 1200:
+                print(f'[data] Requested {int(count)} bars exceeds Webull 1200 limit. Bypassing to Yahoo.')
+                raise Exception('Count exceeds Webull limit')
+            count = max(100, int(count))
             
             wb = WebullBroker()
             # Fetch exactly the calculated dynamic bar count

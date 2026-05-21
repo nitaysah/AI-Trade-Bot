@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Trader BOT — Dashboard</title>
+    <title>Bot Bulls — Dashboard</title>
     <meta name="description"
         content="AI-powered quantitative trading dashboard with multi-indicator confluence and sentiment analysis.">
     <link rel="icon"
@@ -63,7 +63,7 @@
             <div class="space-y-1">
                 <h1
                     class="text-2xl md:text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 leading-tight">
-                    ✦ AI Trader BOT
+                    ✦ Bot Bulls
                 </h1>
                 <p class="text-purple-500 text-xs md:text-sm font-black uppercase tracking-[0.2em] opacity-80">
                     Automated Quantitative Trading System
@@ -171,9 +171,9 @@
                     id="cardSentiment" onclick="openFngModal()">
                     <div class="card-glow"></div>
                     <h3
-                        class="card-label absolute top-4 left-4 right-4 text-left uppercase tracking-widest text-[10px] font-black text-slate-400">
+                        class="card-label absolute top-4 left-4 right-4 text-left uppercase tracking-widest text-[10px] font-black">
                         Fear & Greed Index</h3>
-                    <div class="absolute top-4 right-4 text-slate-300 group-hover:text-indigo-400 transition-colors">
+                    <div class="absolute top-4 right-4 text-slate-400 group-hover:text-indigo-600 transition-colors">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
                             <path
                                 d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z" />
@@ -182,92 +182,54 @@
                         </svg>
                     </div>
 
-                    <div class="relative w-full max-w-[200px] sm:max-w-[240px] aspect-[2/1] mt-6 flex items-end justify-center">
-                        <svg viewBox="0 0 100 52" class="w-full h-full absolute bottom-0 overflow-visible">
-                            <!-- Definitions for paths and gradients -->
+                    <div
+                        class="relative w-full max-w-[220px] sm:max-w-[260px] aspect-[2/1.2] mt-6 flex items-end justify-center">
+                        <svg viewBox="0 0 200 120" class="w-full h-full absolute bottom-0 overflow-visible">
                             <defs>
-                                <path id="fngLabelPath" d="M 20 50 A 30 30 0 0 1 80 50" />
-                                <filter id="fngMute">
-                                    <feColorMatrix type="matrix"
-                                        values="0.3333 0.3333 0.3333 0 0 0.3333 0.3333 0.3333 0 0 0.3333 0.3333 0.3333 0 0 0 0 0 0.4 0" />
-                                </filter>
+                                <!-- Gradient arc: green → yellow → orange → red -->
+                                <linearGradient id="fngArcGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                                    <stop offset="0%" stop-color="#22c55e" />
+                                    <stop offset="25%" stop-color="#84cc16" />
+                                    <stop offset="45%" stop-color="#eab308" />
+                                    <stop offset="65%" stop-color="#f97316" />
+                                    <stop offset="85%" stop-color="#ef4444" />
+                                    <stop offset="100%" stop-color="#dc2626" />
+                                </linearGradient>
                             </defs>
 
-                            <!-- Gauge Segments (IDs for highlighting in JS) -->
-                            <path id="fng-seg-0" d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="#10b981"
-                                stroke-width="8" stroke-dasharray="24.13, 101.53" stroke-dashoffset="0"
-                                class="transition-all duration-500" />
-                            <path id="fng-seg-1" d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="#84cc16"
-                                stroke-width="8" stroke-dasharray="24.13, 101.53" stroke-dashoffset="-25.13"
-                                class="transition-all duration-500" />
-                            <path id="fng-seg-2" d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="#eab308"
-                                stroke-width="8" stroke-dasharray="24.13, 101.53" stroke-dashoffset="-50.26"
-                                class="transition-all duration-500" />
-                            <path id="fng-seg-3" d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="#f97316"
-                                stroke-width="8" stroke-dasharray="24.13, 101.53" stroke-dashoffset="-75.39"
-                                class="transition-all duration-500" />
-                            <path id="fng-seg-4" d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="#ef4444"
-                                stroke-width="8" stroke-dasharray="24.13, 101.53" stroke-dashoffset="-100.52"
-                                class="transition-all duration-500" />
+                            <!-- Background track (dark ring) -->
+                            <path d="M 15 100 A 85 85 0 0 1 185 100" fill="none" stroke="rgba(0,0,0,0.06)"
+                                stroke-width="18" stroke-linecap="round" />
 
-                            <!-- Curved Labels (Aligned mathematically along concentric semi-circle of radius 30) -->
-                            <text class="font-black text-[2.6px] fill-slate-500 uppercase tracking-tighter"
-                                text-anchor="middle">
-                                <textPath href="#fngLabelPath" startOffset="12%">Extreme Fear</textPath>
-                                <textPath href="#fngLabelPath" startOffset="31%">Fear</textPath>
-                                <textPath href="#fngLabelPath" startOffset="50%">Neutral</textPath>
-                                <textPath href="#fngLabelPath" startOffset="69%">Greed</textPath>
-                                <textPath href="#fngLabelPath" startOffset="88%">Extreme Greed</textPath>
-                            </text>
+                            <!-- Gradient arc -->
+                            <path d="M 15 100 A 85 85 0 0 1 185 100" fill="none" stroke="url(#fngArcGrad)"
+                                stroke-width="18" stroke-linecap="round" />
 
-                            <!-- Numerical Markers (Concentric around the needle pivot cy=42 with radius 34) -->
-                            <text x="16" y="42" class="fill-slate-400 font-bold text-[4px]" text-anchor="middle">0</text>
-                            <text x="26" y="18" class="fill-slate-400 font-bold text-[4px]" text-anchor="middle">25</text>
-                            <text x="50" y="8" class="fill-slate-400 font-bold text-[4px]" text-anchor="middle">50</text>
-                            <text x="74" y="18" class="fill-slate-400 font-bold text-[4px]" text-anchor="middle">75</text>
-                            <text x="84" y="42" class="fill-slate-400 font-bold text-[4px]" text-anchor="middle">100</text>
+                            <!-- Tick marks -->
+                            <g id="fngTicks" stroke="rgba(0,0,0,0.3)" stroke-width="1.2"></g>
+
+                            <!-- Needle triangle pointer (dark) -->
+                            <g id="fgNeedleSvg" transform="rotate(-90, 100, 100)">
+                                <polygon points="100,22 96,38 104,38" fill="#334155" />
+                            </g>
+
+                            <!-- Score text -->
+                            <text id="fgScore" x="100" y="88" text-anchor="middle" dominant-baseline="middle"
+                                fill="#1e1b4b" font-size="32" font-weight="900" letter-spacing="-1">--</text>
+
+                            <!-- Sentiment label -->
+                            <text id="fgLabel" x="100" y="115" text-anchor="middle" dominant-baseline="middle"
+                                fill="#64748b" font-size="13" font-weight="800" text-transform="uppercase"
+                                letter-spacing="2">Fetching...</text>
+
+                            <!-- Fear / Greed side labels -->
+                            <text x="12" y="115" text-anchor="start" dominant-baseline="middle" fill="#475569"
+                                font-size="11" font-weight="800" text-transform="uppercase"
+                                letter-spacing="1">Fear</text>
+                            <text x="188" y="115" text-anchor="end" dominant-baseline="middle" fill="#475569"
+                                font-size="11" font-weight="800" text-transform="uppercase"
+                                letter-spacing="1">Greed</text>
                         </svg>
-
-                        <!-- Needle/Pointer (z-20) -->
-                        <div id="fgNeedle"
-                            class="absolute bottom-0 w-full h-full transition-transform duration-1000 ease-out z-20"
-                            style="transform-origin: 50% 80.77%; transform: rotate(-90deg);">
-                            <svg viewBox="0 0 100 52" class="w-full h-full absolute bottom-0 overflow-visible">
-                                <!-- Tapered Needle -->
-                                <polygon points="49.2,38 50.8,38 50,10" fill="#334155" />
-                            </svg>
-                        </div>
-
-                        <!-- Center Hub and Score Text (Stationary at z-30, sitting perfectly on top) -->
-                        <div class="absolute bottom-0 w-full h-full pointer-events-none z-30">
-                            <svg viewBox="0 0 100 52" class="w-full h-full absolute bottom-0 overflow-visible">
-                                <defs>
-                                    <filter id="hubShadow" x="-50%" y="-50%" width="200%" height="200%">
-                                        <feGaussianBlur in="SourceAlpha" stdDeviation="1" />
-                                        <feOffset dx="0" dy="1" result="offsetblur" />
-                                        <feComponentTransfer>
-                                            <feFuncA type="linear" slope="0.3" />
-                                        </feComponentTransfer>
-                                        <feMerge>
-                                            <feMergeNode />
-                                            <feMergeNode in="SourceGraphic" />
-                                        </feMerge>
-                                    </filter>
-                                </defs>
-                                <!-- Center Hub -->
-                                <circle cx="50" cy="42" r="8" fill="#334155" filter="url(#hubShadow)" />
-                                <circle cx="50" cy="42" r="6.8" fill="#1e293b" />
-                                <!-- Score Text -->
-                                <text id="fgScore" x="50" y="42.5" text-anchor="middle" dominant-baseline="middle"
-                                    class="fill-white font-black text-[7.5px] tracking-tighter">--</text>
-                            </svg>
-                        </div>
-
-                        <!-- Sentiment Status Label (Aligned horizontally with 0 & 100 markers, directly centered below the pivot hub) -->
-                        <div class="absolute bottom-[-8px] left-0 right-0 flex justify-center z-30 pointer-events-none">
-                            <p class="text-xs font-black uppercase tracking-[0.2em] text-slate-400 transition-colors duration-500"
-                                id="fgLabel">Fetching...</p>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -285,17 +247,28 @@
                         <!-- Chart Header: Ticker + Search + Star -->
                         <div class="flex items-start justify-between mb-1">
                             <div>
-                                <div class="flex items-baseline gap-2">
-                                    <span class="text-base font-black text-indigo-900" id="chartTickerLabel">---</span>
-                                    <span class="text-lg font-bold" id="chartPrice">---</span>
-                                    <span class="text-sm font-semibold" id="chartPriceChange">---</span>
+                                <div class="flex flex-col">
+                                    <div class="flex items-baseline gap-2">
+                                        <span class="text-xl font-black text-indigo-900"
+                                            id="chartTickerLabel">---</span>
+                                        <span class="text-xl font-black text-emerald-600" id="chartPrice">---</span>
+                                    </div>
+                                    <div class="mt-0.5">
+                                        <span class="text-xs font-bold text-emerald-500"
+                                            id="chartPriceChange">---</span>
+                                    </div>
                                 </div>
                             </div>
                             <!-- Search + Star -->
                             <div class="relative flex items-center z-50 gap-1">
-                                <input type="text" id="tickerSearch" autocomplete="off" placeholder="Search ticker…"
-                                    class="bg-white/80 text-indigo-900 border border-purple-200 rounded-lg px-3 py-1.5 w-36 text-xs uppercase focus:outline-none focus:ring-2 focus:ring-purple-400 transition-all font-bold"
-                                    oninput="onTickerSearchInput(this.value)" onkeydown="onTickerSearchKey(event)">
+                                <div class="relative">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-purple-400 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                    </svg>
+                                    <input type="text" id="tickerSearch" autocomplete="off" placeholder="Search..."
+                                        class="bg-white/80 text-indigo-900 border border-purple-200 rounded-lg pl-8 pr-2 py-1 w-28 text-xs uppercase focus:outline-none focus:ring-2 focus:ring-purple-400 transition-all font-bold"
+                                        oninput="onTickerSearchInput(this.value)" onkeydown="onTickerSearchKey(event)">
+                                </div>
                                 <button id="favoriteBtn" onclick="toggleWatchlistStar()"
                                     class="p-1.5 rounded-lg border border-purple-200 bg-white/80 hover:bg-yellow-50 transition-colors"
                                     title="Add/Remove from Watchlist">
@@ -313,23 +286,15 @@
 
                         <!-- Webull-style interval bar -->
                         <div class="chart-control-row chart-interval-row" id="chartTfBar">
-                            <button class="chart-tf-btn" onclick="setChartTimeframe('30Sec')"
-                                data-tf="30Sec">30s</button>
                             <button class="chart-tf-btn chart-tf-active" onclick="setChartTimeframe('1Min')"
                                 data-tf="1Min">1m</button>
-                            <button class="chart-tf-btn" onclick="setChartTimeframe('2Min')" data-tf="2Min">2m</button>
-                            <button class="chart-tf-btn" onclick="setChartTimeframe('3Min')" data-tf="3Min">3m</button>
                             <button class="chart-tf-btn" onclick="setChartTimeframe('5Min')" data-tf="5Min">5m</button>
-                            <button class="chart-tf-btn" onclick="setChartTimeframe('10Min')"
-                                data-tf="10Min">10m</button>
                             <button class="chart-tf-btn" onclick="setChartTimeframe('15Min')"
                                 data-tf="15Min">15m</button>
                             <button class="chart-tf-btn" onclick="setChartTimeframe('30Min')"
                                 data-tf="30Min">30m</button>
                             <button class="chart-tf-btn" onclick="setChartTimeframe('1Hour')"
                                 data-tf="1Hour">1h</button>
-                            <button class="chart-tf-btn" onclick="setChartTimeframe('2Hour')"
-                                data-tf="2Hour">2h</button>
                             <button class="chart-tf-btn" onclick="setChartTimeframe('4Hour')"
                                 data-tf="4Hour">4h</button>
                         </div>
@@ -354,14 +319,30 @@
                         </div>
                         <!-- Oscillator sub-panes -->
                         <div class="relative">
-                            <div class="chart-osc-label" id="rsiLabel">RSI (14)</div>
+                            <div class="chart-osc-label" id="rsiLabel">RSI (14)<div class="group/tooltip relative inline-flex items-center ml-1">
+    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+    <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
+        Relative Strength Index (RSI) is a momentum oscillator. Purpose: Identifies overbought (>70) or oversold (<30) conditions.
+        <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900"></div>
+    </div>
+</div></div>
                             <div class="chart-osc-pane" id="oscChart_rsi"></div>
                         </div>
                         <div class="relative group">
                             <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
                                 onclick="openIndicatorSettings('MACD')" id="macdLabel">
-                                MACD (12, 26, 9)
-                                <svg class="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" fill="none"
+                                MACD (12, 26, 9)<div class="group/tooltip relative inline-flex items-center ml-1">
+    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+    <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
+        Moving Average Convergence Divergence (MACD) shows the relationship between two moving averages. Purpose: Detects changes in trend momentum.
+        <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900"></div>
+    </div>
+</div>
+                                <svg class="w-3 h-3 opacity-70 hover:opacity-100 transition-opacity" fill="none"
                                     stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                         d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
@@ -375,8 +356,16 @@
                         <div class="relative group">
                             <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
                                 onclick="openIndicatorSettings('Mystic Pulse')" id="mysticPulseLabel">
-                                Mystic Pulse
-                                <svg class="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" fill="none"
+                                Mystic Pulse<div class="group/tooltip relative inline-flex items-center ml-1">
+    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+    <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
+        Mystic Pulse is a custom proprietary oscillator. Purpose: Combines multi-timeframe momentum, volatility, and volume flow to detect early trend reversals.
+        <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900"></div>
+    </div>
+</div>
+                                <svg class="w-3 h-3 opacity-70 hover:opacity-100 transition-opacity" fill="none"
                                     stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                         d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
@@ -528,7 +517,7 @@
             <div class="flex flex-col items-center gap-4">
                 <div class="flex items-center gap-2">
                     <span class="h-1.5 w-1.5 rounded-full bg-purple-400 opacity-50"></span>
-                    <p>AI Trading Bot — Sentient Performance Engine v2.0</p>
+                    <p>Bot Bulls — Sentient Performance Engine v2.0</p>
                     <span class="h-1.5 w-1.5 rounded-full bg-purple-400 opacity-50"></span>
                 </div>
                 <p class="text-[0.6rem] text-rose-400/80 max-w-md">⚠️ Algorithmic trading involves significant risk.
@@ -871,13 +860,18 @@
                 <div id="fngComponentsGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     <!-- Populated by JS -->
                 </div>
+                <div class="mt-6 pt-4 border-t border-slate-100 flex items-center justify-center">
+                    <p class="text-[0.65rem] text-slate-400 font-bold uppercase tracking-widest">
+                        Data sourced from <a href="https://feargreedchart.com" target="_blank" class="text-indigo-400 hover:text-indigo-600 transition-colors">feargreedchart.com</a>
+                    </p>
+                </div>
             </div>
         </div>
     </div>
 
     <!-- Indicator Settings Modal -->
     <div id="indicatorSettingsModal"
-        class="fixed inset-0 bg-indigo-950/40 backdrop-blur-sm z-[200] hidden flex items-center justify-center p-4">
+        class="fixed inset-0 bg-purple-950/15 backdrop-blur-md z-[200] hidden flex items-center justify-center p-4">
         <div
             class="bg-white/90 backdrop-blur-md rounded-2xl shadow-2xl w-full max-w-md border border-white/50 overflow-hidden transform transition-all">
             <div class="bg-gradient-to-r from-indigo-600 to-purple-600 px-6 py-4 flex items-center justify-between">
@@ -895,9 +889,11 @@
                 <!-- Inputs injected by JS -->
             </div>
 
-            <div class="px-4 sm:px-6 py-4 bg-slate-50 flex flex-col sm:flex-row items-stretch sm:items-center gap-3 sm:justify-between border-t border-slate-100">
+            <div
+                class="px-4 sm:px-6 py-4 bg-slate-50 flex flex-col sm:flex-row items-stretch sm:items-center gap-3 sm:justify-between border-t border-slate-100">
                 <button onclick="resetIndicatorSettingsToDefaults()"
-                    class="px-4 py-2 text-sm font-bold text-rose-500 hover:text-rose-700 transition-colors text-center sm:text-left" title="Reset all fields to industry default values">Reset to Defaults</button>
+                    class="px-4 py-2 text-sm font-bold text-rose-500 hover:text-rose-700 transition-colors text-center sm:text-left"
+                    title="Reset all fields to industry default values">Reset to Defaults</button>
                 <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
                     <button onclick="closeIndicatorSettings()"
                         class="px-4 py-2 text-sm font-bold text-slate-500 hover:text-indigo-600 transition-colors rounded-lg border border-slate-200 sm:border-0 py-2 sm:py-0">Cancel</button>

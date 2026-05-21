@@ -188,8 +188,8 @@ function formatPrice(value) {
 }
 
 let selectedTicker = readLastViewedTicker();
-let currentBackendTf = "5Min";
-let currentChartRange = localStorage.getItem('lastChartRange') || "1D";
+let currentBackendTf = "1Hour";
+let currentChartRange = localStorage.getItem('lastChartRange') || "1M";
 let currentChartSession = localStorage.getItem('lastChartSession') || "regular";
 let isAlpacaLinked = false; // Track live connection status
 let favoriteTickers = JSON.parse(localStorage.getItem('favoriteTickers') || '["BTCUSD", "ETHUSD", "TSLA", "AAPL", "MSFT"]');
@@ -199,16 +199,11 @@ let currentWatchlistTab = "all"; // 'all', 'stocks', or 'crypto'
 let latestTradesData = []; // Cached log data
 
 const CHART_INTERVALS = {
-    "30Sec": { label: "30s", seconds: 30, backend: "30Sec" },
     "1Min": { label: "1m", seconds: 60, backend: "1Min" },
-    "2Min": { label: "2m", seconds: 120, backend: "2Min" },
-    "3Min": { label: "3m", seconds: 180, backend: "3Min" },
     "5Min": { label: "5m", seconds: 300, backend: "5Min" },
-    "10Min": { label: "10m", seconds: 600, backend: "10Min" },
     "15Min": { label: "15m", seconds: 900, backend: "15Min" },
     "30Min": { label: "30m", seconds: 1800, backend: "30Min" },
     "1Hour": { label: "1h", seconds: 3600, backend: "1Hour" },
-    "2Hour": { label: "2h", seconds: 7200, backend: "2Hour" },
     "4Hour": { label: "4h", seconds: 14400, backend: "4Hour" },
     "1Day": { label: "1D", seconds: 86400, backend: "1Day" },
 };
@@ -218,7 +213,7 @@ const CHART_RANGES = {
     "5D": { label: "5D", days: 5, preferredTf: "5Min" },
     "1M": { label: "1M", days: 31, preferredTf: "30Min" },
     "3M": { label: "3M", days: 93, preferredTf: "1Hour" },
-    "6M": { label: "6M", days: 186, preferredTf: "2Hour" },
+    "6M": { label: "6M", days: 186, preferredTf: "4Hour" },
     "YTD": { label: "YTD", ytd: true, preferredTf: "4Hour" },
     "1Y": { label: "1Y", days: 366, preferredTf: "4Hour" },
     "5Y": { label: "5Y", days: 365 * 5, preferredTf: "1Day" },
@@ -269,13 +264,18 @@ function formatLocalTime(isoString) {
         }
         const date = new Date(timestamp);
         // Force Central Time (Chicago) for everywhere
-        return date.toLocaleTimeString('en-US', {
+        const dateStr = date.toLocaleDateString('en-US', {
+            timeZone: 'America/Chicago',
+            month: '2-digit', day: '2-digit', year: '2-digit'
+        });
+        const timeStr = date.toLocaleTimeString('en-US', {
             timeZone: 'America/Chicago',
             hour: '2-digit',
             minute: '2-digit',
             second: '2-digit',
             hour12: false
         });
+        return `${dateStr} ${timeStr}`;
     } catch (e) {
         return isoString;
     }
@@ -286,6 +286,7 @@ function formatLocalTime(isoString) {
 // 1. Chart Engine — Webull data + indicator overlays
 // ──────────────────────────────────────────────
 let lwChart = null;
+let extHoursSeries = null;
 let candleSeries = null;
 let oscChartRsi = null;
 let oscChartMacd = null;
@@ -352,6 +353,13 @@ function initChart() {
                 return d.toLocaleTimeString('en-US', { timeZone: 'America/Chicago', hour: '2-digit', minute: '2-digit', hour12: false });
             }
         },
+    });
+
+    extHoursSeries = lwChart.addHistogramSeries({
+        color: 'rgba(100, 116, 139, 0.1)', // Slight grey background
+        priceFormat: { type: 'volume' },
+        priceScaleId: '', // Overlay independently
+        scaleMargins: { top: 0, bottom: 0 },
     });
 
     candleSeries = lwChart.addCandlestickSeries({
@@ -466,6 +474,23 @@ function updateChart(priceHistory, ticker) {
         return;
     }
     window._displayPriceHistory = sorted;
+    // Background highlight for Extended Hours
+    if (extHoursSeries) {
+        if (!isCryptoTicker(ticker) && currentChartSession === 'extended') {
+            const extData = sorted.map(b => {
+                const isExt = !isRegularMarketBar(b);
+                return {
+                    time: b.time,
+                    value: isExt ? 9999999 : 0,
+                    color: isExt ? 'rgba(100, 116, 139, 0.12)' : 'rgba(0,0,0,0)'
+                };
+            });
+            extHoursSeries.setData(extData);
+        } else {
+            extHoursSeries.setData([]);
+        }
+    }
+
     candleSeries.setData(sorted.map(b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })));
 
     // Crosshair OHLCV subscription (wire once)
@@ -494,11 +519,24 @@ function updateChart(priceHistory, ticker) {
     _refreshOverlays(sorted);
     _refreshOscillators(sorted);
 
-    // Only auto-fit if we just switched tickers or if it's the first load
+    // Always maintain a comfortable zoom level for horizontal sliding
     const isNewTicker = window._lastFittedTicker !== ticker;
-    if (isNewTicker) {
-        lwChart.timeScale().fitContent();
+    const isNewRange = window._lastFittedRange !== currentChartRange;
+    
+    if (isNewTicker || isNewRange) {
+        // Instead of squeezing all data into the view, we set a comfortable bar spacing
+        // This allows the user to see candles clearly and slide horizontally
+        const totalBars = sorted.length;
+        if (totalBars > 150) {
+            lwChart.timeScale().setVisibleLogicalRange({
+                from: totalBars - 150,
+                to: totalBars + 5 // add a little empty space on the right
+            });
+        } else {
+            lwChart.timeScale().fitContent();
+        }
         window._lastFittedTicker = ticker;
+        window._lastFittedRange = currentChartRange;
     }
 
     updateVisibleHighLow();
@@ -754,12 +792,12 @@ function _updateChartHeader(bars) {
     const changeEl = document.getElementById('chartPriceChange');
     if (priceEl) {
         priceEl.textContent = price.toFixed(price > 10 ? 2 : 4);
-        priceEl.className = `text-lg font-bold ${change >= 0 ? 'text-emerald-600' : 'text-red-500'}`;
+        priceEl.className = `text-xl font-black ${change >= 0 ? 'text-emerald-600' : 'text-red-500'}`;
     }
     if (changeEl) {
         const sign = change >= 0 ? '+' : '';
         changeEl.textContent = `${sign}${change.toFixed(price > 10 ? 2 : 4)} (${sign}${changePct.toFixed(2)}%)`;
-        changeEl.className = `text-sm font-semibold ${change >= 0 ? 'text-emerald-500' : 'text-red-400'}`;
+        changeEl.className = `text-xs font-bold ${change >= 0 ? 'text-emerald-500' : 'text-red-400'}`;
     }
 }
 
@@ -882,6 +920,21 @@ document.addEventListener('click', e => {
 });
 
 // Indicator Config Mapping
+
+const INDICATOR_TOOLTIPS = {
+    "RSI": "Relative Strength Index (RSI) is a momentum oscillator. Purpose: Identifies overbought (>70) or oversold (<30) conditions.",
+    "MACD": "Moving Average Convergence Divergence (MACD) shows the relationship between two moving averages. Purpose: Detects changes in trend momentum.",
+    "EMA Cross": "Exponential Moving Average (EMA) places greater weight on recent prices. Purpose: Reacts faster to price changes to catch trends early.",
+    "SMA": "Simple Moving Average (SMA) is the unweighted mean of previous prices. Purpose: Smooths out price data to identify trend direction.",
+    "Bollinger": "Bollinger Bands are volatility bands placed above and below a moving average. Purpose: Measures market volatility and potential overbought/oversold levels.",
+    "Supertrend": "Supertrend is a trend-following indicator based on Average True Range (ATR). Purpose: Identifies the current market trend and provides dynamic stop-loss levels.",
+    "Mystic Pulse": "Mystic Pulse is a custom proprietary oscillator. Purpose: Combines multi-timeframe momentum, volatility, and volume flow to detect early trend reversals.",
+    "Candle patterns": "Candlestick Patterns identify specific OHLC price formations. Purpose: Provides visual clues about market psychology and potential reversals.",
+    "ADX Trend": "Average Directional Index (ADX) quantifies trend strength. Purpose: Determines if the market is trending strongly (ADX > 25) or ranging.",
+    "VWAP": "Volume Weighted Average Price (VWAP) is the ratio of value traded to total volume. Purpose: Provides the true average price a security traded at throughout the day.",
+    "Strategy Confidence": "Strategy Confidence combines multiple indicator signals into a single probability score. Purpose: Measures the overall conviction of a bullish or bearish trend."
+};
+
 const INDICATOR_CONFIG_MAP = {
     'RSI': ['RSI_PERIOD', 'RSI_OVERBOUGHT', 'RSI_OVERSOLD'],
     'MACD': ['MACD_FAST', 'MACD_SLOW', 'MACD_SIGNAL'],
@@ -930,6 +983,10 @@ let currentEditingIndicator = null;
 // 3. Render Signal Confluence Grid
 // ──────────────────────────────────────────────
 function renderSignals(signals, action, reason, bullishCount, bearishCount) {
+    // If the user is currently rapid-fire toggling indicators, ignore incoming dashboard data
+    // to prevent reverting their optimistic UI changes. The final debounce will fetch the real state.
+    if (window._indicatorToggleDebounce) return;
+
     const grid = document.getElementById('signalGrid');
     const loading = document.getElementById('gridLoading');
 
@@ -940,11 +997,11 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
     }
 
     if (loading) loading.classList.add('hidden');
-    grid.innerHTML = '';
+
+    const activeIds = new Set();
 
     for (const [name, data] of Object.entries(signals)) {
         const isEnabled = data.enabled !== false;
-
         let signalClass = data.signal === 'BULLISH' ? 'bullish' : data.signal === 'BEARISH' ? 'bearish' : 'neutral';
         if (!isEnabled) {
             signalClass = 'disabled-signal';
@@ -953,35 +1010,92 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
         const icon = data.signal === 'BULLISH' ? '▲' : data.signal === 'BEARISH' ? '▼' : '●';
         const iconColor = data.signal === 'BULLISH' ? 'text-emerald-600' : data.signal === 'BEARISH' ? 'text-red-500' : 'text-purple-400';
 
-        const card = document.createElement('div');
-        // Add cursor-pointer to indicate it's clickable
-        card.className = `signal-card group ${signalClass} fade-in cursor-pointer`;
+        const cardId = 'signal-card-' + name.replace(/\s+/g, '-');
+        activeIds.add(cardId);
+        
+        let card = document.getElementById(cardId);
+        let isNew = false;
+        if (!card) {
+            card = document.createElement('div');
+            card.id = cardId;
+            isNew = true;
+        }
 
-        // When clicked, toggle the indicator
+        const newClassName = `signal-card group ${signalClass} fade-in cursor-pointer transition-all duration-300`;
+        if (card.className !== newClassName) {
+            card.className = newClassName;
+        }
+
         if (data.toggle_key) {
-            card.onclick = () => toggleIndicator(data.toggle_key, !isEnabled);
+            card.onclick = function() {
+                const isNowEnabled = !this.classList.contains('disabled-signal');
+                const targetState = !isNowEnabled;
+                
+                // Optimistic UI toggle for the card
+                if (isNowEnabled) {
+                    this.classList.add('disabled-signal');
+                    this.classList.remove('bullish', 'bearish', 'neutral');
+                    const spans = this.querySelectorAll('span');
+                    spans.forEach(s => s.classList.add('opacity-50'));
+                    this.querySelector('p').classList.add('opacity-50');
+                } else {
+                    this.classList.remove('disabled-signal');
+                    this.classList.add(data.signal === 'BULLISH' ? 'bullish' : data.signal === 'BEARISH' ? 'bearish' : 'neutral');
+                    const spans = this.querySelectorAll('span');
+                    spans.forEach(s => s.classList.remove('opacity-50', 'grayscale'));
+                    this.querySelector('p').classList.remove('opacity-50');
+                }
+                
+                const chartKey = SIGNAL_TO_CHART_KEY[name];
+                if (chartKey) {
+                    _visibleIndicators[chartKey] = targetState;
+                    if (window._lastPriceHistory) {
+                        updateChart(window._lastPriceHistory, window._lastTicker || selectedTicker);
+                    }
+                }
+                
+                // Update internal dataset to prevent the next heartbeat from reverting it visually 
+                // until the backend confirms the new state.
+                this.dataset.cacheKey = `${targetState}-${data.signal}-${data.reason}`;
+                
+                toggleIndicator(data.toggle_key, targetState);
+            };
             card.title = isEnabled ? "Click to disable this indicator" : "Click to enable this indicator";
         }
 
-        card.innerHTML = `
-            <div class="flex items-center justify-between mb-1">
-                <span class="font-bold text-xs text-indigo-900 ${!isEnabled ? 'opacity-50' : ''}">${name}</span>
-                <div class="flex items-center gap-2">
-                    <button class="opacity-0 group-hover:opacity-40 hover:!opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" 
-                            onclick="event.stopPropagation(); openIndicatorSettings('${name}')"
-                            title="Indicator Settings">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                        </svg>
-                    </button>
-                    <span class="${iconColor} text-sm font-bold ${!isEnabled ? 'opacity-50 grayscale' : ''}">${icon}</span>
+        const cacheKey = `${isEnabled}-${data.signal}-${data.reason}`;
+        if (card.dataset.cacheKey !== cacheKey) {
+            card.innerHTML = `
+                <div class="flex items-center justify-between mb-1">
+                    <span class="font-bold text-xs text-indigo-900 ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${name}</span>
+                    <div class="flex items-center gap-2">
+                        <button class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" 
+                                onclick="event.stopPropagation(); openIndicatorSettings('${name}')"
+                                title="Indicator Settings">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                        </button>
+                        <span class="${iconColor} text-sm font-bold ${!isEnabled ? 'opacity-50 grayscale' : ''} transition-all duration-300">${icon}</span>
+                    </div>
                 </div>
-            </div>
-            <p class="text-[0.65rem] text-purple-600 leading-tight ${!isEnabled ? 'opacity-50' : ''}">${data.reason}</p>
-        `;
-        grid.appendChild(card);
+                <p class="text-[0.65rem] text-purple-600 leading-tight ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${data.reason}</p>
+            `;
+            card.dataset.cacheKey = cacheKey;
+        }
+        
+        if (isNew) {
+            grid.appendChild(card);
+        }
     }
+
+    // Remove stale cards that no longer exist in signals
+    Array.from(grid.children).forEach(child => {
+        if (!activeIds.has(child.id)) {
+            grid.removeChild(child);
+        }
+    });
 
     // Update counts
     document.getElementById('bullCount').textContent = `${bullishCount} Bullish`;
@@ -1158,11 +1272,19 @@ function selectTicker(ticker) {
     }
     rememberSelectedTicker(normalizedTicker);
 
+    // Force reset to 1h timeframe and 1M range when loading a new stock
+    const previousTf = currentBackendTf;
+    currentBackendTf = "1Hour";
+    currentChartRange = "1M";
+    localStorage.setItem('lastChartRange', "1M");
+
     // Update header and search box immediately for visual feedback
     updateActiveTickerDisplay(selectedTicker);
+    updateChartControlState(selectedTicker);
 
     // Optimization: Check if we have cached signals for this ticker in the current dashboard data
-    const cachedScan = (window.lastDashboardData?.watchlistScans || {})[normalizedTicker];
+    // Only use cache if the timeframe hasn't changed, otherwise we need fresh signals for 1h
+    const cachedScan = (previousTf === "1Hour") ? (window.lastDashboardData?.watchlistScans || {})[normalizedTicker] : null;
     if (cachedScan) {
         renderSignals(
             cachedScan.signals,
@@ -1328,16 +1450,19 @@ async function removeFromTradelist(ticker) {
 // 5. Render Trade Log
 // ──────────────────────────────────────────────
 let latestScanHistory = [];
-let latestExecutedTrades = [];
+let latestOrderHistory = [];
+let latestPendingOrders = [];
 let currentScanPage = 1;
 let currentTradePage = 1;
+let currentPendingPage = 1;
 const LOG_PAGE_SIZE = 20;
 
 function setLogTab(tab) {
     currentLogTab = tab;
     // Reset to first page when switching tabs
     if (tab === 'all') currentScanPage = 1;
-    else currentTradePage = 1;
+    else if (tab === 'trades') currentTradePage = 1;
+    else currentPendingPage = 1;
 
     // UI Update
     const allBtn = document.getElementById('tabLogAll');
@@ -1353,10 +1478,10 @@ function setLogTab(tab) {
         }
     }
 
-    renderTradeLog(latestScanHistory, latestExecutedTrades);
+    renderTradeLog(latestScanHistory, latestOrderHistory, latestPendingOrders);
 }
 
-function renderTradeLog(scanHistory, executedTrades) {
+function renderTradeLog(scanHistory, orderHistory, pendingOrders) {
     const tbody = document.getElementById('tradeLogBody');
     const noMsg = document.getElementById('noTradesMsg');
     if (!tbody) return;
@@ -1365,7 +1490,7 @@ function renderTradeLog(scanHistory, executedTrades) {
     const filterToggle = document.getElementById('filterLogToggle');
     const isFiltered = filterToggle && filterToggle.checked;
 
-    let trades = currentLogTab === 'trades' ? (executedTrades || []) : (scanHistory || []);
+    let trades = currentLogTab === 'trades' ? (orderHistory || []) : (scanHistory || []);
 
     // Apply Filtering if enabled
     if (currentLogTab === 'all') {
@@ -1460,13 +1585,16 @@ function updatePaginationUI(totalPages, currentPage) {
 
 function changeLogPage(delta) {
     if (currentLogTab === 'all') {
-        const total = Math.ceil(latestScanHistory.length / LOG_PAGE_SIZE);
+        const total = Math.ceil(latestScanHistory.length / LOG_PAGE_SIZE) || 1;
         currentScanPage = Math.max(1, Math.min(total, currentScanPage + delta));
-    } else {
-        const total = Math.ceil(latestExecutedTrades.length / LOG_PAGE_SIZE);
+    } else if (currentLogTab === 'trades') {
+        const total = Math.ceil(latestOrderHistory.length / LOG_PAGE_SIZE) || 1;
         currentTradePage = Math.max(1, Math.min(total, currentTradePage + delta));
+    } else {
+        const total = Math.ceil(latestPendingOrders.length / LOG_PAGE_SIZE) || 1;
+        currentPendingPage = Math.max(1, Math.min(total, currentPendingPage + delta));
     }
-    renderTradeLog(latestScanHistory, latestExecutedTrades);
+    renderTradeLog(latestScanHistory, latestOrderHistory, latestPendingOrders);
 }
 
 // ──────────────────────────────────────────────
@@ -1834,8 +1962,9 @@ async function fetchDashboard(mode = 'heavy') {
 
         // Trade log
         latestScanHistory = data.recentTrades || [];
-        latestExecutedTrades = data.executedTrades || [];
-        renderTradeLog(latestScanHistory, latestExecutedTrades);
+        const latestOrderHistory = data.orderHistory || [];
+        const latestPendingOrders = data.pendingOrders || [];
+        renderTradeLog(latestScanHistory, latestOrderHistory, latestPendingOrders);
 
         // Update Performance Panel
         if (data.performance) {
@@ -2000,7 +2129,7 @@ function updateFavoriteIcon() {
 
 // ──────────────────────────────────────────────
 // 10. Settings & Toggles
-// ──────────────────────────────────────────────
+window._indicatorToggleDebounce = null;
 async function toggleIndicator(key, value) {
     try {
         const headers = await getAuthHeaders();
@@ -2010,8 +2139,12 @@ async function toggleIndicator(key, value) {
             body: JSON.stringify({ [key]: value })
         });
 
-        fetchDashboard('fast');
-        fetchDashboard('heavy'); // Refresh chart and dashboard immediately
+        clearTimeout(window._indicatorToggleDebounce);
+        window._indicatorToggleDebounce = setTimeout(() => {
+            fetchDashboard('fast');
+            fetchDashboard('heavy'); // Refresh chart and dashboard once after clicks settle
+            window._indicatorToggleDebounce = null; // Unblock the heartbeat
+        }, 1000);
     } catch (e) {
         console.error('Error saving setting:', e);
     }
@@ -2071,7 +2204,8 @@ document.addEventListener('DOMContentLoaded', () => {
             fetchDashboard('fast');
             fetchDashboard('heavy');
             setInterval(() => {
-                fetchDashboard('fast');
+                // Skip the "heartbeat" live refresh if the user is currently rapid-fire clicking indicators
+                if (window._indicatorToggleDebounce) return; 
                 fetchDashboard('heavy');
             }, REFRESH_INTERVAL);
             clearInterval(checkAuth);
@@ -2097,7 +2231,7 @@ document.addEventListener('DOMContentLoaded', () => {
         cb.addEventListener('change', syncBacktestSliderRange);
     });
 
-    console.log('[dashboard] AI Trading Bot Dashboard initialized.');
+    console.log('[dashboard] Bot Bulls Dashboard initialized.');
 });
 
 function showGlobalError(msg) {
@@ -2306,11 +2440,15 @@ function syncBacktestSliderRange() {
         slider.disabled = true;
         label.textContent = "Select Indicators First";
         label.className = "text-[0.75rem] font-black px-3 py-1 rounded-full bg-rose-500 text-white uppercase shadow-md";
+        const buyInp = document.getElementById('btThreshold');
+        const sellInp = document.getElementById('btSellThreshold');
+        if (buyInp) buyInp.value = 0;
+        if (sellInp) sellInp.value = 0;
         return;
     }
 
     slider.disabled = false;
-    slider.min = 1;
+    slider.min = 0;
     slider.max = checkedCount;
 
     // If current value is higher than new max, cap it
@@ -2323,20 +2461,23 @@ function syncBacktestSliderRange() {
 
 function updateBtAggressiveness(val) {
     const slider = document.getElementById('btAggressiveSlider');
-    const max = parseInt(slider.max) || 1;
+    const max = parseInt(slider.max) || 0;
     const label = document.getElementById('btAggressiveLabel');
     const buyInp = document.getElementById('btThreshold');
     const sellInp = document.getElementById('btSellThreshold');
 
     val = parseInt(val);
-    buyInp.value = val;
-    sellInp.value = val;
+    if (buyInp) buyInp.value = val;
+    if (sellInp) sellInp.value = val;
 
-    const pct = Math.round((val / max) * 100);
+    const pct = max > 0 ? Math.round((val / max) * 100) : 0;
     let mode = "Balanced";
     let colorClass = "bg-indigo-600";
 
-    if (pct <= 34) {
+    if (val === 0) {
+        mode = "Always Trade";
+        colorClass = "bg-gray-500";
+    } else if (pct <= 34) {
         mode = "Aggressive";
         colorClass = "bg-emerald-600";
     } else if (pct >= 75) {
@@ -2479,7 +2620,19 @@ function openIndicatorSettings(indicatorName) {
     const container = document.getElementById('indicatorModalContent');
     const title = document.getElementById('indicatorModalTitle');
 
-    title.textContent = `${indicatorName} Settings`;
+    
+    const desc = INDICATOR_TOOLTIPS[indicatorName] || "Adjust parameters for this indicator.";
+    const tooltipHtml = `<div class="group/tooltip relative inline-flex items-center ml-2 align-middle">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-indigo-200 hover:text-white cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute top-full left-1/2 -translate-x-1/2 mt-2 w-56 p-2.5 bg-white text-indigo-900 text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal border border-indigo-100">
+            ${desc}
+            <div class="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-white"></div>
+        </div>
+    </div>`;
+    title.innerHTML = `${indicatorName} Settings ${tooltipHtml}`;
+
     container.innerHTML = '';
 
     if (configKeys.length === 0) {
@@ -2599,46 +2752,59 @@ async function fetchFearAndGreed() {
 }
 
 function updateFearAndGreedUI(score) {
+    // Needle rotation: 0=far left (-90°), 100=far right (+90°)
     const angle = (score / 100) * 180 - 90;
 
-    const needle = document.getElementById('fgNeedle');
-    if (needle) needle.style.transform = `rotate(${angle}deg)`;
+    // Rotate the SVG <g> needle group around the arc center (100, 100)
+    const needleG = document.getElementById('fgNeedleSvg');
+    if (needleG) {
+        needleG.setAttribute('transform', `rotate(${angle}, 100, 100)`);
+    }
 
+    // Update score number
     const scoreEl = document.getElementById('fgScore');
     if (scoreEl) {
         scoreEl.textContent = score;
     }
 
-    // Highlight the active segment visually (mimicking CNN)
-    // 5 segments: 0-20, 20-40, 40-60, 60-80, 80-100
-    const activeIdx = Math.min(4, Math.floor(score / 20.001));
-    for (let i = 0; i < 5; i++) {
-        const seg = document.getElementById(`fng-seg-${i}`);
-        if (seg) {
-            if (i === activeIdx) {
-                seg.style.filter = 'none';
-                seg.style.opacity = '1';
-                seg.style.strokeWidth = '16';
-            } else {
-                seg.style.filter = 'url(#fngMute)';
-                seg.style.opacity = '0.3';
-                seg.style.strokeWidth = '14';
-            }
+    // Generate tick marks (once)
+    const ticksG = document.getElementById('fngTicks');
+    if (ticksG && ticksG.childNodes.length === 0) {
+        const cx = 100, cy = 100, r = 85;
+        for (let i = 0; i <= 50; i++) {
+            const angleDeg = 180 + (i / 50) * 180;
+            const rad = angleDeg * Math.PI / 180;
+            const isMajor = (i % 5 === 0);
+            const tickLen = isMajor ? 8 : 4;
+            const x1 = cx + (r - 9) * Math.cos(rad);
+            const y1 = cy + (r - 9) * Math.sin(rad);
+            const x2 = cx + (r - 9 - tickLen) * Math.cos(rad);
+            const y2 = cy + (r - 9 - tickLen) * Math.sin(rad);
+            const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            line.setAttribute('x1', x1);
+            line.setAttribute('y1', y1);
+            line.setAttribute('x2', x2);
+            line.setAttribute('y2', y2);
+            line.setAttribute('stroke', 'rgba(0,0,0,0.45)');
+            line.setAttribute('stroke-width', isMajor ? '1.5' : '0.8');
+            ticksG.appendChild(line);
         }
     }
 
+    // Determine label and color based on score
+    let label = "Neutral";
+    let fillColor = "#eab308"; // yellow
+    if (score <= 25) { label = "Extreme Fear"; fillColor = "#22c55e"; }
+    else if (score <= 45) { label = "Fear"; fillColor = "#84cc16"; }
+    else if (score <= 55) { label = "Neutral"; fillColor = "#eab308"; }
+    else if (score <= 75) { label = "Greed"; fillColor = "#f97316"; }
+    else { label = "Extreme Greed"; fillColor = "#ef4444"; }
+
+    // Update the SVG label text
     const labelEl = document.getElementById('fgLabel');
     if (labelEl) {
-        let label = "Neutral";
-        let color = "text-slate-400";
-        if (score <= 25) { label = "Extreme Fear"; color = "text-emerald-500"; }
-        else if (score <= 45) { label = "Fear"; color = "text-lime-500"; }
-        else if (score <= 55) { label = "Neutral"; color = "text-yellow-600"; }
-        else if (score <= 75) { label = "Greed"; color = "text-orange-500"; }
-        else { label = "Extreme Greed"; color = "text-red-500"; }
-
         labelEl.textContent = label;
-        labelEl.className = `mt-2 text-xs font-black uppercase tracking-[0.2em] ${color}`;
+        labelEl.setAttribute('fill', fillColor);
     }
 }
 

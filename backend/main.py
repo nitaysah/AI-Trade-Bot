@@ -110,7 +110,9 @@ async def save_config_to_cloud(api_key, secret_key, paper):
             "paper": paper,
             "updated_at": firestore.SERVER_TIMESTAMP
         }
-        db.collection("settings").document("alpaca").set(data)
+        def _sync_save():
+            db.collection("settings").document("alpaca").set(data)
+        await asyncio.to_thread(_sync_save)
         print("[vault] Config securely saved to Firestore.")
     except Exception as e:
         print(f"[vault] Error saving to cloud: {e}")
@@ -136,7 +138,7 @@ async def save_history_to_cloud():
             return stripped
 
         cloud_scans = _strip_heavy_data(trade_log)
-        cloud_trades = _strip_heavy_data(executed_trades)
+        cloud_trades = []
         
         # Strip bot scans too (it's a dict)
         cloud_bot_scans = {}
@@ -145,9 +147,11 @@ async def save_history_to_cloud():
             if "price_history" in clean_entry: del clean_entry["price_history"]
             cloud_bot_scans[ticker] = clean_entry
 
-        db.collection("history").document("scans").set({"data": cloud_scans})
-        db.collection("history").document("trades").set({"data": cloud_trades})
-        db.collection("history").document("bot_scans").set({"data": cloud_bot_scans})
+        def _sync_save():
+            db.collection("history").document("scans").set({"data": cloud_scans})
+            db.collection("history").document("trades").set({"data": cloud_trades})
+            db.collection("history").document("bot_scans").set({"data": cloud_bot_scans})
+        await asyncio.to_thread(_sync_save)
     except Exception as e:
         print(f"[vault] Error saving history: {e}")
 
@@ -156,21 +160,23 @@ async def save_settings_to_cloud():
     if not db: return
     try:
         data = {
-            "watchlist": config.WATCHLIST,
-            "tradelist": config.TRADELIST,
+            "watchlist": config.WATCHLIST.copy() if isinstance(config.WATCHLIST, list) else config.WATCHLIST,
+            "tradelist": config.TRADELIST.copy() if isinstance(config.TRADELIST, list) else config.TRADELIST,
             "strategy_timeframe": config.DEFAULT_TIMEFRAME,
-            "ticker_settings": getattr(config, 'TICKER_SETTINGS', {}),
+            "ticker_settings": getattr(config, 'TICKER_SETTINGS', {}).copy() if isinstance(getattr(config, 'TICKER_SETTINGS', {}), dict) else getattr(config, 'TICKER_SETTINGS', {}),
             "toggles": {k: getattr(config, k) for k in dir(config) if k.startswith("ENABLE_")},
             "parameters": {k: getattr(config, k) for k in dir(config) if k.isupper() and not k.startswith("_") and not isinstance(getattr(config, k), (list, dict)) and k not in ["ALPACA_API_KEY", "ALPACA_SECRET_KEY", "GROQ_API_KEY", "FERNET_KEY"]}
         }
-        db.collection("settings").document("ui").set(data)
+        def _sync_save():
+            db.collection("settings").document("ui").set(data)
+        await asyncio.to_thread(_sync_save)
     except Exception as e:
         print(f"[vault] Error saving settings: {e}")
 
 async def load_all_from_cloud():
     """Restores everything from Firestore on startup."""
     if not db: return
-    global executed_trades, trade_log
+    global trade_log
     try:
         try:
             print("[vault] Fetching Alpaca config from Firestore...")
@@ -234,10 +240,7 @@ async def load_all_from_cloud():
 
         # 3. History
         try:
-            doc_trades = db.collection("history").document("trades").get()
-            if doc_trades.exists:
-                executed_trades = doc_trades.to_dict().get("data", [])
-            
+            # doc_trades removed
             doc_scans = db.collection("history").document("scans").get()
             if doc_scans.exists:
                 raw_logs = doc_scans.to_dict().get("data", [])
@@ -283,10 +286,10 @@ async def verify_token(authorization: str = Header(None)):
 
 broker = create_broker()
 trade_log = []      # In-memory history for all scans (HOLD/WATCH/BUY/SELL)
-executed_trades = [] # Persistent history for successful BUY/SELL orders only
 latest_scans = {}   # {ticker: latest_evaluation_result}
 latest_scans_by_tf = {}  # {timeframe: {ticker: latest_evaluation_result}}
 last_trade_timestamps = {}  # {ticker: datetime} — Cooldown tracking
+last_trailing_stops = {}  # {ticker: float} — Trailing stop memory for active positions
 bot_running = False
 last_scan_time = None
 force_scan_trigger = None
@@ -294,6 +297,7 @@ last_scan_timestamps = {}
 bot_scans = {}
 bot_scans_by_tf = {}  # {timeframe: {ticker: latest_evaluation_result}}
 cloud_restore_log = [] # Capture startup events for debugging
+dashboard_primary_ticker = None  # Track what the user is viewing on the dashboard
 
 class AlpacaConfig(BaseModel):
     api_key: str
@@ -332,22 +336,38 @@ def _record_bot_scan(result: dict):
     tf_bucket = bot_scans_by_tf.setdefault(timeframe, {})
     tf_bucket[ticker] = result
 
-def _pick_scan(ticker: str, timeframe: str, prefer_bot: bool = True):
+def _pick_scan(ticker: str, timeframe: str, prefer_bot: bool = True, ignore_freshness: bool = False):
     ticker = ticker.upper()
+    
+    def _is_fresh(scan):
+        if not scan: return False
+        if ignore_freshness: return True
+        try:
+            scan_time = datetime.fromisoformat(scan.get("time", ""))
+            now = get_now()
+            # If the scan is older than 55 seconds, consider it stale
+            return (now - scan_time).total_seconds() < 55
+        except Exception:
+            return False
+
+    scan = None
     if prefer_bot:
         scan = bot_scans_by_tf.get(timeframe, {}).get(ticker)
-        if scan:
-            return scan
+        if _is_fresh(scan): return scan
+        
     scan = latest_scans_by_tf.get(timeframe, {}).get(ticker)
-    if scan:
-        return scan
+    if _is_fresh(scan): return scan
+    
+    # Fallback to non-timeframe specific caches just in case, but verify timeframe match
     if prefer_bot:
         scan = bot_scans.get(ticker)
-        if scan and scan.get("timeframe") == timeframe:
+        if scan and scan.get("timeframe") == timeframe and _is_fresh(scan):
             return scan
+            
     scan = latest_scans.get(ticker)
-    if scan and scan.get("timeframe") == timeframe:
+    if scan and scan.get("timeframe") == timeframe and _is_fresh(scan):
         return scan
+        
     return None
 
 async def _warm_timeframe_scans(timeframe: str, primary_ticker: str = None, limit: int = 4):
@@ -397,7 +417,7 @@ def is_market_open():
 # ──────────────────────────────────────────────
 async def trading_loop():
     """Background task that scans the watchlist on an interval."""
-    global bot_running, last_scan_time, latest_scans, force_scan_trigger, trade_log, executed_trades
+    global bot_running, last_scan_time, latest_scans, force_scan_trigger, trade_log, last_trailing_stops
     if force_scan_trigger is None:
         force_scan_trigger = asyncio.Event()
 
@@ -425,101 +445,25 @@ async def trading_loop():
             all_orders = broker.get_open_orders()
             portfolio_count = len(all_positions)
 
-            # ─── RECONCILIATION: Capture Stop Loss / Take Profit ───
+            # ─── LIVE PORTFOLIO SYNC ───
             try:
-                recent_fills = broker.get_recent_trades(limit=50)
-                for fill in recent_fills:
-                    fill_symbol = fill['symbol'].replace("/", "").upper()
-                    if fill_symbol not in config.TRADELIST:
-                        continue
-                    
-                    # Search for existing entry to update (Find the most recent match)
-                    existing_entry = None
-                    for t in executed_trades:
-                        match_by_id = (t.get('order_id') == fill['id']) or (t.get('order', {}).get('order_id') == fill['id'])
-                        match_by_time = (t.get('ticker') == fill_symbol and 
-                                         t.get('action') == fill['side'].upper() and 
-                                         t.get('time', '')[:16] == fill['time'][:16])
-                        if match_by_id or match_by_time:
-                            existing_entry = t
-                            break
-                    
-                    side = fill['side'].upper()
-                    if existing_entry:
-                        # ENRICH existing entry with real broker data
-                        if existing_entry.get('reconciled'): continue # Already done
-                        
-                        existing_entry['price_raw'] = fill['price']
-                        existing_entry['price'] = f"${fill['price']:.4f}" if fill['price'] < 10 else f"${fill['price']:.2f}"
-                        existing_entry['qty'] = fill['qty']
-                        existing_entry['total_cost'] = round(fill['price'] * fill['qty'], 2)
-                        existing_entry['fees'] = round(fill['price'] * fill['qty'] * 0.001, 2)
-                        existing_entry['reconciled'] = True
-                        
-                        if side == 'SELL' and 'pl' not in existing_entry:
-                            # Try to calculate P/L if missing
-                            matching_buys = [f for f in recent_fills if f['symbol'].replace("/", "").upper() == fill_symbol and f['side'].upper() == 'BUY' and f['time'] < fill['time']]
-                            matching_buys.sort(key=lambda x: x['time'], reverse=True)
-                            if matching_buys:
-                                entry_p = matching_buys[0]['price']
-                                pl = (fill['price'] - entry_p) * fill['qty']
-                                pl_pct = ((fill['price'] / entry_p) - 1) * 100
-                                existing_entry['pl'] = round(pl, 2)
-                                existing_entry['pl_pct'] = round(pl_pct, 2)
-                        
-                        # Also update in trade_log for consistency
-                        for t in trade_log:
-                            if t.get('order_id') == existing_entry.get('order_id'):
-                                t.update(existing_entry)
-                        print(f"[recon] Updated existing {side} log for {fill_symbol} with fill data.")
-                    else:
-                        # CREATE new entry for external trades (SL/TP)
-                        t_settings = getattr(config, 'TICKER_SETTINGS', {}).get(fill_symbol, {})
-                        ticker_tf = t_settings.get('timeframe', config.DEFAULT_TIMEFRAME)
-                        
-                        recon_entry = {
-                            "time": fill['time'],
-                            "action": side,
-                            "ticker": fill_symbol,
-                            "timeframe": ticker_tf,
-                            "price": f"${fill['price']:.4f}" if fill['price'] < 10 else f"${fill['price']:.2f}",
-                            "price_raw": fill['price'],
-                            "qty": fill['qty'],
-                            "total_cost": round(fill['price'] * fill['qty'], 2),
-                            "fees": round(fill['price'] * fill['qty'] * 0.001, 2),
-                            "bullish_count": 0,
-                            "bearish_count": 0,
-                            "reason": f"✅ BOUGHT (Reconciled)" if side == 'BUY' else "✅ AUTO-EXIT (Stop Loss or Take Profit)",
-                            "order_id": fill['id'],
-                            "log_type": "Active Bot",
-                            "reconciled": True
-                        }
-                        
-                        if side == 'SELL':
-                            matching_buys = [f for f in recent_fills if f['symbol'].replace("/", "").upper() == fill_symbol and f['side'].upper() == 'BUY' and f['time'] < fill['time']]
-                            matching_buys.sort(key=lambda x: x['time'], reverse=True)
-                            if matching_buys:
-                                entry_p = matching_buys[0]['price']
-                                pl = (fill['price'] - entry_p) * fill['qty']
-                                pl_pct = ((fill['price'] / entry_p) - 1) * 100
-                                recon_entry["pl"] = round(pl, 2)
-                                recon_entry["pl_pct"] = round(pl_pct, 2)
-                                recon_entry["reason"] = f"✅ AUTO-EXIT: P/L {'+' if pl>=0 else ''}${pl:.2f} (Entry: ${entry_p:.4f})"
-
-                        print(f"[recon] New {side} {fill_symbol} @ ${fill['price']:.4f}")
-                        executed_trades.insert(0, recon_entry)
-                        trade_log.insert(0, recon_entry)
-                        await save_history_to_cloud()
+                pass # Replaced by live Alpaca API data fetching on-demand
             except Exception as e:
-                print(f"[scheduler] Reconciliation error: {e}")
+                print(f"[scheduler] Sync error: {e}")
 
 
+            # Scan priority: 1. Dashboard primary (what user sees), 2. Active Bots, 3. Watchlist
+            viewed = dashboard_primary_ticker
+            bots_minus_viewed = [t for t in config.TRADELIST if t != viewed]
+            watch_minus_both = [t for t in config.WATCHLIST if t not in config.TRADELIST and t != viewed]
+            scan_order = ([viewed] if viewed and viewed in config.WATCHLIST else []) + bots_minus_viewed + watch_minus_both
             print(f"\n{'='*60}")
             print(f"[scheduler] Starting scan cycle at {get_now()}")
-            print(f"[scheduler] Active Bots (TRADELIST): {config.TRADELIST}")
-            print(f"[scheduler] Watchlist: {config.WATCHLIST}")
+            print(f"[scheduler] Dashboard Primary: {viewed or 'N/A'}")
+            print(f"[scheduler] Active Bots (TRADELIST): {bots_minus_viewed}")
+            print(f"[scheduler] Watchlist: {watch_minus_both}")
             print(f"{'='*60}")
-            for ticker in config.WATCHLIST:
+            for ticker in scan_order:
                 try:
                     ticker_norm = ticker.upper().replace("/", "")
                     t_settings = getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {})
@@ -568,7 +512,8 @@ async def trading_loop():
                         log_prefix = "[BOT]" if is_active else "[WATCH]"
                         print(f"{log_prefix} {ticker}: ${result['price_raw']} | Signal: {result['action']} | Sent: {result['sentiment_score']}")
                         
-                        _record_bot_scan(result)
+                        if ticker in config.TRADELIST:
+                            _record_bot_scan(result)
                         _record_scan(result)
                         trade_executed = False
 
@@ -601,6 +546,9 @@ async def trading_loop():
                                 for o in all_orders
                             )
 
+                            if not has_this_pos:
+                                last_trailing_stops.pop(ticker, None)
+
                             pos_info = next((p for p in all_positions if p['symbol'].replace("/", "").upper() == ticker_norm), None)
                             t_settings = getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {})
                             sell_mode = t_settings.get('sell_mode', 'indicator')
@@ -611,10 +559,24 @@ async def trading_loop():
                                 current_price = result['price_raw']
                                 
                                 stop_mult = t_settings.get('atr_stop_multiplier', getattr(config, 'ATR_STOP_MULTIPLIER', 2.0))
+                                trail_mult = t_settings.get('atr_trail_multiplier', getattr(config, 'ATR_TRAIL_MULTIPLIER', 3.0))
                                 tp_mult = t_settings.get('take_profit_multiplier', getattr(config, 'ATR_TAKE_PROFIT_MULTIPLIER', 4.0))
                                 
-                                stop_loss = entry_price - (result['atr'] * stop_mult)
+                                base_stop_loss = entry_price - (result['atr'] * stop_mult)
                                 take_profit = entry_price + (result['atr'] * tp_mult)
+                                
+                                # Retrieve or initialize the trailing stop-loss
+                                if ticker not in last_trailing_stops:
+                                    last_trailing_stops[ticker] = base_stop_loss
+                                
+                                # Trailing stop logic: only move stop higher for long positions
+                                trail_distance = result['atr'] * trail_mult
+                                candidate_stop = current_price - trail_distance
+                                if candidate_stop > last_trailing_stops[ticker]:
+                                    last_trailing_stops[ticker] = round(candidate_stop, 2)
+                                
+                                # Trailed stop is at least the base stop-loss
+                                stop_loss = max(base_stop_loss, last_trailing_stops[ticker])
                                 
                                 if sell_mode == 'sltp' and result['action'] == 'SELL':
                                     result['action'] = 'HOLD'
@@ -763,7 +725,6 @@ async def trading_loop():
                             
                             # If it was a real execution (must be an active bot), save to permanent ledger
                             if trade_executed and is_active:
-                                executed_trades.insert(0, result)
                                 await save_history_to_cloud()
 
 
@@ -774,8 +735,6 @@ async def trading_loop():
             # Bound history size
             if len(trade_log) > 200:
                 trade_log = trade_log[:200]
-            if len(executed_trades) > 200:
-                executed_trades = executed_trades[:200]
 
             last_scan_time = get_now().isoformat()
             print(f"[scheduler] Cycle complete at {last_scan_time}\n{'='*60}")
@@ -810,7 +769,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="AI Trader BOT",
+    title="Bot Bulls",
     description="Automated AI-driven quantitative trading platform",
     version="2.0.0",
     lifespan=lifespan
@@ -839,7 +798,7 @@ app.add_middleware(
 def root():
     """Welcome message for the API root."""
     return {
-        "message": "AI Trading Bot API is running!",
+        "message": "Bot Bulls API is running!",
         "version": "2.0.0",
         "docs": "/docs",
         "dashboard": "/api/dashboard"
@@ -895,11 +854,13 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
 
     # Determine which ticker to focus on for the chart/analysis
     # Priority: 1. URL Param, 2. First Active Bot, 3. First Watchlist Item, 4. TSLA fallback
+    global dashboard_primary_ticker
     primary_ticker = ticker.upper() if ticker else (
         config.TRADELIST[0] if config.TRADELIST else (
             config.WATCHLIST[0] if config.WATCHLIST else "TSLA"
         )
     )
+    dashboard_primary_ticker = primary_ticker  # Tell the background loop what user is viewing
     
     # ─── FRESH ANALYSIS ───
     # If it's an active bot, we prioritize the background scan to avoid conflicts
@@ -942,7 +903,7 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
 
     # Calculate All-Time Profit (Realized + Unrealized)
     # 1. Sum all realized P/L from history
-    total_realized_pl = sum(t.get('pl', 0) for t in executed_trades if t.get('pl') is not None)
+    total_realized_pl = 0 # Can be enhanced by Alpaca Account Activities API later
     # 2. Sum all unrealized P/L from current positions
     total_unrealized_pl = sum(p.get('unrealized_pl', 0) for p in positions)
     
@@ -974,14 +935,21 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
         # Detailed Data
         "positions": positions,
         "recentTrades": [_format_trade_for_ui(t) for t in trade_log],
-        "executedTrades": [_format_trade_for_ui(t) for t in executed_trades],
+        "orderHistory": broker.get_order_history(),
+        "pendingOrders": broker.get_open_orders(),
         "watchlistScans": {
-            ticker: _format_scan_for_ui(scan)
-            for ticker, scan in latest_scans_by_tf.get(timeframe, {}).items()
+            ticker: _format_scan_for_ui(
+                _pick_scan(ticker, timeframe, prefer_bot=False) or 
+                _pick_scan(ticker, getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {}).get('timeframe', config.DEFAULT_TIMEFRAME), prefer_bot=False, ignore_freshness=True) or {}
+            )
+            for ticker in config.WATCHLIST
         },
         "botScans": {
-            ticker: _format_scan_for_ui(scan)
-            for ticker, scan in bot_scans_by_tf.get(timeframe, {}).items()
+            ticker: _format_scan_for_ui(
+                _pick_scan(ticker, timeframe, prefer_bot=True) or 
+                _pick_scan(ticker, getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {}).get('timeframe', config.DEFAULT_TIMEFRAME), prefer_bot=True, ignore_freshness=True) or {}
+            )
+            for ticker in config.TRADELIST
         },
 
         # Strategy Signals (primary ticker)
@@ -1044,7 +1012,7 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
                 "signals": {}
             } for k, v in payload["botScans"].items()
         }
-        asyncio.create_task(_warm_timeframe_scans(timeframe, primary_ticker=primary_ticker, limit=5))
+        # asyncio.create_task(_warm_timeframe_scans(timeframe, primary_ticker=primary_ticker, limit=5))
     print(f"[perf] /api/dashboard mode={mode} {primary_ticker} {timeframe}: {(time.perf_counter() - started) * 1000:.1f}ms")
     return payload
 
@@ -1241,9 +1209,7 @@ async def update_risk_settings(settings: dict):
                 if isinstance(value, (int, float)) and value > 1:
                     value = value / 100.0
             
-            setattr(config, key, value)
-    
-    await save_settings_to_cloud()
+    asyncio.create_task(save_settings_to_cloud())
     print(f"[settings] Updated risk parameters: {', '.join(settings.keys())}")
     return {"status": "success", "settings": settings}
 
@@ -1264,7 +1230,7 @@ async def update_ticker_amount(data: dict):
             except:
                 return {"status": "error", "message": "Invalid amount"}
         
-        await save_settings_to_cloud()
+        asyncio.create_task(save_settings_to_cloud())
         print(f"[settings] {ticker}: Allocated trade amount updated")
         return {"status": "success", "ticker_amounts": config.TICKER_AMOUNTS}
     return {"status": "error", "message": "Ticker required"}
@@ -1295,9 +1261,7 @@ async def update_timeframe(data: dict):
             tf: scans for tf, scans in bot_scans_by_tf.items()
             if tf == new_tf
         }
-        clear_evaluation_cache()
-        
-        await save_settings_to_cloud()
+        asyncio.create_task(save_settings_to_cloud())
         print(f"[settings] Global Timeframe synced to {new_tf}. Triggering immediate scan.")
         
         # Wake up the background loop
@@ -1323,7 +1287,7 @@ async def add_to_watchlist(data: dict):
     ticker = data.get("ticker", "").upper()
     if ticker and ticker not in config.WATCHLIST:
         config.WATCHLIST.append(ticker)
-        await save_settings_to_cloud()
+        asyncio.create_task(save_settings_to_cloud())
         print(f"[settings] Added {ticker} to watchlist")
     return {"status": "success", "watchlist": config.WATCHLIST}
 
@@ -1340,8 +1304,7 @@ async def remove_from_watchlist(ticker: str):
             print(f"[settings] {ticker} removed from watchlist & deactivated")
         else:
             print(f"[settings] Removed {ticker} from watchlist")
-            
-        await save_settings_to_cloud()
+        asyncio.create_task(save_settings_to_cloud())
         if force_scan_trigger:
             force_scan_trigger.set()
     return {"status": "success", "watchlist": config.WATCHLIST, "tradelist": config.TRADELIST}
@@ -1371,8 +1334,7 @@ async def add_to_tradelist(data: dict):
         # Ensure it's also in watchlist so we can see it
         if ticker not in config.WATCHLIST:
             config.WATCHLIST.append(ticker)
-            
-        await save_settings_to_cloud()
+        asyncio.create_task(save_settings_to_cloud())
         if force_scan_trigger:
             force_scan_trigger.set()
     return {"status": "success", "tradelist": config.TRADELIST, "watchlist": config.WATCHLIST}
@@ -1381,9 +1343,9 @@ async def add_to_tradelist(data: dict):
 @app.get("/api/debug/history")
 async def debug_history():
     return {
-        "executed_trades_count": len(executed_trades),
+        "executed_trades_count": 0,
         "trade_log_count": len(trade_log),
-        "executed_trades": executed_trades[:10],
+        "executed_trades": [],
         "trade_log": trade_log[:10]
     }
 
@@ -1393,7 +1355,7 @@ async def remove_from_tradelist(ticker: str):
     ticker = ticker.upper()
     if ticker in config.TRADELIST:
         config.TRADELIST.remove(ticker)
-        await save_settings_to_cloud()
+        asyncio.create_task(save_settings_to_cloud())
         print(f"[settings] Removed {ticker} from active tradelist (Bot Deactivated)")
     return {"status": "success", "tradelist": config.TRADELIST}
 
@@ -1462,6 +1424,22 @@ async def create_bot(data: dict):
 
 
 
+@app.post("/api/cancel_order")
+async def cancel_order(data: dict):
+    """Cancel an active order on Alpaca by ID."""
+    order_id = data.get("order_id")
+    if not order_id:
+        return {"status": "error", "message": "order_id is required"}
+    result = broker.cancel_order_by_id(order_id)
+    if result.get("success"):
+        return {"status": "success", "message": f"Order {order_id} cancelled successfully."}
+    else:
+        return {"status": "error", "message": result.get("error", "Failed to cancel order.")}
+
+
+
+
+
 # ──────────────────────────────────────────────
 # Legacy persistence removed (Now using Cloud Vault)
 # ──────────────────────────────────────────────
@@ -1488,7 +1466,13 @@ async def update_indicators(updates: dict):
                     setattr(config, k, v)
 
     # Save to Firestore (Does not trigger uvicorn reload)
-    await save_settings_to_cloud()
+    asyncio.create_task(save_settings_to_cloud())
+    
+    # Clear cache so the next dashboard fetch gets the new indicator states
+    clear_evaluation_cache()
+    if force_scan_trigger:
+        force_scan_trigger.set()
+        
     print(f"[settings] Updated indicator settings: {', '.join(updates.keys())}")
     return {"status": "success"}
 
@@ -1509,7 +1493,7 @@ async def update_ticker_settings(data: dict):
         elif k in config.TICKER_SETTINGS[ticker]:
             del config.TICKER_SETTINGS[ticker][k]
     
-    await save_settings_to_cloud()
+    asyncio.create_task(save_settings_to_cloud())
     return {"status": "success"}
 
 @app.delete("/api/settings/ticker/{ticker}")
@@ -1518,7 +1502,7 @@ async def reset_ticker_settings(ticker: str):
     ticker = ticker.upper()
     if ticker in config.TICKER_SETTINGS:
         del config.TICKER_SETTINGS[ticker]
-        await save_settings_to_cloud()
+        asyncio.create_task(save_settings_to_cloud())
     return {"status": "success"}
 
 def _load_saved_settings():
@@ -1546,39 +1530,8 @@ def _load_saved_settings():
             print(f"[settings] Error loading: {e}")
 
 
-def _save_executed_trade(trade: dict):
-    """Append a successful trade to trades.json."""
-    import json, os
-    trades_path = os.path.join(os.path.dirname(__file__), "trades.json")
-    try:
-        existing = []
-        if os.path.exists(trades_path):
-            with open(trades_path, "r") as f:
-                existing = json.load(f)
-        
-        existing.insert(0, trade)
-        # Keep last 1000 trades
-        existing = existing[:1000]
-
-        with open(trades_path, "w") as f:
-            json.dump(existing, f, indent=2)
-    except Exception as e:
-        print(f"[trades] Error saving executed trade: {e}")
-
-
-def _load_executed_trades():
-    """Load persistent trade history on startup."""
-    global executed_trades
-    import json, os
-    trades_path = os.path.join(os.path.dirname(__file__), "trades.json")
-    if os.path.exists(trades_path):
-        try:
-            with open(trades_path, "r") as f:
-                executed_trades = json.load(f)
-            print(f"[trades] Loaded {len(executed_trades)} executed trades")
-        except Exception as e:
-            print(f"[trades] Error loading history: {e}")
-
+# Legacy _save_executed_trade / _load_executed_trades removed.
+# Order history is now fetched live from Alpaca via broker.get_order_history().
 
 # Load initial settings (Now handled by lifespan on startup)
 

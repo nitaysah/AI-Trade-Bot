@@ -534,3 +534,50 @@
         flex-direction: column;
     }
 }
+
+/* ── Glassmorphic Indicator Cards in Bots Deploy Modal ── */
+#botStrategyModal .indicator-card {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+}
+
+/* Checked State */
+#botStrategyModal .indicator-card:has(input[type="checkbox"]:checked) {
+    background: rgba(255, 255, 255, 0.55) !important;
+    border-color: rgba(147, 51, 234, 0.4) !important;
+    box-shadow: 0 8px 24px rgba(147, 51, 234, 0.08), 0 2px 6px rgba(147, 51, 234, 0.04) !important;
+}
+
+#botStrategyModal .indicator-card:has(input[type="checkbox"]:checked):hover {
+    background: rgba(255, 255, 255, 0.65) !important;
+    border-color: rgba(147, 51, 234, 0.55) !important;
+    transform: translateY(-2px);
+    box-shadow: 0 12px 30px rgba(147, 51, 234, 0.12), 0 4px 10px rgba(147, 51, 234, 0.06) !important;
+}
+
+/* Unchecked State */
+#botStrategyModal .indicator-card:has(input[type="checkbox"]:not(:checked)) {
+    background: rgba(255, 255, 255, 0.15) !important;
+    border-color: rgba(255, 255, 255, 0.25) !important;
+    box-shadow: none !important;
+}
+
+#botStrategyModal .indicator-card:has(input[type="checkbox"]:not(:checked)):hover {
+    background: rgba(255, 255, 255, 0.25) !important;
+    border-color: rgba(255, 255, 255, 0.4) !important;
+    transform: translateY(-1px);
+}
+
+#botStrategyModal .indicator-card:has(input[type="checkbox"]:not(:checked)) > div {
+    opacity: 0.55;
+    filter: grayscale(100%);
+    transition: all 0.3s ease;
+}
+
+#botStrategyModal .indicator-card:has(input[type="checkbox"]:checked) > div {
+    opacity: 1;
+    filter: grayscale(0%);
+    transition: all 0.3s ease;
+}
+

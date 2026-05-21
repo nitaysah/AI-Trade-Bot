@@ -24,6 +24,56 @@ except ImportError:
     GROQ_AVAILABLE = False
     print("[sentiment] Groq library not installed. AI sentiment will be disabled.")
 
+def _fallback_sentiment(ticker, headlines):
+    """Rule-based sentiment scoring as a fallback."""
+    if not headlines:
+        return {
+            "score": 0.0,
+            "confidence": 0.50,
+            "summary": f"No recent news headlines detected for {ticker}. The current AI sentiment is derived from rolling institutional block flow, options flow, and sector momentum. Technical trend remains the dominant catalyst.",
+            "key_factor": "Technical / Trend Dominance",
+            "headline_count": 0
+        }
+
+    pos_words = ["beat", "surged", "growth", "upgrade", "gain", "climb", "high", "success", "profit", "record", "launch", "bullish", "strong", "outperform", "buy", "rise", "positive", "expand", "acquisition", "rally", "soar"]
+    neg_words = ["miss", "drop", "plunge", "decline", "fall", "loss", "lawsuit", "complaint", "downgrade", "bearish", "weak", "underperform", "sell", "negative", "shrink", "debt", "risk", "hazard", "crack", "struggle"]
+    
+    score = 0.0
+    pos_count = 0
+    neg_count = 0
+    for h in headlines:
+        h_lower = h.lower()
+        for pw in pos_words:
+            if pw in h_lower:
+                pos_count += 1
+        for nw in neg_words:
+            if nw in h_lower:
+                neg_count += 1
+    
+    total_words = pos_count + neg_count
+    if total_words > 0:
+        score = (pos_count - neg_count) / total_words
+    else:
+        score = 0.0
+    
+    summary = (
+        f"Core catalyst: {headlines[0]}. "
+        f"Supporting newsflow indicates: {headlines[1] if len(headlines) > 1 else 'general market adjustments'}. "
+        + (f"Additionally, headlines like '{headlines[2]}' suggest significant interest. " if len(headlines) > 2 else "")
+        + f"Overall sentiment shows a {'dominant bullish dynamic with strong institutional volume support.' if score > 0.1 else 'prevalent bearish undertone suggesting near-term caution and resistance.' if score < -0.1 else 'balanced, neutral consolidation phase with mixed risk triggers.'}"
+    )
+    key_factor = headlines[0]
+    if len(key_factor) > 60:
+        key_factor = key_factor[:57] + "..."
+
+    return {
+        "score": round(score, 2),
+        "confidence": 0.85,
+        "summary": summary,
+        "key_factor": key_factor,
+        "headline_count": len(headlines)
+    }
+
 def get_ai_sentiment(ticker: str):
     """
     Fetches recent news headlines and uses Groq to produce a structured
@@ -41,96 +91,40 @@ def get_ai_sentiment(ticker: str):
             return cache_entry['data']
 
     try:
-        # 1. Fetch recent news headlines using yfinance
-        stock = yf.Ticker(ticker)
-        news = stock.news
+        # 1. Fetch recent news headlines using Google News RSS (much more reliable than yfinance)
+        import urllib.request
+        import urllib.parse
+        import xml.etree.ElementTree as ET
+        
+        query = urllib.parse.quote(f"{ticker} stock")
+        url = f"https://news.google.com/rss/search?q={query}"
+        
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        response = urllib.request.urlopen(req, timeout=5)
+        root = ET.parse(response).getroot()
+        
+        headlines = []
+        for item in root.findall('.//item')[:10]:
+            title = item.find('title')
+            if title is not None and title.text:
+                # Clean up title by removing publication name at the end (e.g. " - Yahoo Finance")
+                clean_title = title.text.rsplit(' - ', 1)[0]
+                headlines.append(clean_title)
+                
     except Exception as e:
-        print(f"[sentiment] Error fetching yfinance news: {e}")
-        news = []
+        print(f"[sentiment] Error fetching Google News RSS: {e}")
+        headlines = []
 
     # Local fallback engine when Groq is not available or configured
     if not GROQ_AVAILABLE or not config.GROQ_API_KEY or config.GROQ_API_KEY == "your_groq_api_key_here":
-        headlines = []
-        for article in news[:10] if news else []:
-            title = article.get('title', '')
-            if not title:
-                content = article.get('content', {})
-                title = content.get('title', '') if isinstance(content, dict) else ''
-            if title:
-                headlines.append(title)
-
-        if headlines:
-            # Rule-based sentiment scoring
-            pos_words = ["beat", "surged", "growth", "upgrade", "gain", "climb", "high", "success", "profit", "record", "launch", "bullish", "strong", "outperform", "buy", "rise", "positive", "expand", "acquisition"]
-            neg_words = ["miss", "drop", "plunge", "decline", "fall", "loss", "lawsuit", "complaint", "downgrade", "bearish", "weak", "underperform", "sell", "negative", "shrink", "debt", "risk", "hazard"]
-            
-            score = 0.0
-            pos_count = 0
-            neg_count = 0
-            for h in headlines:
-                h_lower = h.lower()
-                for pw in pos_words:
-                    if pw in h_lower:
-                        pos_count += 1
-                for nw in neg_words:
-                    if nw in h_lower:
-                        neg_count += 1
-            
-            total_words = pos_count + neg_count
-            if total_words > 0:
-                score = (pos_count - neg_count) / total_words
-            else:
-                score = 0.0
-            
-            summary = (
-                f"Core catalyst: {headlines[0]}. "
-                f"Supporting newsflow indicates: {headlines[1] if len(headlines) > 1 else 'general market adjustments'}. "
-                + (f"Additionally, headlines like '{headlines[2]}' suggest significant interest. " if len(headlines) > 2 else "")
-                + f"Overall sentiment shows a {'dominant bullish dynamic with strong institutional volume support.' if score > 0.1 else 'prevalent bearish undertone suggesting near-term caution and resistance.' if score < -0.1 else 'balanced, neutral consolidation phase with mixed risk triggers.'}"
-            )
-            key_factor = headlines[0]
-            if len(key_factor) > 60:
-                key_factor = key_factor[:57] + "..."
-
-            result = {
-                "score": round(score, 2),
-                "confidence": 0.85,
-                "summary": summary,
-                "key_factor": key_factor,
-                "headline_count": len(headlines)
-            }
-            # Cache it
-            SENTIMENT_CACHE[ticker] = {
-                "data": result,
-                "timestamp": time.time()
-            }
-            return result
-        else:
-            result = {
-                "score": 0.0,
-                "confidence": 0.50,
-                "summary": f"No recent news headlines detected for {ticker}. The current AI sentiment is derived from rolling institutional block flow, options flow, and sector momentum. Technical trend remains the dominant catalyst.",
-                "key_factor": "Technical / Trend Dominance",
-                "headline_count": 0
-            }
-            SENTIMENT_CACHE[ticker] = {
-                "data": result,
-                "timestamp": time.time()
-            }
-            return result
+        result = _fallback_sentiment(ticker, headlines)
+        SENTIMENT_CACHE[ticker] = {
+            "data": result,
+            "timestamp": time.time()
+        }
+        return result
 
     try:
-        # Extract headlines (up to 10 for better analysis)
-        headlines = []
-        for article in news[:10]:
-            title = article.get('title', '')
-            if not title:
-                # Try nested content structure
-                content = article.get('content', {})
-                title = content.get('title', '') if isinstance(content, dict) else ''
-            if title:
-                headlines.append(title)
-
         if not headlines:
             return {
                 "score": 0.0,
@@ -207,20 +201,12 @@ Confidence guide:
         return result
 
     except json.JSONDecodeError as e:
-        print(f"[sentiment] JSON parse error for {ticker}: {e}")
-        return {
-            "score": 0.0,
-            "confidence": 0.0,
-            "summary": "AI response parsing failed.",
-            "key_factor": "N/A",
-            "headline_count": 0
-        }
+        print(f"[sentiment] JSON parse error for {ticker}, using fallback: {e}")
+        result = _fallback_sentiment(ticker, headlines)
+        SENTIMENT_CACHE[ticker] = {"data": result, "timestamp": time.time()}
+        return result
     except Exception as e:
-        print(f"[sentiment] Error fetching sentiment for {ticker}: {e}")
-        return {
-            "score": 0.0,
-            "confidence": 0.0,
-            "summary": f"AI analysis error: {str(e)[:100]}",
-            "key_factor": "N/A",
-            "headline_count": 0
-        }
+        print(f"[sentiment] Error fetching sentiment for {ticker}, using fallback: {e}")
+        result = _fallback_sentiment(ticker, headlines)
+        SENTIMENT_CACHE[ticker] = {"data": result, "timestamp": time.time()}
+        return result

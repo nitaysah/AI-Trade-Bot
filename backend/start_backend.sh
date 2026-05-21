@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =================================================================
-# AI Trading Bot — Backend Start Script
+# Bot Bulls — Backend Start Script
 # =================================================================
 
 # 1. Activate the Python virtual environment
@@ -23,10 +23,12 @@ fi
 
 # 3. Launch: Starts the server via uvicorn
 echo "🚀 Launching FastAPI server (Unbuffered)..."
-export GOOGLE_APPLICATION_CREDENTIALS="/Users/nitaysah/Documents/Antigravity/AI-Trade-Bot/backend/serviceAccount.json"
+if [ -f "/Users/nitaysah/Documents/Antigravity/AI-Trade-Bot/backend/serviceAccount.json" ]; then
+    export GOOGLE_APPLICATION_CREDENTIALS="/Users/nitaysah/Documents/Antigravity/AI-Trade-Bot/backend/serviceAccount.json"
+fi
 PYTHONUNBUFFERED=1 uvicorn main:app --reload --port 8000 > stdout.log 2>&1 &
 
 # 4. Logging
-echo "✅ AI Trading Bot Backend started (PID: $!)."
+echo "✅ Bot Bulls Backend started (PID: $!)."
 echo "📄 Logs are being piped to: stdout.log"
 echo "🌐 API Documentation: http://localhost:8000/docs"

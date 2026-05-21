@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =================================================================
-# AI Trading Bot — Frontend Start Script
+# Bot Bulls — Frontend Start Script
 # =================================================================
 
 PORT=3000
@@ -13,7 +13,7 @@ if [ ! -z "$PID" ]; then
     echo $PID | xargs kill -9
 fi
 
-echo "🚀 Starting AI Trading Bot Dashboard on http://localhost:$PORT..."
+echo "🚀 Starting Bot Bulls Dashboard on http://localhost:$PORT..."
 
 # Run in background
 python3 -m http.server $PORT > frontend.log 2>&1 &

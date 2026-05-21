@@ -265,16 +265,18 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
     # 5. Calculate risk parameters (ONLY for active bots or when requested by UI)
     position_sizing = {}
     if ticker in config.TRADELIST:
+        trade_side = 'short' if action == 'SELL' else 'long'
         position_sizing = risk_mgr.calculate_position_size(
             ticker=ticker,
             entry_price=analysis['price'],
             account_equity=account_equity,
             available_cash=available_cash,
-            atr=analysis.get('atr', 0)
+            atr=analysis.get('atr', 0),
+            side=trade_side
         )
 
     # 6. Check daily drawdown
-    can_trade = risk_mgr.check_drawdown(account_equity)
+    can_trade = risk_mgr.check_drawdown(account_equity, ticker=ticker)
     if not can_trade and action != "HOLD":
         action = "HOLD"
         reason = f"Trading halted: {risk_mgr.halt_reason}"
@@ -298,7 +300,7 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         "rsi": analysis.get('rsi', 50),
         "position_sizing": position_sizing,
         "price_history": analysis.get('price_history', []),
-        "risk_status": risk_mgr.get_risk_status(account_equity),
+        "risk_status": risk_mgr.get_risk_status(account_equity, ticker),
         "is_custom": (ticker.upper() in getattr(config, 'TICKER_AMOUNTS', {})),
         "timeframe": timeframe
     }

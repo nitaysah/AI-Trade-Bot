@@ -124,6 +124,11 @@ class Backtester:
                 'equity': self.equity + (self._get_unrealized_pl(current_price=current_bar['Close']) if self.position else 0)
             })
 
+        # Force close any open position at the end of the backtest
+        if self.position:
+            last_bar = self.df.iloc[-1]
+            last_timestamp = self.df.index[-1]
+            self._exit_trade(last_bar, last_timestamp, 'End of Backtest')
         results = self._calculate_metrics()
         if "summary" in results:
             s = results["summary"]

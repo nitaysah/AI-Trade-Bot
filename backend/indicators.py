@@ -760,12 +760,12 @@ def _generate_signals(latest, prev):
             "EMA Cross": {
                 "signal": ("BULLISH" if ema_f > ema_s else "BEARISH") if is_trending else "NEUTRAL",
                 "reason": f"{ema_f:.1f} vs {ema_s:.1f} (ADX: {adx_val:.1f})" if is_trending else f"Ignored: Choppy Market (ADX {adx_val:.1f})",
-                "weight": 2,
+                "weight": 1,
             },
             "ADX Trend": {
                 "signal": adx_signal,
                 "reason": adx_reason,
-                "weight": 2,
+                "weight": 1,
             },
             "Supertrend": {
                 "signal": "BULLISH" if st_bull else "BEARISH",

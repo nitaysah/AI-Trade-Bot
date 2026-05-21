@@ -355,61 +355,76 @@ function resetBacktestUI() {
 }
 
 function syncBacktestSliderRange() {
+    // Called when indicators are toggled — update the labels for both B and S
+    updateSignalLabels();
+}
+
+function updateSignalLabels() {
     const checkedCount = document.querySelectorAll('.bt-indicator-check:checked').length;
-    const slider = document.getElementById('btAggressiveSlider');
-    const label = document.getElementById('btAggressiveLabel');
+    const buyInput = document.getElementById('btThreshold');
+    const sellInput = document.getElementById('btSellThreshold');
+    const buyLabel = document.getElementById('btBuyLabel');
+    const sellLabel = document.getElementById('btSellLabel');
 
     if (checkedCount === 0) {
-        slider.min = 0;
-        slider.max = 0;
-        slider.value = 0;
-        slider.disabled = true;
-        label.textContent = "Select Indicators First";
-        label.className = "text-[0.75rem] font-black px-5 py-2 rounded-full bg-rose-500 text-white uppercase shadow-md";
+        buyInput.max = 0;
+        buyInput.value = 0;
+        sellInput.max = 0;
+        sellInput.value = 0;
+        buyLabel.textContent = "Select Indicators";
+        buyLabel.className = "text-[0.6rem] font-black px-4 py-1.5 rounded-full bg-purple-100 text-purple-500 shadow-sm uppercase tracking-wider transition-all duration-300";
+        sellLabel.textContent = "Select Indicators";
+        sellLabel.className = "text-[0.6rem] font-black px-4 py-1.5 rounded-full bg-purple-100 text-purple-500 shadow-sm uppercase tracking-wider transition-all duration-300";
         return;
     }
 
-    slider.disabled = false;
-    slider.min = 1;
-    slider.max = checkedCount;
+    buyInput.max = checkedCount;
+    sellInput.max = checkedCount;
 
-    if (parseInt(slider.value) > checkedCount) {
-        slider.value = checkedCount;
-    }
+    // Clamp values
+    if (parseInt(buyInput.value) > checkedCount) buyInput.value = checkedCount;
+    if (parseInt(buyInput.value) < 0) buyInput.value = 0;
+    if (parseInt(sellInput.value) > checkedCount) sellInput.value = checkedCount;
+    if (parseInt(sellInput.value) < 0) sellInput.value = 0;
 
-    updateBtAggressiveness(slider.value);
+    const buyVal = parseInt(buyInput.value);
+    const sellVal = parseInt(sellInput.value);
+
+    // Buy label
+    const buyPct = checkedCount > 0 ? Math.round((buyVal / checkedCount) * 100) : 0;
+    let buyMode = "Balanced";
+    let buyColor = "bg-emerald-100 text-emerald-600";
+    if (buyPct <= 34) { buyMode = "Aggressive"; buyColor = "bg-amber-100 text-amber-600"; }
+    else if (buyPct >= 75) { buyMode = "Quality"; buyColor = "bg-emerald-500 text-white"; }
+    if (buyVal === checkedCount && checkedCount > 1) { buyMode = "Ultra-Quality"; buyColor = "bg-emerald-600 text-white"; }
+    buyLabel.textContent = `${buyMode} — ${buyVal} of ${checkedCount} signals`;
+    buyLabel.className = `text-[0.6rem] font-black px-4 py-1.5 rounded-full ${buyColor} shadow-sm uppercase tracking-wider transition-all duration-300`;
+
+    // Sell label
+    const sellPct = checkedCount > 0 ? Math.round((sellVal / checkedCount) * 100) : 0;
+    let sellMode = "Balanced";
+    let sellColor = "bg-rose-100 text-rose-600";
+    if (sellPct <= 34) { sellMode = "Quick Exit"; sellColor = "bg-amber-100 text-amber-600"; }
+    else if (sellPct >= 75) { sellMode = "Patient"; sellColor = "bg-rose-500 text-white"; }
+    if (sellVal === checkedCount && checkedCount > 1) { sellMode = "Ultra-Patient"; sellColor = "bg-rose-600 text-white"; }
+    sellLabel.textContent = `${sellMode} — ${sellVal} of ${checkedCount} signals`;
+    sellLabel.className = `text-[0.6rem] font-black px-4 py-1.5 rounded-full ${sellColor} shadow-sm uppercase tracking-wider transition-all duration-300`;
 }
 
+function adjustSignalThreshold(type, delta) {
+    const checkedCount = document.querySelectorAll('.bt-indicator-check:checked').length;
+    if (checkedCount === 0) return;
+
+    const input = type === 'buy' ? document.getElementById('btThreshold') : document.getElementById('btSellThreshold');
+    let val = parseInt(input.value) + delta;
+    val = Math.max(0, Math.min(val, checkedCount));
+    input.value = val;
+    updateSignalLabels();
+}
+
+// Keep legacy function name referenced by HTML oninput on the old slider (no-op safety)
 function updateBtAggressiveness(val) {
-    const slider = document.getElementById('btAggressiveSlider');
-    const max = parseInt(slider.max) || 1;
-    const label = document.getElementById('btAggressiveLabel');
-    const buyInp = document.getElementById('btThreshold');
-    const sellInp = document.getElementById('btSellThreshold');
-
-    val = parseInt(val);
-    buyInp.value = val;
-    sellInp.value = val;
-
-    const pct = Math.round((val / max) * 100);
-    let mode = "Balanced";
-    let colorClass = "bg-indigo-100 text-indigo-600";
-
-    if (pct <= 34) {
-        mode = "Aggressive";
-        colorClass = "bg-rose-100 text-rose-600";
-    } else if (pct >= 75) {
-        mode = "Quality";
-        colorClass = "bg-emerald-100 text-emerald-600";
-    }
-
-    if (val === max && max > 1) {
-        mode = "Ultra-Quality";
-        colorClass = "bg-emerald-600 text-white"; // High contrast green for max quality
-    }
-
-    label.textContent = `${mode} (${val} of ${max} signals)`;
-    label.className = `text-[0.65rem] font-black px-4 py-1.5 rounded-full ${colorClass} shadow-sm uppercase tracking-wider transition-all duration-300`;
+    updateSignalLabels();
 }
 
 function formatDate(ds) {
@@ -423,6 +438,7 @@ function formatDate(ds) {
     // Force Central Time (Chicago)
     const options = { 
         timeZone: 'America/Chicago',
+        year: 'numeric',
         month: 'short', 
         day: 'numeric',
         hour: '2-digit', 
@@ -459,6 +475,21 @@ async function bulkDownloadTicker() {
 // ──────────────────────────────────────────────
 // Indicator Settings Logic
 // ──────────────────────────────────────────────
+
+const INDICATOR_TOOLTIPS = {
+    "RSI": "Relative Strength Index (RSI) is a momentum oscillator. Purpose: Identifies overbought (>70) or oversold (<30) conditions.",
+    "MACD": "Moving Average Convergence Divergence (MACD) shows the relationship between two moving averages. Purpose: Detects changes in trend momentum.",
+    "EMA Cross": "Exponential Moving Average (EMA) places greater weight on recent prices. Purpose: Reacts faster to price changes to catch trends early.",
+    "SMA": "Simple Moving Average (SMA) is the unweighted mean of previous prices. Purpose: Smooths out price data to identify trend direction.",
+    "Bollinger": "Bollinger Bands are volatility bands placed above and below a moving average. Purpose: Measures market volatility and potential overbought/oversold levels.",
+    "Supertrend": "Supertrend is a trend-following indicator based on Average True Range (ATR). Purpose: Identifies the current market trend and provides dynamic stop-loss levels.",
+    "Mystic Pulse": "Mystic Pulse is a custom proprietary oscillator. Purpose: Combines multi-timeframe momentum, volatility, and volume flow to detect early trend reversals.",
+    "Candle patterns": "Candlestick Patterns identify specific OHLC price formations. Purpose: Provides visual clues about market psychology and potential reversals.",
+    "ADX Trend": "Average Directional Index (ADX) quantifies trend strength. Purpose: Determines if the market is trending strongly (ADX > 25) or ranging.",
+    "VWAP": "Volume Weighted Average Price (VWAP) is the ratio of value traded to total volume. Purpose: Provides the true average price a security traded at throughout the day.",
+    "Strategy Confidence": "Strategy Confidence combines multiple indicator signals into a single probability score. Purpose: Measures the overall conviction of a bullish or bearish trend."
+};
+
 const INDICATOR_CONFIG_MAP = {
     'RSI': ['RSI_PERIOD', 'RSI_OVERBOUGHT', 'RSI_OVERSOLD'],
     'MACD': ['MACD_FAST', 'MACD_SLOW', 'MACD_SIGNAL'],
@@ -509,7 +540,19 @@ function openIndicatorSettings(indicatorName) {
     const container = document.getElementById('indicatorModalContent');
     const title = document.getElementById('indicatorModalTitle');
 
-    title.textContent = `${indicatorName} Settings`;
+    
+    const desc = INDICATOR_TOOLTIPS[indicatorName] || "Adjust parameters for this indicator.";
+    const tooltipHtml = `<div class="group/tooltip relative inline-flex items-center ml-2 align-middle">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-indigo-200 hover:text-white cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute top-full left-1/2 -translate-x-1/2 mt-2 w-56 p-2.5 bg-white text-indigo-900 text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal border border-indigo-100">
+            ${desc}
+            <div class="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-white"></div>
+        </div>
+    </div>`;
+    title.innerHTML = `${indicatorName} Settings ${tooltipHtml}`;
+
     container.innerHTML = '';
 
     if (configKeys.length === 0) {

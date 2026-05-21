@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Trader BOT — Active Bots</title>
+    <title>Bot Bulls — Active Bots</title>
     <meta name="description"
         content="Manage your active AI trading bots — monitor signals, execution logs, position sizing, and per-ticker settings.">
     <link rel="icon"
@@ -80,7 +80,7 @@
                     class="flex items-center justify-center h-9 text-xs font-black px-5 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider">
                     <span class="h-2 w-2 rounded-full mr-2" id="alpacaStatusDot"></span>
                     <span id="alpacaStatusText">Checking...</span>
-                    <button id="btnUnlinkAlpaca" onclick="unlinkAlpaca()" 
+                    <button id="btnUnlinkAlpaca" onclick="unlinkAlpaca()"
                         class="hidden ml-3 px-2 py-0.5 bg-rose-500 text-white rounded-full text-[9px] hover:bg-rose-600 transition-all uppercase tracking-tighter">
                         Unlink
                     </button>
@@ -186,20 +186,24 @@
                 <div class="panel-top-bar bg-gradient-to-r from-purple-400 to-violet-400"></div>
                 <div class="flex justify-between items-center mb-4">
                     <h2 class="text-lg font-bold text-indigo-900">Execution Log</h2>
-                    <div class="flex bg-indigo-50/50 p-1 rounded-xl border border-indigo-100">
+                    <div class="flex bg-indigo-50/50 p-1 rounded-xl border border-indigo-100 gap-1">
                         <button id="tabLogAll" onclick="setLogTab('all')"
                             class="px-4 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all bg-white text-indigo-600 shadow-sm border border-indigo-100">
                             Scan History
                         </button>
                         <button id="tabLogTrades" onclick="setLogTab('trades')"
                             class="px-4 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600">
-                            Executed Trades
+                            Order History
+                        </button>
+                        <button id="tabLogPending" onclick="setLogTab('pending')"
+                            class="px-4 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600">
+                            Working Orders
                         </button>
                     </div>
                 </div>
                 <div class="overflow-x-auto -mx-2 px-2 scrollbar-hide">
                     <table class="w-full text-left border-collapse min-w-[600px]">
-                        <thead>
+                        <thead id="tradeLogHeader">
                             <tr
                                 class="border-b border-purple-200 text-purple-700 text-[10px] md:text-xs uppercase tracking-wider">
                                 <th class="pb-3 pr-4">Time</th>
@@ -244,119 +248,163 @@
     </main>
 
     <!-- ═══════════════ FOOTER ═══════════════ -->
-    <footer class="mt-20 text-center text-[0.7rem] text-purple-400 font-black uppercase tracking-[0.3em] pb-12 border-t border-purple-100 pt-12">
+    <footer
+        class="mt-20 text-center text-[0.7rem] text-purple-400 font-black uppercase tracking-[0.3em] pb-12 border-t border-purple-100 pt-12">
         <div class="flex flex-col items-center gap-4">
             <div class="flex items-center gap-2">
                 <span class="h-1.5 w-1.5 rounded-full bg-purple-400 opacity-50"></span>
-                <p>AI Trading Bot — Sentient Performance Engine v2.0</p>
+                <p>Bot Bulls — Sentient Performance Engine v2.0</p>
                 <span class="h-1.5 w-1.5 rounded-full bg-purple-400 opacity-50"></span>
             </div>
-            <p class="text-[0.6rem] text-rose-400/80 max-w-md">⚠️ Algorithmic trading involves significant risk. This is for educational purposes only and does not guarantee future results.</p>
+            <p class="text-[0.6rem] text-rose-400/80 max-w-md">⚠️ Algorithmic trading involves significant risk. This is
+                for educational purposes only and does not guarantee future results.</p>
         </div>
     </footer>
 
     <!-- Unified Bot Strategy Modal -->
-    <div id="botStrategyModal" class="fixed inset-0 bg-indigo-950/40 backdrop-blur-sm hidden z-50 flex items-center justify-center p-4">
+    <div id="botStrategyModal" class="fixed inset-0 bg-purple-950/15 backdrop-blur-md hidden z-50 flex items-center justify-center p-4">
         <div class="absolute inset-0" onclick="closeStrategyModal()"></div>
-        <div class="relative w-full max-w-2xl bg-white/95 backdrop-blur-xl rounded-[2.5rem] shadow-2xl border border-indigo-50 overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-300">
-            
+        <div
+            class="relative w-full max-w-2xl bg-white/60 backdrop-blur-2xl rounded-[2.5rem] shadow-2xl border border-white/50 overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-300 shadow-indigo-950/10">
+
             <!-- Modal Header -->
             <div class="panel-top-bar bg-gradient-to-r from-indigo-600 to-purple-600"></div>
             <div class="p-8 pb-4 flex justify-between items-center relative z-10">
                 <div>
-                    <h2 class="text-2xl font-black text-indigo-950 uppercase tracking-tight" id="strategyModalTitle">Configure Strategy</h2>
-                    <p class="text-[0.65rem] font-bold text-indigo-400 uppercase tracking-widest mt-1" id="strategyModalSubtitle">Set parameters for ticker</p>
+                    <h2 class="text-2xl font-black text-indigo-950 uppercase tracking-tight" id="strategyModalTitle">
+                        Configure Strategy</h2>
+                    <p class="text-[0.65rem] font-bold text-indigo-400 uppercase tracking-widest mt-1"
+                        id="strategyModalSubtitle">Set parameters for ticker</p>
                 </div>
-                <button onclick="closeStrategyModal()" class="w-10 h-10 flex items-center justify-center rounded-xl bg-slate-100 text-slate-500 hover:bg-slate-200 transition-all">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                <button onclick="closeStrategyModal()"
+                    class="w-10 h-10 flex items-center justify-center rounded-xl bg-white/40 text-indigo-950 border border-white/50 hover:bg-white/60 shadow-sm transition-all">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
+                        stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M6 18L18 6M6 6l12 12" />
                     </svg>
                 </button>
             </div>
 
             <!-- Modal Body -->
             <div class="p-8 overflow-y-auto space-y-8 custom-scrollbar">
-                
+
                 <!-- Mini Chart Container -->
-                <div id="strategyPreviewChart" class="h-32 w-full rounded-2xl overflow-hidden bg-slate-50 border border-indigo-50 relative pointer-events-none shadow-inner">
+                <div id="strategyPreviewChart"
+                    class="h-32 w-full rounded-2xl overflow-hidden bg-white/20 backdrop-blur-md border border-white/30 relative pointer-events-none shadow-inner">
                     <div class="tradingview-widget-container h-full w-full">
                         <div id="tv_strategy_chart" class="h-full w-full"></div>
                     </div>
                 </div>
 
-                <!-- Capital & Aggressiveness -->
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div class="space-y-2">
-                        <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Initial Capital ($)</label>
-                        <input type="number" id="strategyCapital" class="w-full bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-lg font-black text-indigo-900 shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none" value="100">
-                    </div>
-                    <div class="space-y-2 flex flex-col justify-center">
-                        <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Aggressive vs Quality</label>
-                        <input type="range" id="strategyThreshold" min="1" max="8" value="4" class="w-full h-2 bg-indigo-50 rounded-full appearance-none cursor-pointer accent-indigo-600" oninput="document.getElementById('strategyThresholdLabel').textContent = this.value + ' Signals Required'">
-                        <div class="text-center mt-1">
-                            <span id="strategyThresholdLabel" class="text-[0.65rem] font-black px-3 py-1 rounded-full bg-indigo-50 text-indigo-600 uppercase tracking-wider">4 Signals Required</span>
-                        </div>
-                    </div>
+                <!-- Capital -->
+                <div class="space-y-2">
+                    <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Initial
+                        Capital ($)</label>
+                    <input type="number" id="strategyCapital"
+                        class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl px-4 py-3 text-lg font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
+                        value="100">
                 </div>
 
                 <!-- Timeframe Selection -->
                 <div class="space-y-2">
-                    <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Trading Timeframe</label>
-                    <select id="strategyTimeframe" class="w-full bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-sm font-black text-indigo-900 shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none cursor-pointer appearance-none">
-                        <option value="1Min">1 Minute (Scalp)</option>
-                        <option value="5Min">5 Minutes (Intraday)</option>
-                        <option value="15Min">15 Minutes (Active)</option>
-                        <option value="1Hour">1 Hour (Swing)</option>
-                        <option value="4Hour" selected>4 Hour (Macro)</option>
-                        <option value="1Day">1 Day (Long Term)</option>
-                    </select>
+                    <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Trading
+                        Timeframe</label>
+                    <div class="relative">
+                        <select id="strategyTimeframe"
+                            class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-4 pr-10 py-3 text-sm font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none cursor-pointer appearance-none transition-all">
+                            <option value="1Min">1 Minute (Scalp)</option>
+                            <option value="5Min">5 Minutes (Intraday)</option>
+                            <option value="15Min">15 Minutes (Active)</option>
+                            <option value="1Hour" selected>1 Hour (Swing)</option>
+                            <option value="4Hour">4 Hour (Macro)</option>
+                            <option value="1Day">1 Day (Long Term)</option>
+                        </select>
+                        <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
+                            </svg>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Exit Strategy -->
                 <div class="space-y-2">
-                    <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Exit Strategy (Sell Mode)</label>
-                    <select id="strategySellMode" class="w-full bg-white border border-indigo-100 rounded-2xl px-4 py-3 text-sm font-black text-indigo-900 shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none cursor-pointer appearance-none">
-                        <option value="indicator">Indicator Signals (Dynamic) - Sells when Bearish Signals hit Threshold</option>
-                        <option value="sltp">Stop-Loss & Take-Profit (Fixed) - Ignores Signals, Relies on ATR target</option>
-                        <option value="hybrid">Hybrid (Both) - Sells whichever hits first</option>
-                    </select>
+                    <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Exit
+                        Strategy (Sell Mode)</label>
+                    <div class="relative">
+                        <select id="strategySellMode"
+                            class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-4 pr-10 py-3 text-sm font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none cursor-pointer appearance-none transition-all">
+                            <option value="indicator">Sells when Bearish Signals hit Threshold (Dynamic)</option>
+                            <option value="sltp">Stop-Loss & Take-Profit (Fixed) - Ignores Signals, Relies on ATR target</option>
+                            <option value="hybrid">Hybrid (Both) - Sells whichever hits first</option>
+                        </select>
+                        <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
+                            </svg>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Risk Management Overrides -->
-                <div class="border border-indigo-50 rounded-2xl bg-indigo-50/20 p-4 space-y-4">
-                    <button type="button" onclick="toggleRiskSection()" class="w-full flex items-center justify-between outline-none">
+                <div
+                    class="border border-white/40 rounded-2xl bg-white/20 backdrop-blur-md p-4 space-y-4 shadow-sm transition-all">
+                    <button type="button" onclick="toggleRiskSection()"
+                        class="w-full flex items-center justify-between outline-none">
                         <div class="flex items-center gap-3">
                             <div class="h-5 w-1.5 bg-gradient-to-b from-rose-400 to-red-500 rounded-full"></div>
-                            <span class="text-sm font-black text-indigo-900 uppercase tracking-widest">🛡️ Risk Management Controls</span>
+                            <span class="text-sm font-black text-indigo-900 uppercase tracking-widest">🛡️ Risk
+                                Management Controls</span>
                         </div>
-                        <svg id="riskArrowIcon" class="h-5 w-5 text-indigo-500 transform transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
+                        <svg id="riskArrowIcon" class="h-5 w-5 text-indigo-500 transform transition-transform"
+                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                d="M19 9l-7 7-7-7" />
                         </svg>
                     </button>
                     <div id="riskControlsContent" class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 hidden">
                         <div class="space-y-1">
-                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Risk Per Trade (%)</label>
-                            <input type="number" step="0.1" id="strategyRiskPerTrade" class="w-full bg-white border border-indigo-100 rounded-xl px-3 py-2 text-xs font-black text-indigo-900 shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none" value="2.0">
+                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Risk
+                                Per Trade (%)</label>
+                            <input type="number" step="0.1" id="strategyRiskPerTrade"
+                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
+                                value="2.0">
                         </div>
                         <div class="space-y-1">
-                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Max Daily Drawdown (%)</label>
-                            <input type="number" step="0.1" id="strategyMaxDailyDrawdown" class="w-full bg-white border border-indigo-100 rounded-xl px-3 py-2 text-xs font-black text-indigo-900 shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none" value="5.0">
+                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Max
+                                Daily Drawdown (%)</label>
+                            <input type="number" step="0.1" id="strategyMaxDailyDrawdown"
+                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
+                                value="5.0">
                         </div>
                         <div class="space-y-1">
-                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Max Position Size (%)</label>
-                            <input type="number" step="0.1" id="strategyMaxPositionPct" class="w-full bg-white border border-indigo-100 rounded-xl px-3 py-2 text-xs font-black text-indigo-900 shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none" value="25.0">
+                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Max
+                                Position Size (%)</label>
+                            <input type="number" step="0.1" id="strategyMaxPositionPct"
+                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
+                                value="100.0">
                         </div>
                         <div class="space-y-1">
-                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">ATR Stop Multiplier</label>
-                            <input type="number" step="0.1" id="strategyAtrStopMult" class="w-full bg-white border border-indigo-100 rounded-xl px-3 py-2 text-xs font-black text-indigo-900 shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none" value="2.0">
+                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">ATR
+                                Stop Multiplier</label>
+                            <input type="number" step="0.1" id="strategyAtrStopMult"
+                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
+                                value="2.0">
                         </div>
                         <div class="space-y-1">
-                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">ATR Trail Multiplier</label>
-                            <input type="number" step="0.1" id="strategyAtrTrailMult" class="w-full bg-white border border-indigo-100 rounded-xl px-3 py-2 text-xs font-black text-indigo-900 shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none" value="3.0">
+                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">ATR
+                                Trail Multiplier</label>
+                            <input type="number" step="0.1" id="strategyAtrTrailMult"
+                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
+                                value="3.0">
                         </div>
                         <div class="space-y-1">
-                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">ATR Take Profit Multiplier</label>
-                            <input type="number" step="0.1" id="strategyAtrTpMult" class="w-full bg-white border border-indigo-100 rounded-xl px-3 py-2 text-xs font-black text-indigo-900 shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none" value="4.0">
+                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">ATR
+                                Take Profit Multiplier</label>
+                            <input type="number" step="0.1" id="strategyAtrTpMult"
+                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
+                                value="4.0">
                         </div>
                     </div>
                 </div>
@@ -365,173 +413,454 @@
                 <div class="space-y-4">
                     <div class="flex items-center gap-3">
                         <div class="h-5 w-1.5 bg-gradient-to-b from-indigo-400 to-purple-500 rounded-full"></div>
-                        <label class="text-sm font-black text-indigo-900 uppercase tracking-widest">Enable Strategy Indicators</label>
+                        <label class="text-sm font-black text-indigo-900 uppercase tracking-widest">Enable Strategy
+                            Indicators</label>
                     </div>
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3" id="indicatorChecksContainer">
                         <!-- Dynamic checkboxes will go here -->
-                        <div class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm" onclick="toggleIndicatorCard(this, event)">
+                        <div class="indicator-card group p-4 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
+                            onclick="toggleIndicatorCard(this, event)">
                             <div class="flex flex-col">
-                                <span class="font-black text-indigo-900 uppercase">RSI</span>
-                                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Momentum</span>
-                            </div>
-                            <div class="flex items-center gap-2">
-                                <button onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('RSI')" class="opacity-0 group-hover:opacity-40 hover:!opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" title="RSI Settings">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                    </svg>
-                                </button>
-                                <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="RSI" checked onclick="event.stopPropagation()">
-                            </div>
+                                <span class="font-black text-indigo-900 uppercase">RSI<div
+                                        class="group/tooltip relative inline-flex items-center ml-1">
+                                        <svg xmlns="http://www.w3.org/2000/svg"
+                                            class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                        <div
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
+                                            Relative Strength Index (RSI) is a momentum oscillator. Purpose: Identifies
+                                            overbought (>70) or oversold (<30) conditions. <div
+                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                        </div>
+                                    </div>
+                            </div></span>
+                            <span
+                                class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Momentum</span>
                         </div>
-                        <div class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm" onclick="toggleIndicatorCard(this, event)">
-                            <div class="flex flex-col">
-                                <span class="font-black text-indigo-900 uppercase">MACD</span>
-                                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Trend</span>
-                            </div>
-                            <div class="flex items-center gap-2">
-                                <button onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('MACD')" class="opacity-0 group-hover:opacity-40 hover:!opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" title="MACD Settings">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                    </svg>
-                                </button>
-                                <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="MACD" checked onclick="event.stopPropagation()">
-                            </div>
-                        </div>
-                        <div class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm" onclick="toggleIndicatorCard(this, event)">
-                            <div class="flex flex-col">
-                                <span class="font-black text-indigo-900 uppercase">EMA Cross</span>
-                                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Moving Avg</span>
-                            </div>
-                            <div class="flex items-center gap-2">
-                                <button onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('EMA Cross')" class="opacity-0 group-hover:opacity-40 hover:!opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" title="EMA Cross Settings">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                    </svg>
-                                </button>
-                                <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="EMA Cross" checked onclick="event.stopPropagation()">
-                            </div>
-                        </div>
-                        <div class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm" onclick="toggleIndicatorCard(this, event)">
-                            <div class="flex flex-col">
-                                <span class="font-black text-indigo-900 uppercase">Supertrend</span>
-                                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Volatility</span>
-                            </div>
-                            <div class="flex items-center gap-2">
-                                <button onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('Supertrend')" class="opacity-0 group-hover:opacity-40 hover:!opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" title="Supertrend Settings">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                    </svg>
-                                </button>
-                                <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="Supertrend" checked onclick="event.stopPropagation()">
-                            </div>
-                        </div>
-                        <div class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm" onclick="toggleIndicatorCard(this, event)">
-                            <div class="flex flex-col">
-                                <span class="font-black text-indigo-900 uppercase">Bollinger</span>
-                                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Deviation</span>
-                            </div>
-                            <div class="flex items-center gap-2">
-                                <button onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('Bollinger')" class="opacity-0 group-hover:opacity-40 hover:!opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" title="Bollinger Settings">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                    </svg>
-                                </button>
-                                <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="Bollinger" checked onclick="event.stopPropagation()">
-                            </div>
-                        </div>
-                        <div class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm" onclick="toggleIndicatorCard(this, event)">
-                            <div class="flex flex-col">
-                                <span class="font-black text-indigo-900 uppercase">VWAP</span>
-                                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Volume</span>
-                            </div>
-                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="VWAP" checked onclick="event.stopPropagation()">
-                        </div>
-                        <div class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm" onclick="toggleIndicatorCard(this, event)">
-                            <div class="flex flex-col">
-                                <span class="font-black text-indigo-900 uppercase">Mystic Pulse</span>
-                                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Proprietary</span>
-                            </div>
-                            <div class="flex items-center gap-2">
-                                <button onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('Mystic Pulse')" class="opacity-0 group-hover:opacity-40 hover:!opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" title="Mystic Pulse Settings">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                    </svg>
-                                </button>
-                                <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="Mystic Pulse" checked onclick="event.stopPropagation()">
-                            </div>
-                        </div>
-                        <div class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm" onclick="toggleIndicatorCard(this, event)">
-                            <div class="flex flex-col">
-                                <span class="font-black text-indigo-900 uppercase">Candle Patterns</span>
-                                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Price Action</span>
-                            </div>
-                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="Candle Patterns" checked onclick="event.stopPropagation()">
-                        </div>
-                        <div class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm" onclick="toggleIndicatorCard(this, event)">
-                            <div class="flex flex-col">
-                                <span class="font-black text-indigo-900 uppercase">ADX Trend</span>
-                                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Trend Filter</span>
-                            </div>
-                            <div class="flex items-center gap-2">
-                                <button onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('ADX Trend')" class="opacity-0 group-hover:opacity-40 hover:!opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" title="ADX Trend Settings">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                    </svg>
-                                </button>
-                                <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="ADX Trend" checked onclick="event.stopPropagation()">
-                            </div>
-                        </div>
-                        <div class="indicator-card group p-4 border border-indigo-50 rounded-2xl cursor-pointer hover:bg-indigo-50 transition-colors flex items-center justify-between bg-white shadow-sm" onclick="toggleIndicatorCard(this, event)">
-                            <div class="flex flex-col">
-                                <span class="font-black text-indigo-900 uppercase">SMA</span>
-                                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Trend Filter</span>
-                            </div>
-                            <div class="flex items-center gap-2">
-                                <button onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('SMA')" class="opacity-0 group-hover:opacity-40 hover:!opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" title="SMA Settings">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                    </svg>
-                                </button>
-                                <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded" value="SMA" checked onclick="event.stopPropagation()">
-                            </div>
+                        <div class="flex items-center gap-2">
+                            <button
+                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('RSI')"
+                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50"
+                                title="RSI Settings">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none"
+                                    viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </button>
+                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded"
+                                value="RSI" onclick="event.stopPropagation()">
                         </div>
                     </div>
-                </div>
-
-                <!-- Bot Status Toggle -->
-                <div class="flex items-center justify-between p-4 bg-indigo-50/50 rounded-2xl border border-indigo-100">
-                    <div>
-                        <label class="text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Bot Status</label>
-                        <p class="text-[0.6rem] text-indigo-400 font-bold mt-0.5">Paused bots keep settings but stop trading</p>
+                    <div class="indicator-card group p-4 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
+                        onclick="toggleIndicatorCard(this, event)">
+                        <div class="flex flex-col">
+                            <span class="font-black text-indigo-900 uppercase">MACD<div
+                                    class="group/tooltip relative inline-flex items-center ml-1">
+                                    <svg xmlns="http://www.w3.org/2000/svg"
+                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    <div
+                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
+                                        Moving Average Convergence Divergence (MACD) shows the relationship between two
+                                        moving averages. Purpose: Detects changes in trend momentum.
+                                        <div
+                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                        </div>
+                                    </div>
+                                </div></span>
+                            <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Trend</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button
+                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('MACD')"
+                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50"
+                                title="MACD Settings">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none"
+                                    viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </button>
+                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded"
+                                value="MACD" onclick="event.stopPropagation()">
+                        </div>
                     </div>
-                    <button id="strategyPauseBtn" onclick="togglePauseInStrategyModal()"
-                        class="px-6 py-2 rounded-xl font-black text-xs uppercase tracking-wider transition-all bg-emerald-100 text-emerald-700 border border-emerald-300">
-                        ▶ Active
-                    </button>
+                    <div class="indicator-card group p-4 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
+                        onclick="toggleIndicatorCard(this, event)">
+                        <div class="flex flex-col">
+                            <span class="font-black text-indigo-900 uppercase">EMA Cross<div
+                                    class="group/tooltip relative inline-flex items-center ml-1">
+                                    <svg xmlns="http://www.w3.org/2000/svg"
+                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    <div
+                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
+                                        Exponential Moving Average (EMA) places greater weight on recent prices.
+                                        Purpose: Reacts faster to price changes to catch trends early.
+                                        <div
+                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                        </div>
+                                    </div>
+                                </div></span>
+                            <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Moving
+                                Avg</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button
+                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('EMA Cross')"
+                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50"
+                                title="EMA Cross Settings">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none"
+                                    viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </button>
+                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded"
+                                value="EMA Cross" onclick="event.stopPropagation()">
+                        </div>
+                    </div>
+                    <div class="indicator-card group p-4 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
+                        onclick="toggleIndicatorCard(this, event)">
+                        <div class="flex flex-col">
+                            <span class="font-black text-indigo-900 uppercase">Supertrend<div
+                                    class="group/tooltip relative inline-flex items-center ml-1">
+                                    <svg xmlns="http://www.w3.org/2000/svg"
+                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    <div
+                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
+                                        Supertrend is a trend-following indicator based on Average True Range (ATR).
+                                        Purpose: Identifies the current market trend and provides dynamic stop-loss
+                                        levels.
+                                        <div
+                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                        </div>
+                                    </div>
+                                </div></span>
+                            <span
+                                class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Volatility</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button
+                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('Supertrend')"
+                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50"
+                                title="Supertrend Settings">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none"
+                                    viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </button>
+                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded"
+                                value="Supertrend" onclick="event.stopPropagation()">
+                        </div>
+                    </div>
+                    <div class="indicator-card group p-4 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
+                        onclick="toggleIndicatorCard(this, event)">
+                        <div class="flex flex-col">
+                            <span class="font-black text-indigo-900 uppercase">Bollinger<div
+                                    class="group/tooltip relative inline-flex items-center ml-1">
+                                    <svg xmlns="http://www.w3.org/2000/svg"
+                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    <div
+                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
+                                        Bollinger Bands are volatility bands placed above and below a moving average.
+                                        Purpose: Measures market volatility and potential overbought/oversold levels.
+                                        <div
+                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                        </div>
+                                    </div>
+                                </div></span>
+                            <span
+                                class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Deviation</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button
+                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('Bollinger')"
+                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50"
+                                title="Bollinger Settings">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none"
+                                    viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </button>
+                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded"
+                                value="Bollinger" onclick="event.stopPropagation()">
+                        </div>
+                    </div>
+                    <div class="indicator-card group p-4 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
+                        onclick="toggleIndicatorCard(this, event)">
+                        <div class="flex flex-col">
+                            <span class="font-black text-indigo-900 uppercase">VWAP<div
+                                    class="group/tooltip relative inline-flex items-center ml-1">
+                                    <svg xmlns="http://www.w3.org/2000/svg"
+                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    <div
+                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
+                                        Volume Weighted Average Price (VWAP) is the ratio of value traded to total
+                                        volume. Purpose: Provides the true average price a security traded at throughout
+                                        the day.
+                                        <div
+                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                        </div>
+                                    </div>
+                                </div></span>
+                            <span
+                                class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Volume</span>
+                        </div>
+                        <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded"
+                            value="VWAP" onclick="event.stopPropagation()">
+                    </div>
+                    <div class="indicator-card group p-4 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
+                        onclick="toggleIndicatorCard(this, event)">
+                        <div class="flex flex-col">
+                            <span class="font-black text-indigo-900 uppercase">Mystic Pulse<div
+                                    class="group/tooltip relative inline-flex items-center ml-1">
+                                    <svg xmlns="http://www.w3.org/2000/svg"
+                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    <div
+                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
+                                        Mystic Pulse is a custom proprietary oscillator. Purpose: Combines
+                                        multi-timeframe momentum, volatility, and volume flow to detect early trend
+                                        reversals.
+                                        <div
+                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                        </div>
+                                    </div>
+                                </div></span>
+                            <span
+                                class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Proprietary</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button
+                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('Mystic Pulse')"
+                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50"
+                                title="Mystic Pulse Settings">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none"
+                                    viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </button>
+                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded"
+                                value="Mystic Pulse" onclick="event.stopPropagation()">
+                        </div>
+                    </div>
+                    <div class="indicator-card group p-4 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
+                        onclick="toggleIndicatorCard(this, event)">
+                        <div class="flex flex-col">
+                            <span class="font-black text-indigo-900 uppercase">Candle Patterns</span>
+                            <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Price
+                                Action</span>
+                        </div>
+                        <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded"
+                            value="Candle Patterns" onclick="event.stopPropagation()">
+                    </div>
+                    <div class="indicator-card group p-4 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
+                        onclick="toggleIndicatorCard(this, event)">
+                        <div class="flex flex-col">
+                            <span class="font-black text-indigo-900 uppercase">ADX Trend<div
+                                    class="group/tooltip relative inline-flex items-center ml-1">
+                                    <svg xmlns="http://www.w3.org/2000/svg"
+                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    <div
+                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
+                                        Average Directional Index (ADX) quantifies trend strength. Purpose: Determines
+                                        if the market is trending strongly (ADX > 25) or ranging.
+                                        <div
+                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                        </div>
+                                    </div>
+                                </div></span>
+                            <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Trend
+                                Filter</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button
+                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('ADX Trend')"
+                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50"
+                                title="ADX Trend Settings">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none"
+                                    viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </button>
+                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded"
+                                value="ADX Trend" onclick="event.stopPropagation()">
+                        </div>
+                    </div>
+                    <div class="indicator-card group p-4 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
+                        onclick="toggleIndicatorCard(this, event)">
+                        <div class="flex flex-col">
+                            <span class="font-black text-indigo-900 uppercase">SMA<div
+                                    class="group/tooltip relative inline-flex items-center ml-1">
+                                    <svg xmlns="http://www.w3.org/2000/svg"
+                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    <div
+                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
+                                        Simple Moving Average (SMA) is the unweighted mean of previous prices. Purpose:
+                                        Smooths out price data to identify trend direction.
+                                        <div
+                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                        </div>
+                                    </div>
+                                </div></span>
+                            <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Trend
+                                Filter</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button
+                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('SMA')"
+                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50"
+                                title="SMA Settings">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none"
+                                    viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </button>
+                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded"
+                                value="SMA" onclick="event.stopPropagation()">
+                        </div>
+                    </div>
                 </div>
             </div>
 
-            <!-- Footer Buttons -->
-            <div class="p-8 pt-4 bg-white border-t border-indigo-50">
-                <button id="strategyActionButton" onclick="handleStrategyAction()"
-                    class="w-full bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-black py-4 rounded-2xl hover:shadow-lg hover:shadow-emerald-500/30 transition-all active:scale-[0.98] uppercase tracking-[0.2em] shadow-md flex items-center justify-center gap-2">
-                    Deploy Strategy 🚀
+            <!-- Signal Thresholds -->
+            <div class="space-y-4">
+                <div class="flex items-center gap-3">
+                    <div class="h-5 w-1.5 bg-gradient-to-b from-indigo-400 to-purple-500 rounded-full"></div>
+                    <label class="text-sm font-black text-indigo-900 uppercase tracking-widest">Signal
+                        Thresholds</label>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <!-- Mini Buy Threshold -->
+                    <div
+                        class="bg-emerald-500/10 backdrop-blur-md p-4 rounded-2xl border border-emerald-500/20 flex flex-col items-center gap-2 shadow-sm shadow-emerald-500/5">
+                        <div class="flex items-center gap-1.5">
+                            <span
+                                class="flex items-center justify-center w-6 h-6 rounded-lg bg-emerald-500 text-white text-[0.6rem] font-black shadow-sm">B</span>
+                            <span class="text-[0.55rem] font-black text-indigo-900 uppercase tracking-widest">Buy</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button onclick="adjustStrategyThreshold('buy', -1)"
+                                class="w-7 h-7 flex items-center justify-center bg-white/30 text-emerald-700 rounded-lg border border-white/40 hover:bg-emerald-500/20 transition-all active:scale-90 text-sm font-black shadow-sm">−</button>
+                            <input type="number" id="strategyBuyThreshold" min="0" max="10" value="0"
+                                class="w-12 h-9 text-center text-lg font-black text-emerald-700 bg-white/40 border border-emerald-500/20 rounded-xl outline-none focus:bg-white/70 focus:border-emerald-500/50 transition-all shadow-sm"
+                                oninput="updateStrategySignalLabels()">
+                            <button onclick="adjustStrategyThreshold('buy', 1)"
+                                class="w-7 h-7 flex items-center justify-center bg-white/30 text-emerald-700 rounded-lg border border-white/40 hover:bg-emerald-500/20 transition-all active:scale-90 text-sm font-black shadow-sm">+</button>
+                        </div>
+                        <span id="strategyBuyLabel"
+                            class="text-[0.5rem] font-black px-3 py-1 rounded-full bg-emerald-100/80 text-emerald-700 border border-emerald-200/55 uppercase tracking-wider transition-all duration-300">0
+                            Signals</span>
+                    </div>
+                    <!-- Mini Sell Threshold -->
+                    <div
+                        class="bg-rose-500/10 backdrop-blur-md p-4 rounded-2xl border border-rose-500/20 flex flex-col items-center gap-2 shadow-sm shadow-rose-500/5">
+                        <div class="flex items-center gap-1.5">
+                            <span
+                                class="flex items-center justify-center w-6 h-6 rounded-lg bg-rose-500 text-white text-[0.6rem] font-black shadow-sm">S</span>
+                            <span
+                                class="text-[0.55rem] font-black text-indigo-900 uppercase tracking-widest">Sell</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button onclick="adjustStrategyThreshold('sell', -1)"
+                                class="w-7 h-7 flex items-center justify-center bg-white/30 text-rose-700 rounded-lg border border-white/40 hover:bg-rose-500/20 transition-all active:scale-90 text-sm font-black shadow-sm">−</button>
+                            <input type="number" id="strategySellThreshold" min="0" max="10" value="0"
+                                class="w-12 h-9 text-center text-lg font-black text-rose-700 bg-white/40 border border-rose-500/20 rounded-xl outline-none focus:bg-white/70 focus:border-rose-500/50 transition-all shadow-sm"
+                                oninput="updateStrategySignalLabels()">
+                            <button onclick="adjustStrategyThreshold('sell', 1)"
+                                class="w-7 h-7 flex items-center justify-center bg-white/30 text-rose-700 rounded-lg border border-white/40 hover:bg-rose-500/20 transition-all active:scale-90 text-sm font-black shadow-sm">+</button>
+                        </div>
+                        <span id="strategySellLabel"
+                            class="text-[0.5rem] font-black px-3 py-1 rounded-full bg-rose-100/80 text-rose-700 border border-rose-200/55 uppercase tracking-wider transition-all duration-300">0
+                            Signals</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Bot Status Toggle -->
+            <div
+                class="flex items-center justify-between p-4 bg-white/20 backdrop-blur-md rounded-2xl border border-white/40 shadow-sm">
+                <div>
+                    <label class="text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Bot
+                        Status</label>
+                    <p class="text-[0.6rem] text-indigo-400 font-bold mt-0.5">Paused bots keep settings but stop trading
+                    </p>
+                </div>
+                <button id="strategyPauseBtn" onclick="togglePauseInStrategyModal()"
+                    class="px-6 py-2 rounded-xl font-black text-xs uppercase tracking-wider transition-all bg-emerald-100 text-emerald-700 border border-emerald-300">
+                    ▶ Active
                 </button>
             </div>
         </div>
+
+        <!-- Footer Buttons -->
+        <div class="p-8 pt-4 bg-transparent border-t border-white/20 relative z-10">
+            <button id="strategyActionButton" onclick="handleStrategyAction()"
+                class="w-full bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-black py-4 rounded-2xl hover:shadow-lg hover:shadow-emerald-500/30 transition-all active:scale-[0.98] uppercase tracking-[0.2em] shadow-md flex items-center justify-center gap-2">
+                Deploy Strategy 🚀
+            </button>
+        </div>
+    </div>
     </div>
 
     <!-- Indicator Settings Modal -->
     <div id="indicatorSettingsModal"
-        class="fixed inset-0 bg-indigo-950/40 backdrop-blur-sm z-[200] hidden flex items-center justify-center p-4">
+        class="fixed inset-0 bg-purple-950/15 backdrop-blur-md z-[200] hidden flex items-center justify-center p-4">
         <div
             class="bg-white/90 backdrop-blur-md rounded-3xl shadow-2xl w-full max-w-md border border-white/50 overflow-hidden transform transition-all">
             <div class="bg-gradient-to-r from-indigo-600 to-purple-600 px-6 py-4 flex items-center justify-between">
@@ -549,9 +878,11 @@
                 <!-- Inputs injected by JS -->
             </div>
 
-            <div class="px-4 sm:px-6 py-4 bg-slate-50 flex flex-col sm:flex-row items-stretch sm:items-center gap-3 sm:justify-between border-t border-slate-100">
+            <div
+                class="px-4 sm:px-6 py-4 bg-slate-50 flex flex-col sm:flex-row items-stretch sm:items-center gap-3 sm:justify-between border-t border-slate-100">
                 <button onclick="resetIndicatorSettingsToDefaults()"
-                    class="px-4 py-2 text-sm font-bold text-rose-500 hover:text-rose-700 transition-colors text-center sm:text-left" title="Reset all fields to industry default values">Reset to Defaults</button>
+                    class="px-4 py-2 text-sm font-bold text-rose-500 hover:text-rose-700 transition-colors text-center sm:text-left"
+                    title="Reset all fields to industry default values">Reset to Defaults</button>
                 <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
                     <button onclick="closeIndicatorSettings()"
                         class="px-4 py-2 text-sm font-bold text-slate-500 hover:text-indigo-600 transition-colors rounded-lg border border-slate-200 sm:border-0 py-2 sm:py-0">Cancel</button>

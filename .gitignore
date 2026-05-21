@@ -51,4 +51,14 @@ backend/conf/
 scratch/
 backend/scratch/
 
+# Local utility scripts
+test_*.py
+patch_*.py
+fix_*.py
+update_*.py
+add_info_icons.py
+move_block.py
+*.log*
+
+
 
