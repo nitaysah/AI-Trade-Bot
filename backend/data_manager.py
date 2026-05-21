@@ -18,7 +18,7 @@ except ImportError:
     config = None
     WebullBroker = None
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+DATA_DIR = os.path.realpath(os.path.join(os.path.dirname(__file__), "data"))
 os.makedirs(DATA_DIR, exist_ok=True)
 
 
@@ -43,8 +43,8 @@ def get_historical_data(ticker, timeframe, start_date, end_date):
     filename = os.path.basename(f"{clean_ticker}_{clean_timeframe}.csv")
     
     # Resolve absolute path and restrict to DATA_DIR
-    filepath = os.path.abspath(os.path.join(DATA_DIR, filename))
-    if not filepath.startswith(os.path.abspath(DATA_DIR) + os.sep):
+    filepath = os.path.realpath(os.path.join(DATA_DIR, filename))
+    if not filepath.startswith(DATA_DIR + os.sep):
         print(f"[security] Blocked path traversal attempt: {filepath}")
         return None
 
