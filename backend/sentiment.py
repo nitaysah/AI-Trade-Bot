@@ -9,7 +9,8 @@ Improvements over basic version:
 
 import yfinance as yf
 import json
-import config
+import config as global_config
+from user_config import get_user_config
 import time
 
 # --- Simple In-Memory Cache ---
@@ -116,7 +117,7 @@ def get_ai_sentiment(ticker: str):
         headlines = []
 
     # Local fallback engine when Groq is not available or configured
-    if not GROQ_AVAILABLE or not config.GROQ_API_KEY or config.GROQ_API_KEY == "your_groq_api_key_here":
+    if not GROQ_AVAILABLE or not get_user_config().GROQ_API_KEY or get_user_config().GROQ_API_KEY == "your_groq_api_key_here":
         result = _fallback_sentiment(ticker, headlines)
         SENTIMENT_CACHE[ticker] = {
             "data": result,
@@ -162,7 +163,7 @@ Confidence guide:
 - Low (0.0-0.4): Vague, speculative, or conflicting headlines
 """
 
-        client = Groq(api_key=config.GROQ_API_KEY)
+        client = Groq(api_key=get_user_config().GROQ_API_KEY)
 
         response = client.chat.completions.create(
             messages=[

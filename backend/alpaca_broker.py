@@ -34,7 +34,7 @@ class AlpacaBroker:
         self.sim_positions = {}
         self.sim_orders = []
 
-        if config.ALPACA_API_KEY and config.ALPACA_API_KEY != "your_alpaca_api_key_here":
+        if config.ALPACA_API_KEY and not config.ALPACA_API_KEY.startswith("your_alpaca"):
             self.connect(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY, config.ALPACA_PAPER)
 
     def connect(self, api_key: str, secret_key: str, paper: bool = True) -> bool:

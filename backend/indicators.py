@@ -9,7 +9,8 @@ from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 import ta as ta_lib
-import config
+import config as global_config
+from user_config import get_user_config
 
 from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
@@ -70,16 +71,16 @@ def get_alpaca_clients():
     """Returns initialized Alpaca clients using the latest config keys (cached)."""
     global _stock_client, _crypto_client
     
-    if not config.ALPACA_API_KEY or config.ALPACA_API_KEY == "your_alpaca_api_key_here":
+    if not get_user_config().ALPACA_API_KEY or get_user_config().ALPACA_API_KEY == "your_alpaca_api_key_here":
         return None, None
     
     if _stock_client is None:
         print("[indicators] Initializing Alpaca Stock client...")
-        _stock_client = StockHistoricalDataClient(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY)
+        _stock_client = StockHistoricalDataClient(get_user_config().ALPACA_API_KEY, get_user_config().ALPACA_SECRET_KEY)
     
     if _crypto_client is None:
         print("[indicators] Initializing Alpaca Crypto client...")
-        _crypto_client = CryptoHistoricalDataClient(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY)
+        _crypto_client = CryptoHistoricalDataClient(get_user_config().ALPACA_API_KEY, get_user_config().ALPACA_SECRET_KEY)
         
     return _stock_client, _crypto_client
 
@@ -278,21 +279,21 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
         volume = df["Volume"]
 
         # --- RSI -----------------------------------------------------------
-        df["RSI"] = ta_lib.momentum.rsi(close, window=config.RSI_PERIOD)
+        df["RSI"] = ta_lib.momentum.rsi(close, window=get_user_config().RSI_PERIOD)
 
         # --- EMA -----------------------------------------------------------
-        df["EMA_Fast"] = ta_lib.trend.ema_indicator(close, window=config.EMA_FAST)
-        df["EMA_Slow"] = ta_lib.trend.ema_indicator(close, window=config.EMA_SLOW)
+        df["EMA_Fast"] = ta_lib.trend.ema_indicator(close, window=get_user_config().EMA_FAST)
+        df["EMA_Slow"] = ta_lib.trend.ema_indicator(close, window=get_user_config().EMA_SLOW)
 
         # --- SMA -----------------------------------------------------------
-        df["SMA"] = ta_lib.trend.sma_indicator(close, window=getattr(config, "SMA_PERIOD", 200))
+        df["SMA"] = ta_lib.trend.sma_indicator(close, window=getattr(get_user_config(), "SMA_PERIOD", 200))
 
         # --- MACD ----------------------------------------------------------
         macd_ind = ta_lib.trend.MACD(
             close,
-            window_fast=config.MACD_FAST,
-            window_slow=config.MACD_SLOW,
-            window_sign=config.MACD_SIGNAL,
+            window_fast=get_user_config().MACD_FAST,
+            window_slow=get_user_config().MACD_SLOW,
+            window_sign=get_user_config().MACD_SIGNAL,
         )
         df["MACD_Line"] = macd_ind.macd()
         df["MACD_Signal"] = macd_ind.macd_signal()
@@ -300,7 +301,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
 
         # --- Bollinger Bands -----------------------------------------------
         boll_ind = ta_lib.volatility.BollingerBands(
-            close, window=config.BOLL_PERIOD, window_dev=config.BOLL_STD_DEV
+            close, window=get_user_config().BOLL_PERIOD, window_dev=get_user_config().BOLL_STD_DEV
         )
         df["BOLL_Upper"] = boll_ind.bollinger_hband()
         df["BOLL_Lower"] = boll_ind.bollinger_lband()
@@ -313,10 +314,10 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
         
         # Wilder's Smoothing (Exponential Moving Average with alpha = 1/N)
-        st_atr = tr.ewm(alpha=1/config.SUPERTREND_PERIOD, min_periods=config.SUPERTREND_PERIOD, adjust=False).mean()
+        st_atr = tr.ewm(alpha=1/get_user_config().SUPERTREND_PERIOD, min_periods=get_user_config().SUPERTREND_PERIOD, adjust=False).mean()
         
         hl2 = (high + low) / 2.0
-        st_mult = config.SUPERTREND_MULTIPLIER
+        st_mult = get_user_config().SUPERTREND_MULTIPLIER
         basic_ub = hl2 + st_mult * st_atr
         basic_lb = hl2 - st_mult * st_atr
 
@@ -386,8 +387,8 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
             cvol = df["Volume"].cumsum()
             
             # Find the Volume Spike indices (institutions entering)
-            vol_ma = df["Volume"].rolling(window=getattr(config, 'VOL_MA_PERIOD', 20), min_periods=1).mean()
-            spike_condition = df["Volume"] > (vol_ma * getattr(config, 'VOL_SPIKE_MULTIPLIER', 1.5))
+            vol_ma = df["Volume"].rolling(window=getattr(get_user_config(), 'VOL_MA_PERIOD', 20), min_periods=1).mean()
+            spike_condition = df["Volume"] > (vol_ma * getattr(get_user_config(), 'VOL_SPIKE_MULTIPLIER', 1.5))
             
             # Create a forward-filled Series of the most recent spike's integer index
             int_indices = pd.Series(range(len(df)), index=df.index)
@@ -426,11 +427,11 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
             df["Anchor_Date"] = pd.NaT
 
         # --- ATR (Wilder's Smoothing) --------------------------------------
-        df["ATR"] = tr.ewm(alpha=1/config.ATR_PERIOD, min_periods=config.ATR_PERIOD, adjust=False).mean()
+        df["ATR"] = tr.ewm(alpha=1/get_user_config().ATR_PERIOD, min_periods=get_user_config().ATR_PERIOD, adjust=False).mean()
 
         # --- ADX (Standard Welles Wilder ADX / DI+ / DI-) -------------------
         adx_ind = ta_lib.trend.ADXIndicator(
-            high=high, low=low, close=close, window=getattr(config, "ADX_PERIOD", 14)
+            high=high, low=low, close=close, window=getattr(get_user_config(), "ADX_PERIOD", 14)
         )
         df["ADX"] = adx_ind.adx()
         df["DI_Plus"] = adx_ind.adx_pos()
@@ -712,7 +713,7 @@ def _generate_signals(latest, prev):
         di_minus = float(latest.get("DI_Minus", 0))
 
         # Check if trend strength exists (> 25)
-        is_trending = adx_val > getattr(config, "ADX_TRENDING_THRESHOLD", 25)
+        is_trending = adx_val > getattr(get_user_config(), "ADX_TRENDING_THRESHOLD", 25)
 
         # ADX Trend signal generator
         if is_trending:
@@ -732,13 +733,13 @@ def _generate_signals(latest, prev):
         return {
             "RSI": {
                 "signal": (
-                    "BULLISH" if rsi_val < config.RSI_OVERSOLD
-                    else "BEARISH" if rsi_val > config.RSI_OVERBOUGHT
+                    "BULLISH" if rsi_val < get_user_config().RSI_OVERSOLD
+                    else "BEARISH" if rsi_val > get_user_config().RSI_OVERBOUGHT
                     else "NEUTRAL"
                 ),
                 "reason": (
-                    f"Oversold {rsi_val:.1f}" if rsi_val < config.RSI_OVERSOLD
-                    else f"Overbought {rsi_val:.1f}" if rsi_val > config.RSI_OVERBOUGHT
+                    f"Oversold {rsi_val:.1f}" if rsi_val < get_user_config().RSI_OVERSOLD
+                    else f"Overbought {rsi_val:.1f}" if rsi_val > get_user_config().RSI_OVERBOUGHT
                     else f"Neutral {rsi_val:.1f}"
                 ),
                 "weight": 1,

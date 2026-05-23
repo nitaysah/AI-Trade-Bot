@@ -4,7 +4,8 @@ from datetime import datetime
 from data_manager import get_historical_data
 from indicators import calculate_indicators_for_df, _generate_signals
 from trader import get_confluence_decision
-import config
+import config as global_config
+from user_config import get_user_config
 
 class Backtester:
     def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=0.02, max_pos_pct=0.25, ext_hours=True, sell_mode="indicator", atr_stop_multiplier=2.0, atr_trail_multiplier=3.0, atr_take_profit_multiplier=4.0):

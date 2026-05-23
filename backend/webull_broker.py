@@ -14,6 +14,83 @@ Install: pip install webull-openapi-python-sdk
 import uuid
 import time
 import config
+import os
+import firebase_admin
+from firebase_admin import credentials, firestore
+import hashlib
+import base64
+try:
+    from cryptography.fernet import Fernet
+except ImportError:
+    pass
+
+def get_vault():
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "trading-bot-engine-df3de")
+    seed = project_id.encode()
+    key_hash = hashlib.sha256(seed).digest()
+    return Fernet(base64.urlsafe_b64encode(key_hash))
+
+def get_firestore_db():
+    try:
+        if not firebase_admin._apps:
+            cred_path = os.path.join(os.path.dirname(__file__), "serviceAccount.json")
+            if os.path.exists(cred_path):
+                cred = credentials.Certificate(cred_path)
+                firebase_admin.initialize_app(cred)
+            else:
+                firebase_admin.initialize_app(options={'projectId': 'trading-bot-engine-df3de'})
+        return firestore.client(database_id="trading-bot")
+    except Exception as e:
+        print(f"[webull] Could not get Firestore client: {e}")
+        return None
+
+def sync_token_from_firestore():
+    db = get_firestore_db()
+    if not db: return
+    try:
+        doc_ref = db.collection("system").document("webull_token")
+        doc = doc_ref.get()
+        if doc.exists:
+            data = doc.to_dict()
+            token_content_enc = data.get("token_content", "")
+            if token_content_enc:
+                try:
+                    f_net = get_vault()
+                    token_content = f_net.decrypt(token_content_enc.encode()).decode()
+                except Exception as e:
+                    print(f"[webull] Notice: Decrypt failed, assuming plain text token (migration). Error: {e}")
+                    token_content = token_content_enc
+
+                os.makedirs("conf", exist_ok=True)
+                with open("conf/token.txt", "w") as f:
+                    f.write(token_content)
+                print("[webull] Restored Webull auth token from Firestore.")
+    except Exception as e:
+        print(f"[webull] Error restoring token from Firestore: {e}")
+
+def sync_token_to_firestore():
+    db = get_firestore_db()
+    if not db: return
+    try:
+        token_path = "conf/token.txt"
+        if os.path.exists(token_path):
+            with open(token_path, "r") as f:
+                content = f.read()
+            if content.strip():
+                try:
+                    f_net = get_vault()
+                    token_content_enc = f_net.encrypt(content.encode()).decode()
+                except Exception as e:
+                    print(f"[webull] Error encrypting token: {e}")
+                    token_content_enc = content
+                    
+                db.collection("system").document("webull_token").set({
+                    "token_content": token_content_enc,
+                    "updated_at": firestore.SERVER_TIMESTAMP
+                })
+                print("[webull] Saved encrypted Webull auth token to Firestore.")
+    except Exception as e:
+        print(f"[webull] Error saving token to Firestore: {e}")
 
 try:
     from webull.core.client import ApiClient
@@ -73,6 +150,12 @@ class WebullBroker:
             mode_label = "Data-Only" if data_only else "Prod"
             print(f"[webull] Connecting ({mode_label})...")
 
+            # Restore token from Firestore before initializing SDK client
+            try:
+                sync_token_from_firestore()
+            except Exception as e:
+                print(f"[webull] Firestore token restore error: {e}")
+
             # ── Market data client (always needed) ──────────────────────────
             market_api = ApiClient(app_key, app_secret, "us")
             market_api.add_endpoint("us", ENDPOINTS["market_data"])
@@ -82,6 +165,10 @@ class WebullBroker:
                 # Skip trade client and account verification entirely
                 self.simulation_mode = True  # no real trading through this broker
                 print("[webull] Data-only mode: market data client ready. Trading disabled.")
+                try:
+                    sync_token_to_firestore()
+                except Exception as e:
+                    print(f"[webull] Firestore token save error: {e}")
                 return True
 
             # ── Trade client (only when trading is enabled) ─────────────────
@@ -116,6 +203,10 @@ class WebullBroker:
                 bal = res.json()
                 equity = bal.get('total_market_value', bal.get('net_liquidation', 0))
                 print(f"[webull] SUCCESS: Connected (Account: {self.account_id}) - Equity: ${equity}")
+                try:
+                    sync_token_to_firestore()
+                except Exception as e:
+                    print(f"[webull] Firestore token save error: {e}")
                 return True
             else:
                 print(f"[webull] Balance check failed: {res.status_code} {res.text}")

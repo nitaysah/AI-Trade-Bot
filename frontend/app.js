@@ -522,7 +522,7 @@ function updateChart(priceHistory, ticker) {
     // Always maintain a comfortable zoom level for horizontal sliding
     const isNewTicker = window._lastFittedTicker !== ticker;
     const isNewRange = window._lastFittedRange !== currentChartRange;
-    
+
     if (isNewTicker || isNewRange) {
         // Instead of squeezing all data into the view, we set a comfortable bar spacing
         // This allows the user to see candles clearly and slide horizontally
@@ -1012,7 +1012,7 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
 
         const cardId = 'signal-card-' + name.replace(/\s+/g, '-');
         activeIds.add(cardId);
-        
+
         let card = document.getElementById(cardId);
         let isNew = false;
         if (!card) {
@@ -1027,10 +1027,10 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
         }
 
         if (data.toggle_key) {
-            card.onclick = function() {
+            card.onclick = function () {
                 const isNowEnabled = !this.classList.contains('disabled-signal');
                 const targetState = !isNowEnabled;
-                
+
                 // Optimistic UI toggle for the card
                 if (isNowEnabled) {
                     this.classList.add('disabled-signal');
@@ -1045,7 +1045,7 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
                     spans.forEach(s => s.classList.remove('opacity-50', 'grayscale'));
                     this.querySelector('p').classList.remove('opacity-50');
                 }
-                
+
                 const chartKey = SIGNAL_TO_CHART_KEY[name];
                 if (chartKey) {
                     _visibleIndicators[chartKey] = targetState;
@@ -1053,11 +1053,11 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
                         updateChart(window._lastPriceHistory, window._lastTicker || selectedTicker);
                     }
                 }
-                
+
                 // Update internal dataset to prevent the next heartbeat from reverting it visually 
                 // until the backend confirms the new state.
                 this.dataset.cacheKey = `${targetState}-${data.signal}-${data.reason}`;
-                
+
                 toggleIndicator(data.toggle_key, targetState);
             };
             card.title = isEnabled ? "Click to disable this indicator" : "Click to enable this indicator";
@@ -1084,7 +1084,7 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
             `;
             card.dataset.cacheKey = cacheKey;
         }
-        
+
         if (isNew) {
             grid.appendChild(card);
         }
@@ -1905,9 +1905,9 @@ async function fetchDashboard(mode = 'heavy') {
         // Store watchlist for star state
         window._currentWatchlist = data.watchlist || [];
 
-        // If no ticker selected yet, pick the primary one from backend
-        if (!selectedTicker && data.primaryTicker) {
-            selectedTicker = normalizeTicker(data.primaryTicker);
+        // If no ticker selected yet, pick the primary one from backend, falling back to MSFT
+        if (!selectedTicker) {
+            selectedTicker = normalizeTicker(data.primaryTicker) || "MSFT";
         }
 
         // Update chart label + star state
@@ -2205,7 +2205,7 @@ document.addEventListener('DOMContentLoaded', () => {
             fetchDashboard('heavy');
             setInterval(() => {
                 // Skip the "heartbeat" live refresh if the user is currently rapid-fire clicking indicators
-                if (window._indicatorToggleDebounce) return; 
+                if (window._indicatorToggleDebounce) return;
                 fetchDashboard('heavy');
             }, REFRESH_INTERVAL);
             clearInterval(checkAuth);
@@ -2247,7 +2247,7 @@ function showGlobalError(msg) {
 // ──────────────────────────────────────────────
 function openBacktestModal() {
     document.getElementById('backtestModal').classList.remove('hidden');
-    document.getElementById('btTicker').value = selectedTicker || "TSLA";
+    document.getElementById('btTicker').value = selectedTicker || "MSFT";
     resetBacktestUI(); // Ensure settings are visible
     syncBacktestSliderRange(); // Initial sync of slider range
 }
@@ -2620,7 +2620,7 @@ function openIndicatorSettings(indicatorName) {
     const container = document.getElementById('indicatorModalContent');
     const title = document.getElementById('indicatorModalTitle');
 
-    
+
     const desc = INDICATOR_TOOLTIPS[indicatorName] || "Adjust parameters for this indicator.";
     const tooltipHtml = `<div class="group/tooltip relative inline-flex items-center ml-2 align-middle">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-indigo-200 hover:text-white cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">

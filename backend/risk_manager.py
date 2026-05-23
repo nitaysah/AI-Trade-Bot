@@ -9,22 +9,64 @@ Implements production-grade risk controls:
 - Maximum position concentration limits
 """
 
-import config
+import config as global_config
+from user_config import get_user_config
 
 
 class RiskManager:
     """Manages all risk calculations and enforces trading rules."""
 
     def __init__(self):
-        self.daily_starting_equity = None
-        self.trading_halted = False
-        self.halt_reason = ""
-        
-        # Load defaults from config
-        self.risk_per_trade = getattr(config, 'RISK_PER_TRADE', 0.02)
-        self.max_daily_drawdown = getattr(config, 'MAX_DAILY_DRAWDOWN', 0.05)
-        self.max_position_pct = getattr(config, 'MAX_POSITION_PCT', 0.25)
-        self.atr_stop_multiplier = getattr(config, 'ATR_STOP_MULTIPLIER', 2.0)
+        self._daily_starting_equity = {}
+        self._trading_halted = {}
+        self._halt_reason = {}
+
+    @property
+    def daily_starting_equity(self):
+        uid = get_user_config().uid
+        return self._daily_starting_equity.get(uid, None)
+
+    @daily_starting_equity.setter
+    def daily_starting_equity(self, value):
+        uid = get_user_config().uid
+        self._daily_starting_equity[uid] = value
+
+    @property
+    def trading_halted(self):
+        uid = get_user_config().uid
+        return self._trading_halted.get(uid, False)
+
+    @trading_halted.setter
+    def trading_halted(self, value):
+        uid = get_user_config().uid
+        self._trading_halted[uid] = value
+
+    @property
+    def halt_reason(self):
+        uid = get_user_config().uid
+        return self._halt_reason.get(uid, "")
+
+    @halt_reason.setter
+    def halt_reason(self, value):
+        uid = get_user_config().uid
+        self._halt_reason[uid] = value
+
+    # Dynamic fallback properties matching user configs
+    @property
+    def risk_per_trade(self):
+        return getattr(get_user_config(), 'RISK_PER_TRADE', 0.02)
+
+    @property
+    def max_daily_drawdown(self):
+        return getattr(get_user_config(), 'MAX_DAILY_DRAWDOWN', 0.05)
+
+    @property
+    def max_position_pct(self):
+        return getattr(get_user_config(), 'MAX_POSITION_PCT', 0.25)
+
+    @property
+    def atr_stop_multiplier(self):
+        return getattr(get_user_config(), 'ATR_STOP_MULTIPLIER', 2.0)
 
     def set_daily_equity(self, equity: float):
         """Called at market open to set the baseline for drawdown tracking."""
@@ -50,7 +92,7 @@ class RiskManager:
 
         # 2. Check Ticker-Specific Drawdown Override (Stricter limits)
         if ticker:
-            t_settings = getattr(config, 'TICKER_SETTINGS', {}).get(ticker.upper(), {})
+            t_settings = getattr(get_user_config(), 'TICKER_SETTINGS', {}).get(ticker.upper(), {})
             ticker_max_dd = t_settings.get('max_daily_drawdown')
             if ticker_max_dd is not None and drawdown >= ticker_max_dd:
                 self.halt_reason = f"{ticker} specific drawdown limit {drawdown:.1%} >= {ticker_max_dd:.1%} reached"
@@ -76,13 +118,13 @@ class RiskManager:
             }
 
         # 0. Check for Per-Ticker Settings Override
-        t_settings = getattr(config, 'TICKER_SETTINGS', {}).get(ticker.upper(), {}) if ticker else {}
+        t_settings = getattr(get_user_config(), 'TICKER_SETTINGS', {}).get(ticker.upper(), {}) if ticker else {}
         risk_amount = 0.0
         
         # Use ticker-specific amount if provided, otherwise check legacy TICKER_AMOUNTS
         custom_amount = t_settings.get('amount')
         if custom_amount is None:
-            custom_amount = getattr(config, 'TICKER_AMOUNTS', {}).get(ticker.upper())
+            custom_amount = getattr(get_user_config(), 'TICKER_AMOUNTS', {}).get(ticker.upper())
 
         # Determine Risk Parameters (Ticker-specific or Fallback to Instance Globals)
         risk_pct = t_settings.get('risk_per_trade', self.risk_per_trade)
@@ -128,7 +170,7 @@ class RiskManager:
         risk_amount = shares * stop_distance
 
         # Calculate stop and target prices
-        tp_mult = t_settings.get('take_profit_multiplier', getattr(config, 'ATR_TAKE_PROFIT_MULTIPLIER', 4.0))
+        tp_mult = t_settings.get('take_profit_multiplier', getattr(get_user_config(), 'ATR_TAKE_PROFIT_MULTIPLIER', 4.0))
         
         if side == 'long':
             stop_loss = round(entry_price - stop_distance, 2)
@@ -154,8 +196,8 @@ class RiskManager:
         For longs: new_stop = max(current_stop, price - ATR * multiplier)
         For shorts: new_stop = min(current_stop, price + ATR * multiplier)
         """
-        t_settings = getattr(config, 'TICKER_SETTINGS', {}).get(ticker.upper(), {}) if ticker else {}
-        trail_mult = t_settings.get('atr_trail_multiplier', getattr(config, 'ATR_TRAIL_MULTIPLIER', 3.0))
+        t_settings = getattr(get_user_config(), 'TICKER_SETTINGS', {}).get(ticker.upper(), {}) if ticker else {}
+        trail_mult = t_settings.get('atr_trail_multiplier', getattr(get_user_config(), 'ATR_TRAIL_MULTIPLIER', 3.0))
         trail_distance = atr * trail_mult
 
         if side == 'long':
@@ -187,12 +229,12 @@ class RiskManager:
         if self.daily_starting_equity and self.daily_starting_equity > 0:
             drawdown_pct = (self.daily_starting_equity - account_equity) / self.daily_starting_equity
 
-        t_settings = getattr(config, 'TICKER_SETTINGS', {}).get(ticker.upper(), {}) if ticker else {}
+        t_settings = getattr(get_user_config(), 'TICKER_SETTINGS', {}).get(ticker.upper(), {}) if ticker else {}
         
         max_dd = t_settings.get('max_daily_drawdown', self.max_daily_drawdown)
         risk_pct = t_settings.get('risk_per_trade', self.risk_per_trade)
         stop_mult = t_settings.get('atr_stop_multiplier', self.atr_stop_multiplier)
-        trail_mult = t_settings.get('atr_trail_multiplier', config.ATR_TRAIL_MULTIPLIER)
+        trail_mult = t_settings.get('atr_trail_multiplier', get_user_config().ATR_TRAIL_MULTIPLIER)
 
         return {
             'trading_halted': self.trading_halted,

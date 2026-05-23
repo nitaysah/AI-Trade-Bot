@@ -25,13 +25,35 @@
         const auth = getAuth(app);
         window.auth = auth;
 
-        onAuthStateChanged(auth, (user) => {
+        // 1-Hour Session Timeout Check
+        const enforceSessionTimeout = async () => {
+            const loginTime = localStorage.getItem('loginTimestamp');
+            if (loginTime) {
+                const elapsed = Date.now() - parseInt(loginTime);
+                if (elapsed > 3600000) { // 1 hour in milliseconds
+                    console.log("[auth] Session expired (1 hour). Forcing logout.");
+                    localStorage.removeItem('loginTimestamp');
+                    await window.logoutCommander();
+                }
+            }
+        };
+
+        onAuthStateChanged(auth, async (user) => {
             if (!user) {
                 window.location.href = "index.html";
+            } else {
+                if (!localStorage.getItem('loginTimestamp')) {
+                    localStorage.setItem('loginTimestamp', Date.now().toString());
+                }
+                await enforceSessionTimeout();
             }
         });
 
+        // Run session timeout check every 10 seconds
+        setInterval(enforceSessionTimeout, 10000);
+
         window.logoutCommander = async () => {
+            localStorage.removeItem('loginTimestamp');
             await signOut(auth);
             window.location.href = "index.html";
         };

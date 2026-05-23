@@ -14,7 +14,8 @@ import pytz
 from indicators import get_full_analysis
 from sentiment import get_ai_sentiment
 from risk_manager import RiskManager
-import config
+import config as global_config
+from user_config import get_user_config
 
 
 from concurrent.futures import ThreadPoolExecutor
@@ -51,10 +52,8 @@ def clear_evaluation_cache(ticker: str = None, timeframe: str = None):
 
 def get_now():
     """Returns current time in the configured timezone."""
-    tz = pytz.timezone(config.TIMEZONE)
+    tz = pytz.timezone(get_user_config().TIMEZONE)
     return datetime.now(tz)
-
-
 
 
 def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai_sentiment_confidence=0.0):
@@ -82,18 +81,19 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
     bearish_count = 0
 
     # 1. Process Technical Indicators
-    t_settings = getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {})
+    uc = get_user_config()
+    t_settings = getattr(uc, 'TICKER_SETTINGS', {}).get(ticker, {})
     allowed_indicators = t_settings.get('indicators') # List of names if overridden
 
     for name, data in raw_signals.items():
-        # If allowed_indicators is set, only include those. Otherwise use config.ENABLE_X toggles.
+        # If allowed_indicators is set, only include those. Otherwise use get_user_config().ENABLE_X toggles.
         is_enabled = False
         if allowed_indicators is not None:
             is_enabled = name in allowed_indicators
         else:
             # Fallback to global config toggles (e.g. EMA Cross -> ENABLE_EMA_CROSS)
             toggle_key = SIGNAL_TO_TOGGLE.get(name)
-            is_enabled = getattr(config, toggle_key, True) if toggle_key else True
+            is_enabled = getattr(uc, toggle_key, True) if toggle_key else True
 
         # Add to output signals with enabled status
         filtered_signals[name] = {**data, 'enabled': is_enabled}
@@ -107,9 +107,9 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
                 bearish_count += weight
 
     # 2. Factor in AI sentiment as a signal (only if enabled)
-    if getattr(config, 'ENABLE_AI_SENTIMENT', True):
+    if getattr(uc, 'ENABLE_AI_SENTIMENT', True):
         ai_enabled = True
-        if ai_sentiment_score >= config.SENTIMENT_BULLISH_THRESHOLD and ai_sentiment_confidence >= 0.4:
+        if ai_sentiment_score >= uc.SENTIMENT_BULLISH_THRESHOLD and ai_sentiment_confidence >= 0.4:
             bullish_count += 1
             filtered_signals['News Sentiment'] = {
                 'value': ai_sentiment_score,
@@ -117,7 +117,7 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
                 'reason': "Positive catalysts detected",
                 'enabled': True
             }
-        elif ai_sentiment_score <= config.SENTIMENT_BEARISH_THRESHOLD and ai_sentiment_confidence >= 0.4:
+        elif ai_sentiment_score <= uc.SENTIMENT_BEARISH_THRESHOLD and ai_sentiment_confidence >= 0.4:
             bearish_count += 1
             filtered_signals['News Sentiment'] = {
                 'value': ai_sentiment_score,
@@ -141,9 +141,8 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
         }
 
     # 3. Determine final action using per-ticker thresholds if available
-    t_settings = getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {})
-    min_buy = t_settings.get('min_buy_signals', config.MIN_BULLISH_SIGNALS)
-    min_sell = t_settings.get('min_sell_signals', config.MIN_BEARISH_SIGNALS)
+    min_buy = t_settings.get('min_buy_signals', uc.MIN_BULLISH_SIGNALS)
+    min_sell = t_settings.get('min_sell_signals', uc.MIN_BEARISH_SIGNALS)
 
     action = "HOLD"
     reason = "Neutral"
@@ -170,7 +169,7 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
         bearish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BEARISH' and v.get('enabled')]
         reason = f"SELL Triggered: {bearish_count} bearish signals ({', '.join(bearish_names)})"
     
-    if ticker in config.TRADELIST:
+    if ticker in uc.TRADELIST:
         print(f"[trader] {ticker} Decision: {action} ({bullish_count}B/{bearish_count}S, need {min_buy}B/{min_sell}S) - {reason}")
 
     return {
@@ -187,9 +186,10 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
     Full evaluation pipeline for a single ticker.
     Combines technical signals + AI sentiment + risk management.
     """
+    uc = get_user_config()
     if timeframe is None:
-        ticker_settings = getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {})
-        timeframe = ticker_settings.get('timeframe', config.DEFAULT_TIMEFRAME)
+        ticker_settings = getattr(uc, 'TICKER_SETTINGS', {}).get(ticker, {})
+        timeframe = ticker_settings.get('timeframe', uc.DEFAULT_TIMEFRAME)
 
     # --- Check Evaluation Cache ---
     ticker_key = ticker.upper()
@@ -264,7 +264,7 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
 
     # 5. Calculate risk parameters (ONLY for active bots or when requested by UI)
     position_sizing = {}
-    if ticker in config.TRADELIST:
+    if ticker in uc.TRADELIST:
         trade_side = 'short' if action == 'SELL' else 'long'
         position_sizing = risk_mgr.calculate_position_size(
             ticker=ticker,
@@ -301,7 +301,7 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         "position_sizing": position_sizing,
         "price_history": analysis.get('price_history', []),
         "risk_status": risk_mgr.get_risk_status(account_equity, ticker),
-        "is_custom": (ticker.upper() in getattr(config, 'TICKER_AMOUNTS', {})),
+        "is_custom": (ticker.upper() in getattr(uc, 'TICKER_AMOUNTS', {})),
         "timeframe": timeframe
     }
 

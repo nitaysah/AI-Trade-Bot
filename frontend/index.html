@@ -140,6 +140,7 @@
             if (user) {
                 status.innerText = "Link Established. Initializing...";
                 status.classList.remove('opacity-0');
+                localStorage.setItem('loginTimestamp', Date.now().toString());
                 setTimeout(() => {
                     window.location.href = "dashboard.html";
                 }, 1000);

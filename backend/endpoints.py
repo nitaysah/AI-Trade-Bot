@@ -1,165 +1,11 @@
-"""
-AI Trading Bot — FastAPI Backend.
-
-Production-grade trading engine with:
-- Multi-ticker watchlist scanning
-- Background scheduler for automated evaluation
-- Full REST API for the dashboard
-- Alpaca broker integration
-- Risk management enforcement
-- MULTI-TENANT ARCHITECTURE
-"""
-
-from fastapi import FastAPI, Query, Header, HTTPException, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
-from pydantic import BaseModel
-import asyncio
-from datetime import datetime, timedelta
-import pytz
-import firebase_admin
-from firebase_admin import auth, credentials, firestore
-import time
-import os
-import re
-import json
-import yfinance as yf
-from cryptography.fernet import Fernet
-import base64
-import hashlib
-
-from trader import evaluate_trade, get_risk_manager, clear_evaluation_cache
-from data_manager import get_historical_data
-from engine import UserManager, UserEngine
-import config as global_config
-from user_config import set_user_config, get_user_config
-
-# ──────────────────────────────────────────────
-# Secret Encryption Vault
-# ──────────────────────────────────────────────
-class Vault:
-    """Handles bank-grade encryption for sensitive API keys."""
-    def __init__(self):
-        project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "trading-bot-engine-df3de")
-        seed = project_id.encode()
-        key_hash = hashlib.sha256(seed).digest()
-        self.fernet = Fernet(base64.urlsafe_b64encode(key_hash))
-
-    def encrypt(self, plain_text: str) -> str:
-        if not plain_text: return ""
-        return self.fernet.encrypt(plain_text.encode()).decode()
-
-    def decrypt(self, cipher_text: str) -> str:
-        if not cipher_text: return ""
-        try:
-            decrypted = self.fernet.decrypt(cipher_text.encode()).decode()
-            return decrypted.strip()
-        except Exception as e:
-            print(f"[vault] DECRYPTION FAILED: {e}")
-            return ""
-
-    def self_test(self):
-        test_str = "alpaca_test_123"
-        encrypted = self.encrypt(test_str)
-        decrypted = self.decrypt(encrypted)
-        if test_str == decrypted:
-            print("[vault] Self-test PASSED.")
-        else:
-            print("[vault] Self-test FAILED! Encryption/Decryption mismatch.")
-
-vault = Vault()
-vault.self_test()
-
-# Initialize Firebase Admin
-if not firebase_admin._apps:
-    try:
-        cred_path = os.path.join(os.path.dirname(__file__), "serviceAccount.json")
-        if os.path.exists(cred_path):
-            cred = credentials.Certificate(cred_path)
-            firebase_admin.initialize_app(cred)
-        else:
-            firebase_admin.initialize_app(options={'projectId': 'trading-bot-engine-df3de'})
-        print("[main] Firebase Admin initialized.")
-    except Exception as e:
-        print(f"[main] Firebase Admin init error: {e}")
-
-db = firestore.client(database_id="trading-bot")
-user_manager = UserManager(db)
-
-async def verify_token(authorization: str = Header(None)):
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing Authorization header")
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid Authorization format")
-    token = authorization.split("Bearer ")[1]
-    if token == "dev-token":
-        return {"uid": "dev-user", "email": "dev@example.com"}
-    try:
-        return auth.verify_id_token(token)
-    except Exception as e:
-        raise HTTPException(status_code=401, detail="Invalid or expired authentication credentials")
-
-async def get_user_engine(user: dict = Depends(verify_token)) -> UserEngine:
-    eng = user_manager.get_engine(user['uid'])
-    set_user_config(eng.config)
-    return eng
-
-def get_now():
-    """Returns current time in the configured timezone."""
-    tz = pytz.timezone(get_user_config().TIMEZONE)
-    return datetime.now(tz)
-
-class AlpacaConfig(BaseModel):
-    api_key: str
-    secret_key: str
-    paper: bool = True
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await user_manager.start_all()
-    yield
-    await user_manager.stop_all()
-
-app = FastAPI(
-    title="Bot Bulls",
-    description="Automated AI-driven quantitative trading platform",
-    version="2.0.0",
-    lifespan=lifespan
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "https://trading-bot-engine-df3de.firebaseapp.com",
-        "https://trading-bot-engine-df3de.web.app",
-        "http://localhost:5000",
-        "http://localhost:3000",
-        "http://127.0.0.1:5500"
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-@app.get("/")
-def root():
-    return {"message": "Bot Bulls API is running!", "version": "2.0.0"}
-
 
 @app.post("/api/alpaca_config")
-async def update_alpaca_config(cfg: AlpacaConfig, eng: UserEngine = Depends(get_user_engine)):
+async def update_alpaca_config(cfg: AlpacaConfig, user: dict = Depends(verify_token)):
     success = eng.broker.connect(cfg.api_key, cfg.secret_key, cfg.paper)
+    eng = user_manager.get_engine(user['uid'])
     if success:
         # Persist to cloud (Encrypted)
-        data = {
-            "api_key": vault.encrypt(cfg.api_key),
-            "secret_key": vault.encrypt(cfg.secret_key),
-            "paper": cfg.paper,
-            "updated_at": firestore.SERVER_TIMESTAMP
-        }
-        def _sync_save():
-            db.collection("users").document(eng.uid).collection("settings").document("alpaca").set(data)
-        await asyncio.to_thread(_sync_save)
+        await save_config_to_cloud(cfg.api_key, cfg.secret_key, cfg.paper)
         
         # Update config module state
         eng.config.ALPACA_API_KEY = cfg.api_key
@@ -172,10 +18,11 @@ async def update_alpaca_config(cfg: AlpacaConfig, eng: UserEngine = Depends(get_
 
 
 @app.delete("/api/alpaca_config")
-def unlink_alpaca(eng: UserEngine = Depends(get_user_engine)):
+def unlink_alpaca(, user: dict = Depends(verify_token)):
     # Delete from cloud
+    eng = user_manager.get_engine(user['uid'])
     if db:
-        db.collection("users").document(eng.uid).collection("settings").document("alpaca").delete()
+        db.collection("settings").document("alpaca").delete()
     
     # Reset broker to simulation
     eng.broker.simulation_mode = True
@@ -186,141 +33,136 @@ def unlink_alpaca(eng: UserEngine = Depends(get_user_engine)):
     eng.config.ALPACA_SECRET_KEY = ""
     return {"status": "success", "message": "Alpaca account unlinked. Switched to simulation mode."}
     
-
 @app.get("/api/dashboard")
-async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "heavy", eng: UserEngine = Depends(get_user_engine)):
+async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "heavy", user: dict = Depends(verify_token)):
     """
     Main dashboard endpoint — returns everything the UI needs in one call.
     """
+    eng = user_manager.get_engine(user['uid'])
     overall_start = time.perf_counter()
-
-    # Track dashboard primary ticker
-    if ticker:
-        eng.dashboard_primary_ticker = ticker.upper()
-
-    # Fallback/default timeframe logic
+    started = time.perf_counter()
+    mode = (mode or "heavy").lower()
     if timeframe is None:
         timeframe = eng.config.DEFAULT_TIMEFRAME
-    
-    # Get general account info
+        
     account = eng.broker.get_account_info()
     positions = eng.broker.get_positions()
-    orders = eng.broker.get_open_orders()
-    
-    # Identify primary ticker
-    primary_ticker = (
-        ticker.upper() if ticker else (
-            eng.config.TRADELIST[0] if eng.config.TRADELIST else (
-                eng.config.WATCHLIST[0] if eng.config.WATCHLIST else "MSFT"
-            )
-        )
-    )
-    
-    # Active bot status check
-    is_active_bot = primary_ticker in eng.config.TRADELIST
-    
-    # Check cache first for primary ticker scan
-    primary_scan = None
-    if mode == "heavy":
-        cached_scan = eng._pick_scan(primary_ticker, timeframe, prefer_bot=is_active_bot)
-        if cached_scan:
-            primary_scan = {**cached_scan, 'cached': True}
-        else:
-            is_crypto = any(c in primary_ticker for c in ["BTC", "ETH", "LTC", "SOL", "DOGE"]) or "USD" in primary_ticker
-            avail_cash = account.get('non_marginable_buying_power') or account['cash'] if is_crypto else account['cash']
-            try:
-                primary_scan = await asyncio.to_thread(
-                    evaluate_trade,
-                    primary_ticker, 
-                    account_equity=account['equity'], 
-                    available_cash=avail_cash,
-                    timeframe=timeframe
-                )
-                if primary_scan:
-                    if is_active_bot:
-                        eng._record_bot_scan(primary_scan)
-                    eng._record_scan(primary_scan)
-            except Exception as e:
-                print(f"[dashboard] Scan error for primary ticker {primary_ticker}: {e}")
-                primary_scan = None
-
-    if not primary_scan:
-        primary_scan = {
-            "time": get_now().isoformat(),
-            "ticker": primary_ticker,
-            "action": "HOLD",
-            "price": "$0.00",
-            "price_raw": 0.0,
-            "reason": "Scanning in background...",
-            "signals": {},
-            "price_history": [],
-            "timeframe": timeframe,
-            "sentiment_score": 0.0,
-            "sentiment_confidence": 0.0,
-            "sentiment_summary": "",
-            "sentiment_key_factor": "",
-            "bullish_count": 0,
-            "bearish_count": 0,
-            "total_signals": 0,
-            "atr": 0.0,
-            "rsi": 50.0,
-            "position_sizing": {},
-            "risk_status": {},
-            "is_custom": False
-        }
-
-    # Format the primary scan cleanly
-    formatted_primary = _format_scan_for_ui(primary_scan)
-    
-    # Retrieve order history
-    orders_history = eng.broker.get_order_history()
-    
-    # Format trade log (scans/decisions)
-    ui_trade_log = [_format_trade_for_ui(trade) for trade in eng.trade_log]
-
-    # Warmup or background scan triggers
-    last_scan_time = eng.last_scan_time
-    cloud_restore_log = []
-
     risk_mgr = get_risk_manager()
 
-    # Build the final payload
+    # Determine which ticker to focus on for the chart/analysis
+    # Priority: 1. URL Param, 2. First Active Bot, 3. First Watchlist Item, 4. TSLA fallback
+    global dashboard_primary_ticker
+    primary_ticker = ticker.upper() if ticker else (
+        eng.config.TRADELIST[0] if eng.config.TRADELIST else (
+            eng.config.WATCHLIST[0] if eng.config.WATCHLIST else "TSLA"
+        )
+    )
+    dashboard_primary_ticker = primary_ticker  # Tell the background loop what user is viewing
+    
+    # ─── FRESH ANALYSIS ───
+    # If it's an active bot, we prioritize the background scan to avoid conflicts
+    is_active_bot = primary_ticker in eng.config.TRADELIST
+    primary_scan = eng._pick_scan(primary_ticker, timeframe, prefer_bot=is_active_bot)
+    if mode != "fast" and not primary_scan:
+        # Use settled cash (non-marginable) for crypto
+        is_crypto = any(c in primary_ticker for c in ["BTC", "ETH", "LTC", "SOL", "DOGE"]) or "USD" in primary_ticker
+        avail_cash = account.get('non_marginable_buying_power', account['cash']) if is_crypto else account['cash']
+
+        primary_scan = await asyncio.to_thread(
+            evaluate_trade,
+            primary_ticker, 
+            account_equity=account['equity'], 
+            available_cash=avail_cash,
+            timeframe=timeframe,
+            data_source="webull"  # Dashboard always uses Webull for higher fidelity research
+        )
+        if primary_scan:
+            _record_scan(primary_scan)
+            if is_active_bot:
+                _record_bot_scan(primary_scan)
+    
+    if not primary_scan:
+        primary_scan = eng._pick_scan(primary_ticker, timeframe, prefer_bot=is_active_bot) or {}
+    sentiment_score = primary_scan.get('sentiment_score', 0)
+    sentiment_confidence = primary_scan.get('sentiment_confidence', 0)
+
+    if sentiment_score > 0.3:
+        sentiment_label = "Bullish"
+    elif sentiment_score < -0.3:
+        sentiment_label = "Bearish"
+    else:
+        sentiment_label = "Neutral"
+
+    # Format daily P/L (Today Only)
+    daily_pl = account.get('daily_pl', 0)
+    daily_pl_pct = account.get('daily_pl_pct', 0)
+    daily_pl_sign = "+" if daily_pl >= 0 else ""
+
+    # Calculate All-Time Profit (Realized + Unrealized)
+    # 1. Sum all realized P/L from history
+    total_realized_pl = 0 # Can be enhanced by Alpaca Account Activities API later
+    # 2. Sum all unrealized P/L from current positions
+    total_unrealized_pl = sum(p.get('unrealized_pl', 0) for p in positions)
+    
+    total_profit = total_realized_pl + total_unrealized_pl
+    
+    # Estimate total profit % based on current equity
+    # If equity is 100k and profit is 10k, then initial was 90k, so 10/90 = 11%
+    initial_est = account['equity'] - total_profit
+    total_profit_pct = (total_profit / initial_est * 100) if initial_est > 0 else 0
+    total_pl_sign = "+" if total_profit >= 0 else ""
+
     payload = {
-        "account": account,
+        # Portfolio Summary Cards
+        "capital": f"${account['equity']:.2f}",
+        "cash": f"${account['cash']:.2f}",
+        "openPositions": str(len(positions)),
+        "positionsList": ", ".join(p['symbol'] for p in positions) if positions else "No positions",
+        "dailyPL": f"{daily_pl_sign}${daily_pl:.2f} ({daily_pl_sign}{daily_pl_pct:.1f}%)",
+        "totalProfit": f"{total_pl_sign}${total_profit:.2f} ({total_pl_sign}{total_profit_pct:.1f}%)",
+        "aiSentiment": f"{sentiment_label} ({sentiment_score})",
+        "sentiment_confidence": sentiment_confidence,
+        "sentiment_summary": primary_scan.get("sentiment_summary", ""),
+        "sentiment_key_factor": primary_scan.get("sentiment_key_factor", "N/A"),
+        "tickerAmounts": eng.config.TICKER_AMOUNTS,
+        "ticker_settings": eng.config.TICKER_SETTINGS,
+        "simulation": account.get('simulation', True),
+        "has_keys": bool(eng.config.ALPACA_API_KEY),
+
+        # Detailed Data
         "positions": positions,
-        "open_orders": orders,
-        "orders_history": orders_history,
-        "trade_log": ui_trade_log,
-        
+        "recentTrades": [_format_trade_for_ui(t) for t in eng.trade_log],
+        "orderHistory": eng.broker.get_order_history(),
+        "pendingOrders": eng.broker.get_open_orders(),
         "watchlistScans": {
-            t: _format_scan_for_ui(
-                eng._pick_scan(t, timeframe, prefer_bot=False) or 
-                eng._pick_scan(t, eng.config.TICKER_SETTINGS.get(t, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME), prefer_bot=False, ignore_freshness=True) or {}
+            ticker: _format_scan_for_ui(
+                eng._pick_scan(ticker, timeframe, prefer_bot=False) or 
+                eng._pick_scan(ticker, getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME), prefer_bot=False, ignore_freshness=True) or {}
             )
-            for t in eng.config.WATCHLIST
+            for ticker in eng.config.WATCHLIST
         },
         "botScans": {
-            t: _format_scan_for_ui(
-                eng._pick_scan(t, timeframe, prefer_bot=True) or 
-                eng._pick_scan(t, eng.config.TICKER_SETTINGS.get(t, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME), prefer_bot=True, ignore_freshness=True) or {}
+            ticker: _format_scan_for_ui(
+                eng._pick_scan(ticker, timeframe, prefer_bot=True) or 
+                eng._pick_scan(ticker, getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME), prefer_bot=True, ignore_freshness=True) or {}
             )
-            for t in eng.config.TRADELIST
+            for ticker in eng.config.TRADELIST
         },
 
         # Strategy Signals (primary ticker)
         "primaryTicker": primary_ticker,
-        "signals": formatted_primary.get('signals', {}),
+        "signals": _format_scan_for_ui(primary_scan).get('signals', {}),
         "priceHistory": primary_scan.get('price_history', []),
 
         # Risk Management
         "risk": risk_mgr.get_risk_status(account['equity']),
-        "ticker_settings": eng.config.TICKER_SETTINGS,
+        "ticker_settings": getattr(config, 'TICKER_SETTINGS', {}),
 
         # Bot Meta
         "botRunning": eng.bot_running,
         "lastScan": last_scan_time or "Starting...",
-        "indicator_settings": eng.config.toggles,
-        "indicator_parameters": eng.config.parameters,
+        "indicator_settings": {k: getattr(config, k, True) for k in dir(config) if k.startswith("ENABLE_")},
+        "indicator_parameters": {k: getattr(config, k) for k in dir(config) if k.isupper() and not k.startswith("_") and k not in ["ALPACA_API_KEY", "ALPACA_SECRET_KEY", "GROQ_API_KEY", "FERNET_KEY"]},
         "strategyTimeframe": timeframe,
         "watchlist": eng.config.WATCHLIST,
         "tradelist": eng.config.TRADELIST,
@@ -334,13 +176,12 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
         "scanInterval": eng.config.SCAN_INTERVAL_SECONDS,
 
         # Safety Controls
-        "maxOpenPositions": eng.config.get('MAX_OPEN_POSITIONS', 5),
-        "tradeCooldownSeconds": eng.config.get('TRADE_COOLDOWN_SECONDS', 300),
-        "marketHoursOnly": eng.config.get('MARKET_HOURS_ONLY', True),
+        "maxOpenPositions": getattr(config, 'MAX_OPEN_POSITIONS', 5),
+        "tradeCooldownSeconds": getattr(config, 'TRADE_COOLDOWN_SECONDS', 300),
+        "marketHoursOnly": getattr(config, 'MARKET_HOURS_ONLY', True),
 
         "debug_logs": cloud_restore_log
     }
-
     if mode == "fast":
         payload["signals"] = {}
         payload["priceHistory"] = []
@@ -368,19 +209,21 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
                 "signals": {}
             } for k, v in payload["botScans"].items()
         }
-
+        # asyncio.create_task(_warm_timeframe_scans(timeframe, primary_ticker=primary_ticker, limit=5))
+    print(f"[perf] /api/dashboard mode={mode} {primary_ticker} {timeframe}: {(time.perf_counter() - started) * 1000:.1f}ms")
     return payload
 
 
 @app.get("/api/scan/{ticker}")
-def scan_ticker(ticker: str, timeframe: str = "4Hour", eng: UserEngine = Depends(get_user_engine)):
-    """On-demand scan of a specific ticker."""
+def scan_ticker(ticker: str, timeframe: str = "4Hour", user: dict = Depends(verify_token)):
     if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker.upper()):
+    eng = user_manager.get_engine(user['uid'])
         return {"error": "Invalid ticker format"}
+    """On-demand scan of a specific ticker."""
     account = eng.broker.get_account_info()
     if account.get('simulation', True):
         return {"error": "Alpaca connection required for scanning."}
-        
+    # ─── CACHING ───
     now = datetime.now()
     cached_scan = eng._pick_scan(ticker.upper(), timeframe, prefer_bot=False)
     is_recent = False
@@ -394,6 +237,7 @@ def scan_ticker(ticker: str, timeframe: str = "4Hour", eng: UserEngine = Depends
     if is_recent:
         return _format_scan_for_ui(cached_scan)
 
+    # Use settled cash (non-marginable) for crypto
     is_crypto = any(c in ticker.upper() for c in ["BTC", "ETH", "LTC", "SOL", "DOGE"]) or "USD" in ticker.upper()
     avail_cash = account.get('non_marginable_buying_power') or account['cash'] if is_crypto else account['cash']
 
@@ -404,14 +248,17 @@ def scan_ticker(ticker: str, timeframe: str = "4Hour", eng: UserEngine = Depends
         timeframe=timeframe
     )
     if result:
-        eng._record_scan(result)
+        _record_scan(result)
         return _format_scan_for_ui(result)
     return {"error": f"Could not analyze {ticker}"}
 
 
 @app.post("/api/backtest")
-async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
-    """Runs a historical backtest for a ticker."""
+async def run_backtest(data: dict, user: dict = Depends(verify_token)):
+    """
+    eng = user_manager.get_engine(user['uid'])
+    Runs a historical backtest for a ticker.
+    """
     ticker = data.get("ticker", "AAPL").upper()
     if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
         return {"status": "error", "message": "Invalid ticker format"}
@@ -420,7 +267,7 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
     capital = float(data.get("capital", 1000.0))
     threshold = int(data.get("threshold", 5))
     sell_threshold = int(data.get("sell_threshold", 3))
-    indicators = data.get("indicators", []) 
+    indicators = data.get("indicators", []) # List of names like ['RSI', 'MACD']
     ext_hours = data.get("ext_hours", True)
     
     end_date = get_now()
@@ -433,7 +280,7 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
     atr_trail_multiplier = float(data.get("atr_trail_multiplier", 3.0))
     atr_take_profit_multiplier = float(data.get("atr_take_profit_multiplier", 4.0))
     
-    from backtester import Backtester
+    # Backtester uses get_historical_data internally
     bt = Backtester(
         ticker=ticker,
         timeframe=timeframe,
@@ -463,8 +310,12 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
 
 
 @app.post("/api/download_all")
-async def download_all_data(data: dict, eng: UserEngine = Depends(get_user_engine)):
-    """Downloads and caches all available history for a ticker across all timeframes."""
+async def download_all_data(data: dict, user: dict = Depends(verify_token)):
+    """
+    eng = user_manager.get_engine(user['uid'])
+    Downloads and caches all available history for a ticker across all timeframes.
+    Also saves stock metadata (sector, market cap, etc.)
+    """
     raw_ticker = str(data.get("ticker", "")).strip().upper()
     if not raw_ticker:
         return {"error": "Ticker required"}
@@ -502,6 +353,7 @@ async def download_all_data(data: dict, eng: UserEngine = Depends(get_user_engin
         t = yf.Ticker(ticker)
         info = t.info
         
+        # Security: Sanitize ticker to be strictly alphanumeric and verify path confinement
         clean_ticker = re.sub(r'[^A-Z0-9]', '', ticker)
         safe_ticker = os.path.basename(clean_ticker)
         data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "data"))
@@ -523,48 +375,52 @@ async def download_all_data(data: dict, eng: UserEngine = Depends(get_user_engin
 
 
 @app.get("/api/settings/indicators")
-def get_indicator_settings(eng: UserEngine = Depends(get_user_engine)):
+def get_indicator_settings(, user: dict = Depends(verify_token)):
     """Returns all indicator toggles grouped by category."""
+    eng = user_manager.get_engine(user['uid'])
     return {
         "Momentum": {
-            "ENABLE_RSI": {"label": "RSI", "description": "Relative Strength Index — Overbought / Oversold", "enabled": getattr(eng.config, "ENABLE_RSI", True)},
-            "ENABLE_MACD": {"label": "MACD", "description": "Moving Average Convergence Divergence", "enabled": getattr(eng.config, "ENABLE_MACD", True)},
+            "ENABLE_RSI": {"label": "RSI", "description": "Relative Strength Index — Overbought / Oversold", "enabled": getattr(config, "ENABLE_RSI", True)},
+            "ENABLE_MACD": {"label": "MACD", "description": "Moving Average Convergence Divergence", "enabled": getattr(config, "ENABLE_MACD", True)},
         },
         "Trend": {
-            "ENABLE_EMA": {"label": "EMA Cross", "description": "Exponential Moving Average Crossover (9/21)", "enabled": getattr(eng.config, "ENABLE_EMA", True)},
-            "ENABLE_SUPERTREND": {"label": "Supertrend", "description": "Supertrend Indicator (10, 3)", "enabled": getattr(eng.config, "ENABLE_SUPERTREND", True)},
-            "ENABLE_BOLLINGER": {"label": "Bollinger", "description": "Bollinger Bands (20, 2σ)", "enabled": getattr(eng.config, "ENABLE_BOLLINGER", True)},
-            "ENABLE_ADX_TREND": {"label": "ADX Trend", "description": "Wilder's ADX (14-period) Trend Strength Filter", "enabled": getattr(eng.config, "ENABLE_ADX_TREND", True)},
-            "ENABLE_SMA": {"label": "SMA 200", "description": "Simple Moving Average (200-period) institutional filter", "enabled": getattr(eng.config, "ENABLE_SMA", True)},
+            "ENABLE_EMA": {"label": "EMA Cross", "description": "Exponential Moving Average Crossover (9/21)", "enabled": getattr(config, "ENABLE_EMA", True)},
+            "ENABLE_SUPERTREND": {"label": "Supertrend", "description": "Supertrend Indicator (10, 3)", "enabled": getattr(config, "ENABLE_SUPERTREND", True)},
+            "ENABLE_BOLLINGER": {"label": "Bollinger", "description": "Bollinger Bands (20, 2σ)", "enabled": getattr(config, "ENABLE_BOLLINGER", True)},
+            "ENABLE_ADX_TREND": {"label": "ADX Trend", "description": "Wilder's ADX (14-period) Trend Strength Filter", "enabled": getattr(config, "ENABLE_ADX_TREND", True)},
+            "ENABLE_SMA": {"label": "SMA 200", "description": "Simple Moving Average (200-period) institutional filter", "enabled": getattr(config, "ENABLE_SMA", True)},
         },
         "Volume": {
-            "ENABLE_VWAP": {"label": "VWAP", "description": "Volume Weighted Average Price", "enabled": getattr(eng.config, "ENABLE_VWAP", True)},
+            "ENABLE_VWAP": {"label": "VWAP", "description": "Volume Weighted Average Price", "enabled": getattr(config, "ENABLE_VWAP", True)},
         },
         "Custom": {
-            "ENABLE_MYSTIC_PULSE": {"label": "Mystic Pulse", "description": "DMI-based Consecutive Trend Strength", "enabled": getattr(eng.config, "ENABLE_MYSTIC_PULSE", True)},
-            "ENABLE_AI_SENTIMENT": {"label": "News Sentiment", "description": "Groq-powered News Sentiment Analysis", "enabled": getattr(eng.config, "ENABLE_AI_SENTIMENT", True)},
-            "ENABLE_CANDLE_PATTERNS": {"label": "Candle Patterns", "description": "Engulfing, Hammer, Shooting Star patterns", "enabled": getattr(eng.config, "ENABLE_CANDLE_PATTERNS", True)},
+            "ENABLE_MYSTIC_PULSE": {"label": "Mystic Pulse", "description": "DMI-based Consecutive Trend Strength", "enabled": getattr(config, "ENABLE_MYSTIC_PULSE", True)},
+            "ENABLE_AI_SENTIMENT": {"label": "News Sentiment", "description": "Groq-powered News Sentiment Analysis", "enabled": getattr(config, "ENABLE_AI_SENTIMENT", True)},
+            "ENABLE_CANDLE_PATTERNS": {"label": "Candle Patterns", "description": "Engulfing, Hammer, Shooting Star patterns", "enabled": getattr(config, "ENABLE_CANDLE_PATTERNS", True)},
         },
     }
 
 
 @app.post("/api/settings/risk")
-async def update_risk_settings(settings: dict, eng: UserEngine = Depends(get_user_engine)):
+async def update_risk_settings(settings: dict, user: dict = Depends(verify_token)):
     """Updates risk management parameters."""
     for key, value in settings.items():
-        if key in ['MAX_DAILY_DRAWDOWN', 'RISK_PER_TRADE', 'MAX_POSITION_PCT']:
-            if isinstance(value, (int, float)) and value > 1:
-                value = value / 100.0
-        eng.config.set(key, value)
+        if hasattr(config, key):
+            # Convert percentage strings/ints to decimals if needed
+            if key in ['MAX_DAILY_DRAWDOWN', 'RISK_PER_TRADE', 'MAX_POSITION_PCT']:
+                # Assume value is 0-100 if it's > 1
+                if isinstance(value, (int, float)) and value > 1:
+                    value = value / 100.0
             
-    await eng.save_settings()
-    print(f"[settings] Updated risk parameters for {eng.uid}: {', '.join(settings.keys())}")
+    asyncio.create_task(save_settings_to_cloud())
+    print(f"[settings] Updated risk parameters: {', '.join(settings.keys())}")
     return {"status": "success", "settings": settings}
 
 
 @app.post("/api/settings/ticker_amount")
-async def update_ticker_amount(data: dict, eng: UserEngine = Depends(get_user_engine)):
+async def update_ticker_amount(data: dict, user: dict = Depends(verify_token)):
     """Updates the allocated trade amount for a specific ticker."""
+    eng = user_manager.get_engine(user['uid'])
     ticker = data.get("ticker", "").upper()
     amount = data.get("amount")
     
@@ -578,18 +434,21 @@ async def update_ticker_amount(data: dict, eng: UserEngine = Depends(get_user_en
             except:
                 return {"status": "error", "message": "Invalid amount"}
         
-        await eng.save_settings()
-        print(f"[settings] {ticker}: Allocated trade amount updated for {eng.uid}")
+        asyncio.create_task(save_settings_to_cloud())
+        print(f"[settings] {ticker}: Allocated trade amount updated")
         return {"status": "success", "ticker_amounts": eng.config.TICKER_AMOUNTS}
     return {"status": "error", "message": "Ticker required"}
 
 
 @app.post("/api/settings/timeframe")
-async def update_timeframe(data: dict, eng: UserEngine = Depends(get_user_engine)):
+async def update_timeframe(data: dict, user: dict = Depends(verify_token)):
     """Updates the default trading timeframe and triggers a re-scan."""
+    global eng.latest_scans, eng.bot_scans, eng.latest_scans_by_tf, bot_scans_by_tf
     new_tf = data.get("timeframe")
     if new_tf in ["30Sec", "1Min", "2Min", "3Min", "5Min", "10Min", "15Min", "30Min", "1Hour", "2Hour", "4Hour", "1Day"]:
         eng.config.DEFAULT_TIMEFRAME = new_tf
+        # Clear stale UI/evaluation scans for the previous timeframe while keeping
+        # raw indicator bar caches available per (ticker, timeframe).
         eng.latest_scans = {
             ticker: scan for ticker, scan in eng.latest_scans.items()
             if scan.get('timeframe') == new_tf
@@ -602,86 +461,96 @@ async def update_timeframe(data: dict, eng: UserEngine = Depends(get_user_engine
             tf: scans for tf, scans in eng.latest_scans_by_tf.items()
             if tf == new_tf
         }
-        eng.bot_scans_by_tf = {
-            tf: scans for tf, scans in eng.bot_scans_by_tf.items()
+        bot_scans_by_tf = {
+            tf: scans for tf, scans in bot_scans_by_tf.items()
             if tf == new_tf
         }
-        await eng.save_settings()
-        print(f"[settings] Global Timeframe synced to {new_tf} for {eng.uid}. Triggering immediate scan.")
+        asyncio.create_task(save_settings_to_cloud())
+        print(f"[settings] Global Timeframe synced to {new_tf}. Triggering immediate scan.")
         
-        if eng.force_scan_trigger:
-            eng.force_scan_trigger.set()
-        asyncio.create_task(eng._warm_timeframe_scans(new_tf, limit=5))
+        # Wake up the background loop
+        if force_scan_trigger:
+            force_scan_trigger.set()
+        else:
+            print("[settings] Trigger skip: loop not started.")
+        asyncio.create_task(_warm_timeframe_scans(new_tf, limit=5))
         
         return {"status": "success", "timeframe": new_tf}
     return {"status": "error", "message": "Invalid timeframe"}
 
 
 @app.get("/api/watchlist")
-def get_watchlist(eng: UserEngine = Depends(get_user_engine)):
+def get_watchlist(, user: dict = Depends(verify_token)):
     """Returns the current watchlist."""
+    eng = user_manager.get_engine(user['uid'])
     return eng.config.WATCHLIST
 
 
 @app.post("/api/watchlist")
-async def add_to_watchlist(data: dict, eng: UserEngine = Depends(get_user_engine)):
+async def add_to_watchlist(data: dict, user: dict = Depends(verify_token)):
     """Add a ticker to the watchlist."""
     ticker = data.get("ticker", "").upper()
     if ticker and ticker not in eng.config.WATCHLIST:
         eng.config.WATCHLIST.append(ticker)
-        await eng.save_settings()
-        print(f"[settings] Added {ticker} to watchlist for {eng.uid}")
+        asyncio.create_task(save_settings_to_cloud())
+        print(f"[settings] Added {ticker} to watchlist")
     return {"status": "success", "watchlist": eng.config.WATCHLIST}
 
 
 @app.delete("/api/watchlist/{ticker}")
-async def remove_from_watchlist(ticker: str, eng: UserEngine = Depends(get_user_engine)):
+async def remove_from_watchlist(ticker: str, user: dict = Depends(verify_token)):
     """Remove a ticker from the watchlist."""
+    eng = user_manager.get_engine(user['uid'])
     ticker = ticker.upper()
     if ticker in eng.config.WATCHLIST:
         eng.config.WATCHLIST.remove(ticker)
+        # Deactivate bot if removed from watchlist
         if ticker in eng.config.TRADELIST:
             eng.config.TRADELIST.remove(ticker)
             print(f"[settings] {ticker} removed from watchlist & deactivated")
         else:
             print(f"[settings] Removed {ticker} from watchlist")
-        await eng.save_settings()
-        if eng.force_scan_trigger:
-            eng.force_scan_trigger.set()
+        asyncio.create_task(save_settings_to_cloud())
+        if force_scan_trigger:
+            force_scan_trigger.set()
     return {"status": "success", "watchlist": eng.config.WATCHLIST, "tradelist": eng.config.TRADELIST}
 
 
 @app.get("/api/tradelist")
-def get_tradelist(eng: UserEngine = Depends(get_user_engine)):
+def get_tradelist(, user: dict = Depends(verify_token)):
     """Returns the current active trade list."""
     return eng.config.TRADELIST
 
 
 @app.post("/api/tradelist")
-async def add_to_tradelist(data: dict, eng: UserEngine = Depends(get_user_engine)):
+async def add_to_tradelist(data: dict, user: dict = Depends(verify_token)):
     """Add a ticker to the active trade list."""
+    eng = user_manager.get_engine(user['uid'])
     ticker = data.get("ticker", "").upper()
     timeframe = data.get("timeframe", eng.config.DEFAULT_TIMEFRAME)
     
     if ticker and ticker not in eng.config.TRADELIST:
         eng.config.TRADELIST.append(ticker)
         
+        # LOCK IN TIMEFRAME: Save to ticker settings so it's sticky
         if ticker not in eng.config.TICKER_SETTINGS:
             eng.config.TICKER_SETTINGS[ticker] = {}
         eng.config.TICKER_SETTINGS[ticker]['timeframe'] = timeframe
         print(f"[settings] Activated {ticker} on locked {timeframe} timeframe")
 
+        # Ensure it's also in watchlist so we can see it
         if ticker not in eng.config.WATCHLIST:
             eng.config.WATCHLIST.append(ticker)
-        await eng.save_settings()
-        if eng.force_scan_trigger:
-            eng.force_scan_trigger.set()
+        asyncio.create_task(save_settings_to_cloud())
+        if force_scan_trigger:
+            force_scan_trigger.set()
     return {"status": "success", "tradelist": eng.config.TRADELIST, "watchlist": eng.config.WATCHLIST}
 
 
 @app.get("/api/debug/history")
-async def debug_history(eng: UserEngine = Depends(get_user_engine)):
+async def debug_history(, user: dict = Depends(verify_token)):
     return {
+    eng = user_manager.get_engine(user['uid'])
         "executed_trades_count": 0,
         "trade_log_count": len(eng.trade_log),
         "executed_trades": [],
@@ -689,31 +558,33 @@ async def debug_history(eng: UserEngine = Depends(get_user_engine)):
     }
 
 @app.delete("/api/tradelist/{ticker}")
-async def remove_from_tradelist(ticker: str, eng: UserEngine = Depends(get_user_engine)):
+async def remove_from_tradelist(ticker: str, user: dict = Depends(verify_token)):
     """Remove a ticker from the active trade list."""
     ticker = ticker.upper()
     if ticker in eng.config.TRADELIST:
         eng.config.TRADELIST.remove(ticker)
-        await eng.save_settings()
-        print(f"[settings] Removed {ticker} from active tradelist (Bot Deactivated) for {eng.uid}")
+        asyncio.create_task(save_settings_to_cloud())
+        print(f"[settings] Removed {ticker} from active tradelist (Bot Deactivated)")
     return {"status": "success", "tradelist": eng.config.TRADELIST}
 
 
 @app.get("/api/search/{query}")
-def search_symbols(query: str, eng: UserEngine = Depends(get_user_engine)):
+def search_symbols(query: str, user: dict = Depends(verify_token)):
     """Searches for tradeable assets using the modular eng.broker."""
+    eng = user_manager.get_engine(user['uid'])
     if len(query) < 1:
         return []
     return eng.broker.search_assets(query)
 
 
 @app.post("/api/bots/create")
-async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
+async def create_bot(data: dict, user: dict = Depends(verify_token)):
     """Creates a new active bot with custom settings (adds to watchlist, tradelist, and TICKER_SETTINGS)."""
     symbol = data.get("symbol", "").upper().strip()
     if not symbol:
         return {"status": "error", "message": "Symbol is required"}
         
+    # Apply custom settings
     if symbol not in eng.config.TICKER_SETTINGS:
         eng.config.TICKER_SETTINGS[symbol] = {}
         
@@ -730,33 +601,42 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
     if "sell_mode" in data:
         eng.config.TICKER_SETTINGS[symbol]["sell_mode"] = data["sell_mode"]
     else:
+        # Explicit default for new bots
         eng.config.TICKER_SETTINGS[symbol]["sell_mode"] = "indicator"
         
     if "indicators" in data and isinstance(data["indicators"], list):
         eng.config.TICKER_SETTINGS[symbol]["indicators"] = data["indicators"]
 
+    # Risk Management overrides
     for rk in ["risk_per_trade", "max_daily_drawdown", "max_position_pct", "atr_stop_multiplier", "atr_trail_multiplier", "take_profit_multiplier"]:
         if rk in data:
             eng.config.TICKER_SETTINGS[symbol][rk] = float(data[rk])
 
+    # Ensure it's in watchlist to be scanned
     if symbol not in eng.config.WATCHLIST:
         eng.config.WATCHLIST.append(symbol)
         
+    # Add to tradelist to activate the bot
     if symbol not in eng.config.TRADELIST:
         eng.config.TRADELIST.append(symbol)
-        print(f"[settings] Launched new bot for {symbol} with custom settings for {eng.uid}")
+        print(f"[settings] Launched new bot for {symbol} with custom settings")
         
-    await eng.save_settings()
+    # Save settings to cloud (runs in background)
+    asyncio.create_task(save_settings_to_cloud())
     
-    if eng.force_scan_trigger:
-        eng.force_scan_trigger.set()
+    # Trigger immediate scan so user sees results right away
+    if force_scan_trigger:
+        force_scan_trigger.set()
     
     return {"status": "success", "symbol": symbol, "watchlist": eng.config.WATCHLIST, "tradelist": eng.config.TRADELIST, "settings": eng.config.TICKER_SETTINGS[symbol]}
 
 
+
+
 @app.post("/api/cancel_order")
-async def cancel_order(data: dict, eng: UserEngine = Depends(get_user_engine)):
+async def cancel_order(data: dict, user: dict = Depends(verify_token)):
     """Cancel an active order on Alpaca by ID."""
+    eng = user_manager.get_engine(user['uid'])
     order_id = data.get("order_id")
     if not order_id:
         return {"status": "error", "message": "order_id is required"}
@@ -767,61 +647,105 @@ async def cancel_order(data: dict, eng: UserEngine = Depends(get_user_engine)):
         return {"status": "error", "message": result.get("error", "Failed to cancel order.")}
 
 
+
+
+
+# ──────────────────────────────────────────────
+# Legacy persistence removed (Now using Cloud Vault)
+# ──────────────────────────────────────────────
+
+
 @app.post("/api/settings/indicators")
-async def update_indicators(updates: dict, eng: UserEngine = Depends(get_user_engine)):
+async def update_indicators(updates: dict, user: dict = Depends(verify_token)):
     """Update indicator toggles or parameters dynamically. Instant in-memory + persists to Firestore."""
     for k, v in updates.items():
-        if k.startswith("ENABLE_"):
-            eng.config.toggles[k] = bool(v)
-        else:
-            try:
-                default_val = getattr(global_config, k, None)
-                if isinstance(default_val, int):
-                    eng.config.parameters[k] = int(v)
-                elif isinstance(default_val, float):
-                    eng.config.parameters[k] = float(v)
-                else:
-                    eng.config.parameters[k] = v
-            except Exception as e:
-                print(f"[settings] Type conversion error for {k}: {e}")
-                eng.config.parameters[k] = v
+        if hasattr(config, k):
+            if k.startswith("ENABLE_"):
+                setattr(config, k, bool(v))
+            else:
+                try:
+                    current_val = getattr(config, k)
+                    if isinstance(current_val, int):
+                        setattr(config, k, int(v))
+                    elif isinstance(current_val, float):
+                        setattr(config, k, float(v))
+                    else:
+                        setattr(config, k, v)
+                except Exception as e:
+                    print(f"[settings] Type conversion error for {k}: {e}")
+                    setattr(config, k, v)
 
-    await eng.save_settings()
+    # Save to Firestore (Does not trigger uvicorn reload)
+    asyncio.create_task(save_settings_to_cloud())
+    
+    # Clear cache so the next dashboard fetch gets the new indicator states
     clear_evaluation_cache()
-    if eng.force_scan_trigger:
-        eng.force_scan_trigger.set()
+    if force_scan_trigger:
+        force_scan_trigger.set()
         
-    print(f"[settings] Updated indicator settings for {eng.uid}: {', '.join(updates.keys())}")
+    print(f"[settings] Updated indicator settings: {', '.join(updates.keys())}")
     return {"status": "success"}
 
 
 @app.post("/api/settings/ticker")
-async def update_ticker_settings(data: dict, eng: UserEngine = Depends(get_user_engine)):
+async def update_ticker_settings(data: dict, user: dict = Depends(verify_token)):
     """Update settings for a specific ticker."""
+    eng = user_manager.get_engine(user['uid'])
     ticker = data.get("ticker", "").upper()
     settings = data.get("settings", {})
     if not ticker: return {"status": "error"}
 
     if ticker not in eng.config.TICKER_SETTINGS:
         eng.config.TICKER_SETTINGS[ticker] = {}
+    # Filter out null values to keep global defaults if not specified
     for k, v in settings.items():
         if v is not None:
             eng.config.TICKER_SETTINGS[ticker][k] = v
         elif k in eng.config.TICKER_SETTINGS[ticker]:
             del eng.config.TICKER_SETTINGS[ticker][k]
     
-    await eng.save_settings()
+    asyncio.create_task(save_settings_to_cloud())
     return {"status": "success"}
 
 @app.delete("/api/settings/ticker/{ticker}")
-async def reset_ticker_settings(ticker: str, eng: UserEngine = Depends(get_user_engine)):
+async def reset_ticker_settings(ticker: str, user: dict = Depends(verify_token)):
     """Reset a ticker to global defaults."""
     ticker = ticker.upper()
     if ticker in eng.config.TICKER_SETTINGS:
         del eng.config.TICKER_SETTINGS[ticker]
-        await eng.save_settings()
+        asyncio.create_task(save_settings_to_cloud())
     return {"status": "success"}
 
+def _load_saved_settings(, user: dict = Depends(verify_token)):
+    """Load indicator toggles from settings.json on startup."""
+    eng = user_manager.get_engine(user['uid'])
+    import json, os
+    settings_path = os.path.join(os.path.dirname(__file__), "settings.json")
+    if os.path.exists(settings_path):
+        try:
+            with open(settings_path, "r") as f:
+                saved = json.load(f)
+            for k, v in saved.items():
+                if k == "WATCHLIST":
+                    eng.config.WATCHLIST = v
+                elif k == "TRADELIST":
+                    eng.config.TRADELIST = v
+                elif hasattr(config, k) and k.startswith("ENABLE_"):
+                    setattr(config, k, bool(v))
+            # Load Ticker Settings
+            eng.config.TICKER_SETTINGS = saved.get("TICKER_SETTINGS", {})
+            eng.config.DEFAULT_TIMEFRAME = saved.get("DEFAULT_TIMEFRAME", eng.config.DEFAULT_TIMEFRAME)
+            eng.config.SCAN_INTERVAL_SECONDS = saved.get("SCAN_INTERVAL_SECONDS", eng.config.SCAN_INTERVAL_SECONDS)
+            
+            print(f"[settings] Loaded {len(saved)} saved settings")
+        except Exception as e:
+            print(f"[settings] Error loading: {e}")
+
+
+# Legacy _save_executed_trade / _load_executed_trades removed.
+# Order history is now fetched live from Alpaca via eng.broker.get_order_history().
+
+# Load initial settings (Now handled by lifespan on startup)
 
 # ──────────────────────────────────────────────
 # Helpers
@@ -829,12 +753,12 @@ async def reset_ticker_settings(ticker: str, eng: UserEngine = Depends(get_user_
 
 def _format_trade_for_ui(trade: dict) -> dict:
     """Formats a trade decision for the frontend table."""
+    # Resolve timeframe: entry's own > ticker settings > global default
     ticker = trade.get("ticker", "").replace("/", "").upper()
     tf = trade.get("timeframe")
-    uc = get_user_config()
     if not tf:
-        t_settings = getattr(uc, 'TICKER_SETTINGS', {}).get(ticker, {})
-        tf = t_settings.get('timeframe', uc.DEFAULT_TIMEFRAME)
+        t_settings = getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {})
+        tf = t_settings.get('timeframe', eng.config.DEFAULT_TIMEFRAME)
     
     return {
         "time": trade.get("time", ""),
@@ -855,8 +779,13 @@ def _format_trade_for_ui(trade: dict) -> dict:
     }
 
 
+
 def _format_scan_for_ui(scan: dict) -> dict:
-    """Formats a full scan result for the watchlist panel."""
+    """Formats a full scan result for the watchlist panel.
+    eng = user_manager.get_engine(user['uid'])
+    Sends ALL signals with an 'enabled' flag so the UI can
+    show disabled signals as greyed-out clickable cards."""
+
     SIGNAL_TO_TOGGLE = {
         'RSI': 'ENABLE_RSI',
         'MACD': 'ENABLE_MACD',
@@ -873,10 +802,9 @@ def _format_scan_for_ui(scan: dict) -> dict:
 
     raw_signals = scan.get("signals", {})
     all_signals = {}
-    uc = get_user_config()
     for name, data in raw_signals.items():
         toggle_key = SIGNAL_TO_TOGGLE.get(name, '')
-        enabled = getattr(uc, toggle_key, True) if toggle_key else True
+        enabled = getattr(config, toggle_key, True) if toggle_key else True
         all_signals[name] = {**data, 'enabled': enabled, 'toggle_key': toggle_key}
 
     bullish = sum(s.get('weight', 1) for s in all_signals.values() if s.get('signal') == 'BULLISH' and s.get('enabled'))
