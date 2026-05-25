@@ -10,7 +10,7 @@ Production-grade trading engine with:
 - MULTI-TENANT ARCHITECTURE
 """
 
-from fastapi import FastAPI, Query, Header, HTTPException, Depends
+from fastapi import FastAPI, Query, Header, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
@@ -101,6 +101,15 @@ async def verify_token(authorization: str = Header(None)):
 
 async def get_user_engine(user: dict = Depends(verify_token)) -> UserEngine:
     eng = user_manager.get_engine(user['uid'])
+    if not getattr(eng, 'loaded_from_cloud', False):
+        async with eng.load_lock:
+            if not eng.loaded_from_cloud:
+                await eng.load_from_cloud()
+                eng.loaded_from_cloud = True
+    if not eng.bot_running:
+        async with eng.load_lock:
+            if not eng.bot_running:
+                eng.task = asyncio.create_task(eng.trading_loop())
     set_user_config(eng.config)
     return eng
 
@@ -185,10 +194,29 @@ def unlink_alpaca(eng: UserEngine = Depends(get_user_engine)):
     eng.config.ALPACA_API_KEY = ""
     eng.config.ALPACA_SECRET_KEY = ""
     return {"status": "success", "message": "Alpaca account unlinked. Switched to simulation mode."}
-    
+
+
+@app.get("/api/portfolio/history")
+async def get_portfolio_history(
+    period: str = "1M",
+    timeframe: str = "1D",
+    eng: UserEngine = Depends(get_user_engine)
+):
+    """
+    Get portfolio history for the current user's broker connection.
+    Maps period '1Y' to Alpaca-compatible '1A'.
+    """
+    alpaca_period = "1A" if period.upper() == "1Y" else period
+    try:
+        data = await asyncio.to_thread(eng.broker.get_portfolio_history, period=alpaca_period, timeframe=timeframe)
+        return data
+    except Exception as e:
+        print(f"[api] Error getting portfolio history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/api/dashboard")
-async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "heavy", eng: UserEngine = Depends(get_user_engine)):
+async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None, timeframe: str = None, source: str = "dashboard", eng: UserEngine = Depends(get_user_engine)):
     """
     Main dashboard endpoint — returns everything the UI needs in one call.
     """
@@ -198,15 +226,6 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
     if ticker:
         eng.dashboard_primary_ticker = ticker.upper()
 
-    # Fallback/default timeframe logic
-    if timeframe is None:
-        timeframe = eng.config.DEFAULT_TIMEFRAME
-    
-    # Get general account info
-    account = eng.broker.get_account_info()
-    positions = eng.broker.get_positions()
-    orders = eng.broker.get_open_orders()
-    
     # Identify primary ticker
     primary_ticker = (
         ticker.upper() if ticker else (
@@ -215,34 +234,46 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
             )
         )
     )
+
+    # Fallback/default timeframe logic
+    if timeframe is None:
+        timeframe = eng.config.TICKER_SETTINGS.get(primary_ticker, {}).get('timeframe') or eng.config.DEFAULT_TIMEFRAME
+    
+    # Get general account info
+    account = eng.broker.get_account_info()
+    positions = eng.broker.get_positions()
+    orders = eng.broker.get_open_orders()
     
     # Active bot status check
     is_active_bot = primary_ticker in eng.config.TRADELIST
     
     # Check cache first for primary ticker scan
     primary_scan = None
-    if mode == "heavy":
-        cached_scan = eng._pick_scan(primary_ticker, timeframe, prefer_bot=is_active_bot)
-        if cached_scan:
-            primary_scan = {**cached_scan, 'cached': True}
-        else:
-            is_crypto = any(c in primary_ticker for c in ["BTC", "ETH", "LTC", "SOL", "DOGE"]) or "USD" in primary_ticker
-            avail_cash = account.get('non_marginable_buying_power') or account['cash'] if is_crypto else account['cash']
-            try:
-                primary_scan = await asyncio.to_thread(
-                    evaluate_trade,
-                    primary_ticker, 
-                    account_equity=account['equity'], 
-                    available_cash=avail_cash,
-                    timeframe=timeframe
-                )
-                if primary_scan:
-                    if is_active_bot:
-                        eng._record_bot_scan(primary_scan)
+    prefer_bot_for_primary = is_active_bot and source == "bots"
+    cached_scan = eng._pick_scan(primary_ticker, timeframe, prefer_bot=prefer_bot_for_primary)
+    if cached_scan:
+        primary_scan = {**cached_scan, 'cached': True}
+
+    if mode == "heavy" and not primary_scan:
+        is_crypto = any(c in primary_ticker for c in ["BTC", "ETH", "LTC", "SOL", "DOGE"]) or "USD" in primary_ticker
+        avail_cash = account.get('non_marginable_buying_power') or account['cash'] if is_crypto else account['cash']
+        try:
+            primary_scan = await asyncio.to_thread(
+                evaluate_trade,
+                primary_ticker, 
+                account_equity=account['equity'], 
+                available_cash=avail_cash,
+                timeframe=timeframe,
+                use_bot_settings=prefer_bot_for_primary
+            )
+            if primary_scan:
+                if prefer_bot_for_primary:
+                    eng._record_bot_scan(primary_scan)
+                else:
                     eng._record_scan(primary_scan)
-            except Exception as e:
-                print(f"[dashboard] Scan error for primary ticker {primary_ticker}: {e}")
-                primary_scan = None
+        except Exception as e:
+            print(f"[dashboard] Scan error for primary ticker {primary_ticker}: {e}")
+            primary_scan = None
 
     if not primary_scan:
         primary_scan = {
@@ -270,11 +301,20 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
         }
 
     # Format the primary scan cleanly
-    formatted_primary = _format_scan_for_ui(primary_scan)
+    formatted_primary = _format_scan_for_ui(primary_scan, use_global_settings=(not prefer_bot_for_primary))
     
     # Retrieve order history
     orders_history = eng.broker.get_order_history()
     
+    # Format daily P/L (Today Only)
+    daily_pl = account.get('daily_pl', 0.0)
+    daily_pl_pct = account.get('daily_pl_pct', 0.0)
+    daily_pl_sign = "+" if daily_pl >= 0 else ""
+
+    # Calculate All-Time Profit (Realized + Unrealized) directly from the broker history
+    total_profit, total_profit_pct = eng.broker.get_all_time_profit()
+    total_pl_sign = "+" if total_profit >= 0 else ""
+
     # Format trade log (scans/decisions)
     ui_trade_log = [_format_trade_for_ui(trade) for trade in eng.trade_log]
 
@@ -284,25 +324,52 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
 
     risk_mgr = get_risk_manager()
 
+    sentiment_score = primary_scan.get('sentiment_score', 0)
+    sentiment_confidence = primary_scan.get('sentiment_confidence', 0)
+
+    if sentiment_score > 0.3:
+        sentiment_label = "Bullish"
+    elif sentiment_score < -0.3:
+        sentiment_label = "Bearish"
+    else:
+        sentiment_label = "Neutral"
+
     # Build the final payload
     payload = {
+        "simulation": account.get('simulation', True),
+        "has_keys": bool(eng.config.ALPACA_API_KEY),
+        "capital": f"${account['equity']:.2f}",
+        "cash": f"${account['cash']:.2f}",
+        "openPositions": str(len(positions)),
+        "positionsList": ", ".join(p['symbol'] for p in positions) if positions else "No positions",
+        "dailyPL": f"{daily_pl_sign}${daily_pl:.2f} ({daily_pl_sign}{daily_pl_pct:.1f}%)",
+        "totalProfit": f"{total_pl_sign}${total_profit:.2f} ({total_pl_sign}{total_profit_pct:.1f}%)",
+        "aiSentiment": f"{sentiment_label} ({sentiment_score})",
+        "sentiment_confidence": sentiment_confidence,
+        "sentiment_summary": primary_scan.get("sentiment_summary", ""),
+        "sentiment_key_factor": primary_scan.get("sentiment_key_factor", "N/A"),
         "account": account,
         "positions": positions,
         "open_orders": orders,
+        "pendingOrders": orders,
         "orders_history": orders_history,
+        "orderHistory": orders_history,
         "trade_log": ui_trade_log,
+        "recentTrades": ui_trade_log,
         
         "watchlistScans": {
             t: _format_scan_for_ui(
                 eng._pick_scan(t, timeframe, prefer_bot=False) or 
-                eng._pick_scan(t, eng.config.TICKER_SETTINGS.get(t, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME), prefer_bot=False, ignore_freshness=True) or {}
+                eng._pick_scan(t, eng.config.TICKER_SETTINGS.get(t, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME), prefer_bot=False, ignore_freshness=True) or {},
+                use_global_settings=True
             )
             for t in eng.config.WATCHLIST
         },
         "botScans": {
             t: _format_scan_for_ui(
                 eng._pick_scan(t, timeframe, prefer_bot=True) or 
-                eng._pick_scan(t, eng.config.TICKER_SETTINGS.get(t, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME), prefer_bot=True, ignore_freshness=True) or {}
+                eng._pick_scan(t, eng.config.TICKER_SETTINGS.get(t, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME), prefer_bot=True, ignore_freshness=True) or {},
+                use_global_settings=False
             )
             for t in eng.config.TRADELIST
         },
@@ -318,6 +385,8 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
 
         # Bot Meta
         "botRunning": eng.bot_running,
+        "brokerConnected": not account.get('simulation', True),
+        "has_keys": bool(eng.config.ALPACA_API_KEY),
         "lastScan": last_scan_time or "Starting...",
         "indicator_settings": eng.config.toggles,
         "indicator_parameters": eng.config.parameters,
@@ -344,30 +413,14 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
     if mode == "fast":
         payload["signals"] = {}
         payload["priceHistory"] = []
-        payload["watchlistScans"] = {
-            k: {
-                "ticker": v.get("ticker", ""),
-                "price": v.get("price", ""),
-                "action": v.get("action", "HOLD"),
-                "reason": v.get("reason", ""),
-                "bullish_count": v.get("bullish_count", 0),
-                "bearish_count": v.get("bearish_count", 0),
-                "total_signals": v.get("total_signals", 0),
-                "signals": {}
-            } for k, v in payload["watchlistScans"].items()
-        }
-        payload["botScans"] = {
-            k: {
-                "ticker": v.get("ticker", ""),
-                "price": v.get("price", ""),
-                "action": v.get("action", "HOLD"),
-                "reason": v.get("reason", ""),
-                "bullish_count": v.get("bullish_count", 0),
-                "bearish_count": v.get("bearish_count", 0),
-                "total_signals": v.get("total_signals", 0),
-                "signals": {}
-            } for k, v in payload["botScans"].items()
-        }
+        for k, v in payload["watchlistScans"].items():
+            v["signals"] = {}
+            if "price_history" in v:
+                del v["price_history"]
+        for k, v in payload["botScans"].items():
+            v["signals"] = {}
+            if "price_history" in v:
+                del v["price_history"]
 
     return payload
 
@@ -722,7 +775,8 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         
     if "threshold" in data:
         eng.config.TICKER_SETTINGS[symbol]["min_buy_signals"] = int(data["threshold"])
-        eng.config.TICKER_SETTINGS[symbol]["min_sell_signals"] = int(data["threshold"])
+    if "sell_threshold" in data:
+        eng.config.TICKER_SETTINGS[symbol]["min_sell_signals"] = int(data["sell_threshold"])
     
     if "timeframe" in data:
         eng.config.TICKER_SETTINGS[symbol]["timeframe"] = data["timeframe"]
@@ -747,6 +801,27 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         print(f"[settings] Launched new bot for {symbol} with custom settings for {eng.uid}")
         
     await eng.save_settings()
+    
+    # Warm up cache synchronously before returning so immediate dashboard refresh gets the price/data
+    try:
+        timeframe = data.get("timeframe") or eng.config.TICKER_SETTINGS.get(symbol, {}).get('timeframe') or eng.config.DEFAULT_TIMEFRAME
+        is_crypto = any(c in symbol for c in ["BTC", "ETH", "LTC", "SOL", "DOGE"]) or "USD" in symbol
+        account = eng.broker.get_account_info()
+        avail_cash = account.get('non_marginable_buying_power') or account['cash'] if is_crypto else account['cash']
+        
+        initial_scan = await asyncio.to_thread(
+            evaluate_trade,
+            symbol,
+            account_equity=account['equity'],
+            available_cash=avail_cash,
+            timeframe=timeframe,
+            use_bot_settings=True
+        )
+        if initial_scan:
+            eng._record_bot_scan(initial_scan)
+            print(f"[bots/create] Synchronous warm up scan completed for new bot {symbol}")
+    except Exception as e:
+        print(f"[bots/create] Synchronous warm up scan failed for {symbol}: {e}")
     
     if eng.force_scan_trigger:
         eng.force_scan_trigger.set()
@@ -855,7 +930,7 @@ def _format_trade_for_ui(trade: dict) -> dict:
     }
 
 
-def _format_scan_for_ui(scan: dict) -> dict:
+def _format_scan_for_ui(scan: dict, use_global_settings: bool = False) -> dict:
     """Formats a full scan result for the watchlist panel."""
     SIGNAL_TO_TOGGLE = {
         'RSI': 'ENABLE_RSI',
@@ -874,10 +949,20 @@ def _format_scan_for_ui(scan: dict) -> dict:
     raw_signals = scan.get("signals", {})
     all_signals = {}
     uc = get_user_config()
+    ticker = scan.get("ticker", "")
+    t_settings = getattr(uc, 'TICKER_SETTINGS', {}).get(ticker, {}) if not use_global_settings else {}
+    allowed_indicators = t_settings.get('indicators') if not use_global_settings else None
+
     for name, data in raw_signals.items():
         toggle_key = SIGNAL_TO_TOGGLE.get(name, '')
-        enabled = getattr(uc, toggle_key, True) if toggle_key else True
-        all_signals[name] = {**data, 'enabled': enabled, 'toggle_key': toggle_key}
+        if name == 'News Sentiment':
+            enabled = getattr(uc, 'ENABLE_AI_SENTIMENT', True)
+        elif allowed_indicators is not None:
+            enabled = name in allowed_indicators
+        else:
+            enabled = getattr(uc, toggle_key, True) if toggle_key else True
+            
+        all_signals[name] = {**data, 'enabled': enabled, 'toggle_key': toggle_key if name != 'News Sentiment' else 'ENABLE_AI_SENTIMENT'}
 
     bullish = sum(s.get('weight', 1) for s in all_signals.values() if s.get('signal') == 'BULLISH' and s.get('enabled'))
     bearish = sum(s.get('weight', 1) for s in all_signals.values() if s.get('signal') == 'BEARISH' and s.get('enabled'))

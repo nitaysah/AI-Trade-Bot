@@ -56,7 +56,7 @@ def get_now():
     return datetime.now(tz)
 
 
-def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai_sentiment_confidence=0.0):
+def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai_sentiment_confidence=0.0, use_bot_settings=False):
     """
     Pure decision logic based on technical and AI signals.
     Respects global ENABLE_ toggles for technical indicators.
@@ -82,8 +82,8 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
 
     # 1. Process Technical Indicators
     uc = get_user_config()
-    t_settings = getattr(uc, 'TICKER_SETTINGS', {}).get(ticker, {})
-    allowed_indicators = t_settings.get('indicators') # List of names if overridden
+    t_settings = getattr(uc, 'TICKER_SETTINGS', {}).get(ticker, {}) if use_bot_settings else {}
+    allowed_indicators = t_settings.get('indicators') if use_bot_settings else None
 
     for name, data in raw_signals.items():
         # If allowed_indicators is set, only include those. Otherwise use get_user_config().ENABLE_X toggles.
@@ -181,7 +181,7 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
     }
 
 
-def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash: float = None, timeframe: str = None, data_source: str = "webull"):
+def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash: float = None, timeframe: str = None, data_source: str = "webull", use_bot_settings: bool = False):
     """
     Full evaluation pipeline for a single ticker.
     Combines technical signals + AI sentiment + risk management.
@@ -257,7 +257,8 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         ticker,
         analysis, 
         ai_data['score'], 
-        ai_data['confidence']
+        ai_data['confidence'],
+        use_bot_settings=use_bot_settings
     )
     action = decision['action']
     reason = decision['reason']

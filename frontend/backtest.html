@@ -24,18 +24,27 @@
         const auth = getAuth(app);
         window.auth = auth; // Expose for backtest.js
 
-        // 1-Hour Session Timeout Check
+        // 1-Hour Session Timeout Check (Inactivity-based)
         const enforceSessionTimeout = async () => {
             const loginTime = localStorage.getItem('loginTimestamp');
             if (loginTime) {
                 const elapsed = Date.now() - parseInt(loginTime);
                 if (elapsed > 3600000) { // 1 hour in milliseconds
-                    console.log("[auth] Session expired (1 hour). Forcing logout.");
+                    console.log("[auth] Session expired (1 hour of inactivity). Forcing logout.");
                     localStorage.removeItem('loginTimestamp');
                     await window.logoutCommander();
                 }
             }
         };
+
+        const resetSessionActivity = () => {
+            if (localStorage.getItem('loginTimestamp')) {
+                localStorage.setItem('loginTimestamp', Date.now().toString());
+            }
+        };
+        ['mousemove', 'keydown', 'click', 'scroll'].forEach(evt => {
+            window.addEventListener(evt, resetSessionActivity, { passive: true });
+        });
 
         onAuthStateChanged(auth, async (user) => {
             if (!user) {

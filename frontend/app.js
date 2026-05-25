@@ -181,9 +181,10 @@ function updateVisibleHighLow() {
     ];
 }
 
-function formatPrice(value) {
-    if (value == null || Number.isNaN(Number(value))) return '—';
-    const n = Number(value);
+function formatPrice(n, forceTicker = null) {
+    if (isNaN(n) || n === null) return '---';
+    const t = forceTicker || document.getElementById('chartTickerLabel')?.textContent;
+    if (t && isCryptoTicker(t)) return n.toFixed(4);
     return n > 10 ? n.toFixed(2) : n.toFixed(4);
 }
 
@@ -252,6 +253,29 @@ async function getAuthHeaders() {
         return { 'Content-Type': 'application/json' };
     }
 }
+
+async function unlinkAlpacaDashboard() {
+    if (!confirm("Are you sure you want to unlink your Alpaca account? The bot will switch back to simulation mode.")) return;
+
+    try {
+        const headers = await getAuthHeaders();
+        const response = await fetch(`${API_BASE}/api/alpaca_config`, {
+            method: 'DELETE',
+            headers: headers
+        });
+        const data = await response.json();
+        if (data.status === 'success') {
+            alert(data.message);
+            fetchDashboard('heavy');
+        } else {
+            alert("Error unlinking account.");
+        }
+    } catch (err) {
+        console.error(err);
+        alert("Backend communication error.");
+    }
+}
+window.unlinkAlpacaDashboard = unlinkAlpacaDashboard;
 
 function formatLocalTime(isoString) {
     if (!isoString || isoString === "Starting...") return isoString;
@@ -1172,14 +1196,14 @@ function renderWatchlist(scans, watchlist, tradelist = [], botScans = {}) {
     }
 
     tickers.forEach(ticker => {
-        // Prioritize botScans for active bots, otherwise use general scans
-        const scan = (botScans || {})[ticker] || (scans || {})[ticker];
+        // Always use general scans for the Dashboard Watchlist to ensure settings separation
+        const scan = (scans || {})[ticker];
         const item = document.createElement('div');
         item.className = `watchlist-item group cursor-pointer ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2 flex flex-col gap-2`;
         item.onclick = () => selectTicker(ticker);
 
         const action = scan?.action || '—';
-        const price = scan?.price ? `$${parseFloat(scan.price.toString().replace('$', '')).toFixed(2)}` : '---';
+        const price = scan?.price ? `$${parseFloat(scan.price.toString().replace('$', '')).toFixed(isCryptoTicker(ticker) ? 4 : 2)}` : '---';
         const actionColor = action === 'BUY' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : action === 'SELL' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-400 border-slate-100';
 
         const bullish = scan?.bullish_count || 0;
@@ -1191,7 +1215,6 @@ function renderWatchlist(scans, watchlist, tradelist = [], botScans = {}) {
                 <div class="flex items-center justify-between">
                     <div class="flex items-center gap-2">
                         <span class="font-black text-sm text-indigo-950 tracking-tight">${ticker}</span>
-                        ${isBotActive ? '<span class="px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-600 text-[0.6rem] font-black tracking-widest uppercase">Active Bot</span>' : ''}
                     </div>
                     
                     <div class="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
@@ -1347,7 +1370,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         item.className = `watchlist-item group active-bot ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2 flex flex-col gap-2`;
 
         const action = scan?.action || '—';
-        const price = scan?.price ? `$${parseFloat(scan.price.toString().replace('$', '')).toFixed(2)}` : '---';
+        const price = scan?.price ? `$${parseFloat(scan.price.toString().replace('$', '')).toFixed(isCryptoTicker(ticker) ? 4 : 2)}` : '---';
         const actionColor = action === 'BUY' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : action === 'SELL' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-400 border-slate-100';
         const bullish = scan?.bullish_count ?? 0;
         const bearish = scan?.bearish_count ?? 0;
@@ -1706,7 +1729,7 @@ async function resetTickerSettings() {
     if (!confirm(`Reset ${currentEditingTicker} to global defaults?`)) return;
 
     try {
-        const headers = await getAuthHeaders();
+        const headers = await getAuthHeaders();        // Alpaca connection check has been moved to bots.js
         await fetch(`${API_BASE}/api/settings/ticker/${currentEditingTicker}`, {
             method: 'DELETE',
             headers: headers
@@ -1726,8 +1749,8 @@ async function fetchDashboard(mode = 'heavy') {
     try {
         const requestedTicker = normalizeTicker(selectedTicker);
         const url = requestedTicker
-            ? `${API_BASE}/api/dashboard?ticker=${encodeURIComponent(requestedTicker)}&timeframe=${encodeURIComponent(currentBackendTf)}&mode=${encodeURIComponent(mode)}`
-            : `${API_BASE}/api/dashboard?mode=${mode}`;
+            ? `${API_BASE}/api/dashboard?ticker=${encodeURIComponent(requestedTicker)}&timeframe=${encodeURIComponent(currentBackendTf)}&mode=${encodeURIComponent(mode)}&source=dashboard`
+            : `${API_BASE}/api/dashboard?mode=${mode}&timeframe=${encodeURIComponent(currentBackendTf)}&source=dashboard`;
 
         const headers = await getAuthHeaders();
         // Removed redundant header log
@@ -1755,6 +1778,44 @@ async function fetchDashboard(mode = 'heavy') {
             updateChartControlState(selectedTicker);
         }
 
+        // Update Alpaca Link / Connected Button State (Identical to bots page)
+        const redirectBtn = document.getElementById('alpacaLinkRedirectBtn');
+        const statusSpan = document.getElementById('alpacaLinkStatus');
+        const dotEl = document.getElementById('alpacaStatusDot');
+        const textEl = document.getElementById('alpacaStatusText');
+        const btnUnlink = document.getElementById('btnUnlinkAlpaca');
+        
+        if (redirectBtn && statusSpan && dotEl && textEl && btnUnlink) {
+            if (data.brokerConnected) {
+                // Connected to Alpaca: Hide Connect redirect button and show active link pill
+                redirectBtn.classList.add('hidden');
+                statusSpan.classList.remove('hidden');
+                statusSpan.style.display = 'flex';
+                
+                statusSpan.className = 'flex items-center justify-center h-9 text-xs font-black px-5 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider bg-emerald-50 text-emerald-600 border-emerald-100';
+                dotEl.className = 'h-2 w-2 rounded-full mr-2 bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]';
+                textEl.textContent = 'Alpaca';
+                btnUnlink.classList.remove('hidden');
+            } else {
+                if (data.has_keys) {
+                    // Retrying state: Hide Connect redirect button and show retrying pill
+                    redirectBtn.classList.add('hidden');
+                    statusSpan.classList.remove('hidden');
+                    statusSpan.style.display = 'flex';
+                    
+                    statusSpan.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-amber-50 text-amber-600 border-2 border-amber-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
+                    dotEl.className = "h-2 w-2 rounded-full mr-2 bg-amber-500 animate-pulse";
+                    textEl.textContent = "RETRYING...";
+                    btnUnlink.classList.remove('hidden');
+                } else {
+                    // Not connected / No keys: Show the original Connect Alpaca button
+                    redirectBtn.classList.remove('hidden');
+                    statusSpan.classList.add('hidden');
+                    statusSpan.style.display = '';
+                }
+            }
+        }
+
         // Log diagnostic info from backend
         if (data.debug_logs && data.debug_logs.length > 0) {
             // Diagnostic logs silenced as requested
@@ -1765,37 +1826,7 @@ async function fetchDashboard(mode = 'heavy') {
             selectedTicker = normalizeTicker(data.primaryTicker || data.watchlist[0]);
         }
 
-        // Alpaca Status Pill & Action Toggle
-        const statusPill = document.getElementById('alpacaLinkStatus');
-        const statusDot = document.getElementById('alpacaStatusDot');
-        const statusText = document.getElementById('alpacaStatusText');
-        const btnConnect = document.getElementById('btnConnectAlpaca');
-        const btnUnlink = document.getElementById('btnUnlinkAlpaca');
-
-        if (statusPill && statusDot && statusText) {
-            if (data.simulation) {
-                isAlpacaLinked = false;
-                if (data.has_keys) {
-                    statusPill.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-amber-50 text-amber-600 border-2 border-amber-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
-                    statusDot.className = "h-2 w-2 rounded-full mr-2 bg-amber-500 animate-pulse";
-                    statusText.textContent = "RETRYING...";
-                } else {
-                    statusPill.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-rose-50 text-rose-600 border-2 border-rose-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
-                    statusDot.className = "h-2 w-2 rounded-full mr-2 bg-rose-500 animate-pulse";
-                    statusText.textContent = "SIMULATION";
-                }
-                if (btnUnlink) btnUnlink.classList.add('hidden');
-            } else {
-                isAlpacaLinked = true;
-                statusPill.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-emerald-50 text-emerald-600 border-2 border-emerald-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
-                statusDot.className = "h-2 w-2 rounded-full mr-2 bg-emerald-500 animate-pulse";
-                statusText.textContent = "Alpaca";
-                if (btnUnlink) btnUnlink.classList.remove('hidden');
-            }
-        }
-
-        // Connection prompt visibility
-        const connPrompt = document.getElementById('connectionPrompt');
+        // Alpaca Status Pill & Action Toggle removed (migrated to active bots)
         const dashContent = document.getElementById('dashboardContent');
 
         const summaryEl = document.getElementById('aiSummary');
@@ -1830,46 +1861,9 @@ async function fetchDashboard(mode = 'heavy') {
             }
         }
 
-        if (data.simulation) {
-            if (connPrompt) connPrompt.classList.remove('hidden');
-            if (dashContent) dashContent.classList.add('hidden');
-        } else {
-            if (connPrompt) connPrompt.classList.add('hidden');
-            if (dashContent) dashContent.classList.remove('hidden');
-        }
-
-        // Portfolio stats
-        const capitalEl = document.getElementById('totalCapital');
-        const openPosEl = document.getElementById('openPositions');
-        const plEl = document.getElementById('dailyPL');
+        if (dashContent) dashContent.classList.remove('hidden');
+        // Portfolio stats removed from dashboard (migrated to active bots)
         const sentEl = document.getElementById('aiSentiment');
-
-        if (capitalEl) {
-            capitalEl.textContent = data.capital || '---';
-            if (data.simulation) capitalEl.textContent += ' (Simulated)';
-            capitalEl.classList.remove('animate-pulse');
-        }
-        const cashEl = document.getElementById('cashDisplay');
-        if (cashEl) {
-            cashEl.textContent = `Cash: ${data.cash || '---'}`;
-            if (data.simulation) cashEl.textContent += ' (Simulated)';
-        }
-
-        if (openPosEl) {
-            openPosEl.textContent = data.openPositions || '0';
-            openPosEl.classList.remove('animate-pulse');
-        }
-        if (plEl) {
-            plEl.textContent = data.dailyPL || '---';
-            plEl.classList.remove('animate-pulse');
-            if (data.dailyPL?.startsWith('+')) {
-                plEl.className = 'card-value text-emerald-600';
-            } else if (data.dailyPL?.startsWith('-')) {
-                plEl.className = 'card-value text-red-500';
-            } else {
-                plEl.className = 'card-value text-indigo-900';
-            }
-        }
 
         // Fetch dynamic Market Sentiment (Fear & Greed)
         fetchFearAndGreed();
@@ -2517,88 +2511,7 @@ async function emergencyShutdown() {
 }
 
 // ──────────────────────────────────────────────
-// 12. Alpaca Connection Logic
-// ──────────────────────────────────────────────
-function openAlpacaModal() {
-    document.getElementById('alpacaModal').classList.remove('hidden');
-    // Clear fields for security
-    document.getElementById('alpacaKey').value = "";
-    document.getElementById('alpacaSecret').value = "";
-}
-
-function closeAlpacaModal() {
-    document.getElementById('alpacaModal').classList.add('hidden');
-}
-
-async function submitAlpacaConfig() {
-    const key = document.getElementById('alpacaKey').value.trim();
-    const secret = document.getElementById('alpacaSecret').value.trim();
-    const isPaper = document.getElementById('alpacaPaper').checked;
-    const btn = document.getElementById('alpacaSubmitBtn');
-
-    if (!key || !secret) {
-        alert("Please provide both API Key and Secret.");
-        return;
-    }
-
-    const originalText = btn.innerText;
-    btn.innerText = "ESTABLISHING BRIDGE...";
-    btn.disabled = true;
-
-    try {
-        const headers = await getAuthHeaders();
-        const response = await fetch(`${API_BASE}/api/alpaca_config`, {
-            method: 'POST',
-            headers: headers,
-            body: JSON.stringify({
-                api_key: key,
-                secret_key: secret,
-                paper: isPaper
-            })
-        });
-
-        const data = await response.json();
-        if (data.status === 'success') {
-            alert("Connection Successful! Your Alpaca account is now linked.");
-            closeAlpacaModal();
-            // Refresh dashboard data to show new balance
-            if (typeof fetchDashboardData === 'function') fetchDashboardData();
-        } else {
-            alert("Connection Failed: " + data.message);
-        }
-    } catch (err) {
-        console.error(err);
-        alert("Backend communication error.");
-    } finally {
-        btn.innerText = originalText;
-        btn.disabled = false;
-    }
-}
-
-async function unlinkAlpaca() {
-    if (!confirm("Are you sure you want to unlink your Alpaca account? The bot will switch back to simulation mode.")) return;
-
-    try {
-        const headers = await getAuthHeaders();
-        const response = await fetch(`${API_BASE}/api/alpaca_config`, {
-            method: 'DELETE',
-            headers: headers
-        });
-        const data = await response.json();
-        if (data.status === 'success') {
-            alert(data.message);
-            if (typeof fetchDashboard === 'function') {
-                fetchDashboard('fast');
-                fetchDashboard('heavy');
-            }
-        } else {
-            alert("Error unlinking account.");
-        }
-    } catch (err) {
-        console.error(err);
-        alert("Backend communication error.");
-    }
-}
+// Alpaca functions moved to bots.js
 
 // ──────────────────────────────────────────────
 // 13. Onboarding Guide Logic

@@ -18,7 +18,7 @@ async def update_alpaca_config(cfg: AlpacaConfig, user: dict = Depends(verify_to
 
 
 @app.delete("/api/alpaca_config")
-def unlink_alpaca(, user: dict = Depends(verify_token)):
+def unlink_alpaca(user: dict = Depends(verify_token)):
     # Delete from cloud
     eng = user_manager.get_engine(user['uid'])
     if db:
@@ -132,8 +132,8 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
         # Detailed Data
         "positions": positions,
         "recentTrades": [_format_trade_for_ui(t) for t in eng.trade_log],
-        "orderHistory": eng.broker.get_order_history(),
-        "pendingOrders": eng.broker.get_open_orders(),
+        "orderHistory": eng.broker.get_order_history(eng.trade_log),
+        "pendingOrders": eng.broker.get_open_orders(eng.trade_log),
         "watchlistScans": {
             ticker: _format_scan_for_ui(
                 eng._pick_scan(ticker, timeframe, prefer_bot=False) or 
@@ -216,8 +216,8 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
 
 @app.get("/api/scan/{ticker}")
 def scan_ticker(ticker: str, timeframe: str = "4Hour", user: dict = Depends(verify_token)):
-    if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker.upper()):
     eng = user_manager.get_engine(user['uid'])
+    if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker.upper()):
         return {"error": "Invalid ticker format"}
     """On-demand scan of a specific ticker."""
     account = eng.broker.get_account_info()
@@ -375,7 +375,7 @@ async def download_all_data(data: dict, user: dict = Depends(verify_token)):
 
 
 @app.get("/api/settings/indicators")
-def get_indicator_settings(, user: dict = Depends(verify_token)):
+def get_indicator_settings(user: dict = Depends(verify_token)):
     """Returns all indicator toggles grouped by category."""
     eng = user_manager.get_engine(user['uid'])
     return {
@@ -443,7 +443,7 @@ async def update_ticker_amount(data: dict, user: dict = Depends(verify_token)):
 @app.post("/api/settings/timeframe")
 async def update_timeframe(data: dict, user: dict = Depends(verify_token)):
     """Updates the default trading timeframe and triggers a re-scan."""
-    global eng.latest_scans, eng.bot_scans, eng.latest_scans_by_tf, bot_scans_by_tf
+    global bot_scans_by_tf
     new_tf = data.get("timeframe")
     if new_tf in ["30Sec", "1Min", "2Min", "3Min", "5Min", "10Min", "15Min", "30Min", "1Hour", "2Hour", "4Hour", "1Day"]:
         eng.config.DEFAULT_TIMEFRAME = new_tf
@@ -480,7 +480,7 @@ async def update_timeframe(data: dict, user: dict = Depends(verify_token)):
 
 
 @app.get("/api/watchlist")
-def get_watchlist(, user: dict = Depends(verify_token)):
+def get_watchlist(user: dict = Depends(verify_token)):
     """Returns the current watchlist."""
     eng = user_manager.get_engine(user['uid'])
     return eng.config.WATCHLIST
@@ -517,7 +517,7 @@ async def remove_from_watchlist(ticker: str, user: dict = Depends(verify_token))
 
 
 @app.get("/api/tradelist")
-def get_tradelist(, user: dict = Depends(verify_token)):
+def get_tradelist(user: dict = Depends(verify_token)):
     """Returns the current active trade list."""
     return eng.config.TRADELIST
 
@@ -548,9 +548,9 @@ async def add_to_tradelist(data: dict, user: dict = Depends(verify_token)):
 
 
 @app.get("/api/debug/history")
-async def debug_history(, user: dict = Depends(verify_token)):
-    return {
+async def debug_history(user: dict = Depends(verify_token)):
     eng = user_manager.get_engine(user['uid'])
+    return {
         "executed_trades_count": 0,
         "trade_log_count": len(eng.trade_log),
         "executed_trades": [],
@@ -716,8 +716,25 @@ async def reset_ticker_settings(ticker: str, user: dict = Depends(verify_token))
         asyncio.create_task(save_settings_to_cloud())
     return {"status": "success"}
 
-def _load_saved_settings(, user: dict = Depends(verify_token)):
-    """Load indicator toggles from settings.json on startup."""
+def _load_saved_settings(user: dict = Depends(verify_token)):
+    def _load_saved_settings(user: dict = Depends(verify_token)):
+    """
+    Load indicator toggles from settings.json on startup.
+    """
+    # Existing implementation (placeholder)
+    pass
+
+@app.post("/api/clear_evaluation_cache")
+async def clear_evaluation_cache_endpoint(data: dict, user: dict = Depends(verify_token)):
+    """
+    Clear evaluation cache for optional ticker and timeframe.
+    """
+    ticker = data.get("ticker")
+    timeframe = data.get("timeframe")
+    from trader import clear_evaluation_cache
+    clear_evaluation_cache(ticker, timeframe)
+    return {"status": "success", "cleared": {"ticker": ticker, "timeframe": timeframe}}
+
     eng = user_manager.get_engine(user['uid'])
     import json, os
     settings_path = os.path.join(os.path.dirname(__file__), "settings.json")

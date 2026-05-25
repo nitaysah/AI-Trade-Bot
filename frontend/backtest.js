@@ -113,9 +113,14 @@ document.addEventListener('DOMContentLoaded', () => {
     syncBacktestSliderRange();
     console.log('[backtest] Center Initialized.');
 
-    // Start Alpaca Status Polling
-    pollAlpacaStatus();
-    setInterval(pollAlpacaStatus, 30000); // Check every 30s
+    // Start Alpaca Status Polling once auth is ready
+    const checkAuth = setInterval(() => {
+        if (window.auth && window.auth.currentUser) {
+            clearInterval(checkAuth);
+            pollAlpacaStatus();
+            setInterval(pollAlpacaStatus, 30000); // Check every 30s
+        }
+    }, 500);
 });
 
 async function pollAlpacaStatus() {
@@ -127,7 +132,7 @@ async function pollAlpacaStatus() {
 
     try {
         const headers = await getAuthHeaders();
-        const response = await fetch(`${API_BASE}/api/dashboard`, { headers });
+        const response = await fetch(`${API_BASE}/api/dashboard?mode=fast`, { headers });
         const data = await response.json();
         window.lastDashboardData = data;
 

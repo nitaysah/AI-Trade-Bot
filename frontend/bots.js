@@ -14,6 +14,8 @@ let selectedTicker = null;
 let currentBackendTf = "5Min";
 let isAlpacaLinked = false;
 let currentLogTab = "all";
+let currentChartPeriod = "1M";
+let portfolioChartInstance = null;
 
 // ──────────────────────────────────────────────
 // Auth Headers
@@ -77,18 +79,18 @@ function setBotTab(tab) {
     const allBtn = document.getElementById('tabBotsAll');
     const stocksBtn = document.getElementById('tabBotsStocks');
     const cryptoBtn = document.getElementById('tabBotsCrypto');
-    
+
     [allBtn, stocksBtn, cryptoBtn].forEach(btn => {
         if (btn) btn.className = "px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600";
     });
-    
+
     const activeBtn = document.getElementById(`tabBots${tab.charAt(0).toUpperCase() + tab.slice(1)}`);
     if (activeBtn) {
         activeBtn.className = "px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all bg-white text-indigo-600 shadow-sm border border-indigo-100";
     }
-    
+
     if (window.lastBotsData) {
-        renderTradelist(window.lastBotsData.scans, window.lastBotsData.tradelist, window.lastBotsData.tickerAmounts);
+        renderTradelist(window.lastBotsData.botScans || window.lastBotsData.watchlistScans, window.lastBotsData.tradelist, window.lastBotsData.tickerAmounts);
     }
 }
 
@@ -100,7 +102,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
     // Update active bot count card with breakdown
     const countEl = document.getElementById('activeBotCount');
     const subEl = document.getElementById('botStatusSub');
-    
+
     const totalCount = (tradelist || []).length;
     const pausedCount = tradelist ? tradelist.filter(t => (window.lastBotsData?.ticker_settings || {})[t]?.paused).length : 0;
     const runningCount = totalCount - pausedCount;
@@ -138,7 +140,12 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         item.className = `watchlist-item group active-bot ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2 flex flex-col gap-2`;
 
         const action = scan?.action || '—';
-        const price = scan?.price ? `$${parseFloat(scan.price.toString().replace('$', '')).toFixed(2)}` : '---';
+        let price = '---';
+        const isCrypto = ticker.includes('USD') || ticker.includes('BTC') || ticker.includes('ETH') || ticker.includes('SOL') || ticker.includes('DOGE') || ticker.includes('LTC');
+        if (scan?.price) {
+            const parsedPrice = parseFloat(scan.price.toString().replace('$', ''));
+            price = isCrypto ? `$${parsedPrice.toFixed(4)}` : `$${parsedPrice.toFixed(2)}`;
+        }
         const actionColor = action === 'BUY' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : action === 'SELL' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-400 border-slate-100';
 
         const bullish = scan?.bullish_count ?? 0;
@@ -150,45 +157,105 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             ? 'h-2 w-2 bg-slate-300 rounded-full'
             : 'h-2 w-2 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]';
 
+        // Check for active position
+        const positions = window.lastBotsData?.positions || [];
+        const activePosition = positions.find(p => p.symbol === ticker);
+
+        let positionHtml = '';
+        if (activePosition) {
+            const qty = activePosition.qty;
+            const avgCostVal = activePosition.avg_price;
+            const avgCost = isCrypto ? avgCostVal.toFixed(4) : avgCostVal.toFixed(2);
+            const mktValue = activePosition.market_value.toFixed(2);
+            const currPriceVal = activePosition.current_price;
+            const currPrice = isCrypto ? currPriceVal.toFixed(4) : currPriceVal.toFixed(2);
+
+            const dailyPl = activePosition.unrealized_intraday_pl || 0;
+            const dailyPlPc = activePosition.unrealized_intraday_plpc || 0;
+            const dailyPlStr = dailyPl >= 0 ? `+$${dailyPl.toFixed(2)}` : `-$${Math.abs(dailyPl).toFixed(2)}`;
+            const dailyPlPcStr = dailyPlPc >= 0 ? `(+${dailyPlPc.toFixed(2)}%)` : `(${dailyPlPc.toFixed(2)}%)`;
+            const dailyColorClass = dailyPl >= 0 ? 'text-emerald-500 bg-emerald-50/50' : 'text-rose-500 bg-rose-50/50';
+
+            const totalPl = activePosition.unrealized_pl || 0;
+            const totalPlPc = activePosition.unrealized_pl_pct || 0;
+            const totalPlStr = totalPl >= 0 ? `+$${totalPl.toFixed(2)}` : `-$${Math.abs(totalPl).toFixed(2)}`;
+            const totalPlPcStr = totalPlPc >= 0 ? `(+${totalPlPc.toFixed(2)}%)` : `(${totalPlPc.toFixed(2)}%)`;
+            const totalColorClass = totalPl >= 0 ? 'text-emerald-500 bg-emerald-50/50' : 'text-rose-500 bg-rose-50/50';
+
+            const costBasis = (qty * avgCostVal).toFixed(2);
+            const qtyDisp = qty % 1 === 0 ? qty : (qty < 1 ? qty.toFixed(6) : qty.toFixed(4));
+
+            positionHtml = `
+                <div class="mt-2 pt-2 border-t border-slate-50 grid grid-cols-4 gap-1.5 cursor-pointer" onclick="selectTicker('${ticker}')">
+                    <div class="flex flex-col">
+                        <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Holding</span>
+                        <span class="text-[0.62rem] font-black text-indigo-950 font-mono tracking-tight">${qtyDisp} @ $${avgCost}</span>
+                    </div>
+                    <div class="flex flex-col">
+                        <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Total Cost</span>
+                        <span class="text-[0.62rem] font-black text-indigo-950 font-mono tracking-tight">$${costBasis}</span>
+                    </div>
+                    <div class="flex flex-col">
+                        <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Market Val</span>
+                        <span class="text-[0.62rem] font-black text-indigo-950 font-mono tracking-tight">$${mktValue}</span>
+                    </div>
+                    <div class="flex flex-col gap-1 justify-center">
+                        <div class="flex items-center justify-between px-1.5 py-0.5 rounded ${dailyColorClass} w-full leading-none">
+                            <span class="text-[0.45rem] font-bold uppercase opacity-85">1D</span>
+                            <span class="text-[0.55rem] font-black font-mono tracking-tight ml-1">${dailyPlStr} <span class="opacity-75 text-[0.45rem] font-medium ml-0.5">${dailyPlPcStr}</span></span>
+                        </div>
+                        <div class="flex items-center justify-between px-1.5 py-0.5 rounded ${totalColorClass} w-full leading-none">
+                            <span class="text-[0.45rem] font-bold uppercase opacity-85">Tot</span>
+                            <span class="text-[0.55rem] font-black font-mono tracking-tight ml-1">${totalPlStr} <span class="opacity-75 text-[0.45rem] font-medium ml-0.5">${totalPlPcStr}</span></span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        } else {
+            positionHtml = `
+                <div class="mt-2 pt-2 border-t border-slate-50 flex items-center justify-center py-1 cursor-pointer" onclick="selectTicker('${ticker}')">
+                    <span class="text-[0.65rem] font-bold text-slate-400 animate-pulse tracking-wide flex items-center gap-1.5">
+                        💤 Standing by. Watching market for entry...
+                    </span>
+                </div>
+            `;
+        }
+
         item.innerHTML = `
-                <!-- Top Layer: Ticker & Status -->
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center gap-2 cursor-pointer" onclick="selectTicker('${ticker}')">
+                <!-- Top Layer: Ticker, Status, Price, Action & Signals -->
+                <div class="flex items-center justify-between cursor-pointer" onclick="selectTicker('${ticker}')">
+                    <div class="flex items-center gap-2">
                         <div class="${dotClass}"></div>
                         <span class="font-black text-sm ${isPaused ? 'text-slate-400' : 'text-indigo-950'} tracking-tight">${ticker}</span>
-                        <span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-400 border border-indigo-100">${tfLabel}</span>
                         ${isPaused ? '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-500 border border-amber-200">PAUSED</span>' : '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-100">ACTIVE</span>'}
+                        <span class="px-1.5 py-0.5 rounded bg-indigo-50/50 text-indigo-500 font-mono font-black text-[0.55rem] border border-indigo-100/50 uppercase">${tfLabel}</span>
+                        <span class="text-[0.75rem] font-black text-slate-600 font-mono tracking-tight ml-1">${price}</span>
                     </div>
                     
                     <div class="flex items-center gap-1.5">
+                        <span class="px-1.5 py-0.5 rounded border ${actionColor} font-black text-[0.5rem] tracking-widest uppercase">${action}</span>
                         <span class="text-[0.6rem] font-bold text-emerald-600 bg-emerald-50 px-1 rounded border border-emerald-100">${bullish}B</span>
                         <span class="text-[0.6rem] font-bold text-red-600 bg-red-50 px-1 rounded border border-red-100">${bearish}S</span>
-                    </div>
 
-                    <div class="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
-                        <button class="p-1.5 rounded hover:bg-indigo-50 text-indigo-400 transition-all" 
-                            onclick="event.stopPropagation(); openStrategyModal('${ticker}', 'edit')">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                            </svg>
-                        </button>
-                        <button class="p-1.5 rounded hover:bg-rose-50 text-rose-400 transition-all" 
-                            onclick="event.stopPropagation(); removeFromTradelist('${ticker}')">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                        </button>
+                        <div class="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity ml-1">
+                            <button class="p-1 rounded hover:bg-indigo-50 text-indigo-400 transition-all" 
+                                onclick="event.stopPropagation(); openStrategyModal('${ticker}', 'edit')">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </button>
+                            <button class="p-1 rounded hover:bg-rose-50 text-rose-400 transition-all" 
+                                onclick="event.stopPropagation(); removeFromTradelist('${ticker}')">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        </div>
                     </div>
                 </div>
 
-                <!-- Bottom Layer: Price & Action -->
-                <div class="flex items-center justify-between border-t border-slate-50 pt-2 cursor-pointer" onclick="selectTicker('${ticker}')">
-                    <span class="text-xs font-black text-slate-500 font-mono tracking-tight">${price}</span>
-                    <div class="px-2 py-0.5 rounded border ${actionColor} shadow-sm min-w-[50px] text-center">
-                        <span class="font-black text-[0.65rem] tracking-widest">${action}</span>
-                    </div>
-                </div>
+                ${positionHtml}
         `;
         container.appendChild(item);
     });
@@ -284,10 +351,6 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders) {
                     <th class="pb-3 pr-4">Ticker</th>
                     <th class="pb-3 pr-4 text-center">TF</th>
                     <th class="pb-3 pr-4">Price</th>
-                    <th class="pb-3 pr-4 text-center">Qty</th>
-                    <th class="pb-3 pr-4 text-center">Total</th>
-                    <th class="pb-3 pr-4 text-center">Fee</th>
-                    <th class="pb-3 pr-4 text-center">P/L</th>
                     <th class="pb-3 pr-4">Signals</th>
                     <th class="pb-3 pr-4">AI Reason</th>
                 </tr>
@@ -298,11 +361,11 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders) {
                     <th class="pb-3 pr-4">Time Created</th>
                     <th class="pb-3 pr-4">Ticker</th>
                     <th class="pb-3 pr-4">Side</th>
-                    <th class="pb-3 pr-4">Type</th>
-                    <th class="pb-3 pr-4 text-center">Status</th>
                     <th class="pb-3 pr-4 text-center">Qty Filled</th>
                     <th class="pb-3 pr-4 text-center">Avg Price</th>
-                    <th class="pb-3 pr-4">Order ID</th>
+                    <th class="pb-3 pr-4 text-center">Total Cost</th>
+                    <th class="pb-3 pr-4 text-center">P/L</th>
+                    <th class="pb-3 pr-4">AI Summary</th>
                 </tr>
             `;
         } else if (currentLogTab === 'pending') {
@@ -311,10 +374,11 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders) {
                     <th class="pb-3 pr-4">Time Placed</th>
                     <th class="pb-3 pr-4">Ticker</th>
                     <th class="pb-3 pr-4">Side</th>
-                    <th class="pb-3 pr-4">Type</th>
-                    <th class="pb-3 pr-4 text-center">Status</th>
+                    <th class="pb-3 pr-4 text-center">TIF</th>
                     <th class="pb-3 pr-4 text-center">Qty</th>
-                    <th class="pb-3 pr-4">Order ID</th>
+                    <th class="pb-3 pr-4 text-center">Target Price</th>
+                    <th class="pb-3 pr-4 text-center">Total Value</th>
+                    <th class="pb-3 pr-4">AI Summary</th>
                     <th class="pb-3 pr-4 text-center">Action</th>
                 </tr>
             `;
@@ -373,21 +437,6 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders) {
                 ? `${item.bullish_count}B / ${item.bearish_count}S`
                 : '—';
 
-            const plVal = item.pl !== undefined && item.pl !== null ? Number(item.pl) : null;
-            const plPct = item.pl_pct !== undefined && item.pl_pct !== null ? Number(item.pl_pct) : null;
-            let plHtml = '<td class="py-2.5 pr-4 text-center text-[0.65rem] text-slate-300">—</td>';
-
-            if (plVal !== null) {
-                const plColor = plVal >= 0 ? 'text-emerald-500' : 'text-red-500';
-                const sign = plVal >= 0 ? '+' : '';
-                plHtml = `
-                    <td class="py-2.5 pr-4 text-center ${plColor} font-bold text-[0.65rem]">
-                        <div>${sign}${plVal.toFixed(2)}</div>
-                        <div class="text-[0.55rem] opacity-80">${sign}${plPct.toFixed(2)}%</div>
-                    </td>
-                `;
-            }
-
             row.innerHTML = `
                 <td class="py-2.5 pr-4 text-purple-600 text-xs">${formatLocalTime(item.time)}</td>
                 <td class="py-2.5 pr-4 ${actionColor} text-xs">${item.action}</td>
@@ -396,10 +445,6 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders) {
                     <span class="px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-500 font-black text-[0.55rem] border border-indigo-100">${item.timeframe || '5M'}</span>
                 </td>
                 <td class="py-2.5 pr-4 text-indigo-700 font-medium text-xs">${item.price}</td>
-                <td class="py-2.5 pr-4 text-center text-[0.65rem] font-bold text-indigo-900">${item.qty && !isNaN(item.qty) ? Number(item.qty).toFixed(4) : (item.qty || '—')}</td>
-                <td class="py-2.5 pr-4 text-center text-[0.65rem] font-bold text-emerald-600">$${item.total_cost ? Number(item.total_cost).toFixed(2) : '—'}</td>
-                <td class="py-2.5 pr-4 text-center text-[0.65rem] text-purple-400 font-mono">$${item.fees ? Number(item.fees).toFixed(2) : '0.00'}</td>
-                ${plHtml}
                 <td class="py-2.5 pr-4 text-xs">
                     <span class="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-mono text-[0.6rem]">${signalBadge}</span>
                 </td>
@@ -407,36 +452,67 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders) {
             `;
         } else if (currentLogTab === 'trades') {
             const sideColor = item.side === 'buy' ? 'text-emerald-600 font-bold' : 'text-rose-500 font-bold';
-            const statusColor = item.status === 'filled' ? 'bg-emerald-100 text-emerald-700 border-emerald-200' :
-                                item.status === 'cancelled' ? 'bg-slate-100 text-slate-500 border-slate-200' :
-                                'bg-rose-100 text-rose-700 border-rose-200';
+            
+            // Dynamic precision price formatting
+            const cleanSym = String(item.symbol).toUpperCase();
+            const isCrypto = cleanSym.includes("USD") || cleanSym.includes("USDT") || cleanSym.includes("USDC");
+            const priceDecimals = (isCrypto || (item.filled_avg_price && item.filled_avg_price < 10)) ? 4 : 2;
+            const avgPriceStr = item.filled_avg_price ? Number(item.filled_avg_price).toFixed(priceDecimals) : '0.00';
+            const totalCostStr = item.total_cost ? Number(item.total_cost).toFixed(2) : '0.00';
+            
+            // Realized P/L cell formatting
+            let plHtml = '<td class="py-2.5 pr-4 text-center text-slate-300 text-[11px]">—</td>';
+            if (item.pl !== undefined && item.pl !== null) {
+                const plVal = Number(item.pl);
+                const plPct = Number(item.pl_pct || 0.0);
+                const plColor = plVal >= 0 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold';
+                const sign = plVal >= 0 ? '+' : '';
+                plHtml = `
+                    <td class="py-2.5 pr-4 text-center ${plColor} text-[11px]">
+                        <div>${sign}$${plVal.toFixed(2)}</div>
+                        <div class="text-[9px] opacity-80 font-semibold">${sign}${plPct.toFixed(2)}%</div>
+                    </td>
+                `;
+            } else if (item.side === 'buy') {
+                plHtml = '<td class="py-2.5 pr-4 text-center text-indigo-400 font-black text-[9px] uppercase tracking-wider">Entry</td>';
+            }
+
+            const aiReason = item.reason || 'AI Strategy: Execution criteria satisfied.';
 
             row.innerHTML = `
                 <td class="py-2.5 pr-4 text-purple-600 text-xs">${formatLocalTime(item.created_at)}</td>
                 <td class="py-2.5 pr-4 text-indigo-950 font-semibold text-xs">${item.symbol}</td>
                 <td class="py-2.5 pr-4 text-xs ${sideColor} uppercase">${item.side}</td>
-                <td class="py-2.5 pr-4 text-xs text-indigo-900 font-mono uppercase">${item.type}</td>
-                <td class="py-2.5 pr-4 text-center">
-                    <span class="px-1.5 py-0.5 rounded-md font-bold text-[0.55rem] border ${statusColor} uppercase">${item.status}</span>
-                </td>
-                <td class="py-2.5 pr-4 text-center text-[0.65rem] font-bold text-indigo-900">${item.filled_qty ? item.filled_qty.toFixed(4) : '0.0000'} / ${item.qty ? item.qty.toFixed(4) : '0.0000'}</td>
-                <td class="py-2.5 pr-4 text-center text-xs text-indigo-700 font-medium">$${item.filled_avg_price ? item.filled_avg_price.toFixed(2) : '0.00'}</td>
-                <td class="py-2.5 pr-4 text-purple-400 font-mono text-[0.6rem] truncate max-w-[100px]" title="${item.id}">${item.id}</td>
+                <td class="py-2.5 pr-4 text-center text-[0.65rem] font-bold text-indigo-900">${item.filled_qty ? item.filled_qty.toFixed(4) : '0.0000'}</td>
+                <td class="py-2.5 pr-4 text-center text-xs text-indigo-700 font-medium">$${avgPriceStr}</td>
+                <td class="py-2.5 pr-4 text-center text-xs text-indigo-900 font-bold">$${totalCostStr}</td>
+                ${plHtml}
+                <td class="py-2.5 pr-4 text-purple-500 italic text-[11px] max-w-[200px] truncate" title="${aiReason}">${aiReason}</td>
             `;
         } else if (currentLogTab === 'pending') {
             const sideColor = item.side === 'buy' ? 'text-emerald-600 font-bold' : 'text-rose-500 font-bold';
-            const statusColor = 'bg-amber-100 text-amber-700 border-amber-200 animate-pulse';
+            
+            // Dynamic precision price formatting
+            const cleanSym = String(item.symbol).toUpperCase();
+            const isCrypto = cleanSym.includes("USD") || cleanSym.includes("USDT") || cleanSym.includes("USDC");
+            const priceDecimals = (isCrypto || (item.limit_price && item.limit_price < 10)) ? 4 : 2;
+            
+            const limitPriceVal = item.limit_price ? Number(item.limit_price) : (item.stop_price ? Number(item.stop_price) : 0);
+            const limitPriceStr = limitPriceVal > 0 ? `$${limitPriceVal.toFixed(priceDecimals)}` : 'Market';
+            const totalValueStr = item.total_cost ? `$${Number(item.total_cost).toFixed(2)}` : '—';
+            
+            const tifBadge = `<span class="px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-500 font-black text-[0.55rem] border border-indigo-100 uppercase">${item.time_in_force || 'GTC'}</span>`;
+            const aiReason = item.reason || 'AI Strategy: Trigger awaiting limit order criteria.';
 
             row.innerHTML = `
                 <td class="py-2.5 pr-4 text-purple-600 text-xs">${formatLocalTime(item.created_at)}</td>
                 <td class="py-2.5 pr-4 text-indigo-950 font-semibold text-xs">${item.symbol}</td>
                 <td class="py-2.5 pr-4 text-xs ${sideColor} uppercase">${item.side}</td>
-                <td class="py-2.5 pr-4 text-xs text-indigo-900 font-mono uppercase">${item.type}</td>
-                <td class="py-2.5 pr-4 text-center">
-                    <span class="px-1.5 py-0.5 rounded-md font-bold text-[0.55rem] border ${statusColor} uppercase">${item.status}</span>
-                </td>
+                <td class="py-2.5 pr-4 text-center">${tifBadge}</td>
                 <td class="py-2.5 pr-4 text-center text-[0.65rem] font-bold text-indigo-900">${item.qty ? item.qty.toFixed(4) : '0.0000'}</td>
-                <td class="py-2.5 pr-4 text-purple-400 font-mono text-[0.6rem] truncate max-w-[100px]" title="${item.id}">${item.id}</td>
+                <td class="py-2.5 pr-4 text-center text-xs text-indigo-700 font-medium">${limitPriceStr}</td>
+                <td class="py-2.5 pr-4 text-center text-xs text-indigo-900 font-bold">${totalValueStr}</td>
+                <td class="py-2.5 pr-4 text-purple-500 italic text-[11px] max-w-[200px] truncate" title="${aiReason}">${aiReason}</td>
                 <td class="py-2.5 pr-4 text-center">
                     <button onclick="cancelOrder('${item.id}')"
                         class="px-2 py-1 bg-rose-500 text-white rounded hover:bg-rose-600 transition-all font-black text-[9px] uppercase tracking-wider">
@@ -493,12 +569,12 @@ let strategyModalMode = 'deploy'; // 'deploy' or 'edit'
 window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
     currentStrategySymbol = symbol.toUpperCase();
     strategyModalMode = mode;
-    
+
     const modal = document.getElementById('botStrategyModal');
     const titleEl = document.getElementById('strategyModalTitle');
     const subtitleEl = document.getElementById('strategyModalSubtitle');
     const actionBtn = document.getElementById('strategyActionButton');
-    
+
     if (!modal) return;
 
     // UI State based on Mode
@@ -507,16 +583,16 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         subtitleEl.textContent = name ? `Configure parameters for ${name}` : 'Set initial strategy parameters';
         actionBtn.textContent = 'Deploy Strategy 🚀';
         actionBtn.className = "w-full bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-black py-4 rounded-2xl hover:shadow-lg hover:shadow-emerald-500/30 transition-all active:scale-[0.98] uppercase tracking-[0.2em] shadow-md flex items-center justify-center gap-2";
-        
+
         // Defaults for deployment
+        const globalParams = window.lastBotsData?.indicator_parameters || {};
         document.getElementById('strategyCapital').value = 100;
-        document.getElementById('strategyBuyThreshold').value = 0;
-        document.getElementById('strategySellThreshold').value = 0;
-        updateStrategySignalLabels();
+        document.getElementById('strategyBuyThreshold').value = globalParams.MIN_BULLISH_SIGNALS || 4;
+        document.getElementById('strategySellThreshold').value = globalParams.MIN_BEARISH_SIGNALS || 4;
         document.getElementById('strategyTimeframe').value = "1Hour";
         document.getElementById('strategySellMode').value = "indicator";
         window._strategyPaused = false;
-        
+
         // Reset Risk Overrides to defaults
         document.getElementById('strategyRiskPerTrade').value = 2.0;
         document.getElementById('strategyMaxDailyDrawdown').value = 5.0;
@@ -524,11 +600,11 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyAtrStopMult').value = 2.0;
         document.getElementById('strategyAtrTrailMult').value = 3.0;
         document.getElementById('strategyAtrTpMult').value = 4.0;
-        
+
         // Ensure collapsed on open
         document.getElementById('riskControlsContent').classList.add('hidden');
         document.getElementById('riskArrowIcon').classList.remove('rotate-180');
-        
+
         // Reset Indicators
         document.querySelectorAll('.strategy-indicator-check').forEach(chk => chk.checked = false);
     } else {
@@ -536,17 +612,17 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         subtitleEl.textContent = 'Adjust active bot strategy parameters';
         actionBtn.textContent = 'Save Settings 💾';
         actionBtn.className = "w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-black py-4 rounded-2xl hover:shadow-lg hover:shadow-indigo-500/30 transition-all active:scale-[0.98] uppercase tracking-[0.2em] shadow-md flex items-center justify-center gap-2";
-        
+
         // Load existing settings
         const settings = (window.lastBotsData?.ticker_settings || {})[currentStrategySymbol] || {};
+        const globalParams = window.lastBotsData?.indicator_parameters || {};
         document.getElementById('strategyCapital').value = settings.amount || '';
-        document.getElementById('strategyBuyThreshold').value = settings.min_buy_signals || 0;
-        document.getElementById('strategySellThreshold').value = settings.min_sell_signals || 0;
-        updateStrategySignalLabels();
+        document.getElementById('strategyBuyThreshold').value = settings.min_buy_signals !== undefined ? settings.min_buy_signals : (globalParams.MIN_BULLISH_SIGNALS || 4);
+        document.getElementById('strategySellThreshold').value = settings.min_sell_signals !== undefined ? settings.min_sell_signals : (globalParams.MIN_BEARISH_SIGNALS || 4);
         document.getElementById('strategyTimeframe').value = settings.timeframe || '1Hour';
         document.getElementById('strategySellMode').value = settings.sell_mode || 'indicator';
         window._strategyPaused = settings.paused || false;
-        
+
         // Load Risk Overrides
         document.getElementById('strategyRiskPerTrade').value = settings.risk_per_trade !== undefined ? (settings.risk_per_trade * 100).toFixed(1) : 2.0;
         document.getElementById('strategyMaxDailyDrawdown').value = settings.max_daily_drawdown !== undefined ? (settings.max_daily_drawdown * 100).toFixed(1) : 5.0;
@@ -554,17 +630,18 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyAtrStopMult').value = settings.atr_stop_multiplier !== undefined ? settings.atr_stop_multiplier : 2.0;
         document.getElementById('strategyAtrTrailMult').value = settings.atr_trail_multiplier !== undefined ? settings.atr_trail_multiplier : 3.0;
         document.getElementById('strategyAtrTpMult').value = settings.take_profit_multiplier !== undefined ? settings.take_profit_multiplier : 4.0;
-        
+
         // Ensure collapsed on open
         document.getElementById('riskControlsContent').classList.add('hidden');
         document.getElementById('riskArrowIcon').classList.remove('rotate-180');
-        
+
         const enabledIndicators = settings.indicators || ['RSI', 'MACD', 'EMA Cross', 'Supertrend', 'Bollinger', 'VWAP', 'Mystic Pulse', 'Candle Patterns'];
         document.querySelectorAll('.strategy-indicator-check').forEach(chk => {
             chk.checked = enabledIndicators.includes(chk.value);
         });
     }
 
+    updateStrategySignalLabels();
     updateStrategyPauseButton();
     modal.classList.remove('hidden');
 
@@ -595,7 +672,7 @@ window.closeStrategyModal = function () {
     currentStrategySymbol = null;
 };
 
-window.updateStrategySignalLabels = function() {
+window.updateStrategySignalLabels = function () {
     const checkedCount = document.querySelectorAll('.strategy-indicator-check:checked').length;
     const buyInput = document.getElementById('strategyBuyThreshold');
     const sellInput = document.getElementById('strategySellThreshold');
@@ -624,7 +701,7 @@ window.updateStrategySignalLabels = function() {
     sellLabel.textContent = `${sellInput.value} of ${checkedCount} Signals`;
 };
 
-window.adjustStrategyThreshold = function(type, delta) {
+window.adjustStrategyThreshold = function (type, delta) {
     const checkedCount = document.querySelectorAll('.strategy-indicator-check:checked').length;
     if (checkedCount === 0) return;
 
@@ -637,7 +714,7 @@ window.adjustStrategyThreshold = function(type, delta) {
     window.updateStrategySignalLabels();
 };
 
-window.toggleRiskSection = function() {
+window.toggleRiskSection = function () {
     const content = document.getElementById('riskControlsContent');
     const arrow = document.getElementById('riskArrowIcon');
     if (content.classList.contains('hidden')) {
@@ -666,7 +743,7 @@ function updateStrategyPauseButton() {
     }
 }
 
-window.handleStrategyAction = async function() {
+window.handleStrategyAction = async function () {
     if (strategyModalMode === 'deploy') {
         await confirmAndDeployBot();
     } else {
@@ -719,7 +796,7 @@ async function saveTickerSettings() {
     }
 }
 
-window.resetTickerSettings = async function() {
+window.resetTickerSettings = async function () {
     if (!currentStrategySymbol) return;
     if (!confirm(`Reset ${currentStrategySymbol} to global defaults?`)) return;
 
@@ -742,7 +819,7 @@ window.resetTickerSettings = async function() {
 async function fetchBotsData() {
     try {
         const headers = await getAuthHeaders();
-        const url = `${API_BASE}/api/dashboard`;
+        const url = `${API_BASE}/api/dashboard?mode=fast&source=bots`;
         const response = await fetch(url, { headers });
         const data = await response.json();
 
@@ -752,7 +829,20 @@ async function fetchBotsData() {
 
         // Connection status
         isAlpacaLinked = !data.simulation && data.has_keys;
-        updateAlpacaStatus(isAlpacaLinked);
+        updateAlpacaStatus(isAlpacaLinked, data);
+
+        const connPrompt = document.getElementById('connectionPrompt');
+        const dashContent = document.getElementById('dashboardContent');
+
+        if (!isAlpacaLinked && !data.has_keys) {
+            if (connPrompt) connPrompt.classList.remove('hidden');
+            if (dashContent) dashContent.classList.add('hidden');
+            return; // Don't try to render portfolio cards or bots if we are showing the prompt
+        } else {
+            if (connPrompt) connPrompt.classList.add('hidden');
+            if (dashContent) dashContent.classList.remove('hidden');
+            fetchPortfolioHistory();
+        }
 
         // Portfolio cards
         if (document.getElementById('totalCapital')) {
@@ -792,7 +882,7 @@ async function fetchBotsData() {
         }
 
         // Active bots list
-        renderTradelist(data.watchlistScans, data.tradelist, data.tickerAmounts);
+        renderTradelist(data.botScans || data.watchlistScans, data.tradelist, data.tickerAmounts);
 
         // Auto-select first active bot if none selected
         if (!selectedTicker && data.tradelist && data.tradelist.length > 0) {
@@ -800,8 +890,14 @@ async function fetchBotsData() {
         }
 
         // AI Summary
-        if (document.getElementById('aiSummary') && data.sentiment_summary) {
-            document.getElementById('aiSummary').textContent = data.sentiment_summary;
+        if (document.getElementById('aiSummary')) {
+            let summaryText = "";
+            if (selectedTicker && data.botScans && data.botScans[selectedTicker] && data.botScans[selectedTicker].sentiment_summary) {
+                summaryText = data.botScans[selectedTicker].sentiment_summary;
+            } else if (data.sentiment_summary) {
+                summaryText = data.sentiment_summary;
+            }
+            document.getElementById('aiSummary').textContent = summaryText || "Waiting for scan analysis...";
         }
 
         // Execution log
@@ -815,7 +911,7 @@ async function fetchBotsData() {
     }
 }
 
-function updateAlpacaStatus(isLinked) {
+function updateAlpacaStatus(isLinked, data = null) {
     const statusEl = document.getElementById('alpacaLinkStatus');
     const dotEl = document.getElementById('alpacaStatusDot');
     const textEl = document.getElementById('alpacaStatusText');
@@ -829,10 +925,113 @@ function updateAlpacaStatus(isLinked) {
         textEl.textContent = 'Alpaca';
         if (btnUnlink) btnUnlink.classList.remove('hidden');
     } else {
-        statusEl.className = 'flex items-center justify-center h-9 text-xs font-black px-5 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider bg-amber-50 text-amber-600 border-amber-100';
-        dotEl.className = 'h-2 w-2 rounded-full mr-2 bg-amber-500 animate-pulse';
-        textEl.textContent = 'SIMULATION';
-        if (btnUnlink) btnUnlink.classList.add('hidden');
+        if (data && data.has_keys) {
+            statusEl.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-amber-50 text-amber-600 border-2 border-amber-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
+            dotEl.className = "h-2 w-2 rounded-full mr-2 bg-amber-500 animate-pulse";
+            textEl.textContent = "RETRYING...";
+            if (btnUnlink) btnUnlink.classList.remove('hidden');
+        } else {
+            statusEl.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-rose-50 text-rose-600 border-2 border-rose-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
+            dotEl.className = "h-2 w-2 rounded-full mr-2 bg-rose-500 animate-pulse";
+            textEl.textContent = "SIMULATION";
+            if (btnUnlink) btnUnlink.classList.add('hidden');
+        }
+    }
+}
+
+// ──────────────────────────────────────────────
+// Alpaca Connection Logic
+// ──────────────────────────────────────────────
+function openAlpacaModal() {
+    const modal = document.getElementById('alpacaModal');
+    if (modal) {
+        modal.classList.remove('hidden');
+        // Clear fields for security
+        const keyEl = document.getElementById('alpacaKey');
+        const secretEl = document.getElementById('alpacaSecret');
+        if (keyEl) keyEl.value = "";
+        if (secretEl) secretEl.value = "";
+    }
+}
+
+function closeAlpacaModal() {
+    const modal = document.getElementById('alpacaModal');
+    if (modal) modal.classList.add('hidden');
+}
+
+function openGuideModal() {
+    const modal = document.getElementById('guideModal');
+    if (modal) modal.classList.remove('hidden');
+}
+
+function closeGuideModal() {
+    const modal = document.getElementById('guideModal');
+    if (modal) modal.classList.add('hidden');
+}
+
+async function submitAlpacaConfig() {
+    const key = document.getElementById('alpacaKey').value.trim();
+    const secret = document.getElementById('alpacaSecret').value.trim();
+    const isPaper = document.getElementById('alpacaPaper').checked;
+    const btn = document.getElementById('alpacaSubmitBtn');
+
+    if (!key || !secret) {
+        alert("Please provide both API Key and Secret.");
+        return;
+    }
+
+    const originalText = btn.innerText;
+    btn.innerText = "ESTABLISHING BRIDGE...";
+    btn.disabled = true;
+
+    try {
+        const headers = await getAuthHeaders();
+        const response = await fetch(`${API_BASE}/api/alpaca_config`, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({
+                api_key: key,
+                secret_key: secret,
+                paper: isPaper
+            })
+        });
+
+        const data = await response.json();
+        if (data.status === 'success') {
+            alert("Connection Successful! Your Alpaca account is now linked.");
+            closeAlpacaModal();
+            fetchBotsData();
+        } else {
+            alert("Connection Failed: " + data.message);
+        }
+    } catch (err) {
+        console.error(err);
+        alert("Backend communication error.");
+    } finally {
+        btn.innerText = originalText;
+        btn.disabled = false;
+    }
+}
+
+async function unlinkAlpaca() {
+    if (!confirm("Are you sure you want to unlink your Alpaca account? The bot will switch back to simulation mode.")) return;
+
+    try {
+        const headers = await getAuthHeaders();
+        const response = await fetch(`${API_BASE}/api/alpaca_config`, {
+            method: 'DELETE',
+            headers: headers
+        });
+        const data = await response.json();
+        if (data.status === 'success') {
+            alert(data.message);
+            fetchBotsData();
+        } else {
+            alert("Error unlinking account.");
+        }
+    } catch (err) {
+        console.error(err);
+        alert("Backend communication error.");
     }
 }
 
@@ -1024,9 +1223,9 @@ async function unlinkAlpaca() {
 // Init
 // ──────────────────────────────────────────────
 (function init() {
-    // Wait for Firebase auth to be ready before first fetch
+    // Wait for Firebase auth to be ready and currentUser to be populated before first fetch
     const waitForAuth = setInterval(() => {
-        if (window.auth) {
+        if (window.auth && window.auth.currentUser) {
             clearInterval(waitForAuth);
             fetchBotsData();
             setInterval(fetchBotsData, REFRESH_INTERVAL);
@@ -1101,7 +1300,7 @@ function openIndicatorSettings(indicatorName) {
     const container = document.getElementById('indicatorModalContent');
     const title = document.getElementById('indicatorModalTitle');
 
-    
+
     const desc = INDICATOR_TOOLTIPS[indicatorName] || "Adjust parameters for this indicator.";
     const tooltipHtml = `<div class="group/tooltip relative inline-flex items-center ml-2 align-middle">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-indigo-200 hover:text-white cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1218,3 +1417,216 @@ function toggleIndicatorCard(card, event) {
         checkbox.dispatchEvent(new Event('change', { bubbles: true }));
     }
 }
+
+// ──────────────────────────────────────────────
+// Portfolio Equity History Chart Logic
+// ──────────────────────────────────────────────
+function getChartTimeframe(period) {
+    switch (period.toUpperCase()) {
+        case '1D': return '15Min';
+        case '1W': return '1H';
+        case '1M': return '1D';
+        case '1Y': return '1D';
+        default: return '1D';
+    }
+}
+
+async function setChartPeriod(period) {
+    currentChartPeriod = period;
+
+    // Update active period button styling
+    const buttons = ['1D', '1W', '1M', '1Y'];
+    buttons.forEach(btn => {
+        const el = document.getElementById(`period-${btn}`);
+        if (el) {
+            if (btn === period) {
+                el.className = "px-3.5 py-1.5 text-[0.65rem] font-black uppercase rounded-lg transition-all bg-white text-indigo-600 shadow-sm border border-indigo-100";
+            } else {
+                el.className = "px-3.5 py-1.5 text-[0.65rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600";
+            }
+        }
+    });
+
+    await fetchPortfolioHistory();
+}
+
+async function fetchPortfolioHistory() {
+    const canvas = document.getElementById('portfolioHistoryChart');
+    if (!canvas) return;
+
+    try {
+        const headers = await getAuthHeaders();
+        const tf = getChartTimeframe(currentChartPeriod);
+        const url = `${API_BASE}/api/portfolio/history?period=${currentChartPeriod}&timeframe=${tf}`;
+
+        const response = await fetch(url, { headers });
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+
+        const data = await response.json();
+        if (!data || !data.timestamp || data.timestamp.length === 0) {
+            console.warn("[chart] No portfolio history data returned.");
+            return;
+        }
+
+        // Format timestamps for the labels based on period
+        const labels = data.timestamp.map(ts => {
+            const date = new Date(ts * 1000);
+            if (currentChartPeriod.toUpperCase() === '1D') {
+                return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+            } else if (currentChartPeriod.toUpperCase() === '1W') {
+                return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' + date.toLocaleTimeString('en-US', { hour: '2-digit', hour12: false }) + ':00';
+            } else {
+                return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
+            }
+        });
+
+        const equities = data.equity;
+
+        // Calculate dynamic limits to fit the curve beautifully without starting at zero
+        const minEquity = Math.min(...equities);
+        const maxEquity = Math.max(...equities);
+        const padding = (maxEquity - minEquity) * 0.1 || 100; // fallback if no variation
+        const yMin = Math.floor(minEquity - padding);
+        const yMax = Math.ceil(maxEquity + padding);
+
+        // Update performance metric text based on first and last points of active curve
+        if (equities && equities.length > 0) {
+            const firstEq = equities[0];
+            const lastEq = equities[equities.length - 1];
+            const finalPl = lastEq - firstEq;
+            const finalPlPct = firstEq > 0 ? (finalPl / firstEq * 100) : 0.0;
+
+            const subEl = document.getElementById('equityPerformanceSub');
+            if (subEl) {
+                const sign = finalPl >= 0 ? '+' : '';
+                const colorClass = finalPl >= 0 ? 'text-emerald-500' : 'text-rose-500';
+                subEl.innerHTML = `Performance: <span class="${colorClass} font-black">${sign}$${finalPl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${sign}${finalPlPct.toFixed(2)}%)</span> over this ${currentChartPeriod}`;
+            }
+        }
+
+        // Destroy existing chart if it exists to avoid overlapping
+        if (portfolioChartInstance) {
+            portfolioChartInstance.destroy();
+        }
+
+        const ctx = canvas.getContext('2d');
+
+        // Create gorgeous linear area gradient
+        const gradient = ctx.createLinearGradient(0, 0, 0, 240);
+        gradient.addColorStop(0, 'rgba(168, 85, 247, 0.4)'); // Fuchsia
+        gradient.addColorStop(0.5, 'rgba(99, 102, 241, 0.15)'); // Indigo
+        gradient.addColorStop(1, 'rgba(99, 102, 241, 0)');
+
+        // Premium chart configuration
+        portfolioChartInstance = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Portfolio Equity',
+                    data: equities,
+                    fill: true,
+                    backgroundColor: gradient,
+                    borderColor: 'rgb(147, 51, 234)', // Purple-600
+                    borderWidth: 2.5,
+                    pointBackgroundColor: 'rgb(147, 51, 234)',
+                    pointBorderColor: '#ffffff',
+                    pointBorderWidth: 1.5,
+                    pointRadius: 0, // Clean line, show points only on hover
+                    pointHoverRadius: 6,
+                    pointHoverBackgroundColor: 'rgb(79, 70, 229)', // Indigo-600
+                    pointHoverBorderColor: '#ffffff',
+                    pointHoverBorderWidth: 2.5,
+                    tension: 0.35, // Smooth cubic spline interpolation
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: false // Clean look, no legend
+                    },
+                    tooltip: {
+                        enabled: true,
+                        mode: 'index',
+                        intersect: false,
+                        backgroundColor: 'rgba(15, 23, 42, 0.85)', // Premium slate-900 background
+                        titleColor: '#ffffff',
+                        titleFont: {
+                            family: "'Inter', sans-serif",
+                            size: 11,
+                            weight: '800'
+                        },
+                        bodyColor: '#e2e8f0',
+                        bodyFont: {
+                            family: "'Inter', sans-serif",
+                            size: 12,
+                            weight: 'bold'
+                        },
+                        padding: 12,
+                        borderRadius: 12,
+                        borderColor: 'rgba(255, 255, 255, 0.1)',
+                        borderWidth: 1,
+                        callbacks: {
+                            label: function (context) {
+                                let val = context.parsed.y;
+                                return ` Equity: $${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: {
+                            display: false, // Clean look
+                        },
+                        ticks: {
+                            color: 'rgb(156, 163, 175)', // Gray-400
+                            font: {
+                                family: "'Inter', sans-serif",
+                                size: 9,
+                                weight: 'bold'
+                            },
+                            maxTicksLimit: currentChartPeriod.toUpperCase() === '1D' ? 6 : 8
+                        },
+                        border: {
+                            display: false
+                        }
+                    },
+                    y: {
+                        min: yMin,
+                        max: yMax,
+                        grid: {
+                            color: 'rgba(243, 244, 246, 0.8)', // Light gridlines
+                            drawBorder: false
+                        },
+                        ticks: {
+                            color: 'rgb(156, 163, 175)',
+                            font: {
+                                family: "'Inter', sans-serif",
+                                size: 9,
+                                weight: 'bold'
+                            },
+                            callback: function (value) {
+                                return '$' + value.toLocaleString('en-US', { maximumFractionDigits: 0 });
+                            }
+                        },
+                        border: {
+                            display: false
+                        }
+                    }
+                },
+                interaction: {
+                    mode: 'nearest',
+                    axis: 'x',
+                    intersect: false
+                }
+            }
+        });
+
+    } catch (e) {
+        console.error("[chart] Error rendering portfolio history:", e);
+    }
+}
+

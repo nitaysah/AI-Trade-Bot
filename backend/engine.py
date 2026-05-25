@@ -30,6 +30,8 @@ class UserEngine:
         self.force_scan_trigger = asyncio.Event()
         self.last_scan_time = None
         self.dashboard_primary_ticker = None
+        self.loaded_from_cloud = False
+        self.load_lock = asyncio.Lock()
         
     def get_now(self):
         tz = pytz.timezone(self.config.TIMEZONE if hasattr(self.config, 'TIMEZONE') else 'US/Central')
@@ -126,6 +128,7 @@ class UserEngine:
             if doc_bot.exists:
                 self.bot_scans.update(doc_bot.to_dict().get("data", {}))
                 
+            self.loaded_from_cloud = True
         except Exception as e:
             print(f"[engine-{self.uid}] Load error: {e}")
 
@@ -209,11 +212,10 @@ class UserEngine:
                     ticker,
                     account_equity=account['equity'],
                     available_cash=avail_cash,
-                    timeframe=timeframe
+                    timeframe=timeframe,
+                    use_bot_settings=False
                 )
                 self._record_scan(warmed)
-                if ticker in self.config.TRADELIST:
-                    self._record_bot_scan(warmed)
             except Exception as exc:
                 print(f"[warmup-{self.uid}] {ticker} {timeframe} failed: {exc}")
 
@@ -276,16 +278,39 @@ class UserEngine:
                         self.last_scan_timestamps[ticker] = now
 
                         avail_cash = account.get('non_marginable_buying_power') or account['cash'] if is_crypto else account['cash']
+                        is_watched = ticker in self.config.WATCHLIST
+                        tf_to_use = t_settings.get('timeframe') or self.config.DEFAULT_TIMEFRAME
                         
-                        result = await asyncio.to_thread(
-                            evaluate_trade,
-                            ticker, 
-                            account_equity=equity, 
-                            available_cash=avail_cash
-                        )
+                        result = None
+                        if is_active:
+                            bot_result = await asyncio.to_thread(
+                                evaluate_trade,
+                                ticker, 
+                                account_equity=equity, 
+                                available_cash=avail_cash,
+                                timeframe=tf_to_use,
+                                use_bot_settings=True
+                            )
+                            if bot_result:
+                                self._record_bot_scan(bot_result)
+                                result = bot_result
+
+                        if is_watched:
+                            # Always fetch global evaluation for the dashboard using global settings
+                            global_result = await asyncio.to_thread(
+                                evaluate_trade,
+                                ticker, 
+                                account_equity=equity, 
+                                available_cash=avail_cash,
+                                timeframe=self.config.DEFAULT_TIMEFRAME,
+                                use_bot_settings=False
+                            )
+                            if global_result:
+                                self._record_scan(global_result)
+                                if not is_active:
+                                    result = global_result
+                                    
                         if result:
-                            if is_active: self._record_bot_scan(result)
-                            self._record_scan(result)
                             trade_executed = False
 
                             if is_active:
@@ -311,7 +336,7 @@ class UserEngine:
                                 
                                 # Sell Mode Logic
                                 if has_this_pos and pos_info:
-                                    entry_price = float(pos_info.get('avg_entry_price', result['price_raw']))
+                                    entry_price = float(pos_info.get('avg_price', result['price_raw']))
                                     current_price = result['price_raw']
                                     
                                     stop_mult = t_settings.get('atr_stop_multiplier', self.config.get('ATR_STOP_MULTIPLIER', 2.0))
@@ -351,11 +376,8 @@ class UserEngine:
                                         result['action'] = 'HOLD'
                                         result['reason'] = f"Max positions reached ({portfolio_count}/{max_pos})."
                                     elif has_this_pos:
-                                        if pos_info:
-                                            result['pl'] = pos_info['unrealized_pl']
-                                            result['pl_pct'] = pos_info['unrealized_pl_pct']
-                                            result['qty'] = pos_info['qty']
-                                        result['reason'] = "Position already open."
+                                        result['action'] = 'HOLD'
+                                        result['reason'] = "Position already open. (Buy signal ignored)"
                                     elif has_open_order:
                                         result['action'] = 'PENDING'
                                         result['reason'] = "Buy order pending."
