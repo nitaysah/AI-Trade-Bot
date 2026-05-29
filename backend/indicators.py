@@ -174,28 +174,28 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca"):
                 lookback_days = 3
             elif tf_str == "5MIN":
                 tf_obj = TimeFrame(5, TimeFrameUnit.Minute)
-                lookback_days = 4
+                lookback_days = 10
             elif tf_str == "10MIN":
                 tf_obj = TimeFrame(10, TimeFrameUnit.Minute)
-                lookback_days = 5
+                lookback_days = 15
             elif tf_str == "15MIN":
                 tf_obj = TimeFrame(15, TimeFrameUnit.Minute)
-                lookback_days = 7
+                lookback_days = 20
             elif tf_str == "30MIN":
                 tf_obj = TimeFrame(30, TimeFrameUnit.Minute)
-                lookback_days = 14
+                lookback_days = 35
             elif tf_str in ["1HOUR", "60MIN"]:
                 tf_obj = TimeFrame.Hour
-                lookback_days = 30
+                lookback_days = 100
             elif tf_str == "2HOUR":
                 tf_obj = TimeFrame(2, TimeFrameUnit.Hour)
-                lookback_days = 45
+                lookback_days = 200
             elif tf_str == "4HOUR":
                 tf_obj = TimeFrame(4, TimeFrameUnit.Hour)
-                lookback_days = 60
+                lookback_days = 400
             elif tf_str in ["1D", "1DAY"]:
                 tf_obj = TimeFrame.Day
-                lookback_days = 365
+                lookback_days = 3650
             else:
                 tf_obj = TimeFrame(5, TimeFrameUnit.Minute)
                 lookback_days = 5
@@ -608,6 +608,212 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
         df.loc[three_white_soldiers, "cdl_name"] = "3 White Soldiers"
         df.loc[three_black_crows, "cdl_name"] = "3 Black Crows"
 
+        # ═══════════════════════════════════════════════════════════════════
+        # PREMIUM INDICATORS — BotBulls1, BotBulls2, BotBulls3
+        # ═══════════════════════════════════════════════════════════════════
+
+        # --- BotBulls1: WaveTrend + MFI (Market Cipher B / VuManChu) --------
+        try:
+            _n1 = 10   # Channel Length
+            _n2 = 21   # Average Length
+            ap = (high + low + close) / 3  # hlc3
+            esa = ta_lib.trend.ema_indicator(ap, window=_n1)
+            d_wt = ta_lib.trend.ema_indicator((ap - esa).abs(), window=_n1)
+            # Avoid division by zero
+            d_wt_safe = d_wt.replace(0, np.nan)
+            ci = (ap - esa) / (0.015 * d_wt_safe)
+            ci = ci.fillna(0)
+            df["WT1"] = ta_lib.trend.ema_indicator(ci, window=_n2)
+            df["WT2"] = df["WT1"].rolling(window=4).mean()
+
+            # MFI (14-period)
+            mfi_ind = ta_lib.volume.MFIIndicator(
+                high=high, low=low, close=close, volume=volume, window=14
+            )
+            df["MFI_14"] = mfi_ind.money_flow_index()
+
+            # Signal: WT1 crosses WT2 at extremes + MFI confirmation
+            wt1_arr = df["WT1"].values
+            wt2_arr = df["WT2"].values
+            mfi_arr = df["MFI_14"].values
+            ba1_buy = np.zeros(len(df), dtype=bool)
+            ba1_sell = np.zeros(len(df), dtype=bool)
+            for i in range(1, len(df)):
+                if not (np.isnan(wt1_arr[i]) or np.isnan(wt2_arr[i]) or np.isnan(wt1_arr[i-1]) or np.isnan(wt2_arr[i-1])):
+                    cross_up = wt1_arr[i] > wt2_arr[i] and wt1_arr[i-1] <= wt2_arr[i-1]
+                    cross_dn = wt1_arr[i] < wt2_arr[i] and wt1_arr[i-1] >= wt2_arr[i-1]
+                    mfi_v = mfi_arr[i] if not np.isnan(mfi_arr[i]) else 50
+                    if cross_up and wt1_arr[i] < -53 and mfi_v < 30:
+                        ba1_buy[i] = True
+                    elif cross_dn and wt1_arr[i] > 53 and mfi_v > 70:
+                        ba1_sell[i] = True
+            df["BA1_Buy"] = ba1_buy
+            df["BA1_Sell"] = ba1_sell
+        except Exception as e:
+            print(f"[indicators] BotBulls1 error: {e}")
+            df["WT1"] = 0.0
+            df["WT2"] = 0.0
+            df["MFI_14"] = 50.0
+            df["BA1_Buy"] = False
+            df["BA1_Sell"] = False
+
+        # --- BotBulls2: Smart Trail + Trend Tracer + Reversal Zones (LuxAlgo) --
+        try:
+            _lx_atr_len = 14
+            _lx_atr_mult = 2.0
+            # Reuse existing ATR or compute dedicated one
+            lx_atr = df["ATR"].values
+            close_arr_lx = close.to_numpy()
+            n_lx = len(df)
+
+            # Component 1: Smart Trail (ATR Trailing Stop)
+            lx_trail = np.full(n_lx, np.nan)
+            lx_trend = np.ones(n_lx, dtype=bool)  # True = UP
+            # Init first valid bar
+            first_valid = 0
+            for idx_lx in range(n_lx):
+                if not np.isnan(lx_atr[idx_lx]):
+                    first_valid = idx_lx
+                    break
+            lx_trail[first_valid] = close_arr_lx[first_valid] - lx_atr[first_valid] * _lx_atr_mult
+            lx_trend[first_valid] = True
+
+            for i in range(first_valid + 1, n_lx):
+                nLoss = lx_atr[i] * _lx_atr_mult if not np.isnan(lx_atr[i]) else 0
+                if close_arr_lx[i] > lx_trail[i-1] and close_arr_lx[i-1] > lx_trail[i-1]:
+                    lx_trail[i] = max(lx_trail[i-1], close_arr_lx[i] - nLoss)
+                    lx_trend[i] = True
+                elif close_arr_lx[i] < lx_trail[i-1] and close_arr_lx[i-1] < lx_trail[i-1]:
+                    lx_trail[i] = min(lx_trail[i-1], close_arr_lx[i] + nLoss)
+                    lx_trend[i] = False
+                elif close_arr_lx[i] > lx_trail[i-1]:
+                    lx_trail[i] = close_arr_lx[i] - nLoss
+                    lx_trend[i] = True
+                else:
+                    lx_trail[i] = close_arr_lx[i] + nLoss
+                    lx_trend[i] = False
+
+            df["LX_SmartTrail"] = lx_trail
+            df["LX_SmartTrend"] = lx_trend
+
+            # Component 2: Trend Tracer (Hull-inspired double-smooth EMA)
+            _tt_period = 50
+            ema_full = ta_lib.trend.ema_indicator(close, window=_tt_period)
+            ema_half = ta_lib.trend.ema_indicator(close, window=max(_tt_period // 2, 2))
+            df["LX_TrendTracer"] = 2 * ema_half - ema_full
+
+            # Component 3: Reversal Zones (±2σ from 50-SMA)
+            _rz_period = 50
+            rz_mean = close.rolling(window=_rz_period).mean()
+            rz_std = close.rolling(window=_rz_period).std()
+            df["LX_RZ_Upper"] = rz_mean + 2 * rz_std
+            df["LX_RZ_Lower"] = rz_mean - 2 * rz_std
+
+            # Component 4: Signal Classification (Score 0-4)
+            rsi_arr = df["RSI"].values
+            tt_arr = df["LX_TrendTracer"].values
+            rz_upper_arr = df["LX_RZ_Upper"].values
+            rz_lower_arr = df["LX_RZ_Lower"].values
+            lx_score = np.zeros(n_lx, dtype=int)
+
+            for i in range(n_lx):
+                s = 0
+                # +1: Smart Trail direction is UP
+                if lx_trend[i]:
+                    s += 1
+                # +1: Price above Trend Tracer
+                if not np.isnan(tt_arr[i]) and close_arr_lx[i] > tt_arr[i]:
+                    s += 1
+                # +1: Not in bearish reversal zone (overbought)
+                if not np.isnan(rz_upper_arr[i]) and close_arr_lx[i] < rz_upper_arr[i]:
+                    s += 1
+                # +1: RSI in healthy bullish range (40-70)
+                if not np.isnan(rsi_arr[i]) and 40 < rsi_arr[i] < 70:
+                    s += 1
+                lx_score[i] = s
+            df["LX_Score"] = lx_score
+
+        except Exception as e:
+            print(f"[indicators] BotBulls2 error: {e}")
+            df["LX_SmartTrail"] = close.copy()
+            df["LX_SmartTrend"] = True
+            df["LX_TrendTracer"] = close.copy()
+            df["LX_RZ_Upper"] = close.copy()
+            df["LX_RZ_Lower"] = close.copy()
+            df["LX_Score"] = 0
+
+        # --- BotBulls3: Heikin-Ashi + UT Bot ATR Trailing Stop ---------------
+        try:
+            _ut_key = 1.0       # Sensitivity multiplier (QuantNomad default)
+            _ut_atr_period = 10 # ATR lookback (QuantNomad default)
+            open_arr = df["Open"].to_numpy()
+            high_arr = high.to_numpy()
+            low_arr = low.to_numpy()
+            close_arr_ut = close.to_numpy()
+            n_ut = len(df)
+
+            # 1. Heikin-Ashi candles
+            ha_close = (open_arr + high_arr + low_arr + close_arr_ut) / 4
+            ha_open = np.empty(n_ut)
+            ha_open[0] = (open_arr[0] + close_arr_ut[0]) / 2
+            for i in range(1, n_ut):
+                ha_open[i] = (ha_open[i-1] + ha_close[i-1]) / 2
+            ha_high = np.maximum(high_arr, np.maximum(ha_open, ha_close))
+            ha_low = np.minimum(low_arr, np.minimum(ha_open, ha_close))
+
+            # 2. ATR on Heikin-Ashi candles (Wilder's)
+            ha_tr = np.zeros(n_ut)
+            ha_tr[0] = ha_high[0] - ha_low[0]
+            for i in range(1, n_ut):
+                ha_tr[i] = max(
+                    ha_high[i] - ha_low[i],
+                    abs(ha_high[i] - ha_close[i-1]),
+                    abs(ha_low[i] - ha_close[i-1])
+                )
+            # Wilder's smoothing for ATR
+            ha_atr = np.zeros(n_ut)
+            ha_atr[:_ut_atr_period] = np.nan
+            if n_ut >= _ut_atr_period:
+                ha_atr[_ut_atr_period - 1] = np.mean(ha_tr[:_ut_atr_period])
+                for i in range(_ut_atr_period, n_ut):
+                    ha_atr[i] = (ha_atr[i-1] * (_ut_atr_period - 1) + ha_tr[i]) / _ut_atr_period
+
+            nLoss_ut = ha_atr * _ut_key
+
+            # 3. Recursive trailing stop on HA Close
+            ut_trail = np.full(n_ut, np.nan)
+            ut_above = np.ones(n_ut, dtype=bool)
+            # Find first valid bar
+            ut_start = _ut_atr_period - 1 if n_ut >= _ut_atr_period else 0
+            if not np.isnan(nLoss_ut[ut_start]):
+                ut_trail[ut_start] = ha_close[ut_start] - nLoss_ut[ut_start]
+                ut_above[ut_start] = True
+
+            for i in range(ut_start + 1, n_ut):
+                nl = nLoss_ut[i] if not np.isnan(nLoss_ut[i]) else 0
+                if ha_close[i] > ut_trail[i-1] and ha_close[i-1] > ut_trail[i-1]:
+                    ut_trail[i] = max(ut_trail[i-1], ha_close[i] - nl)
+                    ut_above[i] = True
+                elif ha_close[i] < ut_trail[i-1] and ha_close[i-1] < ut_trail[i-1]:
+                    ut_trail[i] = min(ut_trail[i-1], ha_close[i] + nl)
+                    ut_above[i] = False
+                elif ha_close[i] > ut_trail[i-1]:
+                    ut_trail[i] = ha_close[i] - nl
+                    ut_above[i] = True
+                else:
+                    ut_trail[i] = ha_close[i] + nl
+                    ut_above[i] = False
+
+            df["HA_Close"] = ha_close
+            df["UT_Trail"] = ut_trail
+            df["UT_Above"] = ut_above
+
+        except Exception as e:
+            print(f"[indicators] BotBulls3 error: {e}")
+            df["HA_Close"] = close.copy()
+            df["UT_Trail"] = close.copy()
+            df["UT_Above"] = True
+
         # --- Build result --------------------------------------------------
         # Forward-fill then back-fill any remaining NaN from warm-up period
         indicator_cols = [
@@ -616,6 +822,10 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
             "BOLL_Upper", "BOLL_Lower", "BOLL_Middle",
             "Supertrend", "ATR", "VWAP",
             "ADX", "DI_Plus", "DI_Minus",
+            # Premium indicator columns
+            "WT1", "WT2", "MFI_14",
+            "LX_SmartTrail", "LX_TrendTracer", "LX_RZ_Upper", "LX_RZ_Lower",
+            "HA_Close", "UT_Trail",
         ]
         for col in indicator_cols:
             if col in df.columns:
@@ -670,6 +880,24 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
                     "macd_hist":     _safe(row.get("MACD_Hist")),
                     "mystic_bull":   _safe(row.get("Bull_Pulse")),
                     "mystic_bear":   _safe(row.get("Bear_Pulse")),
+                    "adx":           _safe(row.get("ADX")),
+                    "di_plus":       _safe(row.get("DI_Plus")),
+                    "di_minus":      _safe(row.get("DI_Minus")),
+                    # Premium indicators
+                    "wt1":            _safe(row.get("WT1")),
+                    "wt2":            _safe(row.get("WT2")),
+                    "mfi":            _safe(row.get("MFI_14")),
+                    "ba1_buy":        bool(row.get("BA1_Buy", False)),
+                    "ba1_sell":       bool(row.get("BA1_Sell", False)),
+                    "lx_smart_trail": _safe(row.get("LX_SmartTrail")),
+                    "lx_smart_trend": bool(row.get("LX_SmartTrend", True)),
+                    "lx_trend_tracer":_safe(row.get("LX_TrendTracer")),
+                    "lx_rz_upper":    _safe(row.get("LX_RZ_Upper")),
+                    "lx_rz_lower":    _safe(row.get("LX_RZ_Lower")),
+                    "lx_score":       _safe(row.get("LX_Score")),
+                    "ha_close":       _safe(row.get("HA_Close")),
+                    "ut_trail":       _safe(row.get("UT_Trail")),
+                    "ut_above":       bool(row.get("UT_Above", True)),
                 } for t, row in df.iterrows()
             ],
             "df": df,
@@ -824,6 +1052,56 @@ def _generate_signals(latest, prev):
                 ),
                 "reason": f"Pattern: {latest.get('cdl_name', 'None')}",
                 "weight": 1,
+            },
+            # ═══════════════ Premium Indicators ═══════════════
+            "BotBulls1": {
+                "signal": (
+                    "BULLISH" if bool(latest.get("BA1_Buy", False))
+                    else "BEARISH" if bool(latest.get("BA1_Sell", False))
+                    else "NEUTRAL"
+                ),
+                "reason": (
+                    f"WT Cross ↑ Oversold ({float(latest.get('WT1', 0)):.0f}) + MFI {float(latest.get('MFI_14', 50)):.0f}" if bool(latest.get("BA1_Buy", False))
+                    else f"WT Cross ↓ Overbought ({float(latest.get('WT1', 0)):.0f}) + MFI {float(latest.get('MFI_14', 50)):.0f}" if bool(latest.get("BA1_Sell", False))
+                    else f"WT1: {float(latest.get('WT1', 0)):.1f} | MFI: {float(latest.get('MFI_14', 50)):.0f}"
+                ),
+                "weight": 1,
+                "premium": True,
+            },
+            "BotBulls2": {
+                "signal": (
+                    # Fire on Smart Trail FLIP with score >= 2
+                    "BULLISH" if (bool(latest.get("LX_SmartTrend", True)) and not bool(prev.get("LX_SmartTrend", True)) and int(latest.get("LX_Score", 0)) >= 2)
+                    else "BEARISH" if (not bool(latest.get("LX_SmartTrend", True)) and bool(prev.get("LX_SmartTrend", True)) and (4 - int(latest.get("LX_Score", 0))) >= 2)
+                    # Also show directional bias when trending (no flip)
+                    else "BULLISH" if (bool(latest.get("LX_SmartTrend", True)) and int(latest.get("LX_Score", 0)) >= 3)
+                    else "BEARISH" if (not bool(latest.get("LX_SmartTrend", True)) and int(latest.get("LX_Score", 0)) <= 1)
+                    else "NEUTRAL"
+                ),
+                "reason": (
+                    f"Trail {'↑' if bool(latest.get('LX_SmartTrend', True)) else '↓'} | "
+                    f"Score {int(latest.get('LX_Score', 0))}/4 | "
+                    f"{'Trend ✓' if (not np.isnan(float(latest.get('LX_TrendTracer', 0))) and price > float(latest.get('LX_TrendTracer', 0))) else 'Trend ✗'}"
+                ),
+                "weight": 1,
+                "premium": True,
+            },
+            "BotBulls3": {
+                "signal": (
+                    # Signal on FLIP only
+                    "BULLISH" if (bool(latest.get("UT_Above", True)) and not bool(prev.get("UT_Above", True)))
+                    else "BEARISH" if (not bool(latest.get("UT_Above", True)) and bool(prev.get("UT_Above", True)))
+                    # Show directional bias when no flip
+                    else "BULLISH" if bool(latest.get("UT_Above", True))
+                    else "BEARISH"
+                ),
+                "reason": (
+                    f"HA {'Above' if bool(latest.get('UT_Above', True)) else 'Below'} Trail ({float(latest.get('UT_Trail', 0)):.2f})"
+                    + (" | FLIP ↑" if (bool(latest.get("UT_Above", True)) and not bool(prev.get("UT_Above", True))) else "")
+                    + (" | FLIP ↓" if (not bool(latest.get("UT_Above", True)) and bool(prev.get("UT_Above", True))) else "")
+                ),
+                "weight": 1,
+                "premium": True,
             },
         }
 

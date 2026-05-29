@@ -15,7 +15,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
         rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=31">
+    <link rel="stylesheet" href="styles.css?v=34">
     <!-- Firebase Sentinel (Auth Guard) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
@@ -216,6 +216,91 @@
                         </svg>
                     </div>
                 </div>
+
+                <!-- Upcoming Macro Events -->
+                <div class="card-glass group flex flex-col p-5 cursor-pointer hover:ring-2 hover:ring-indigo-400 transition-all overflow-hidden relative" onclick="openMacroModal()">
+                    <div class="card-glow"></div>
+                    <h3 class="card-label uppercase tracking-widest text-[10px] font-black text-slate-500 mb-4">
+                        Macro Events
+                    </h3>
+                    <div class="absolute top-4 right-4 text-slate-400">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clip-rule="evenodd" />
+                        </svg>
+                    </div>
+                    
+                    <div class="flex-1 flex flex-col justify-center gap-2 relative z-10" id="macroEventsContainer">
+                        <div class="flex items-center justify-between text-sm">
+                            <span class="font-bold text-slate-700">CPI Data Release</span>
+                            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-600 uppercase">High</span>
+                        </div>
+                        <div class="flex items-center justify-between text-sm">
+                            <span class="font-bold text-slate-700">FOMC Minutes</span>
+                            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-orange-100 text-orange-600 uppercase">Med</span>
+                        </div>
+                        <div class="flex items-center justify-between text-sm">
+                            <span class="font-bold text-slate-700">Initial Jobless</span>
+                            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-yellow-100 text-yellow-600 uppercase">Low</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Market Breadth / Trend Alignment -->
+                <div class="card-glass group flex flex-col p-5 cursor-pointer hover:ring-2 hover:ring-indigo-400 transition-all overflow-hidden relative items-center" onclick="openBreadthModal()">
+                    <div class="card-glow"></div>
+                    <h3 class="card-label absolute top-4 left-4 right-4 text-left uppercase tracking-widest text-[10px] font-black text-slate-500">
+                        Market Breadth
+                    </h3>
+                    <div class="absolute top-4 right-4 text-slate-400">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M12 7a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0V8.414l-4.293 4.293a1 1 0 01-1.414 0L8 10.414l-4.293 4.293a1 1 0 01-1.414-1.414l5-5a1 1 0 011.414 0L11 10.586 14.586 7H12z" clip-rule="evenodd" />
+                        </svg>
+                    </div>
+
+                    <div class="flex-1 flex flex-col items-center justify-center relative w-full mt-6">
+                        <div class="relative w-24 h-24 flex items-center justify-center">
+                            <!-- Circular Progress -->
+                            <svg class="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
+                                <!-- Background Circle -->
+                                <path class="text-slate-200" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" stroke-width="3" />
+                                <!-- Progress Circle (Dynamic via JS, mocked to 65%) -->
+                                <path id="breadthProgress" class="text-emerald-500" stroke-dasharray="65, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
+                            </svg>
+                            <div class="absolute flex flex-col items-center justify-center">
+                                <span id="breadthScore" class="text-xl font-black text-slate-800">65%</span>
+                            </div>
+                        </div>
+                        <span id="breadthLabel" class="text-xs font-bold text-emerald-600 mt-2 uppercase tracking-wide">Bullish Trend</span>
+                    </div>
+                </div>
+
+                <!-- Sector Heatmap -->
+                <div class="card-glass group flex flex-col p-5 cursor-pointer hover:ring-2 hover:ring-indigo-400 transition-all overflow-hidden relative" onclick="openSectorModal()">
+                    <div class="card-glow"></div>
+                    <h3 class="card-label absolute top-4 left-4 right-4 text-left uppercase tracking-widest text-[10px] font-black text-slate-500">
+                        Sector Heatmap
+                    </h3>
+                    <div class="absolute top-4 right-4 text-slate-400">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                            <path d="M5 3a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2V5a2 2 0 00-2-2H5zM5 11a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2v-2a2 2 0 00-2-2H5zM11 5a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V5zM11 13a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+                        </svg>
+                    </div>
+
+                    <div class="flex-1 flex flex-col justify-end gap-2 mt-8 relative z-10" id="sectorHeatmapContainer">
+                        <div class="flex items-center justify-between">
+                            <span class="text-sm font-bold text-slate-600">Technology</span>
+                            <span class="px-2 py-1 rounded text-xs font-bold bg-emerald-100 text-emerald-700">+1.2%</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-sm font-bold text-slate-600">Crypto</span>
+                            <span class="px-2 py-1 rounded text-xs font-bold bg-emerald-100 text-emerald-700">+3.4%</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-sm font-bold text-slate-600">Energy</span>
+                            <span class="px-2 py-1 rounded text-xs font-bold bg-red-100 text-red-700">-0.8%</span>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- ═══════════════ MAIN GRID ═══════════════ -->
@@ -360,6 +445,45 @@
                             </div>
                             <div class="chart-osc-pane" id="oscChart_mystic"></div>
                         </div>
+                        <div class="relative group">
+                            <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
+                                onclick="openIndicatorSettings('ADX')" id="adxLabel">
+                                ADX (14) / DI+ / DI-<div class="group/tooltip relative inline-flex items-center ml-1">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
+                                        Average Directional Index (ADX) measures trend strength (regardless of direction). DI+ (Green) and DI- (Red) indicate trend direction.
+                                        <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900"></div>
+                                    </div>
+                                </div>
+                                <svg class="w-3 h-3 opacity-70 hover:opacity-100 transition-opacity" fill="none"
+                                    stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
+                                    </path>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                </svg>
+                            </div>
+                            <div class="chart-osc-pane" id="oscChart_adx"></div>
+                        </div>
+                        <div class="relative group">
+                            <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
+                                id="botbulls1Label">
+                                BotBulls1 (WaveTrend + MFI)
+                                <div class="group/tooltip relative inline-flex items-center ml-1">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
+                                        WaveTrend Momentum Oscillator + Money Flow analysis. Detects reversals when momentum and institutional volume flow align at oversold/overbought extremes.
+                                        <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="chart-osc-pane" id="oscChart_botbulls1"></div>
+                        </div>
 
                         <!-- Webull-style range/session/footer row -->
                         <div class="chart-bottom-bar">
@@ -407,19 +531,9 @@
                                     id="bullCount">0 Bullish</span>
                                 <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700"
                                     id="bearCount">0 Bearish</span>
-                                <button onclick="openIndicatorSettings('Strategy Confidence')"
-                                    class="ml-1 p-1 rounded hover:bg-emerald-50 text-emerald-600 transition-colors"
-                                    title="Global Strategy Settings">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none"
-                                        viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                            d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                    </svg>
-                                </button>
                             </div>
                         </div>
+                        
                         <div class="relative min-h-[120px]">
                             <div id="gridLoading"
                                 class="hidden absolute inset-0 z-10 flex flex-col items-center justify-center bg-white/40 backdrop-blur-[2px] rounded-xl transition-all duration-300">
@@ -433,12 +547,18 @@
                             <div id="signalGrid" class="grid grid-cols-2 md:grid-cols-3 gap-3">
                                 <!-- Signals injected by JS -->
                             </div>
-                        </div>
-                        <!-- Verdict Bar -->
-                        <div class="mt-4 p-3 rounded-lg border" id="verdictBar">
-                            <div class="flex items-center justify-between">
-                                <span class="font-bold text-sm" id="verdictLabel">HOLD</span>
-                                <span class="text-xs text-purple-500" id="verdictReason">Waiting for scan...</span>
+
+                            <!-- Premium Indicators Sub-Box -->
+                            <div class="mt-4 pt-3 border-t border-amber-200/60">
+                                <div class="flex items-center gap-2 mb-3">
+                                    <h3 class="text-xs font-black text-amber-700 uppercase tracking-widest">
+                                        ✦ Premium Indicators
+                                    </h3>
+                                    <span class="px-1.5 py-0.5 text-[9px] font-black bg-gradient-to-r from-amber-400 to-orange-500 text-white rounded-md uppercase tracking-wider shadow-sm">PRO</span>
+                                </div>
+                                <div id="premiumSignalGrid" class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                    <!-- Premium signals injected by JS -->
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -513,127 +633,10 @@
 
     <!-- Ticker Settings Modal -->
 
-    <!-- Ticker Settings Modal -->
-    <div id="tickerModal"
-        class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden z-50 flex items-center justify-center p-4">
-        <div
-            class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
-            <div
-                class="bg-gradient-to-r from-indigo-600 to-purple-600 p-4 flex justify-between items-center text-white">
-                <h3 class="font-bold text-lg" id="modalTickerName">BTCUSD Settings</h3>
-                <button onclick="closeTickerModal()" class="hover:rotate-90 transition-all duration-300">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12">
-                        </path>
-                    </svg>
-                </button>
-            </div>
-            <div class="p-6 space-y-4">
-                <div class="space-y-1">
-                    <div class="flex items-center gap-1 mb-1">
-                        <label class="text-xs font-bold text-slate-500 uppercase">Trade Amount ($)</label>
-                        <div class="group relative">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-slate-400 cursor-help"
-                                fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                            </svg>
-                            <div
-                                class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-white text-[0.65rem] rounded-lg shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 leading-relaxed">
-                                Total capital allocated to this specific ticker. Overrides global defaults.
-                            </div>
-                        </div>
-                    </div>
-                    <input type="number" id="modalAmount"
-                        class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                        placeholder="Manual Entry Required">
-                </div>
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="space-y-1">
-                        <div class="flex items-center gap-1 mb-1">
-                            <label class="text-xs font-bold text-slate-500 uppercase">Risk / Trade (%)</label>
-                            <div class="group relative">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-slate-400 cursor-help"
-                                    fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                </svg>
-                                <div
-                                    class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-white text-[0.65rem] rounded-lg shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 leading-relaxed">
-                                    % of your budget to risk on each trade based on stop loss distance.
-                                </div>
-                            </div>
-                        </div>
-                        <input type="number" id="modalRisk"
-                            class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                            placeholder="Enter Risk %" step="0.1">
-                    </div>
-                    <div class="space-y-1">
-                        <div class="flex items-center gap-1 mb-1">
-                            <label class="text-xs font-bold text-slate-500 uppercase">ATR Stop Mult</label>
-                            <div class="group relative">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-slate-400 cursor-help"
-                                    fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                </svg>
-                                <div
-                                    class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-white text-[0.65rem] rounded-lg shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 leading-relaxed">
-                                    Multiplier for ATR to set stop loss distance. Higher = wider stops.
-                                </div>
-                            </div>
-                        </div>
-                        <input type="number" id="modalAtrStop"
-                            class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                            placeholder="Enter ATR Mult" step="0.1">
-                    </div>
-                </div>
-                <div class="space-y-1">
-                    <div class="flex items-center gap-1 mb-1">
-                        <label class="text-xs font-bold text-slate-500 uppercase">Take Profit Mult</label>
-                        <div class="group relative">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-slate-400 cursor-help"
-                                fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                            </svg>
-                            <div
-                                class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-white text-[0.65rem] rounded-lg shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 leading-relaxed">
-                                Multiplier for your risk distance to set the target. e.g. 1.5 = 1.5x risk.
-                            </div>
-                        </div>
-                    </div>
-                    <input type="number" id="modalTpMult"
-                        class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                        placeholder="Enter TP Mult" step="0.1">
-                </div>
-
-                <div class="space-y-1">
-                    <label class="text-xs font-bold text-slate-500 uppercase">Trading Timeframe</label>
-                    <select id="modalTimeframe"
-                        class="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none appearance-none cursor-pointer">
-                        <option value="">Use Global Strategy Default</option>
-                        <option value="1Min">1 Minute (Scalp)</option>
-                        <option value="5Min">5 Minutes (Intraday)</option>
-                        <option value="15Min">15 Minutes (Active)</option>
-                        <option value="1Hour">1 Hour (Swing)</option>
-                        <option value="1Day">1 Day (Long Term)</option>
-                    </select>
-                </div>
-
-                <div class="pt-6 flex gap-4">
-                    <button onclick="saveTickerSettings()"
-                        class="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 hover:shadow-indigo-500/20 hover:shadow-xl text-white font-black py-4 rounded-xl shadow-lg transition-all active:scale-95 uppercase tracking-widest text-sm">Save
-                        Settings</button>
-                    <button onclick="resetTickerSettings()"
-                        class="px-6 bg-slate-100 hover:bg-slate-200 text-slate-500 font-black py-4 rounded-xl transition-all uppercase tracking-widest text-sm">Reset</button>
-                </div>
-            </div>
-        </div>
-    </div>
 
 
-    <script src="app.js?v=58"></script>
+
+    <script src="app.js?v=61"></script>
 
     <!-- Fear & Greed Sub-Components Modal -->
     <div id="fngModal"
@@ -707,6 +710,229 @@
             </div>
         </div>
     </div>
+    <!-- Macro Events Modal -->
+    <div id="macroModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[200] hidden flex flex-col items-center justify-center p-4">
+        <div class="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-4xl border border-white/50 flex flex-col h-[700px] max-h-[90vh] overflow-hidden">
+            <div class="px-6 py-5 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white/95 backdrop-blur-xl z-10 rounded-t-2xl">
+                <h3 class="text-xl font-black text-slate-800 tracking-tight flex items-center gap-2">
+                    Macro Data
+                    <span class="text-xs font-bold bg-indigo-100 text-indigo-600 px-2 py-1 rounded-md uppercase tracking-widest ml-2">Live Data</span>
+                </h3>
+                <button onclick="closeMacroModal()" class="text-slate-400 hover:text-slate-700 transition-colors p-2 hover:bg-slate-100 rounded-full">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+                    </svg>
+                </button>
+            </div>
+            
+            <!-- Tabs Navigation -->
+            <div class="px-6 pt-4 border-b border-slate-100 bg-slate-50/50 flex gap-6">
+                <button onclick="switchMacroTab('calendar')" id="tab-macro-calendar" class="pb-3 text-sm font-bold border-b-2 border-indigo-600 text-indigo-700 transition-colors">Economic Calendar</button>
+                <button onclick="switchMacroTab('indicators')" id="tab-macro-indicators" class="pb-3 text-sm font-bold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors">Indicators</button>
+            </div>
+            
+            <div class="p-6 overflow-y-auto custom-scrollbar relative flex-1 h-[600px]" id="macro-events-container">
+                <div id="macro-events-loading" class="text-center py-10">
+                    <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mx-auto mb-4"></div>
+                    <p class="text-sm font-bold text-slate-400 uppercase tracking-widest">Loading Macro Data...</p>
+                </div>
+                
+                <!-- Calendar View -->
+                <div id="view-macro-calendar" class="w-full relative">
+                    <div class="absolute left-[38px] top-10 bottom-10 w-0.5 bg-indigo-100 hidden" id="macro-timeline-line"></div>
+                    <div id="macro-calendar-list"></div>
+                </div>
+                
+                <!-- Indicators View -->
+                <div id="view-macro-indicators" class="w-full hidden">
+                    <div id="macro-indicators-list"></div>
+                </div>
+            </div>
+            
+            <!-- Footer -->
+            <div class="px-6 py-3 border-t border-slate-100 flex items-center justify-center bg-white/95 backdrop-blur-xl z-10 rounded-b-2xl">
+                <p class="text-[0.65rem] text-slate-400 font-bold uppercase tracking-widest">
+                    Data sourced concurrently from <span class="text-indigo-400">ForexFactory & yfinance</span>
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sector Heatmap Modal -->
+    <div id="sectorModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[200] hidden flex flex-col items-center justify-center p-4">
+        <div class="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-4xl border border-white/50 flex flex-col h-[700px] max-h-[90vh] overflow-hidden">
+            <div class="px-6 py-5 border-b border-slate-100 flex items-center justify-between bg-white/95 backdrop-blur-xl z-10">
+                <h3 class="text-xl font-black text-slate-800 tracking-tight flex items-center gap-2">
+                    Market Sector Heatmap
+                    <span class="text-xs font-bold bg-indigo-100 text-indigo-600 px-2 py-1 rounded-md uppercase tracking-widest ml-2">Live Data</span>
+                </h3>
+                <button onclick="closeSectorModal()" class="text-slate-400 hover:text-slate-700 transition-colors p-2 hover:bg-slate-100 rounded-full">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+                    </svg>
+                </button>
+            </div>
+            
+            <!-- Tabs Navigation -->
+            <div class="px-6 pt-4 border-b border-slate-100 bg-slate-50/50 flex gap-6 overflow-x-auto">
+                <button onclick="switchSectorTab('tech')" id="tab-tech" class="pb-3 text-sm font-bold border-b-2 border-indigo-600 text-indigo-700 transition-colors whitespace-nowrap">Technology</button>
+                <button onclick="switchSectorTab('financials')" id="tab-financials" class="pb-3 text-sm font-bold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Financials</button>
+                <button onclick="switchSectorTab('healthcare')" id="tab-healthcare" class="pb-3 text-sm font-bold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Healthcare & Retail</button>
+                <button onclick="switchSectorTab('energy')" id="tab-energy" class="pb-3 text-sm font-bold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Energy & Industrials</button>
+                <button onclick="switchSectorTab('crypto')" id="tab-crypto" class="pb-3 text-sm font-bold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Crypto</button>
+            </div>
+
+            <!-- Heatmap Views -->
+            <div class="p-5 bg-slate-50/50 flex-1 overflow-y-auto custom-scrollbar">
+                
+                <!-- Tech Tab -->
+                <div id="view-tech" class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2 w-full grid-flow-row-dense"></div>
+                
+                <!-- Financials Tab -->
+                <div id="view-financials" class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2 w-full hidden grid-flow-row-dense"></div>
+                
+                <!-- Healthcare Tab -->
+                <div id="view-healthcare" class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2 w-full hidden grid-flow-row-dense"></div>
+                
+                <!-- Energy Tab -->
+                <div id="view-energy" class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2 w-full hidden grid-flow-row-dense"></div>
+                
+                <!-- Crypto Tab -->
+                <div id="view-crypto" class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2 w-full hidden grid-flow-row-dense"></div>
+                
+            </div>
+            <!-- Footer -->
+            <div class="mt-auto px-6 py-3 border-t border-slate-100 flex items-center justify-center bg-white/95 backdrop-blur-xl z-10">
+                <p class="text-[0.65rem] text-slate-400 font-bold uppercase tracking-widest">
+                    Data sourced concurrently from <span class="text-indigo-400">yfinance</span>
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Market Breadth Modal -->
+    <div id="breadthModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[200] hidden flex flex-col items-center justify-center p-4">
+        <div class="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-3xl border border-white/50 flex flex-col h-[700px] max-h-[90vh] overflow-hidden">
+            <div class="px-6 py-5 border-b border-slate-100 flex items-center justify-between bg-white/95 backdrop-blur-xl z-10">
+                <h3 class="text-xl font-black text-slate-800 tracking-tight flex items-center gap-2">
+                    Internal Market Breadth
+                    <span class="text-xs font-bold bg-indigo-100 text-indigo-600 px-2 py-1 rounded-md uppercase tracking-widest ml-2">Live Data</span>
+                </h3>
+                <button onclick="closeBreadthModal()" class="text-slate-400 hover:text-slate-700 transition-colors p-2 hover:bg-slate-100 rounded-full">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+                    </svg>
+                </button>
+            </div>
+            
+            <div class="p-6 overflow-y-auto custom-scrollbar bg-slate-50/50 flex-1">
+                <p class="text-sm text-slate-500 mb-6 font-medium">Metrics tracking underlying participation for your active portfolio (Watchlist & Bots).</p>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <!-- Metric 1: A/D Line -->
+                    <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                        <div class="flex items-center justify-between mb-4">
+                            <h4 class="font-black text-slate-800 text-[13px] tracking-wide uppercase">Advance / Decline</h4>
+                            <span id="bm-ad-label" class="text-slate-500 bg-slate-50 text-[10px] px-2 py-1 rounded font-bold uppercase tracking-widest shadow-sm">Calculating...</span>
+                        </div>
+                        <div class="flex items-end justify-between mb-2">
+                            <div class="text-emerald-500 font-black text-2xl"><span id="bm-adv">--</span> <span class="text-xs text-slate-400 font-bold uppercase">Adv</span></div>
+                            <div class="text-red-500 font-black text-2xl"><span class="text-xs text-slate-400 font-bold uppercase">Dec</span> <span id="bm-dec">--</span></div>
+                        </div>
+                        <!-- Progress bar -->
+                        <div class="w-full bg-red-100 rounded-full h-3 overflow-hidden flex">
+                            <div id="bm-adv-bar" class="bg-emerald-500 h-full transition-all duration-1000 ease-out" style="width: 50%"></div>
+                            <div id="bm-dec-bar" class="bg-red-500 h-full transition-all duration-1000 ease-out" style="width: 50%"></div>
+                        </div>
+                        <p id="bm-ad-ratio" class="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-3 text-center">Ratio: --</p>
+                    </div>
+
+                    <!-- Metric 2: New Highs / Lows -->
+                    <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                        <div class="flex items-center justify-between mb-4">
+                            <h4 class="font-black text-slate-800 text-[13px] tracking-wide uppercase">New Highs vs Lows</h4>
+                            <span id="bm-hl-label" class="text-slate-500 bg-slate-50 text-[10px] px-2 py-1 rounded font-bold uppercase tracking-widest shadow-sm">Calculating...</span>
+                        </div>
+                        <div class="flex items-center justify-center gap-8 mb-2">
+                            <div class="flex flex-col items-center">
+                                <span class="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">52W Highs</span>
+                                <span id="bm-highs" class="text-emerald-500 font-black text-3xl">--</span>
+                            </div>
+                            <div class="h-10 w-px bg-slate-200"></div>
+                            <div class="flex flex-col items-center">
+                                <span class="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">52W Lows</span>
+                                <span id="bm-lows" class="text-red-500 font-black text-3xl">--</span>
+                            </div>
+                        </div>
+                        <p id="bm-hl-text" class="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-4 text-center">--</p>
+                    </div>
+
+                    <!-- Metric 3: Moving Averages -->
+                    <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm md:col-span-2">
+                        <div class="flex items-center justify-between mb-6">
+                            <h4 class="font-black text-slate-800 text-[13px] tracking-wide uppercase">Trend Alignment (% Above MA)</h4>
+                        </div>
+                        <div class="grid grid-cols-2 gap-8">
+                            <!-- 50 Day -->
+                            <div class="flex flex-col items-center">
+                                <div class="relative w-24 h-24 flex items-center justify-center mb-2">
+                                    <svg class="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
+                                        <path class="text-slate-100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" stroke-width="4" />
+                                        <path id="bm-50-gauge" class="text-slate-300" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" />
+                                    </svg>
+                                    <div id="bm-50-val" class="absolute text-lg font-black text-slate-800">--%</div>
+                                </div>
+                                <span class="text-[10px] text-slate-500 font-bold uppercase tracking-widest text-center">Above 50-Day MA<br/>(Medium Term)</span>
+                            </div>
+                            
+                            <!-- 200 Day -->
+                            <div class="flex flex-col items-center">
+                                <div class="relative w-24 h-24 flex items-center justify-center mb-2">
+                                    <svg class="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
+                                        <path class="text-slate-100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" stroke-width="4" />
+                                        <path id="bm-200-gauge" class="text-slate-300" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" />
+                                    </svg>
+                                    <div id="bm-200-val" class="absolute text-lg font-black text-slate-800">--%</div>
+                                </div>
+                                <span class="text-[10px] text-slate-500 font-bold uppercase tracking-widest text-center">Above 200-Day MA<br/>(Long Term)</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Portfolio Ticker Breakdown Table -->
+                <div class="mt-6 pt-6 border-t border-slate-200">
+                    <h4 class="font-black text-slate-800 text-[13px] tracking-wide uppercase mb-4">Portfolio Ticker Breakdown</h4>
+                    <div class="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="bg-slate-50 border-b border-slate-200">
+                                    <th class="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Ticker</th>
+                                    <th class="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Price</th>
+                                    <th class="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Change</th>
+                                    <th class="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">50-Day MA</th>
+                                    <th class="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">200-Day MA</th>
+                                    <th class="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">52W Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="bm-ticker-rows">
+                                <tr>
+                                    <td colspan="6" class="px-4 py-8 text-center text-xs font-bold text-slate-400 uppercase tracking-widest">Loading Tickers...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <!-- Footer -->
+            <div class="mt-auto px-6 py-3 border-t border-slate-100 flex items-center justify-center bg-white/95 backdrop-blur-xl z-10">
+                <p class="text-[0.65rem] text-slate-400 font-bold uppercase tracking-widest">
+                    Data sourced concurrently from <span class="text-indigo-400">yfinance</span> based on portfolio
+                </p>
+            </div>
+        </div>
+    </div>
+
 </body>
 
 </html>

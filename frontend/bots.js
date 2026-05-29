@@ -24,7 +24,15 @@ async function getAuthHeaders() {
     const auth = window.auth;
     if (!auth) return { 'Content-Type': 'application/json' };
     const user = auth.currentUser;
-    if (!user) return { 'Content-Type': 'application/json' };
+    if (!user) {
+        if (localStorage.getItem('dev_mode') === 'true') {
+            return {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer dev-token`
+            };
+        }
+        return { 'Content-Type': 'application/json' };
+    }
 
     try {
         const token = await user.getIdToken();
@@ -153,6 +161,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         const tickerTf = (window.lastBotsData?.ticker_settings || {})[ticker]?.timeframe || '';
         const tfLabel = tickerTf || (window.lastBotsData?.strategyTimeframe || '5Min');
         const isPaused = (window.lastBotsData?.ticker_settings || {})[ticker]?.paused || false;
+        const inWatchlist = (window.lastBotsData?.watchlist || []).includes(ticker);
         const dotClass = isPaused
             ? 'h-2 w-2 bg-slate-300 rounded-full'
             : 'h-2 w-2 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]';
@@ -238,6 +247,13 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         <span class="text-[0.6rem] font-bold text-red-600 bg-red-50 px-1 rounded border border-red-100">${bearish}S</span>
 
                         <div class="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity ml-1">
+                            <button class="p-1 rounded hover:bg-amber-50 ${inWatchlist ? 'text-amber-400' : 'text-slate-300 hover:text-amber-400'} transition-all" 
+                                title="Toggle Watchlist"
+                                onclick="event.stopPropagation(); toggleWatchlist('${ticker}')">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 ${inWatchlist ? 'fill-current' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+                                </svg>
+                            </button>
                             <button class="p-1 rounded hover:bg-indigo-50 text-indigo-400 transition-all" 
                                 onclick="event.stopPropagation(); openStrategyModal('${ticker}', 'edit')">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -813,6 +829,33 @@ window.resetTickerSettings = async function () {
     }
 };
 
+window.toggleWatchlist = async function (ticker) {
+    if (!ticker) return;
+    
+    const inWatchlist = (window.lastBotsData?.watchlist || []).includes(ticker);
+    
+    try {
+        const headers = await getAuthHeaders();
+        if (inWatchlist) {
+            // Remove from watchlist
+            await fetch(`${API_BASE}/api/watchlist/${ticker}`, {
+                method: 'DELETE',
+                headers: headers
+            });
+        } else {
+            // Add to watchlist
+            await fetch(`${API_BASE}/api/watchlist`, {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify({ ticker: ticker })
+            });
+        }
+        // Refresh UI
+        fetchBotsData();
+    } catch (e) {
+        console.error('Error toggling watchlist:', e);
+    }
+};
 // ──────────────────────────────────────────────
 // Main Fetch Loop
 // ──────────────────────────────────────────────
@@ -1131,6 +1174,10 @@ window.confirmAndDeployBot = async function () {
         if (chk.checked) indicators.push(chk.value);
     });
 
+    // Watchlist Preference
+    const addWatchlistEl = document.getElementById('strategyAddWatchlist');
+    const addToWatchlist = addWatchlistEl ? addWatchlistEl.checked : false;
+
     // Optimistic UI Update
     const symbol = currentStrategySymbol;
     const container = document.getElementById('tradelistContainer');
@@ -1165,6 +1212,7 @@ window.confirmAndDeployBot = async function () {
             headers: headers,
             body: JSON.stringify({
                 symbol,
+                add_to_watchlist: addToWatchlist,
                 capital: parseFloat(capital),
                 threshold: parseInt(threshold),
                 sell_threshold: parseInt(sellThreshold),
@@ -1225,7 +1273,7 @@ async function unlinkAlpaca() {
 (function init() {
     // Wait for Firebase auth to be ready and currentUser to be populated before first fetch
     const waitForAuth = setInterval(() => {
-        if (window.auth && window.auth.currentUser) {
+        if (window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true')) {
             clearInterval(waitForAuth);
             fetchBotsData();
             setInterval(fetchBotsData, REFRESH_INTERVAL);
@@ -1248,7 +1296,10 @@ const INDICATOR_TOOLTIPS = {
     "Candle patterns": "Candlestick Patterns identify specific OHLC price formations. Purpose: Provides visual clues about market psychology and potential reversals.",
     "ADX Trend": "Average Directional Index (ADX) quantifies trend strength. Purpose: Determines if the market is trending strongly (ADX > 25) or ranging.",
     "VWAP": "Volume Weighted Average Price (VWAP) is the ratio of value traded to total volume. Purpose: Provides the true average price a security traded at throughout the day.",
-    "Strategy Confidence": "Strategy Confidence combines multiple indicator signals into a single probability score. Purpose: Measures the overall conviction of a bullish or bearish trend."
+    "Strategy Confidence": "Strategy Confidence combines multiple indicator signals into a single probability score. Purpose: Measures the overall conviction of a bullish or bearish trend.",
+    "BotBulls1": "WaveTrend momentum oscillator + Money Flow analysis. Detects reversals when momentum and institutional volume flow align at oversold/overbought extremes.",
+    "BotBulls2": "Adaptive ATR trailing stop with trend-smoothed EMA and reversal zone detection. Fires on trend flips confirmed by multi-condition confluence scoring (1-4 strength rating).",
+    "BotBulls3": "Heikin-Ashi noise filter + ATR-based trailing stop. Generates buy/sell alerts only on confirmed momentum flips — removing false signals from choppy markets."
 };
 
 const INDICATOR_CONFIG_MAP = {

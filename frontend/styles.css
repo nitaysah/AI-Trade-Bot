@@ -119,6 +119,31 @@
     opacity: 0.6;
 }
 
+/* ── Premium Signal Cards (Gold) ── */
+.signal-card.premium-bullish {
+    border: 1px solid rgba(251, 191, 36, 0.5);
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.05), rgba(251, 191, 36, 0.08));
+    box-shadow: 0 2px 8px rgba(251, 191, 36, 0.08);
+}
+
+.signal-card.premium-bearish {
+    border: 1px solid rgba(251, 191, 36, 0.5);
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.05), rgba(251, 191, 36, 0.08));
+    box-shadow: 0 2px 8px rgba(251, 191, 36, 0.08);
+}
+
+.signal-card.premium-neutral {
+    border: 1px solid rgba(251, 191, 36, 0.3);
+    background: linear-gradient(135deg, rgba(168, 85, 247, 0.03), rgba(251, 191, 36, 0.05));
+}
+
+.signal-card.premium-bullish:hover,
+.signal-card.premium-bearish:hover,
+.signal-card.premium-neutral:hover {
+    border-color: rgba(245, 158, 11, 0.7);
+    box-shadow: 0 4px 16px rgba(251, 191, 36, 0.18);
+}
+
 /* ── Verdict Bar ── */
 .verdict-buy {
     background: rgba(16, 185, 129, 0.08);
@@ -495,7 +520,9 @@
 #oscChart_rsi:not([style*="display: none"]) + .chart-osc-label,
 .relative:has(#oscChart_rsi:not([style*="display: none"])) .chart-osc-label,
 .relative:has(#oscChart_macd:not([style*="display: none"])) .chart-osc-label,
-.relative:has(#oscChart_mystic:not([style*="display: none"])) .chart-osc-label {
+.relative:has(#oscChart_mystic:not([style*="display: none"])) .chart-osc-label,
+.relative:has(#oscChart_adx:not([style*="display: none"])) .chart-osc-label,
+.relative:has(#oscChart_botbulls1:not([style*="display: none"])) .chart-osc-label {
     display: block;
 }
 

@@ -123,7 +123,7 @@ function getDisplayBars(rawBars, ticker = selectedTicker) {
     const sorted = [...(rawBars || [])].sort((a, b) => a.time - b.time);
     const rangeStart = getRangeStartTime(sorted);
     const ranged = rangeStart ? sorted.filter(b => b.time >= rangeStart) : sorted;
-    if (isCryptoTicker(ticker) || currentChartSession === 'extended') return ranged;
+    if (isCryptoTicker(ticker) || currentChartSession === 'extended' || currentBackendTf === '1Day') return ranged;
     return ranged.filter(isRegularMarketBar);
 }
 
@@ -189,7 +189,7 @@ function formatPrice(n, forceTicker = null) {
 }
 
 let selectedTicker = readLastViewedTicker();
-let currentBackendTf = "1Hour";
+let currentBackendTf = localStorage.getItem('lastChartTf') || "1Hour";
 let currentChartRange = localStorage.getItem('lastChartRange') || "1M";
 let currentChartSession = localStorage.getItem('lastChartSession') || "regular";
 let isAlpacaLinked = false; // Track live connection status
@@ -198,6 +198,8 @@ let tvWidget = null;
 let currentLogTab = "all"; // 'all' or 'trades'
 let currentWatchlistTab = "all"; // 'all', 'stocks', or 'crypto'
 let latestTradesData = []; // Cached log data
+const chartDataCache = new Map();
+let chartRequestSerial = 0;
 
 const CHART_INTERVALS = {
     "1Min": { label: "1m", seconds: 60, backend: "1Min" },
@@ -315,6 +317,8 @@ let candleSeries = null;
 let oscChartRsi = null;
 let oscChartMacd = null;
 let oscChartMystic = null;
+let oscChartAdx = null;
+let oscChartBotbulls1 = null;
 
 // All series objects keyed by indicator name
 const _overlaySeries = {};
@@ -324,11 +328,16 @@ const _oscSeries = {};
 const _visibleIndicators = {
     ema: true,
     vwap: true,
-    supertrend: false,
+    supertrend: true,
     bollinger: false,
     rsi: false,
     macd: false,
     mystic: false,
+    sma: false,
+    adx: false,
+    botbulls1: true,
+    botbulls2: true,
+    botbulls3: true,
 };
 
 const IND_COLORS = {
@@ -341,6 +350,18 @@ const IND_COLORS = {
     rsi: '#f59e0b',
     macd_line: '#06b6d4',
     macd_signal: '#f97316', // Orange
+    sma: '#8b5cf6', // Violet
+    adx: '#6366f1', // Indigo
+    di_plus: '#10b981', // Green
+    di_minus: '#ef4444', // Red
+    wt1: '#0ea5e9', // Sky blue
+    wt2: '#f43f5e', // Rose
+    mfi: '#10b981', // Emerald
+    lx_smart_trail: '#10b981', // Smart trail
+    lx_trend_tracer: '#8b5cf6', // Trend tracer
+    lx_rz_upper: '#f59e0b', // Reversal zone upper
+    lx_rz_lower: '#ec4899', // Reversal zone lower
+    ut_trail: '#3b82f6', // UT Bot trail
 };
 
 function initChart() {
@@ -470,12 +491,58 @@ function _initOscPane() {
         resizeMystic.observe(mysticContainer);
     }
 
+    // ADX Chart
+    const adxContainer = document.getElementById('oscChart_adx');
+    if (adxContainer) {
+        adxContainer.innerHTML = '';
+        oscChartAdx = LightweightCharts.createChart(adxContainer, {
+            layout: { background: { color: '#fafbff' }, textColor: '#64748b' },
+            grid: { vertLines: { color: 'rgba(168,85,247,0.04)' }, horzLines: { color: 'rgba(168,85,247,0.04)' } },
+            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)' },
+            localization: {
+                timeFormatter: time => {
+                    return `${formatChartTime(time, false)} CT`;
+                }
+            },
+            timeScale: { visible: false },
+        });
+        const resizeAdx = new ResizeObserver(entries => {
+            if (!entries[0] || !oscChartAdx) return;
+            oscChartAdx.applyOptions({ width: entries[0].contentRect.width });
+        });
+        resizeAdx.observe(adxContainer);
+    }
+
+    // BotBulls1 (WaveTrend) Chart
+    const botbulls1Container = document.getElementById('oscChart_botbulls1');
+    if (botbulls1Container) {
+        botbulls1Container.innerHTML = '';
+        oscChartBotbulls1 = LightweightCharts.createChart(botbulls1Container, {
+            layout: { background: { color: '#fafbff' }, textColor: '#64748b' },
+            grid: { vertLines: { color: 'rgba(168,85,247,0.04)' }, horzLines: { color: 'rgba(168,85,247,0.04)' } },
+            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)' },
+            localization: {
+                timeFormatter: time => {
+                    return `${formatChartTime(time, false)} CT`;
+                }
+            },
+            timeScale: { visible: false },
+        });
+        const resizeBotbulls1 = new ResizeObserver(entries => {
+            if (!entries[0] || !oscChartBotbulls1) return;
+            oscChartBotbulls1.applyOptions({ width: entries[0].contentRect.width });
+        });
+        resizeBotbulls1.observe(botbulls1Container);
+    }
+
     // Sync all time scales to main chart
     lwChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
         if (range) {
             if (oscChartRsi) oscChartRsi.timeScale().setVisibleLogicalRange(range);
             if (oscChartMacd) oscChartMacd.timeScale().setVisibleLogicalRange(range);
             if (oscChartMystic) oscChartMystic.timeScale().setVisibleLogicalRange(range);
+            if (oscChartAdx) oscChartAdx.timeScale().setVisibleLogicalRange(range);
+            if (oscChartBotbulls1) oscChartBotbulls1.timeScale().setVisibleLogicalRange(range);
         }
     });
 }
@@ -500,7 +567,7 @@ function updateChart(priceHistory, ticker) {
     window._displayPriceHistory = sorted;
     // Background highlight for Extended Hours
     if (extHoursSeries) {
-        if (!isCryptoTicker(ticker) && currentChartSession === 'extended') {
+        if (!isCryptoTicker(ticker) && currentChartSession === 'extended' && currentBackendTf !== '1Day') {
             const extData = sorted.map(b => {
                 const isExt = !isRegularMarketBar(b);
                 return {
@@ -568,6 +635,8 @@ function updateChart(priceHistory, ticker) {
         if (oscChartRsi) oscChartRsi.timeScale().setVisibleLogicalRange(lwChart.timeScale().getVisibleLogicalRange());
         if (oscChartMacd) oscChartMacd.timeScale().setVisibleLogicalRange(lwChart.timeScale().getVisibleLogicalRange());
         if (oscChartMystic) oscChartMystic.timeScale().setVisibleLogicalRange(lwChart.timeScale().getVisibleLogicalRange());
+        if (oscChartAdx) oscChartAdx.timeScale().setVisibleLogicalRange(lwChart.timeScale().getVisibleLogicalRange());
+        if (oscChartBotbulls1) oscChartBotbulls1.timeScale().setVisibleLogicalRange(lwChart.timeScale().getVisibleLogicalRange());
     } catch (e) { }
 }
 
@@ -580,6 +649,8 @@ function _removeSeries(map, key, chartInst) {
 }
 
 function _refreshOverlays(bars) {
+    const activeMarkers = [];
+
     // EMA
     if (_visibleIndicators.ema) {
         _getOrCreate(_overlaySeries, 'ema_fast', lwChart, { color: IND_COLORS.ema_fast, lineWidth: 1 })
@@ -596,6 +667,13 @@ function _refreshOverlays(bars) {
             .setData(bars.filter(b => b.vwap != null).map(b => ({ time: b.time, value: b.vwap })));
     } else {
         _removeSeries(_overlaySeries, 'vwap', lwChart);
+    }
+    // SMA
+    if (_visibleIndicators.sma) {
+        _getOrCreate(_overlaySeries, 'sma', lwChart, { color: IND_COLORS.sma, lineWidth: 3, lineStyle: 0 })
+            .setData(bars.filter(b => b.sma != null).map(b => ({ time: b.time, value: b.sma })));
+    } else {
+        _removeSeries(_overlaySeries, 'sma', lwChart);
     }
     // Supertrend (Continuous multi-color line)
     if (_visibleIndicators.supertrend) {
@@ -623,7 +701,7 @@ function _refreshOverlays(bars) {
 
         _getOrCreate(_overlaySeries, 'st_line', lwChart, {
             lineWidth: 2,
-            lineType: 1 // LineType.WithSteps
+            lineType: 2 // LineType.Curved
         }).setData(clean(stData));
 
         // Clean up old multi-series if they exist
@@ -631,7 +709,6 @@ function _refreshOverlays(bars) {
         _removeSeries(_overlaySeries, 'st_bear', lwChart);
 
         // Trend Reversal Markers (Arrows)
-        const markers = [];
         for (let i = 1; i < bars.length; i++) {
             const curr = bars[i];
             const prev = bars[i - 1];
@@ -639,32 +716,30 @@ function _refreshOverlays(bars) {
 
             if (curr.supertrend_up && !prev.supertrend_up) {
                 // Flip to BULLISH (Buy)
-                markers.push({
+                activeMarkers.push({
                     time: curr.time,
                     position: 'belowBar',
                     color: '#10b981',
                     shape: 'arrowUp',
-                    text: 'BUY',
+                    text: 'ST Buy',
                     size: 1
                 });
             } else if (!curr.supertrend_up && prev.supertrend_up) {
                 // Flip to BEARISH (Sell)
-                markers.push({
+                activeMarkers.push({
                     time: curr.time,
                     position: 'aboveBar',
                     color: '#ef4444',
                     shape: 'arrowDown',
-                    text: 'SELL',
+                    text: 'ST Sell',
                     size: 1
                 });
             }
         }
-        candleSeries.setMarkers(markers);
     } else {
         _removeSeries(_overlaySeries, 'st_bull', lwChart);
         _removeSeries(_overlaySeries, 'st_bear', lwChart);
         _removeSeries(_overlaySeries, 'st_line', lwChart);
-        candleSeries.setMarkers([]);
     }
     // Bollinger Bands
     if (_visibleIndicators.bollinger) {
@@ -676,6 +751,141 @@ function _refreshOverlays(bars) {
         _removeSeries(_overlaySeries, 'boll_middle', lwChart);
         _removeSeries(_overlaySeries, 'boll_lower', lwChart);
     }
+
+    // BotBulls2 — Smart Trail + Trend Tracer + Reversal Zones (LuxAlgo Premium style)
+    if (_visibleIndicators.botbulls2) {
+        const lxTrailData = bars.filter(b => b.lx_smart_trail != null).map(b => ({
+            time: b.time,
+            value: b.lx_smart_trail,
+            color: b.lx_smart_trend ? '#10b981' : '#ef4444'
+        }));
+        _getOrCreate(_overlaySeries, 'lx_smart_trail', lwChart, {
+            lineWidth: 2,
+            lineType: 2 // Curved
+        }).setData(lxTrailData);
+
+        _getOrCreate(_overlaySeries, 'lx_trend_tracer', lwChart, {
+            color: IND_COLORS.lx_trend_tracer,
+            lineWidth: 1.5,
+            lineStyle: 0
+        }).setData(bars.filter(b => b.lx_trend_tracer != null).map(b => ({ time: b.time, value: b.lx_trend_tracer })));
+
+        _getOrCreate(_overlaySeries, 'lx_rz_upper', lwChart, {
+            color: IND_COLORS.lx_rz_upper,
+            lineWidth: 1,
+            lineStyle: 1 // Dashed
+        }).setData(bars.filter(b => b.lx_rz_upper != null).map(b => ({ time: b.time, value: b.lx_rz_upper })));
+
+        _getOrCreate(_overlaySeries, 'lx_rz_lower', lwChart, {
+            color: IND_COLORS.lx_rz_lower,
+            lineWidth: 1,
+            lineStyle: 1 // Dashed
+        }).setData(bars.filter(b => b.lx_rz_lower != null).map(b => ({ time: b.time, value: b.lx_rz_lower })));
+
+        // Trend flip alerts for Smart Trail
+        for (let i = 1; i < bars.length; i++) {
+            const curr = bars[i];
+            const prev = bars[i - 1];
+            if (curr.lx_smart_trail == null || prev.lx_smart_trail == null) continue;
+
+            if (curr.lx_smart_trend && !prev.lx_smart_trend) {
+                activeMarkers.push({
+                    time: curr.time,
+                    position: 'belowBar',
+                    color: '#c2410c', // Dark orange/rust
+                    shape: 'arrowUp',
+                    text: 'Trail Buy',
+                    size: 1.2
+                });
+            } else if (!curr.lx_smart_trend && prev.lx_smart_trend) {
+                activeMarkers.push({
+                    time: curr.time,
+                    position: 'aboveBar',
+                    color: '#be123c', // Deep rose/crimson
+                    shape: 'arrowDown',
+                    text: 'Trail Sell',
+                    size: 1.2
+                });
+            }
+        }
+    } else {
+        _removeSeries(_overlaySeries, 'lx_smart_trail', lwChart);
+        _removeSeries(_overlaySeries, 'lx_trend_tracer', lwChart);
+        _removeSeries(_overlaySeries, 'lx_rz_upper', lwChart);
+        _removeSeries(_overlaySeries, 'lx_rz_lower', lwChart);
+    }
+
+    // BotBulls3 — Heikin-Ashi Smoothed + UT Bot Trailing Stop
+    if (_visibleIndicators.botbulls3) {
+        const utTrailData = bars.filter(b => b.ut_trail != null).map(b => ({
+            time: b.time,
+            value: b.ut_trail,
+            color: b.ut_above ? '#0ea5e9' : '#f43f5e'
+        }));
+        _getOrCreate(_overlaySeries, 'ut_trail', lwChart, {
+            lineWidth: 2,
+            lineType: 2 // Curved
+        }).setData(utTrailData);
+
+        // UT Bot buy/sell flip alerts
+        for (let i = 1; i < bars.length; i++) {
+            const curr = bars[i];
+            const prev = bars[i - 1];
+            if (curr.ut_trail == null || prev.ut_trail == null) continue;
+
+            if (curr.ut_above && !prev.ut_above) {
+                activeMarkers.push({
+                    time: curr.time,
+                    position: 'belowBar',
+                    color: '#0ea5e9', // Blue
+                    shape: 'arrowUp',
+                    text: 'UT Buy',
+                    size: 1.5
+                });
+            } else if (!curr.ut_above && prev.ut_above) {
+                activeMarkers.push({
+                    time: curr.time,
+                    position: 'aboveBar',
+                    color: '#f43f5e', // Red
+                    shape: 'arrowDown',
+                    text: 'UT Sell',
+                    size: 1.5
+                });
+            }
+        }
+    } else {
+        _removeSeries(_overlaySeries, 'ut_trail', lwChart);
+    }
+
+    // BotBulls1 WT Buy/Sell Markers (WaveTrend Extreme Crossover alerts)
+    if (_visibleIndicators.botbulls1) {
+        for (let i = 0; i < bars.length; i++) {
+            const b = bars[i];
+            if (b.ba1_buy) {
+                activeMarkers.push({
+                    time: b.time,
+                    position: 'belowBar',
+                    color: '#06b6d4', // Cyan
+                    shape: 'arrowUp',
+                    text: 'WT Buy',
+                    size: 1.2
+                });
+            } else if (b.ba1_sell) {
+                activeMarkers.push({
+                    time: b.time,
+                    position: 'aboveBar',
+                    color: '#f43f5e', // Rose
+                    shape: 'arrowDown',
+                    text: 'WT Sell',
+                    size: 1.2
+                });
+            }
+        }
+    }
+
+    // Apply merged markers
+    activeMarkers.sort((a, b) => a.time - b.time);
+    candleSeries.setMarkers(activeMarkers);
 }
 
 function _refreshOscillators(bars) {
@@ -778,6 +988,118 @@ function _refreshOscillators(bars) {
     } else if (oscChartMystic) {
         _removeSeries(_oscSeries, 'mystic_hist', oscChartMystic);
     }
+
+    // Handle ADX
+    const adxContainer = document.getElementById('oscChart_adx');
+    const adxLabel = document.getElementById('adxLabel');
+    if (adxContainer) {
+        const wasHidden = adxContainer.style.display === 'none';
+        adxContainer.style.display = _visibleIndicators.adx ? 'block' : 'none';
+        if (adxLabel) adxLabel.style.display = _visibleIndicators.adx ? 'flex' : 'none';
+        if (wasHidden && _visibleIndicators.adx && oscChartAdx) {
+            oscChartAdx.applyOptions({ width: adxContainer.clientWidth, height: adxContainer.clientHeight });
+        }
+    }
+    if (_visibleIndicators.adx && oscChartAdx) {
+        _getOrCreate(_oscSeries, 'adx', oscChartAdx, { color: IND_COLORS.adx, lineWidth: 2 })
+            .setData(bars.filter(b => b.adx != null).map(b => ({ time: b.time, value: b.adx })));
+        _getOrCreate(_oscSeries, 'di_plus', oscChartAdx, { color: IND_COLORS.di_plus, lineWidth: 1 })
+            .setData(bars.filter(b => b.di_plus != null).map(b => ({ time: b.time, value: b.di_plus })));
+        _getOrCreate(_oscSeries, 'di_minus', oscChartAdx, { color: IND_COLORS.di_minus, lineWidth: 1 })
+            .setData(bars.filter(b => b.di_minus != null).map(b => ({ time: b.time, value: b.di_minus })));
+        
+        // Threshold line at 25 (trending vs choppy)
+        const adxThreshold = _getOrCreate(_oscSeries, 'adx_threshold', oscChartAdx, { color: 'rgba(99,102,241,0.25)', lineWidth: 1, lineStyle: 2 });
+        adxThreshold.setData(bars.map(b => ({ time: b.time, value: 25 })));
+
+        try { oscChartAdx.timeScale().fitContent(); } catch (e) { }
+    } else if (oscChartAdx) {
+        _removeSeries(_oscSeries, 'adx', oscChartAdx);
+        _removeSeries(_oscSeries, 'di_plus', oscChartAdx);
+        _removeSeries(_oscSeries, 'di_minus', oscChartAdx);
+        _removeSeries(_oscSeries, 'adx_threshold', oscChartAdx);
+    }
+
+    // Handle BotBulls1 (WaveTrend + MFI)
+    const botbulls1Container = document.getElementById('oscChart_botbulls1');
+    const botbulls1Label = document.getElementById('botbulls1Label');
+    if (botbulls1Container) {
+        const wasHidden = botbulls1Container.style.display === 'none';
+        botbulls1Container.style.display = _visibleIndicators.botbulls1 ? 'block' : 'none';
+        if (botbulls1Label) botbulls1Label.style.display = _visibleIndicators.botbulls1 ? 'flex' : 'none';
+        if (wasHidden && _visibleIndicators.botbulls1 && oscChartBotbulls1) {
+            oscChartBotbulls1.applyOptions({ width: botbulls1Container.clientWidth, height: botbulls1Container.clientHeight });
+        }
+    }
+    if (_visibleIndicators.botbulls1 && oscChartBotbulls1) {
+        // wt1 line
+        _getOrCreate(_oscSeries, 'wt1', oscChartBotbulls1, { color: IND_COLORS.wt1, lineWidth: 1.5 })
+            .setData(bars.filter(b => b.wt1 != null).map(b => ({ time: b.time, value: b.wt1 })));
+        
+        // wt2 line
+        _getOrCreate(_oscSeries, 'wt2', oscChartBotbulls1, { color: IND_COLORS.wt2, lineWidth: 1, lineStyle: 2 })
+            .setData(bars.filter(b => b.wt2 != null).map(b => ({ time: b.time, value: b.wt2 })));
+
+        // MFI filled zone (centered at 50)
+        if (!_oscSeries['mfi_hist']) {
+            _oscSeries['mfi_hist'] = oscChartBotbulls1.addHistogramSeries({
+                base: 50,
+                priceScaleId: '', // Same pane scale
+            });
+        }
+        const mfiHistData = bars.filter(b => b.mfi != null).map(b => ({
+            time: b.time,
+            value: b.mfi,
+            color: b.mfi >= 50 ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)'
+        }));
+        _oscSeries['mfi_hist'].setData(mfiHistData);
+
+        // Reference lines: Overbought (+53), Oversold (-53), Zero Line (0)
+        const obLine = _getOrCreate(_oscSeries, 'wt_ob', oscChartBotbulls1, { color: 'rgba(239,68,68,0.35)', lineWidth: 1, lineStyle: 2 });
+        const osLine = _getOrCreate(_oscSeries, 'wt_os', oscChartBotbulls1, { color: 'rgba(16,185,129,0.35)', lineWidth: 1, lineStyle: 2 });
+        const zeroLine = _getOrCreate(_oscSeries, 'wt_zero', oscChartBotbulls1, { color: 'rgba(148,163,184,0.15)', lineWidth: 1, lineStyle: 0 });
+        if (bars.length) {
+            obLine.setData([{ time: bars[0].time, value: 53 }, { time: bars[bars.length - 1].time, value: 53 }]);
+            osLine.setData([{ time: bars[0].time, value: -53 }, { time: bars[bars.length - 1].time, value: -53 }]);
+            zeroLine.setData([{ time: bars[0].time, value: 0 }, { time: bars[bars.length - 1].time, value: 0 }]);
+        }
+
+        // Wave crossover dots directly on wt1 line
+        const wt1Series = _oscSeries['wt1'];
+        if (wt1Series) {
+            const wtMarkers = [];
+            for (let i = 0; i < bars.length; i++) {
+                const b = bars[i];
+                if (b.ba1_buy) {
+                    wtMarkers.push({
+                        time: b.time,
+                        position: 'inLine',
+                        color: '#10b981', // Green dot
+                        shape: 'circle',
+                        size: 2
+                    });
+                } else if (b.ba1_sell) {
+                    wtMarkers.push({
+                        time: b.time,
+                        position: 'inLine',
+                        color: '#ef4444', // Red dot
+                        shape: 'circle',
+                        size: 2
+                    });
+                }
+            }
+            wt1Series.setMarkers(wtMarkers);
+        }
+
+        try { oscChartBotbulls1.timeScale().fitContent(); } catch (e) { }
+    } else if (oscChartBotbulls1) {
+        _removeSeries(_oscSeries, 'wt1', oscChartBotbulls1);
+        _removeSeries(_oscSeries, 'wt2', oscChartBotbulls1);
+        _removeSeries(_oscSeries, 'mfi_hist', oscChartBotbulls1);
+        _removeSeries(_oscSeries, 'wt_ob', oscChartBotbulls1);
+        _removeSeries(_oscSeries, 'wt_os', oscChartBotbulls1);
+        _removeSeries(_oscSeries, 'wt_zero', oscChartBotbulls1);
+    }
 }
 
 // Called by toolbar buttons
@@ -799,6 +1121,80 @@ function syncChart() {
         updateActiveTickerDisplay(selectedTicker);
         updateChartControlState(selectedTicker);
         _updateStarState();
+    }
+}
+
+function chartCacheKey(ticker, timeframe = currentBackendTf) {
+    return `${normalizeTicker(ticker)}|${timeframe}`;
+}
+
+function renderFastChartPayload(data, requestedTicker) {
+    const ticker = normalizeTicker(requestedTicker || data?.ticker || data?.primaryTicker);
+    if (!ticker || normalizeTicker(selectedTicker) !== ticker) return;
+
+    const history = data?.priceHistory || data?.price_history || data?.primaryScan?.price_history || [];
+    if (history.length > 0) {
+        updateChart(history, ticker);
+    }
+
+    const scan = data?.primaryScan || data;
+    const signals = scan?.signals || data?.signals || {};
+    if (signals && Object.keys(signals).length > 0) {
+        window._lastSignals = signals;
+        renderSignals(
+            signals,
+            scan.action || data.action || 'HOLD',
+            scan.reason || data.reason || '',
+            scan.bullish_count ?? data.bullish_count ?? 0,
+            scan.bearish_count ?? data.bearish_count ?? 0
+        );
+        updateSizingPanel(scan);
+        recomputeConfluence();
+    }
+
+    if (window.lastDashboardData) {
+        window.lastDashboardData.primaryTicker = ticker;
+        window.lastDashboardData.primaryScan = scan;
+        window.lastDashboardData.signals = signals;
+        window.lastDashboardData.priceHistory = history;
+    }
+}
+
+async function loadSelectedTickerChart(options = {}) {
+    return loadTickerChartFast(selectedTicker, options);
+}
+
+async function loadTickerChartFast(ticker, options = {}) {
+    const requestedTicker = normalizeTicker(ticker);
+    if (!requestedTicker) return;
+
+    const { force = false, renderCached = true } = options;
+    const key = chartCacheKey(requestedTicker);
+    const cached = chartDataCache.get(key);
+    if (renderCached && cached) {
+        renderFastChartPayload(cached, requestedTicker);
+    } else {
+        const grid = document.getElementById('signalGrid');
+        const loading = document.getElementById('gridLoading');
+        if (grid) grid.innerHTML = '';
+        if (loading) loading.classList.remove('hidden');
+    }
+
+    const requestId = ++chartRequestSerial;
+    try {
+        const headers = await getAuthHeaders();
+        const url = `${API_BASE}/api/chart/${encodeURIComponent(requestedTicker)}?timeframe=${encodeURIComponent(currentBackendTf)}&force=${force ? 'true' : 'false'}&source=dashboard`;
+        const response = await fetch(url, { headers });
+        if (!response.ok) {
+            console.error(`[chart] HTTP Error: ${response.status} - ${await response.text()}`);
+            return;
+        }
+        const data = await response.json();
+        if (requestId !== chartRequestSerial || normalizeTicker(selectedTicker) !== requestedTicker) return;
+        chartDataCache.set(key, data);
+        renderFastChartPayload(data, requestedTicker);
+    } catch (e) {
+        console.error('[chart] Fast chart load failed:', e);
     }
 }
 
@@ -830,22 +1226,53 @@ function _updateChartHeader(bars) {
 // ──────────────────────────────────────────────
 function setChartTimeframe(tf) {
     currentBackendTf = CHART_INTERVALS[tf]?.backend || tf;
+    localStorage.setItem('lastChartTf', currentBackendTf);
+
+    // If they choose a very small timeframe, check if the current range is too large.
+    const smallTfs = ["1Min", "5Min", "15Min", "30Min"];
+    if (smallTfs.includes(currentBackendTf)) {
+        if (currentChartRange === '1Y' || currentChartRange === '5Y' || currentChartRange === 'MAX') {
+            currentChartRange = "1M";
+            localStorage.setItem('lastChartRange', "1M");
+        }
+    } else if (currentBackendTf === "1Hour") {
+        if (currentChartRange === '5Y' || currentChartRange === 'MAX') {
+            currentChartRange = "1Y";
+            localStorage.setItem('lastChartRange', "1Y");
+        }
+    }
+
     updateChartControlState(selectedTicker);
-    // Reload chart + signals
-    fetchDashboard('heavy');
+    loadSelectedTickerChart({ renderCached: true });
+    fetchDashboard('fast');
 }
 
 function setChartRange(range) {
     if (!CHART_RANGES[range]) return;
     currentChartRange = range;
     localStorage.setItem('lastChartRange', range);
-    const preferredTf = CHART_RANGES[range].preferredTf;
-    if (preferredTf && CHART_INTERVALS[preferredTf]) currentBackendTf = preferredTf;
+
+    // Only force 1Y and 5Y (and MAX) to minimum timeframes if they are currently set to smaller ones.
+    if (range === '1Y') {
+        const smallTfs = ["1Min", "5Min", "15Min", "30Min"];
+        if (smallTfs.includes(currentBackendTf)) {
+            currentBackendTf = "1Hour";
+            localStorage.setItem('lastChartTf', currentBackendTf);
+        }
+    } else if (range === '5Y' || range === 'MAX') {
+        const smallTfs = ["1Min", "5Min", "15Min", "30Min", "1Hour"];
+        if (smallTfs.includes(currentBackendTf)) {
+            currentBackendTf = "4Hour";
+            localStorage.setItem('lastChartTf', currentBackendTf);
+        }
+    }
+
     updateChartControlState(selectedTicker);
     if (window._lastPriceHistory) {
         updateChart(window._lastPriceHistory, window._lastTicker || selectedTicker);
     }
-    fetchDashboard('heavy');
+    loadSelectedTickerChart({ renderCached: true });
+    fetchDashboard('fast');
 }
 
 function setChartSession(session) {
@@ -882,7 +1309,6 @@ async function toggleWatchlistStar() {
         await fetch(`${API_BASE}/api/watchlist`, { method: 'POST', headers, body: JSON.stringify({ ticker: selectedTicker }) });
     }
     fetchDashboard('fast');
-    fetchDashboard('heavy');
 }
 
 // ──────────────────────────────────────────────
@@ -929,11 +1355,7 @@ function onTickerSearchKey(e) {
 
 function selectTickerFromSearch(ticker) {
     document.getElementById('tickerSearchResults')?.classList.add('hidden');
-    if (!rememberSelectedTicker(ticker)) return;
-    syncChart();
-    // Chart loads first (fast mode), signals follow
-    fetchDashboard('fast');
-    fetchDashboard('heavy');
+    selectTicker(ticker);
 }
 
 // Close search dropdown on outside click
@@ -1004,38 +1426,138 @@ const INDICATOR_DEFAULTS = {
 let currentEditingIndicator = null;
 
 // ──────────────────────────────────────────────
+// 2.5 Global Indicator State Management
+// ──────────────────────────────────────────────
+const GLOBAL_INDICATOR_PREFS_KEY = 'globalIndicatorPrefs';
+const ALL_SIGNAL_NAMES = [
+    'RSI', 'MACD', 'EMA Cross', 'ADX Trend', 'Supertrend',
+    'Bollinger', 'VWAP', 'SMA', 'Mystic Pulse', 'Candle Patterns', 'News Sentiment'
+];
+
+function getGlobalIndicatorPrefs() {
+    try {
+        return JSON.parse(localStorage.getItem(GLOBAL_INDICATOR_PREFS_KEY)) || {};
+    } catch { return {}; }
+}
+
+function setGlobalIndicatorPref(indicatorName, enabled) {
+    const prefs = getGlobalIndicatorPrefs();
+    prefs[indicatorName] = enabled;
+    localStorage.setItem(GLOBAL_INDICATOR_PREFS_KEY, JSON.stringify(prefs));
+    recomputeConfluence();
+
+    // Sync to backend via existing toggleIndicator logic in background
+    if (window._lastSignals && window._lastSignals[indicatorName]) {
+        const toggleKey = window._lastSignals[indicatorName].toggle_key;
+        if (toggleKey) {
+            // we do this without triggering the full redraw since recomputeConfluence handles it
+            const wasDebouncing = window._indicatorToggleDebounce;
+            // Prevent fetchDashboard from ruining our optimistic UI
+            if (!wasDebouncing) window._indicatorToggleDebounce = setTimeout(() => { window._indicatorToggleDebounce = null; }, 2000);
+
+            getAuthHeaders().then(headers => {
+                fetch(`${API_BASE}/api/settings/indicators`, {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify({ [toggleKey]: enabled })
+                }).catch(e => console.error('Error saving setting:', e));
+            });
+        }
+    }
+}
+
+function recomputeConfluence() {
+    const signals = window._lastSignals;
+    if (!signals) return;
+
+    const prefs = getGlobalIndicatorPrefs();
+    let bullish = 0, bearish = 0;
+
+    for (const [name, data] of Object.entries(signals)) {
+        const isEnabled = prefs[name] !== false;
+        if (!isEnabled) continue;
+        if (data.signal === 'BULLISH') bullish++;
+        if (data.signal === 'BEARISH') bearish++;
+    }
+
+    // Determine verdict
+    let action = 'HOLD', reason = 'Waiting for scan...';
+    if (bullish >= (INDICATOR_DEFAULTS.MIN_BULLISH_SIGNALS || 4)) {
+        action = 'BUY';
+        reason = `BUY Triggered: ${bullish} bullish signals`;
+    } else if (bearish >= (INDICATOR_DEFAULTS.MIN_BEARISH_SIGNALS || 4)) {
+        action = 'SELL';
+        reason = `SELL Triggered: ${bearish} bearish signals`;
+    }
+
+    // We pass signals, action, reason, bullish, bearish to renderSignals
+    // We need to bypass the debounce logic in renderSignals since this is a local redraw
+    const wasDebouncing = window._indicatorToggleDebounce;
+    window._indicatorToggleDebounce = null;
+
+    renderSignals(signals, action, reason, bullish, bearish);
+
+    window._indicatorToggleDebounce = wasDebouncing;
+}
 // 3. Render Signal Confluence Grid
 // ──────────────────────────────────────────────
+
+// Premium indicator tooltip descriptions
+const PREMIUM_INFO = {
+    'BotBulls1': 'WaveTrend momentum oscillator + Money Flow analysis. Detects reversals when momentum and institutional volume flow align at oversold/overbought extremes.',
+    'BotBulls2': 'Adaptive ATR trailing stop with trend-smoothed EMA and reversal zone detection. Fires on trend flips confirmed by multi-condition confluence scoring (1-4 strength rating).',
+    'BotBulls3': 'Heikin-Ashi noise filter + ATR-based trailing stop. Generates buy/sell alerts only on confirmed momentum flips — removing false signals from choppy markets.',
+};
+
 function renderSignals(signals, action, reason, bullishCount, bearishCount) {
     // If the user is currently rapid-fire toggling indicators, ignore incoming dashboard data
     // to prevent reverting their optimistic UI changes. The final debounce will fetch the real state.
     if (window._indicatorToggleDebounce) return;
 
     const grid = document.getElementById('signalGrid');
+    const premiumGrid = document.getElementById('premiumSignalGrid');
     const loading = document.getElementById('gridLoading');
 
     if (!signals || Object.keys(signals).length === 0) {
         if (loading) loading.classList.remove('hidden');
         grid.innerHTML = '';
+        if (premiumGrid) premiumGrid.innerHTML = '';
         return;
     }
 
     if (loading) loading.classList.add('hidden');
 
     const activeIds = new Set();
+    const premiumActiveIds = new Set();
+    const prefs = getGlobalIndicatorPrefs();
 
     for (const [name, data] of Object.entries(signals)) {
-        const isEnabled = data.enabled !== false;
-        let signalClass = data.signal === 'BULLISH' ? 'bullish' : data.signal === 'BEARISH' ? 'bearish' : 'neutral';
+        const isPremium = data.premium === true;
+        const targetGrid = isPremium ? premiumGrid : grid;
+        if (!targetGrid) continue;
+
+        // Local prefs override backend 'enabled' flag
+        const isEnabled = prefs[name] !== false;
+
+        // Determine CSS class
+        let signalClass;
         if (!isEnabled) {
             signalClass = 'disabled-signal';
+        } else if (isPremium) {
+            signalClass = data.signal === 'BULLISH' ? 'premium-bullish' : data.signal === 'BEARISH' ? 'premium-bearish' : 'premium-neutral';
+        } else {
+            signalClass = data.signal === 'BULLISH' ? 'bullish' : data.signal === 'BEARISH' ? 'bearish' : 'neutral';
         }
 
         const icon = data.signal === 'BULLISH' ? '▲' : data.signal === 'BEARISH' ? '▼' : '●';
         const iconColor = data.signal === 'BULLISH' ? 'text-emerald-600' : data.signal === 'BEARISH' ? 'text-red-500' : 'text-purple-400';
 
         const cardId = 'signal-card-' + name.replace(/\s+/g, '-');
-        activeIds.add(cardId);
+        if (isPremium) {
+            premiumActiveIds.add(cardId);
+        } else {
+            activeIds.add(cardId);
+        }
 
         let card = document.getElementById(cardId);
         let isNew = false;
@@ -1054,97 +1576,82 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
             card.onclick = function () {
                 const isNowEnabled = !this.classList.contains('disabled-signal');
                 const targetState = !isNowEnabled;
-
-                // Optimistic UI toggle for the card
-                if (isNowEnabled) {
-                    this.classList.add('disabled-signal');
-                    this.classList.remove('bullish', 'bearish', 'neutral');
-                    const spans = this.querySelectorAll('span');
-                    spans.forEach(s => s.classList.add('opacity-50'));
-                    this.querySelector('p').classList.add('opacity-50');
-                } else {
-                    this.classList.remove('disabled-signal');
-                    this.classList.add(data.signal === 'BULLISH' ? 'bullish' : data.signal === 'BEARISH' ? 'bearish' : 'neutral');
-                    const spans = this.querySelectorAll('span');
-                    spans.forEach(s => s.classList.remove('opacity-50', 'grayscale'));
-                    this.querySelector('p').classList.remove('opacity-50');
-                }
-
-                const chartKey = SIGNAL_TO_CHART_KEY[name];
-                if (chartKey) {
-                    _visibleIndicators[chartKey] = targetState;
-                    if (window._lastPriceHistory) {
-                        updateChart(window._lastPriceHistory, window._lastTicker || selectedTicker);
-                    }
-                }
-
-                // Update internal dataset to prevent the next heartbeat from reverting it visually 
-                // until the backend confirms the new state.
-                this.dataset.cacheKey = `${targetState}-${data.signal}-${data.reason}`;
-
-                toggleIndicator(data.toggle_key, targetState);
+                setGlobalIndicatorPref(name, targetState);
             };
             card.title = isEnabled ? "Click to disable this indicator" : "Click to enable this indicator";
         }
 
         const cacheKey = `${isEnabled}-${data.signal}-${data.reason}`;
         if (card.dataset.cacheKey !== cacheKey) {
-            card.innerHTML = `
-                <div class="flex items-center justify-between mb-1">
-                    <span class="font-bold text-xs text-indigo-900 ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${name}</span>
-                    <div class="flex items-center gap-2">
-                        <button class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" 
-                                onclick="event.stopPropagation(); openIndicatorSettings('${name}')"
-                                title="Indicator Settings">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                            </svg>
-                        </button>
+            if (isPremium) {
+                // Premium card with ⓘ info tooltip
+                const tooltipText = PREMIUM_INFO[name] || '';
+                card.innerHTML = `
+                    <div class="flex items-center justify-between mb-1">
+                        <div class="flex items-center gap-1.5">
+                            <span class="font-bold text-xs text-amber-800 ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${name}</span>
+                            <div class="group/tooltip relative inline-flex items-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal normal-case tracking-normal">
+                                    ${tooltipText}
+                                    <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900"></div>
+                                </div>
+                            </div>
+                        </div>
                         <span class="${iconColor} text-sm font-bold ${!isEnabled ? 'opacity-50 grayscale' : ''} transition-all duration-300">${icon}</span>
                     </div>
-                </div>
-                <p class="text-[0.65rem] text-purple-600 leading-tight ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${data.reason}</p>
-            `;
+                    <p class="text-[0.65rem] text-amber-700 leading-tight ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${data.reason}</p>
+                `;
+            } else {
+                // Standard signal card (existing template)
+                card.innerHTML = `
+                    <div class="flex items-center justify-between mb-1">
+                        <span class="font-bold text-xs text-indigo-900 ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${name}</span>
+                        <div class="flex items-center gap-2">
+                            <button class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" 
+                                    onclick="event.stopPropagation(); openIndicatorSettings('${name}')"
+                                    title="Indicator Settings">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </button>
+                            <span class="${iconColor} text-sm font-bold ${!isEnabled ? 'opacity-50 grayscale' : ''} transition-all duration-300">${icon}</span>
+                        </div>
+                    </div>
+                    <p class="text-[0.65rem] text-purple-600 leading-tight ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${data.reason}</p>
+                `;
+            }
             card.dataset.cacheKey = cacheKey;
         }
 
         if (isNew) {
-            grid.appendChild(card);
+            targetGrid.appendChild(card);
         }
     }
 
-    // Remove stale cards that no longer exist in signals
+    // Remove stale cards from standard grid
     Array.from(grid.children).forEach(child => {
         if (!activeIds.has(child.id)) {
             grid.removeChild(child);
         }
     });
 
+    // Remove stale cards from premium grid
+    if (premiumGrid) {
+        Array.from(premiumGrid.children).forEach(child => {
+            if (!premiumActiveIds.has(child.id)) {
+                premiumGrid.removeChild(child);
+            }
+        });
+    }
+
     // Update counts
     document.getElementById('bullCount').textContent = `${bullishCount} Bullish`;
     document.getElementById('bearCount').textContent = `${bearishCount} Bearish`;
 
-    // Update verdict bar
-    const verdictBar = document.getElementById('verdictBar');
-    const verdictLabel = document.getElementById('verdictLabel');
-    const verdictReason = document.getElementById('verdictReason');
-
-    verdictBar.className = 'mt-4 p-3 rounded-lg border ';
-    if (action === 'BUY') {
-        verdictBar.className += 'verdict-buy';
-        verdictLabel.textContent = '🟢 BUY SIGNAL';
-        verdictLabel.className = 'font-bold text-sm text-emerald-700';
-    } else if (action === 'SELL') {
-        verdictBar.className += 'verdict-sell';
-        verdictLabel.textContent = '🔴 SELL SIGNAL';
-        verdictLabel.className = 'font-bold text-sm text-red-700';
-    } else {
-        verdictBar.className += 'verdict-hold';
-        verdictLabel.textContent = '⏸ HOLD';
-        verdictLabel.className = 'font-bold text-sm text-purple-700';
-    }
-    verdictReason.textContent = reason || 'No signal';
 
     // Sync chart overlays to match which indicators are enabled here
     _syncIndicatorsFromSignals(signals);
@@ -1159,15 +1666,19 @@ const SIGNAL_TO_CHART_KEY = {
     'Bollinger': 'bollinger',
     'VWAP': 'vwap',
     'Mystic Pulse': 'mystic',
+    'SMA': 'sma',
+    'ADX Trend': 'adx',
+    'BotBulls1': 'botbulls1',
+    'BotBulls2': 'botbulls2',
+    'BotBulls3': 'botbulls3',
 };
 
 function _syncIndicatorsFromSignals(signals) {
-    if (!signals) return;
     let changed = false;
-    for (const [name, data] of Object.entries(signals)) {
-        const key = SIGNAL_TO_CHART_KEY[name];
-        if (!key) continue;
-        const shouldShow = data.enabled !== false;
+    const prefs = getGlobalIndicatorPrefs();
+    for (const [name, key] of Object.entries(SIGNAL_TO_CHART_KEY)) {
+        // If it's disabled globally, it shouldn't show on chart
+        const shouldShow = prefs[name] !== false;
         if (_visibleIndicators[key] !== shouldShow) {
             _visibleIndicators[key] = shouldShow;
             changed = true;
@@ -1182,7 +1693,7 @@ function _syncIndicatorsFromSignals(signals) {
 // ──────────────────────────────────────────────
 // 4. Render Watchlist
 // ──────────────────────────────────────────────
-function renderWatchlist(scans, watchlist, tradelist = [], botScans = {}) {
+function renderWatchlist(scans, watchlist) {
     const container = document.getElementById('watchlistContainer');
     container.innerHTML = '';
 
@@ -1202,38 +1713,25 @@ function renderWatchlist(scans, watchlist, tradelist = [], botScans = {}) {
         item.className = `watchlist-item group cursor-pointer ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2 flex flex-col gap-2`;
         item.onclick = () => selectTicker(ticker);
 
-        const action = scan?.action || '—';
         const price = scan?.price ? `$${parseFloat(scan.price.toString().replace('$', '')).toFixed(isCryptoTicker(ticker) ? 4 : 2)}` : '---';
-        const actionColor = action === 'BUY' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : action === 'SELL' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-400 border-slate-100';
-
-        const bullish = scan?.bullish_count || 0;
-        const total = scan?.total_signals || 0;
-        const isBotActive = tradelist.includes(ticker);
 
         item.innerHTML = `
-                <!-- Top Layer: Ticker & Bot Badge -->
                 <div class="flex items-center justify-between">
                     <div class="flex items-center gap-2">
                         <span class="font-black text-sm text-indigo-950 tracking-tight">${ticker}</span>
                     </div>
                     
-                    <div class="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
-                        <button class="p-1.5 rounded hover:bg-rose-50 text-rose-300 hover:text-rose-400 transition-all" 
-                            title="Remove from Watchlist"
-                            onclick="event.stopPropagation(); removeFromWatchlist('${ticker}')">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Bottom Layer: Price & Signals -->
-                <div class="flex items-center justify-between border-t border-slate-50 pt-2.5">
-                    <span class="text-xs font-bold text-slate-500 font-mono tracking-tight">${price}</span>
-                    <div class="flex items-center gap-1.5">
-                        <span class="text-[0.65rem] font-black text-emerald-600 bg-emerald-50/80 px-2 py-0.5 rounded border border-emerald-100 shadow-sm">${bullish} B</span>
-                        <span class="text-[0.65rem] font-black text-red-600 bg-red-50/80 px-2 py-0.5 rounded border border-red-100 shadow-sm">${scan?.bearish_count || 0} S</span>
+                    <div class="flex items-center gap-3">
+                        <span class="text-xs font-bold text-slate-500 font-mono tracking-tight">${price}</span>
+                        <div class="opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button class="p-1 rounded hover:bg-rose-50 text-rose-300 hover:text-rose-400 transition-all"
+                                title="Remove from Watchlist"
+                                onclick="event.stopPropagation(); removeFromWatchlist('${ticker}')">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        </div>
                     </div>
                 </div>
         `;
@@ -1278,9 +1776,7 @@ function setWatchlistTab(tab) {
     if (window.lastDashboardData) {
         renderWatchlist(
             window.lastDashboardData.watchlistScans,
-            window.lastDashboardData.watchlist,
-            window.lastDashboardData.tradelist,
-            window.lastDashboardData.botScans
+            window.lastDashboardData.watchlist
         );
     }
 }
@@ -1295,39 +1791,25 @@ function selectTicker(ticker) {
     }
     rememberSelectedTicker(normalizedTicker);
 
-    // Force reset to 1h timeframe and 1M range when loading a new stock
-    const previousTf = currentBackendTf;
-    currentBackendTf = "1Hour";
-    currentChartRange = "1M";
-    localStorage.setItem('lastChartRange', "1M");
+    // Keep whatever timeframe and range were previously selected
 
     // Update header and search box immediately for visual feedback
     updateActiveTickerDisplay(selectedTicker);
     updateChartControlState(selectedTicker);
 
-    // Optimization: Check if we have cached signals for this ticker in the current dashboard data
-    // Only use cache if the timeframe hasn't changed, otherwise we need fresh signals for 1h
-    const cachedScan = (previousTf === "1Hour") ? (window.lastDashboardData?.watchlistScans || {})[normalizedTicker] : null;
-    if (cachedScan) {
-        renderSignals(
-            cachedScan.signals,
-            cachedScan.action,
-            cachedScan.reason,
-            cachedScan.bullish_count,
-            cachedScan.bearish_count
-        );
-        updateSizingPanel(cachedScan);
+    const cachedChart = chartDataCache.get(chartCacheKey(normalizedTicker));
+    if (cachedChart) {
+        renderFastChartPayload(cachedChart, normalizedTicker);
     } else {
-        // Clear signals and show loader only if we don't have cached data
         const grid = document.getElementById('signalGrid');
         const loading = document.getElementById('gridLoading');
         if (grid) grid.innerHTML = '';
         if (loading) loading.classList.remove('hidden');
     }
 
-    syncChart(); // Load chart in parallel
+    syncChart();
+    loadSelectedTickerChart({ renderCached: true });
     fetchDashboard('fast');
-    fetchDashboard('heavy'); // Get fresh data
 }
 
 async function removeFromWatchlist(ticker) {
@@ -1344,7 +1826,6 @@ async function removeFromWatchlist(ticker) {
             localStorage.setItem('userFavorites', JSON.stringify(favorites));
 
             fetchDashboard('fast');
-            fetchDashboard('heavy'); // Refresh UI
         }
     } catch (e) {
         console.error('Error removing from watchlist:', e);
@@ -1352,122 +1833,6 @@ async function removeFromWatchlist(ticker) {
 }
 
 // ──────────────────────────────────────────────
-// 4b. Render Active Trade List (Bots)
-// ──────────────────────────────────────────────
-function renderTradelist(scans, tradelist, tickerAmounts = {}) {
-    const container = document.getElementById('tradelistContainer');
-    if (!container) return; // Prevent crash if container is removed
-    container.innerHTML = '';
-
-    if (!tradelist || tradelist.length === 0) {
-        container.innerHTML = '<p class="text-center text-purple-400 text-[0.65rem] py-4">No active bots. Add from watchlist below.</p>';
-        return;
-    }
-
-    tradelist.forEach(ticker => {
-        const scan = (scans || {})[ticker];
-        const item = document.createElement('div');
-        item.className = `watchlist-item group active-bot ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2 flex flex-col gap-2`;
-
-        const action = scan?.action || '—';
-        const price = scan?.price ? `$${parseFloat(scan.price.toString().replace('$', '')).toFixed(isCryptoTicker(ticker) ? 4 : 2)}` : '---';
-        const actionColor = action === 'BUY' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : action === 'SELL' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-400 border-slate-100';
-        const bullish = scan?.bullish_count ?? 0;
-        const bearish = scan?.bearish_count ?? 0;
-        const tickerTf = (window.lastDashboardData?.ticker_settings || {})[ticker]?.timeframe || '';
-        const tfLabel = tickerTf || (window.lastDashboardData?.strategyTimeframe || '5Min');
-
-        item.innerHTML = `
-                <!-- Top Layer: Ticker & Status -->
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center gap-2 cursor-pointer" onclick="selectTicker('${ticker}')">
-                        <div class="h-2 w-2 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]"></div>
-                        <span class="font-black text-sm text-indigo-950 tracking-tight">${ticker}</span>
-                        <span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-400 border border-indigo-100">${tfLabel}</span>
-                    </div>
-                    
-                    <div class="flex items-center gap-1.5">
-                        <span class="text-[0.6rem] font-bold text-emerald-600 bg-emerald-50 px-1 rounded border border-emerald-100">${bullish}B</span>
-                        <span class="text-[0.6rem] font-bold text-red-600 bg-red-50 px-1 rounded border border-red-100">${bearish}S</span>
-                    </div>
-
-                    <div class="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
-                        <button class="p-1.5 rounded hover:bg-indigo-50 text-indigo-400 transition-all" 
-                            onclick="event.stopPropagation(); openTickerModal('${ticker}')">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                            </svg>
-                        </button>
-                        <button class="p-1.5 rounded hover:bg-rose-50 text-rose-400 transition-all" 
-                            onclick="event.stopPropagation(); removeFromTradelist('${ticker}')">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Bottom Layer: Price & Action -->
-                <div class="flex items-center justify-between border-t border-slate-50 pt-2 cursor-pointer" onclick="selectTicker('${ticker}')">
-                    <span class="text-xs font-black text-slate-500 font-mono tracking-tight">${price}</span>
-                    <div class="px-2 py-0.5 rounded border ${actionColor} shadow-sm min-w-[50px] text-center">
-                        <span class="font-black text-[0.65rem] tracking-widest">${action}</span>
-                    </div>
-                </div>
-        `;
-        container.appendChild(item);
-    });
-}
-
-async function updateTickerAmount(ticker, amount) {
-    try {
-        const headers = await getAuthHeaders();
-        await fetch(`${API_BASE}/api/settings/ticker_amount`, {
-            method: 'POST',
-            headers: headers,
-            body: JSON.stringify({ ticker: ticker, amount: amount })
-        });
-        // Quietly update in background, no need to refresh entire dashboard unless needed
-        console.log(`[settings] Updated amount for ${ticker}: $${amount}`);
-    } catch (e) {
-        console.error('Error updating ticker amount:', e);
-    }
-}
-
-async function addToTradelist(ticker) {
-    try {
-        const headers = await getAuthHeaders();
-        const timeframe = document.getElementById('strategyTimeframe')?.value || '4Hour';
-        const response = await fetch(`${API_BASE}/api/tradelist`, {
-            method: 'POST',
-            headers: headers,
-            body: JSON.stringify({ ticker: ticker, timeframe: timeframe })
-        });
-        if (response.ok) {
-            fetchDashboard('fast');
-            fetchDashboard('heavy');
-        }
-    } catch (e) {
-        console.error('Error adding to tradelist:', e);
-    }
-}
-
-async function removeFromTradelist(ticker) {
-    try {
-        const headers = await getAuthHeaders();
-        const response = await fetch(`${API_BASE}/api/tradelist/${ticker}`, {
-            method: 'DELETE',
-            headers: headers
-        });
-        if (response.ok) {
-            fetchDashboard('fast');
-            fetchDashboard('heavy');
-        }
-    } catch (e) {
-        console.error('Error removing from tradelist:', e);
-    }
-}
 
 // ──────────────────────────────────────────────
 // 5. Render Trade Log
@@ -1649,98 +2014,6 @@ function updateSizingPanel(scan) {
     if (rr) rr.className = scan.is_custom ? 'font-black text-[0.6rem] text-amber-500 animate-pulse' : 'font-bold';
 }
 
-// ──────────────────────────────────────────────
-// 8. Ticker-Specific Settings
-// ──────────────────────────────────────────────
-let currentEditingTicker = null;
-
-function openTickerModal(ticker) {
-    currentEditingTicker = ticker.toUpperCase();
-    const modal = document.getElementById('tickerModal');
-    const nameEl = document.getElementById('modalTickerName');
-    if (!modal || !nameEl) return;
-
-    nameEl.textContent = `${currentEditingTicker} Settings`;
-    modal.classList.remove('hidden');
-
-    const settings = (window.lastDashboardData?.ticker_settings || {})[currentEditingTicker] || {};
-
-    // 1. Set Manual Placeholders
-    const amountInput = document.getElementById('modalAmount');
-    const riskInput = document.getElementById('modalRisk');
-    const atrInput = document.getElementById('modalAtrStop');
-    const tpInput = document.getElementById('modalTpMult');
-
-    amountInput.placeholder = "Enter Budget (e.g. 500)";
-    riskInput.placeholder = "Enter Risk % (e.g. 2.5)";
-    atrInput.placeholder = "Enter ATR Mult (e.g. 2.0)";
-    tpInput.placeholder = "Enter TP Mult (e.g. 1.5)";
-
-    // 2. Set Actual Values (Overrides)
-    amountInput.value = settings.amount || '';
-    riskInput.value = settings.risk_per_trade ? settings.risk_per_trade * 100 : '';
-    atrInput.value = settings.atr_stop_multiplier || '';
-    tpInput.value = settings.take_profit_multiplier || '';
-
-    const tfSelect = document.getElementById('modalTimeframe');
-    if (tfSelect) tfSelect.value = settings.timeframe || '';
-}
-
-function closeTickerModal() {
-    document.getElementById('tickerModal').classList.add('hidden');
-    currentEditingTicker = null;
-}
-
-async function saveTickerSettings() {
-    if (!currentEditingTicker) return;
-
-    const tfEl = document.getElementById('modalTimeframe');
-    const data = {
-        ticker: currentEditingTicker,
-        settings: {
-            amount: parseFloat(document.getElementById('modalAmount').value) || null,
-            risk_per_trade: parseFloat(document.getElementById('modalRisk').value) / 100 || null,
-            atr_stop_multiplier: parseFloat(document.getElementById('modalAtrStop').value) || null,
-            take_profit_multiplier: parseFloat(document.getElementById('modalTpMult').value) || null,
-            timeframe: tfEl ? (tfEl.value || null) : null
-        }
-    };
-
-    try {
-        const headers = await getAuthHeaders();
-        const response = await fetch(`${API_BASE}/api/settings/ticker`, {
-            method: 'POST',
-            headers: headers,
-            body: JSON.stringify(data)
-        });
-        if (response.ok) {
-            console.log(`[settings] Saved settings for ${currentEditingTicker}`);
-            closeTickerModal();
-            fetchDashboard('fast');
-            fetchDashboard('heavy'); // Refresh to show changes
-        }
-    } catch (e) {
-        console.error('Error saving ticker settings:', e);
-    }
-}
-
-async function resetTickerSettings() {
-    if (!currentEditingTicker) return;
-    if (!confirm(`Reset ${currentEditingTicker} to global defaults?`)) return;
-
-    try {
-        const headers = await getAuthHeaders();        // Alpaca connection check has been moved to bots.js
-        await fetch(`${API_BASE}/api/settings/ticker/${currentEditingTicker}`, {
-            method: 'DELETE',
-            headers: headers
-        });
-        closeTickerModal();
-        fetchDashboard('fast');
-        fetchDashboard('heavy');
-    } catch (e) {
-        console.error('Error resetting ticker settings:', e);
-    }
-}
 
 // ──────────────────────────────────────────────
 // 8. Main Fetch Loop
@@ -1784,14 +2057,14 @@ async function fetchDashboard(mode = 'heavy') {
         const dotEl = document.getElementById('alpacaStatusDot');
         const textEl = document.getElementById('alpacaStatusText');
         const btnUnlink = document.getElementById('btnUnlinkAlpaca');
-        
+
         if (redirectBtn && statusSpan && dotEl && textEl && btnUnlink) {
             if (data.brokerConnected) {
                 // Connected to Alpaca: Hide Connect redirect button and show active link pill
                 redirectBtn.classList.add('hidden');
                 statusSpan.classList.remove('hidden');
                 statusSpan.style.display = 'flex';
-                
+
                 statusSpan.className = 'flex items-center justify-center h-9 text-xs font-black px-5 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider bg-emerald-50 text-emerald-600 border-emerald-100';
                 dotEl.className = 'h-2 w-2 rounded-full mr-2 bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]';
                 textEl.textContent = 'Alpaca';
@@ -1802,7 +2075,7 @@ async function fetchDashboard(mode = 'heavy') {
                     redirectBtn.classList.add('hidden');
                     statusSpan.classList.remove('hidden');
                     statusSpan.style.display = 'flex';
-                    
+
                     statusSpan.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-amber-50 text-amber-600 border-2 border-amber-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
                     dotEl.className = "h-2 w-2 rounded-full mr-2 bg-amber-500 animate-pulse";
                     textEl.textContent = "RETRYING...";
@@ -1867,6 +2140,9 @@ async function fetchDashboard(mode = 'heavy') {
 
         // Fetch dynamic Market Sentiment (Fear & Greed)
         fetchFearAndGreed();
+        
+        // Update new Macro, Breadth, and Sector trading cards
+        updateTradingCards(data);
         const posLabel = document.getElementById('positionsList');
         if (posLabel) {
             if (data.positions?.length > 0) {
@@ -1915,31 +2191,31 @@ async function fetchDashboard(mode = 'heavy') {
             }
         }
 
-        // Get selected ticker scan
-        const activeScan = isStaleTickerResponse ? null : data.watchlistScans?.[selectedTicker];
+        // Watchlist scans are price-only. Full signals belong to the chart's primary ticker.
+        const activeScan = (
+            !isStaleTickerResponse &&
+            normalizeTicker(data.primaryTicker) === selectedTicker
+        ) ? data.primaryScan : null;
 
 
 
         // Signals
         if (activeScan && mode !== 'fast') {
-            renderSignals(
-                activeScan.signals,
-                activeScan.action,
-                activeScan.reason,
-                activeScan.bullish_count,
-                activeScan.bearish_count
-            );
+            window._lastSignals = activeScan.signals || null;
             updateSizingPanel(activeScan);
         } else if (data.signals && mode !== 'fast' && !isStaleTickerResponse) {
-            renderSignals(data.signals, 'HOLD', 'Waiting for scan...', 0, 0);
+            window._lastSignals = data.signals || null;
+        }
+
+        if (mode !== 'fast' && !isStaleTickerResponse) {
+            recomputeConfluence();
         }
 
         // Cache data first so renderWatchlist can access it safely
         window.lastDashboardData = data;
 
-        // Watchlist & Tradelist
-        renderTradelist(data.watchlistScans, data.tradelist, data.tickerAmounts);
-        renderWatchlist(data.watchlistScans, data.watchlist, data.tradelist, data.botScans);
+        // Watchlist
+        renderWatchlist(data.watchlistScans, data.watchlist);
 
         if (data.indicator_parameters) {
             const macdFast = data.indicator_parameters.MACD_FAST || 12;
@@ -1990,22 +2266,7 @@ async function fetchDashboard(mode = 'heavy') {
 async function fetchTickerChart(ticker, signals) {
     const requestedTicker = normalizeTicker(ticker);
     if (!requestedTicker) return;
-    if (!isAlpacaLinked) {
-        console.log('[chart] Skip fetch: Alpaca not linked.');
-        return;
-    }
-    try {
-        const headers = await getAuthHeaders();
-        const response = await fetch(`${API_BASE}/api/scan/${encodeURIComponent(requestedTicker)}?timeframe=${encodeURIComponent(currentBackendTf)}`, { headers });
-        if (!response.ok) return;
-        const data = await response.json();
-        if (normalizeTicker(selectedTicker) !== requestedTicker) return;
-        if (data.price_history) {
-            updateChart(data.price_history, requestedTicker, signals || data.signals);
-        }
-    } catch (e) {
-        console.log('[chart] Could not fetch ticker data:', e);
-    }
+    return loadTickerChartFast(requestedTicker, { renderCached: true });
 }
 
 // ──────────────────────────────────────────────
@@ -2097,7 +2358,6 @@ function attachEventListeners() {
 
                 updateFavoriteIcon();
                 fetchDashboard('fast');
-                fetchDashboard('heavy'); // Trigger UI update
             } catch (e) {
                 console.error('Error toggling favorite:', e);
             }
@@ -2136,7 +2396,7 @@ async function toggleIndicator(key, value) {
         clearTimeout(window._indicatorToggleDebounce);
         window._indicatorToggleDebounce = setTimeout(() => {
             fetchDashboard('fast');
-            fetchDashboard('heavy'); // Refresh chart and dashboard once after clicks settle
+            loadSelectedTickerChart({ force: true, renderCached: false });
             window._indicatorToggleDebounce = null; // Unblock the heartbeat
         }, 1000);
     } catch (e) {
@@ -2147,6 +2407,7 @@ async function toggleIndicator(key, value) {
 async function updateStrategyTf(newTf) {
     try {
         currentBackendTf = newTf;
+        localStorage.setItem('lastChartTf', newTf);
         if (window.lastDashboardData) {
             window.lastDashboardData.watchlistScans = {};
             window.lastDashboardData.botScans = {};
@@ -2169,9 +2430,9 @@ async function updateStrategyTf(newTf) {
         if (response.ok) {
             console.log(`[settings] Timeframe updated to ${newTf}`);
 
-            syncChart(); // Load chart in parallel
+            syncChart();
+            loadSelectedTickerChart({ force: true, renderCached: false });
             fetchDashboard('fast');
-            fetchDashboard('heavy'); // Refresh data
         }
     } catch (e) {
         console.error('Error updating timeframe:', e);
@@ -2193,15 +2454,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initial data fetch once auth is ready
     const checkAuth = setInterval(() => {
-        if (window.auth && window.auth.currentUser) {
+        if (window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true')) {
             console.log('[dashboard] Auth ready. Starting data stream.');
             fetchDashboard('fast');
+            if (selectedTicker) loadSelectedTickerChart({ renderCached: true });
             fetchDashboard('heavy');
+            fetchMarketData(); // Fetch market data for modals
+            fetchMacroEvents(); // Fetch macro events for modal
             setInterval(() => {
                 // Skip the "heartbeat" live refresh if the user is currently rapid-fire clicking indicators
                 if (window._indicatorToggleDebounce) return;
                 fetchDashboard('heavy');
             }, REFRESH_INTERVAL);
+            setInterval(fetchMarketData, 60000); // Refresh market data every minute
             clearInterval(checkAuth);
         }
     }, 500);
@@ -2624,9 +2889,9 @@ async function saveIndicatorSettings() {
         if (response.ok) {
             console.log(`[settings] Updated settings for ${currentEditingIndicator}`);
             closeIndicatorSettings();
-            // Fetch dashboard to see effects (calculating with new params)
+            // Recalculate the current chart/signals with the updated indicator parameters.
             fetchDashboard('fast');
-            fetchDashboard('heavy');
+            loadSelectedTickerChart({ force: true, renderCached: false });
         } else {
             alert("Error saving indicator settings.");
         }
@@ -2637,8 +2902,64 @@ async function saveIndicatorSettings() {
 }
 
 // ──────────────────────────────────────────────
-// Fear & Greed Integration
+// Fear & Greed Integration and Trading Cards
 // ──────────────────────────────────────────────
+
+function updateTradingCards(data) {
+    if (!data || !data.watchlistScans) return;
+
+    // 1. Calculate Market Breadth dynamically from watchlist/botlist scans
+    let totalTickers = 0;
+    let bullishCount = 0;
+    
+    // Combine watchlist and botScans to get a broad view
+    const allScans = { ...data.watchlistScans, ...data.botScans };
+    
+    for (const ticker in allScans) {
+        const scan = allScans[ticker];
+        if (scan && scan.sentiment_score !== undefined) {
+            totalTickers++;
+            if (scan.sentiment_score > 0) bullishCount++;
+        }
+    }
+
+    const breadthScoreEl = document.getElementById('breadthScore');
+    const breadthLabelEl = document.getElementById('breadthLabel');
+    const breadthProgressEl = document.getElementById('breadthProgress');
+
+    if (breadthScoreEl && breadthProgressEl) {
+        if (totalTickers > 0) {
+            const breadthPct = Math.round((bullishCount / totalTickers) * 100);
+            breadthScoreEl.textContent = `${breadthPct}%`;
+            breadthProgressEl.setAttribute('stroke-dasharray', `${breadthPct}, 100`);
+            
+            // Color mapping based on breadth
+            if (breadthPct >= 60) {
+                breadthProgressEl.className.baseVal = "text-emerald-500";
+                breadthLabelEl.textContent = "Bullish Trend";
+                breadthLabelEl.className = "text-xs font-bold text-emerald-600 mt-2 uppercase tracking-wide";
+            } else if (breadthPct <= 40) {
+                breadthProgressEl.className.baseVal = "text-red-500";
+                breadthLabelEl.textContent = "Bearish Trend";
+                breadthLabelEl.className = "text-xs font-bold text-red-600 mt-2 uppercase tracking-wide";
+            } else {
+                breadthProgressEl.className.baseVal = "text-yellow-500";
+                breadthLabelEl.textContent = "Neutral Trend";
+                breadthLabelEl.className = "text-xs font-bold text-yellow-600 mt-2 uppercase tracking-wide";
+            }
+        } else {
+            breadthScoreEl.textContent = `--%`;
+            breadthProgressEl.setAttribute('stroke-dasharray', `0, 100`);
+            breadthLabelEl.textContent = "Waiting for data...";
+        }
+    }
+
+    // 2. Sector Heatmap (Populated dynamically via fetchMarketData live averages)
+    // We let the fetchMarketData live updates control this container to ensure perfect, mathematical alignment.
+
+    // 3. Macro Events (Mocked high-impact events)
+    // Could eventually be populated by a finnhub/alphavantage economic calendar API.
+}
 let lastFngScore = null;
 let lastFngComponents = [];
 let lastFngFetch = 0;
@@ -2741,16 +3062,17 @@ function openFngModal() {
             else { label = "Extreme Greed"; color = "bg-red-500"; }
 
             grid.innerHTML += `
-                <div class="bg-white border border-slate-200 rounded-2xl p-5 flex flex-col justify-between shadow-sm hover:shadow-md transition-shadow">
-                    <div>
+                <div class="card-glass p-5 flex flex-col justify-between hover:ring-2 hover:ring-indigo-400 transition-all overflow-hidden relative group">
+                    <div class="card-glow"></div>
+                    <div class="relative z-10">
                         <div class="flex items-center justify-between mb-3">
-                            <h4 class="font-black text-slate-800 text-[13px] tracking-wide">${comp.name}</h4>
+                            <h4 class="font-black text-slate-700 text-[13px] tracking-wide">${comp.name}</h4>
                             <span class="${color} text-white text-[10px] px-2.5 py-1 rounded-md font-bold uppercase tracking-widest shadow-sm">${label}</span>
                         </div>
                         <p class="text-xs text-slate-500 mb-2 leading-relaxed">${comp.desc}</p>
-                        <p class="text-[10px] text-slate-400 font-mono bg-slate-50 px-2 py-1 rounded border border-slate-100 inline-block truncate max-w-full">${comp.raw}</p>
+                        <p class="text-[10px] text-slate-400 font-mono bg-slate-50/50 backdrop-blur-sm px-2 py-1 rounded border border-slate-200 inline-block truncate max-w-full">${comp.raw}</p>
                     </div>
-                    <div class="mt-5">
+                    <div class="mt-5 relative z-10">
                         <div class="flex justify-between items-end text-[10px] text-slate-400 font-bold mb-1.5">
                             <span>Fear</span>
                             <span class="text-slate-800 text-lg font-black leading-none">${comp.val}</span>
@@ -2766,4 +3088,460 @@ function openFngModal() {
     }
 
     modal.classList.remove('hidden');
+}
+
+function openMacroModal() {
+    const modal = document.getElementById('macroModal');
+    if (modal) modal.classList.remove('hidden');
+}
+
+function closeMacroModal() {
+    const modal = document.getElementById('macroModal');
+    if (modal) modal.classList.add('hidden');
+}
+
+function openSectorModal() {
+    const modal = document.getElementById('sectorModal');
+    if (modal) modal.classList.remove('hidden');
+}
+
+function closeSectorModal() {
+    const modal = document.getElementById('sectorModal');
+    if (modal) modal.classList.add('hidden');
+}
+
+function switchSectorTab(sector) {
+    const sectors = ['tech', 'financials', 'healthcare', 'energy', 'crypto'];
+    sectors.forEach(s => {
+        const tab = document.getElementById(`tab-${s}`);
+        const view = document.getElementById(`view-${s}`);
+        
+        if (s === sector) {
+            if (tab) tab.className = 'pb-3 text-sm font-bold border-b-2 border-indigo-600 text-indigo-700 transition-colors';
+            if (view) view.classList.remove('hidden');
+        } else {
+            if (tab) tab.className = 'pb-3 text-sm font-bold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors';
+            if (view) view.classList.add('hidden');
+        }
+    });
+}
+
+function openBreadthModal() {
+    const modal = document.getElementById('breadthModal');
+    if (modal) modal.classList.remove('hidden');
+}
+
+function closeBreadthModal() {
+    const modal = document.getElementById('breadthModal');
+    if (modal) modal.classList.add('hidden');
+}
+
+async function fetchMarketData() {
+    try {
+        const headers = await getAuthHeaders();
+        const req = await fetch(`${API_BASE}/api/market-data`, {
+            headers: headers
+        });
+        if (!req.ok) return;
+        const data = await req.json();
+        
+        // Update Sector Heatmap Modal (Dynamic Webull-Style Grid)
+        if (data.sectors) {
+            // Calculate actual mathematical averages for the main dashboard card
+            const techList = ["AAPL", "MSFT", "GOOG", "NVDA", "META", "TSLA", "AVGO", "AMD", "QCOM", "NFLX", "AMZN", "ADBE", "CRM", "INTC", "CSCO", "ORCL"];
+            const cryptoList = ["BTC-USD", "ETH-USD", "SOL-USD", "ADA-USD", "XRP-USD", "DOGE-USD", "DOT-USD", "LINK-USD", "LTC-USD", "NEAR-USD", "BCH-USD", "AVAX-USD"];
+            const energyList = ["XOM", "CVX", "COP", "OXY", "SLB", "CAT", "GE", "HON", "UNP", "LMT", "DE", "MMM"];
+
+            const calcAvg = (list) => {
+                let sum = 0;
+                let count = 0;
+                list.forEach(t => {
+                    if (data.sectors[t] !== undefined) {
+                        sum += data.sectors[t];
+                        count++;
+                    }
+                });
+                return count > 0 ? (sum / count) : 0.0;
+            };
+
+            const techAvg = calcAvg(techList);
+            const cryptoAvg = calcAvg(cryptoList);
+            const energyAvg = calcAvg(energyList);
+
+            const mainSectorContainer = document.getElementById('sectorHeatmapContainer');
+            if (mainSectorContainer) {
+                const getPill = (avg) => {
+                    const isUp = avg >= 0;
+                    const pillColor = isUp ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700';
+                    return `<span class="px-2 py-1 rounded text-xs font-bold ${pillColor}">${isUp ? '+' : ''}${avg.toFixed(2)}%</span>`;
+                };
+
+                mainSectorContainer.innerHTML = `
+                    <div class="flex items-center justify-between">
+                        <span class="text-sm font-bold text-slate-600">Technology</span>
+                        ${getPill(techAvg)}
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <span class="text-sm font-bold text-slate-600">Crypto</span>
+                        ${getPill(cryptoAvg)}
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <span class="text-sm font-bold text-slate-600">Energy & Industrials</span>
+                        ${getPill(energyAvg)}
+                    </div>
+                `;
+            }
+
+            const SECTOR_TICKERS = {
+                tech: techList,
+                financials: ["JPM", "BAC", "WFC", "MS", "GS", "V", "MA", "AXP", "BLK", "C", "SCHW", "HDB"],
+                healthcare: ["LLY", "UNH", "JNJ", "MRK", "ABBV", "PFE", "WMT", "COST", "PG", "KO", "PEP", "NKE", "MCD", "EL"],
+                energy: energyList,
+                crypto: cryptoList
+            };
+
+            const TICKER_WEIGHTS = {
+                // Mega-Caps (Weight 3 - Large Mosaic Tiles: 2x2)
+                "AAPL": 3, "MSFT": 3, "GOOG": 3, "NVDA": 3, "AMZN": 3, 
+                "BTC-USD": 3, "ETH-USD": 3, 
+                "JPM": 3, "LLY": 3, "XOM": 3,
+
+                // Large-Caps (Weight 2 - Wide Rectangle Tiles: 2x1)
+                "META": 2, "TSLA": 2, "AVGO": 2, "NFLX": 2, "ADBE": 2,
+                "BAC": 2, "V": 2, "MA": 2, 
+                "UNH": 2, "COST": 2, "PG": 2, 
+                "CVX": 2, "SOL-USD": 2
+            };
+
+            for (const [sectorName, tickers] of Object.entries(SECTOR_TICKERS)) {
+                const gridContainer = document.getElementById(`view-${sectorName}`);
+                if (!gridContainer) continue;
+
+                // Sort tickers by weight descending so larger tiles render first at the top
+                const sortedTickers = [...tickers].sort((a, b) => {
+                    const wA = TICKER_WEIGHTS[a] || 1;
+                    const wB = TICKER_WEIGHTS[b] || 1;
+                    return wB - wA;
+                });
+
+                let html = '';
+                sortedTickers.forEach(ticker => {
+                    const pct = data.sectors[ticker] !== undefined ? data.sectors[ticker] : 0.0;
+                    const cleanSymbol = ticker.replace('-USD', '');
+                    const isUp = pct > 0;
+                    const isDown = pct < 0;
+                    
+                    // Light-mode glassmorphic return-based color scaling
+                    let bgClass = 'bg-white/90 border-slate-200/80 text-slate-600 shadow-sm'; // Flat/Neutral
+                    if (isUp) {
+                        if (pct > 4) bgClass = 'bg-emerald-600 border-emerald-700 text-white shadow-md shadow-emerald-100';
+                        else if (pct > 2) bgClass = 'bg-emerald-400/90 border-emerald-500/60 text-slate-900 shadow-sm';
+                        else bgClass = 'bg-emerald-100/80 border-emerald-200 text-emerald-800 shadow-sm';
+                    } else if (isDown) {
+                        if (pct < -4) bgClass = 'bg-rose-600 border-rose-700 text-white shadow-md shadow-rose-100';
+                        else if (pct < -2) bgClass = 'bg-rose-400/90 border-rose-500/60 text-slate-900 shadow-sm';
+                        else bgClass = 'bg-rose-100/80 border-rose-200 text-rose-800 shadow-sm';
+                    }
+
+                    // Sizing and spanning classes based on relative market cap weight
+                    const weight = TICKER_WEIGHTS[ticker] || 1;
+                    let spanClass = 'col-span-1 row-span-1 p-1.5 md:p-2 min-h-[50px] flex flex-col justify-center';
+                    let fontClass = 'text-xs font-bold';
+                    let changeFontClass = 'text-[9px]';
+                    
+                    if (weight === 3) {
+                        spanClass = 'col-span-2 row-span-2 p-3 md:p-4 flex flex-col justify-center min-h-[108px]';
+                        fontClass = 'text-base md:text-lg font-black tracking-widest';
+                        changeFontClass = 'text-xs font-bold';
+                    } else if (weight === 2) {
+                        spanClass = 'col-span-2 row-span-1 p-2 md:p-3 flex flex-col justify-center min-h-[50px]';
+                        fontClass = 'text-sm font-black tracking-wider';
+                        changeFontClass = 'text-[10px] font-bold';
+                    }
+
+                    const tileClass = `flex flex-col items-center justify-center rounded-xl border backdrop-blur-sm transition-all duration-300 hover:scale-[1.03] hover:shadow-md cursor-pointer text-center relative ${spanClass} ${bgClass}`;
+                    
+                    // Convert to alpaca/standard ticker representation for selectTicker (remove hyphens)
+                    const selectSymbol = cleanSymbol.replace('-', '');
+
+                    html += `
+                    <div class="${tileClass}" onclick="selectTicker('${selectSymbol}'); closeSectorModal();" title="${cleanSymbol}: ${pct > 0 ? '+' : ''}${pct}%">
+                        <span class="${fontClass}">${cleanSymbol}</span>
+                        <span class="${changeFontClass} mt-0.5">${pct > 0 ? '+' : ''}${pct}%</span>
+                    </div>
+                    `;
+                });
+                gridContainer.innerHTML = html;
+            }
+        }
+        
+        // Update Market Breadth Modal
+        if (data.breadth) {
+            document.getElementById('bm-adv').innerText = data.breadth.advancing;
+            document.getElementById('bm-dec').innerText = data.breadth.declining;
+            
+            const total = data.breadth.advancing + data.breadth.declining;
+            const adv_pct = total > 0 ? (data.breadth.advancing / total) * 100 : 50;
+            const dec_pct = total > 0 ? (data.breadth.declining / total) * 100 : 50;
+            
+            document.getElementById('bm-adv-bar').style.width = `${adv_pct}%`;
+            document.getElementById('bm-dec-bar').style.width = `${dec_pct}%`;
+            
+            if (data.breadth.declining > 0) {
+                document.getElementById('bm-ad-ratio').innerText = `Ratio: ${(data.breadth.advancing / data.breadth.declining).toFixed(2)}`;
+            } else {
+                document.getElementById('bm-ad-ratio').innerText = `Ratio: ${data.breadth.advancing} Adv / 0 Dec`;
+            }
+            
+            const ad_label = document.getElementById('bm-ad-label');
+            if (adv_pct > 60) {
+                ad_label.innerText = 'Bullish Bias';
+                ad_label.className = 'text-emerald-500 bg-emerald-50 text-[10px] px-2 py-1 rounded font-bold uppercase tracking-widest shadow-sm';
+            } else if (dec_pct > 60) {
+                ad_label.innerText = 'Bearish Bias';
+                ad_label.className = 'text-red-500 bg-red-50 text-[10px] px-2 py-1 rounded font-bold uppercase tracking-widest shadow-sm';
+            } else {
+                ad_label.innerText = 'Neutral';
+                ad_label.className = 'text-slate-500 bg-slate-50 text-[10px] px-2 py-1 rounded font-bold uppercase tracking-widest shadow-sm';
+            }
+
+            document.getElementById('bm-highs').innerText = data.breadth.new_highs;
+            document.getElementById('bm-lows').innerText = data.breadth.new_lows;
+            
+            const hl_label = document.getElementById('bm-hl-label');
+            const hl_text = document.getElementById('bm-hl-text');
+            if (data.breadth.new_highs > data.breadth.new_lows * 2) {
+                hl_label.innerText = 'Expansion';
+                hl_label.className = 'text-emerald-500 bg-emerald-50 text-[10px] px-2 py-1 rounded font-bold uppercase tracking-widest shadow-sm';
+                hl_text.innerText = 'Momentum heavily favors buyers';
+            } else if (data.breadth.new_lows > data.breadth.new_highs * 2) {
+                hl_label.innerText = 'Contraction';
+                hl_label.className = 'text-red-500 bg-red-50 text-[10px] px-2 py-1 rounded font-bold uppercase tracking-widest shadow-sm';
+                hl_text.innerText = 'Momentum heavily favors sellers';
+            } else {
+                hl_label.innerText = 'Mixed';
+                hl_label.className = 'text-slate-500 bg-slate-50 text-[10px] px-2 py-1 rounded font-bold uppercase tracking-widest shadow-sm';
+                hl_text.innerText = 'No clear momentum dominance';
+            }
+
+            document.getElementById('bm-50-val').innerText = `${data.breadth.above_50_pct}%`;
+            const gauge50 = document.getElementById('bm-50-gauge');
+            gauge50.setAttribute('stroke-dasharray', `${data.breadth.above_50_pct}, 100`);
+            if (data.breadth.above_50_pct > 50) gauge50.className.baseVal = "text-emerald-500";
+            else gauge50.className.baseVal = "text-red-500";
+            
+            document.getElementById('bm-200-val').innerText = `${data.breadth.above_200_pct}%`;
+            const gauge200 = document.getElementById('bm-200-gauge');
+            gauge200.setAttribute('stroke-dasharray', `${data.breadth.above_200_pct}, 100`);
+            if (data.breadth.above_200_pct > 50) gauge200.className.baseVal = "text-emerald-400";
+            else gauge200.className.baseVal = "text-red-400";
+
+            // Render individual tickers list
+            const rowsContainer = document.getElementById('bm-ticker-rows');
+            if (rowsContainer && data.breadth.tickers) {
+                let rowsHtml = '';
+                data.breadth.tickers.forEach(t => {
+                    const isUp = t.change_pct >= 0;
+                    const changeColor = isUp ? 'text-emerald-500' : 'text-red-500';
+                    const changeSign = isUp ? '+' : '';
+                    
+                    const ma50Pill = t.above_50 === null ? 
+                        '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-400">N/A</span>' :
+                        (t.above_50 ? 
+                            '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700">ABOVE</span>' : 
+                            '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-700">BELOW</span>'
+                        );
+                        
+                    const ma200Pill = t.above_200 === null ? 
+                        '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-400">N/A</span>' :
+                        (t.above_200 ? 
+                            '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700 font-semibold">ABOVE</span>' : 
+                            '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-700 font-semibold">BELOW</span>'
+                        );
+                        
+                    let hlPill = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-400">NORMAL</span>';
+                    if (t.is_high) {
+                        hlPill = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500 text-white shadow-sm shadow-emerald-100">52W HIGH</span>';
+                    } else if (t.is_low) {
+                        hlPill = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-500 text-white shadow-sm shadow-red-100">52W LOW</span>';
+                    }
+                    
+                    rowsHtml += `
+                    <tr class="border-b border-slate-100 hover:bg-slate-50/50 transition-colors">
+                        <td class="px-4 py-3 font-bold text-slate-800 text-xs">${t.ticker}</td>
+                        <td class="px-4 py-3 font-semibold text-slate-700 text-xs text-right">$${t.price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                        <td class="px-4 py-3 font-bold text-xs text-right ${changeColor}">${changeSign}${t.change_pct}%</td>
+                        <td class="px-4 py-3 text-center">${ma50Pill}</td>
+                        <td class="px-4 py-3 text-center">${ma200Pill}</td>
+                        <td class="px-4 py-3 text-center">${hlPill}</td>
+                    </tr>
+                    `;
+                });
+                rowsContainer.innerHTML = rowsHtml;
+            }
+        }
+    } catch(e) {
+        console.error("Failed to fetch market data:", e);
+    }
+}
+
+async function fetchMacroEvents() {
+    try {
+        const headers = await getAuthHeaders();
+        const req = await fetch(`${API_BASE}/api/macro-events`, { headers });
+        if (!req.ok) return;
+        const data = await req.json();
+        
+        const loader = document.getElementById('macro-events-loading');
+        if (loader) loader.style.display = 'none';
+        
+        // Render Indicators
+        const indList = document.getElementById('macro-indicators-list');
+        if (indList && data.indicators) {
+            let html = '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">';
+            const indicators = Object.values(data.indicators);
+            
+            indicators.forEach(ind => {
+                if(ind.error) return;
+                
+                const isUp = ind.direction === 'up';
+                const colorClass = isUp ? 'text-emerald-500' : 'text-red-500';
+                const bgClass = isUp ? 'bg-emerald-100' : 'bg-red-100';
+                const arrow = isUp ? '↑' : '↓';
+                
+                let newsHtml = '';
+                if(ind.recent_news && ind.recent_news.length > 0) {
+                    const topNews = ind.recent_news[0];
+                    newsHtml = `
+                    <div class="mt-3 pt-3 border-t border-slate-100">
+                        <a href="${topNews.link}" target="_blank" class="block group">
+                            <span class="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">${topNews.publisher}</span>
+                            <p class="text-xs text-slate-600 font-medium group-hover:text-indigo-600 transition-colors line-clamp-2">${topNews.title}</p>
+                        </a>
+                    </div>`;
+                }
+
+                html += `
+                <div class="bg-slate-50 border border-slate-100 rounded-xl p-5 hover:shadow-md transition-all hover:border-indigo-100">
+                    <div class="flex justify-between items-start mb-2">
+                        <div>
+                            <span class="text-[10px] font-black text-slate-400 uppercase tracking-widest">${ind.ticker}</span>
+                            <h4 class="text-sm font-bold text-slate-800 leading-tight">${ind.name}</h4>
+                        </div>
+                        <span class="px-2 py-1 rounded text-xs font-bold ${bgClass} ${colorClass}">
+                            ${arrow} ${Math.abs(ind.change_pct)}%
+                        </span>
+                    </div>
+                    <div class="flex items-end gap-2 mb-2">
+                        <span class="text-2xl font-black text-slate-800">${ind.current_value}</span>
+                        <span class="text-xs font-bold text-slate-400 mb-1">${ind.unit}</span>
+                    </div>
+                    <p class="text-[10px] text-slate-500 mb-2 leading-relaxed">${ind.description}</p>
+                    ${newsHtml}
+                </div>`;
+            });
+            
+            html += '</div>';
+            indList.innerHTML = html;
+        }
+
+        // Render Calendar
+        const calList = document.getElementById('macro-calendar-list');
+        const line = document.getElementById('macro-timeline-line');
+        if (calList && data.calendar) {
+            let html = '';
+            if (data.calendar.length > 0) {
+                line.classList.remove('hidden');
+                data.calendar.forEach(e => {
+                    const dateObj = new Date(e.date);
+                    const dayStr = dateObj.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+                    const timeStr = dateObj.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+                    
+                    html += `
+                    <div class="relative pl-12 mb-8">
+                        <div class="absolute left-[-5px] top-1.5 w-3 h-3 bg-red-500 rounded-full border-4 border-white shadow-sm ring-2 ring-red-100"></div>
+                        <div class="bg-slate-50 border border-slate-100 rounded-lg p-4 hover:shadow-md transition-all">
+                            <div class="flex items-center justify-between mb-2">
+                                <span class="text-xs font-black text-slate-500 uppercase tracking-widest">${dayStr} • ${timeStr}</span>
+                                <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-600 uppercase">${e.impact}</span>
+                            </div>
+                            <h4 class="text-lg font-bold text-slate-800 mb-1">${e.title}</h4>
+                            <div class="flex items-center gap-4 text-sm font-medium text-slate-600 bg-white p-2 rounded-md border border-slate-100 mt-3">
+                                <div><span class="text-slate-400 text-xs">Previous:</span> ${e.previous || 'N/A'}</div>
+                                <div><span class="text-slate-400 text-xs">Forecast:</span> ${e.forecast || 'N/A'}</div>
+                            </div>
+                        </div>
+                    </div>`;
+                });
+            } else {
+                html = `<p class="text-center text-slate-500 font-bold mt-10">No high impact USD events this week.</p>`;
+                line.classList.add('hidden');
+            }
+            calList.innerHTML = html;
+        }
+
+        // Render mini dashboard card with live calendar events
+        const miniContainer = document.getElementById('macroEventsContainer');
+        if (miniContainer && data.calendar) {
+            let miniHtml = '';
+            if (data.calendar.length > 0) {
+                const topEvents = data.calendar.slice(0, 3);
+                topEvents.forEach(e => {
+                    let badgeColor = 'bg-red-100 text-red-600';
+                    if (e.impact === 'Medium' || e.impact === 'Medium/Low') {
+                        badgeColor = 'bg-orange-100 text-orange-600';
+                    } else if (e.impact === 'Low') {
+                        badgeColor = 'bg-yellow-100 text-yellow-600';
+                    }
+
+                    // Format date & time dynamically for the mini card
+                    const dateObj = new Date(e.date);
+                    const today = new Date();
+                    let dayStr = dateObj.toLocaleDateString(undefined, { weekday: 'short' });
+                    if (dateObj.toDateString() === today.toDateString()) {
+                        dayStr = 'Today';
+                    }
+                    const timeStr = dateObj.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+                    const country = e.country || 'USD';
+
+                    miniHtml += `
+                        <div class="flex flex-col gap-0.5 w-full">
+                            <div class="flex items-center justify-between text-[8px] text-slate-400 font-bold uppercase tracking-wider">
+                                <span>${dayStr} • ${timeStr} • ${country}</span>
+                                <span class="px-1.5 py-0.1 rounded-[2.5px] text-[7px] font-black ${badgeColor} uppercase shrink-0">${e.impact || 'High'}</span>
+                            </div>
+                            <span class="font-bold text-slate-700 text-[10.5px] truncate w-full" title="${e.title}">${e.title}</span>
+                        </div>
+                    `;
+                });
+            } else {
+                miniHtml = `
+                    <div class="flex items-center justify-center text-xs font-semibold text-slate-400 py-4">
+                        No events scheduled this week
+                    </div>
+                `;
+            }
+            miniContainer.innerHTML = miniHtml;
+        }
+
+    } catch (e) {
+        console.error("Error fetching macro events", e);
+    }
+}
+
+function switchMacroTab(tab) {
+    const tabs = ['calendar', 'indicators'];
+    tabs.forEach(t => {
+        const btn = document.getElementById(`tab-macro-${t}`);
+        const view = document.getElementById(`view-macro-${t}`);
+        if(t === tab) {
+            btn.classList.replace('border-transparent', 'border-indigo-600');
+            btn.classList.replace('text-slate-500', 'text-indigo-700');
+            view.classList.remove('hidden');
+        } else {
+            btn.classList.replace('border-indigo-600', 'border-transparent');
+            btn.classList.replace('text-indigo-700', 'text-slate-500');
+            view.classList.add('hidden');
+        }
+    });
 }

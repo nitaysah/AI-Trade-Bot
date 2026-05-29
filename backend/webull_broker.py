@@ -15,6 +15,7 @@ import uuid
 import time
 import config
 import os
+import logging
 import firebase_admin
 from firebase_admin import credentials, firestore
 import hashlib
@@ -115,7 +116,7 @@ ENDPOINTS = {
 class WebullBroker:
     """Wrapper around Webull's Trading API with AlpacaBroker-compatible interface."""
 
-    def __init__(self):
+    def __init__(self, data_only: bool = None, auto_connect: bool = True):
         self.simulation_mode = True
         self.api_client = None
         self.trade_client = None
@@ -131,13 +132,22 @@ class WebullBroker:
         # Auto-connect if keys are configured
         app_key = getattr(config, 'WEBULL_APP_KEY', '')
         app_secret = getattr(config, 'WEBULL_APP_SECRET', '')
-        if app_key and app_key != "your_webull_app_key_here":
-            data_only = getattr(config, 'WEBULL_DATA_ONLY', False)
+        if auto_connect and app_key and app_key != "your_webull_app_key_here":
+            if data_only is None:
+                data_only = getattr(config, 'WEBULL_DATA_ONLY', False)
             self.connect(app_key, app_secret, data_only=data_only)
+
+    @staticmethod
+    def _quiet_sdk_logging(api_client):
+        """Keep Webull SDK failures from dumping signed headers/tokens to stdout."""
+        try:
+            api_client.set_stream_logger(log_level=logging.CRITICAL)
+        except Exception:
+            pass
 
     def connect(self, app_key: str, app_secret: str, test_mode: bool = False, data_only: bool = False) -> bool:
         """Connects to Webull using App Key + App Secret (HMAC-SHA1 signed).
-        
+
         data_only=True: initialise only the market data client (no trading, no account calls).
         """
         if not WEBULL_AVAILABLE:
@@ -158,6 +168,7 @@ class WebullBroker:
 
             # ── Market data client (always needed) ──────────────────────────
             market_api = ApiClient(app_key, app_secret, "us")
+            self._quiet_sdk_logging(market_api)
             market_api.add_endpoint("us", ENDPOINTS["market_data"])
             self.market_client = DataClient(market_api)
 
@@ -173,6 +184,7 @@ class WebullBroker:
 
             # ── Trade client (only when trading is enabled) ─────────────────
             self.api_client = ApiClient(app_key, app_secret, "us")
+            self._quiet_sdk_logging(self.api_client)
             self.api_client.add_endpoint("us", ENDPOINTS["trade"])
             self.trade_client = TradeClient(self.api_client)
 
@@ -610,24 +622,144 @@ class WebullBroker:
     # Helpers
     # ──────────────────────────────────────────────
 
+    @staticmethod
+    def _normalize_symbol(symbol: str) -> str:
+        return str(symbol or "").upper().replace("/", "").strip()
+
+    @staticmethod
+    def _is_crypto_symbol(clean_symbol: str) -> bool:
+        return any(clean_symbol.endswith(base) for base in ["USD", "USDT", "USDC"])
+
+    @staticmethod
+    def _snapshot_items(payload):
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            for key in ("data", "result", "results", "items"):
+                nested = payload.get(key)
+                if isinstance(nested, list):
+                    return nested
+                if isinstance(nested, dict):
+                    return [nested]
+            return [payload]
+        return []
+
+    def _extract_snapshot_price(self, item) -> float:
+        if not isinstance(item, dict):
+            return None
+
+        for nested_key in ("snapshot", "data", "result", "quote"):
+            nested = item.get(nested_key)
+            if isinstance(nested, dict):
+                nested_price = self._extract_snapshot_price(nested)
+                if nested_price:
+                    return nested_price
+            elif isinstance(nested, list) and nested:
+                nested_price = self._extract_snapshot_price(nested[0])
+                if nested_price:
+                    return nested_price
+
+        for key in (
+            "last_price", "lastPrice", "latest_price", "latestPrice",
+            "price", "close", "last", "pPrice", "trade_price",
+            "tradePrice", "lastSalePrice", "mark"
+        ):
+            raw = item.get(key)
+            if raw is None:
+                continue
+            try:
+                price = float(str(raw).replace(",", ""))
+                if price > 0:
+                    return price
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _record_snapshot_price(self, prices: dict, requested_symbol: str, item: dict):
+        clean_requested = self._normalize_symbol(requested_symbol)
+        response_symbol = self._normalize_symbol(
+            item.get("symbol") or item.get("ticker") or item.get("code") or clean_requested
+        ) if isinstance(item, dict) else clean_requested
+        price = self._extract_snapshot_price(item)
+        if not price:
+            return
+
+        for key in {clean_requested, response_symbol}:
+            if key:
+                prices[key] = price
+
     def _get_current_price(self, symbol: str) -> float:
         """Fetches current market price for notional→qty conversion."""
-        if self.market_client is None:
-            print(f"[webull] No market client. Using fallback price for {symbol}")
-            return 0.0
-
+        prices = self.get_latest_prices([symbol])
         try:
-            clean = symbol.upper().replace("/", "")
-            is_crypto = any(clean.endswith(b) for b in ["USD", "USDT", "USDC"])
-            category = "US_CRYPTO" if is_crypto else "US_STOCK"
-            res = self._retry_request(self.market_client.market_data.get_snapshot, [clean], category)
-            if res.status_code == 200:
-                data = res.json()
-                if data:
-                    return float(data[0].get('last_price', 0))
+            return float(prices.get(self._normalize_symbol(symbol), 0.0) or 0.0)
         except Exception as e:
             print(f"[webull] Price fetch error for {symbol}: {e}")
         return 0.0
+
+    def get_latest_prices(self, symbols: list) -> dict:
+        """Fetches current market prices for a list of symbols efficiently."""
+        if self.market_client is None or not symbols:
+            return {}
+
+        prices = {}
+        crypto_symbols = []
+        stock_symbols = []
+
+        for sym in symbols:
+            clean = self._normalize_symbol(sym)
+            if not clean:
+                continue
+            if self._is_crypto_symbol(clean):
+                crypto_symbols.append(clean)
+            else:
+                stock_symbols.append(clean)
+
+        def _record_snapshot_response(request_symbols, res, category):
+            if res.status_code != 200:
+                print(f"[webull] Snapshot error ({category}): {res.status_code} {getattr(res, 'text', '')}")
+                return 0
+
+            found = 0
+            for idx, item in enumerate(self._snapshot_items(res.json())):
+                requested = request_symbols[idx] if idx < len(request_symbols) else request_symbols[0]
+                before = len(prices)
+                self._record_snapshot_price(prices, requested, item)
+                if len(prices) > before:
+                    found += 1
+            return found
+
+        def _snapshot_client(category):
+            if category == "US_CRYPTO":
+                return self.market_client.crypto_market_data.get_crypto_snapshot
+            return self.market_client.market_data.get_snapshot
+
+        def _fetch_one(symbol, category):
+            res = self._retry_request(_snapshot_client(category), symbol, category)
+            return _record_snapshot_response([symbol], res, category)
+
+        def _fetch_group(request_symbols, category):
+            if not request_symbols:
+                return
+
+            if category == "US_STOCK":
+                for symbol in request_symbols:
+                    _fetch_one(symbol, category)
+                return
+
+            res = self._retry_request(_snapshot_client(category), request_symbols, category)
+            found = _record_snapshot_response(request_symbols, res, category)
+            if found == 0:
+                for symbol in request_symbols:
+                    _fetch_one(symbol, category)
+
+        try:
+            _fetch_group(crypto_symbols, "US_CRYPTO")
+            _fetch_group(stock_symbols, "US_STOCK")
+        except Exception as e:
+            print(f"[webull] Batch price fetch error: {e}")
+
+        return prices
 
     def _recalc_sim_equity(self):
         """Recalculates sim equity from cash + positions."""

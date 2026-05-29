@@ -37,10 +37,10 @@ class Backtester:
         if self.df is None or self.df.empty:
             return {"error": "No data found for the selected range."}
 
-        # Filter for Regular Hours (RTH) if stocks & self.ext_hours is False
+        # Filter for Regular Hours (RTH) if stocks & self.ext_hours is False and not daily
         clean_ticker = self.ticker.upper().replace("/", "")
         is_crypto = any(clean_ticker.endswith(base) for base in ["USD", "USDT", "USDC"])
-        if not is_crypto and not self.ext_hours:
+        if not is_crypto and not self.ext_hours and self.timeframe != "1Day":
             try:
                 time_idx = self.df.index.time
                 start_time = pd.to_datetime("09:30:00").time()
@@ -70,8 +70,8 @@ class Backtester:
             prev_bar = self.df.iloc[i-1]
             current_price = current_bar['Close']
             
-            # Check for SL / TP if in position and using sltp/hybrid sell mode
-            if self.position and self.sell_mode in ["sltp", "hybrid"]:
+            # Check for SL / TP if in position and using sltp/hybrid/trend_rider sell mode
+            if self.position and self.sell_mode in ["sltp", "hybrid", "trend_rider"]:
                 atr = current_bar['ATR']
                 trail_distance = atr * self.atr_trail_multiplier
                 
@@ -104,16 +104,43 @@ class Backtester:
             # Use Manual Thresholds
             action = "HOLD"
             reason = "Neutral"
-            if analysis['bullish_count'] >= self.threshold:
-                action = "BUY"
-                names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
-                reason = f"{analysis['bullish_count']} signals ({', '.join(names)})"
-            elif analysis['bearish_count'] >= self.sell_threshold:
-                # Dynamic exits hit only if sell mode supports indicators
-                if self.sell_mode in ["indicator", "hybrid"]:
+            
+            if self.sell_mode == "trend_rider":
+                ema_f = current_bar.get("EMA_Fast", 0)
+                ema_s = current_bar.get("EMA_Slow", 0)
+                prev_ema_f = prev_bar.get("EMA_Fast", 0)
+                prev_ema_s = prev_bar.get("EMA_Slow", 0)
+                st_bull = current_bar.get("Supertrend_Trend", True)
+                sma_val = current_bar.get("SMA", 0)
+                
+                # Entry: Golden Cross (or already crossed) AND Supertrend Bullish
+                golden_cross = (ema_f > ema_s) and (prev_ema_f <= prev_ema_s)
+                if golden_cross and st_bull:
+                    action = "BUY"
+                    reason = "Trend Rider Entry (Golden Cross + Supertrend)"
+                elif analysis['bullish_count'] >= self.threshold:
+                    # Fallback to normal entry if strong momentum
+                    action = "BUY"
+                    names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
+                    reason = f"Trend Rider Entry: {analysis['bullish_count']} signals ({', '.join(names)})"
+
+                # Exit: Trend Break (Death Cross or below SMA)
+                death_cross = (ema_f < ema_s) and (prev_ema_f >= prev_ema_s)
+                if death_cross or current_price < sma_val:
                     action = "SELL"
-                    names = [k for k, v in filtered_signals.items() if v['signal'] == 'BEARISH']
-                    reason = f"Dynamic Sell: {analysis['bearish_count']} signals ({', '.join(names)})"
+                    reason = "Trend Rider Exit: Trend Broken (Death Cross or < SMA 200)"
+
+            else:
+                if analysis['bullish_count'] >= self.threshold:
+                    action = "BUY"
+                    names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
+                    reason = f"{analysis['bullish_count']} signals ({', '.join(names)})"
+                elif analysis['bearish_count'] >= self.sell_threshold:
+                    # Dynamic exits hit only if sell mode supports indicators
+                    if self.sell_mode in ["indicator", "hybrid"]:
+                        action = "SELL"
+                        names = [k for k, v in filtered_signals.items() if v['signal'] == 'BEARISH']
+                        reason = f"Dynamic Sell: {analysis['bearish_count']} signals ({', '.join(names)})"
 
             if action == 'BUY' and not self.position:
                 self._enter_trade(current_bar, timestamp, reason)

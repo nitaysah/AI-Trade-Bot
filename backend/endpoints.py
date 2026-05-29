@@ -112,6 +112,21 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
     total_profit_pct = (total_profit / initial_est * 100) if initial_est > 0 else 0
     total_pl_sign = "+" if total_profit >= 0 else ""
 
+    # Fetch live prices for ALL tickers in watchlist and tradelist to ensure UI is never blank
+    all_tickers = list(set(eng.config.WATCHLIST + eng.config.TRADELIST + [primary_ticker]))
+    if all_tickers:
+        latest_prices = await asyncio.to_thread(eng.broker.get_latest_prices, all_tickers)
+    else:
+        latest_prices = {}
+
+    def _inject_price(scan_ui, ticker):
+        live_price = latest_prices.get(ticker)
+        if live_price:
+            scan_ui['price'] = live_price
+        if not scan_ui.get('ticker'):
+            scan_ui['ticker'] = ticker
+        return scan_ui
+
     payload = {
         # Portfolio Summary Cards
         "capital": f"${account['equity']:.2f}",
@@ -135,17 +150,17 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
         "orderHistory": eng.broker.get_order_history(eng.trade_log),
         "pendingOrders": eng.broker.get_open_orders(eng.trade_log),
         "watchlistScans": {
-            ticker: _format_scan_for_ui(
+            ticker: _inject_price(_format_scan_for_ui(
                 eng._pick_scan(ticker, timeframe, prefer_bot=False) or 
                 eng._pick_scan(ticker, getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME), prefer_bot=False, ignore_freshness=True) or {}
-            )
+            ), ticker)
             for ticker in eng.config.WATCHLIST
         },
         "botScans": {
-            ticker: _format_scan_for_ui(
+            ticker: _inject_price(_format_scan_for_ui(
                 eng._pick_scan(ticker, timeframe, prefer_bot=True) or 
                 eng._pick_scan(ticker, getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME), prefer_bot=True, ignore_freshness=True) or {}
-            )
+            ), ticker)
             for ticker in eng.config.TRADELIST
         },
 
@@ -264,6 +279,14 @@ async def run_backtest(data: dict, user: dict = Depends(verify_token)):
         return {"status": "error", "message": "Invalid ticker format"}
     timeframe = data.get("timeframe", "1Day")
     days = int(data.get("days", 30))
+    
+    # Cap days according to yfinance/API limit constraints to prevent invalid periods
+    if timeframe == "1Min":
+        days = min(days, 7)
+    elif timeframe in ["5Min", "15Min", "30Min", "10Min"]:
+        days = min(days, 60)
+    elif timeframe in ["1Hour", "2Hour", "4Hour"]:
+        days = min(days, 730)
     capital = float(data.get("capital", 1000.0))
     threshold = int(data.get("threshold", 5))
     sell_threshold = int(data.get("sell_threshold", 3))
@@ -716,14 +739,6 @@ async def reset_ticker_settings(ticker: str, user: dict = Depends(verify_token))
         asyncio.create_task(save_settings_to_cloud())
     return {"status": "success"}
 
-def _load_saved_settings(user: dict = Depends(verify_token)):
-    def _load_saved_settings(user: dict = Depends(verify_token)):
-    """
-    Load indicator toggles from settings.json on startup.
-    """
-    # Existing implementation (placeholder)
-    pass
-
 @app.post("/api/clear_evaluation_cache")
 async def clear_evaluation_cache_endpoint(data: dict, user: dict = Depends(verify_token)):
     """
@@ -735,6 +750,11 @@ async def clear_evaluation_cache_endpoint(data: dict, user: dict = Depends(verif
     clear_evaluation_cache(ticker, timeframe)
     return {"status": "success", "cleared": {"ticker": ticker, "timeframe": timeframe}}
 
+
+def _load_saved_settings(user: dict = Depends(verify_token)):
+    """
+    Load indicator toggles from settings.json on startup.
+    """
     eng = user_manager.get_engine(user['uid'])
     import json, os
     settings_path = os.path.join(os.path.dirname(__file__), "settings.json")

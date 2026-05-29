@@ -30,6 +30,56 @@ def _strip_tz(idx):
     return idx
 
 
+def _resample_df(df, timeframe):
+    """Resample DataFrame to the correct timeframe frequency if needed."""
+    if df is None or df.empty:
+        return df
+
+    resample_rules = {
+        "3Min": "3min",
+        "10Min": "10min",
+        "2Hour": "2h",
+        "4Hour": "4h",
+    }
+
+    rule = resample_rules.get(timeframe)
+    if not rule:
+        return df
+
+    # Standardise column names to lowercase for robust matching during resampling
+    rename_cols = {}
+    for col in df.columns:
+        if col.lower() != col:
+            rename_cols[col] = col.lower()
+    if rename_cols:
+        df = df.rename(columns=rename_cols)
+
+    # Build safe aggregation dict based on columns present in df
+    agg_dict = {}
+    for col, agg_func in [
+        ("open", "first"),
+        ("high", "max"),
+        ("low", "min"),
+        ("close", "last"),
+        ("adj_close", "last"),
+        ("volume", "sum")
+    ]:
+        if col in df.columns:
+            agg_dict[col] = agg_func
+
+    if not agg_dict:
+        return df
+
+    print(f"[data] Resampling data to {timeframe} using rule '{rule}'...")
+    try:
+        # Pandas resample requires a DatetimeIndex
+        resampled = df.resample(rule).agg(agg_dict).dropna()
+        return resampled
+    except Exception as exc:
+        print(f"[data] Resampling failed for {timeframe}: {exc}")
+        return df
+
+
 def get_historical_data(ticker, timeframe, start_date, end_date):
     """
     Return a DataFrame of OHLCV data for *ticker* between *start_date* and
@@ -63,6 +113,14 @@ def get_historical_data(ticker, timeframe, start_date, end_date):
             df = pd.read_csv(filepath, index_col=0, parse_dates=True)
             if not df.empty:
                 df.index = _strip_tz(df.index)
+
+                # Cache self-healing: resample if the cached file has hourly/high frequency data
+                original_len = len(df)
+                df = _resample_df(df, timeframe)
+                if len(df) != original_len:
+                    print(f"[data] Healing cache for {ticker} ({timeframe}): resampled from {original_len} to {len(df)} bars.")
+                    df.to_csv(filepath)
+
                 file_start = df.index[0]
                 file_end = df.index[-1]
 
@@ -154,9 +212,9 @@ def get_historical_data(ticker, timeframe, start_date, end_date):
             "30Sec": "1m",
             "1Min": "1m",
             "2Min": "2m",
-            "3Min": "5m",
+            "3Min": "1m",
             "5Min": "5m",
-            "10Min": "15m",
+            "10Min": "5m",
             "15Min": "15m",
             "30Min": "30m",
             "1Hour": "1h",
@@ -189,8 +247,8 @@ def get_historical_data(ticker, timeframe, start_date, end_date):
                         yf_ticker = clean_ticker.replace(base, f"-{base}")
                         break
 
-            print(f"[data] Downloading {ticker} (via {yf_ticker}) ({interval}) for period: {period}...")
-            new_df = yf.download(yf_ticker, period=period, interval=interval, progress=False)
+            print(f"[data] Downloading {ticker} (via {yf_ticker}) ({interval}) for period: {period} with extended hours...")
+            new_df = yf.download(yf_ticker, period=period, interval=interval, prepost=True, progress=False)
 
             if new_df is None or new_df.empty:
                 return df  # return whatever cache we have, or None
@@ -227,6 +285,8 @@ def get_historical_data(ticker, timeframe, start_date, end_date):
         else:
             df = new_df.sort_index()
 
+        # Resample the final combined DataFrame before persisting!
+        df = _resample_df(df, timeframe)
         # Persist to disk
         df.to_csv(filepath)
 

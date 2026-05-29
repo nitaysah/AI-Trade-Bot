@@ -28,7 +28,8 @@ from cryptography.fernet import Fernet
 import base64
 import hashlib
 
-from trader import evaluate_trade, get_risk_manager, clear_evaluation_cache
+from trader import evaluate_trade, get_risk_manager, clear_evaluation_cache, get_confluence_decision
+from indicators import get_full_analysis
 from data_manager import get_historical_data
 from engine import UserManager, UserEngine
 import config as global_config
@@ -85,6 +86,156 @@ if not firebase_admin._apps:
 
 db = firestore.client(database_id="trading-bot")
 user_manager = UserManager(db)
+_webull_market_data_broker = None
+_chart_analysis_cache = {}
+
+
+def _chart_cache_ttl(timeframe: str) -> int:
+    tf = (timeframe or "").upper()
+    if tf in ("30SEC", "1MIN"):
+        return 10
+    if tf in ("2MIN", "3MIN", "5MIN"):
+        return 20
+    if tf in ("10MIN", "15MIN", "30MIN"):
+        return 45
+    if tf in ("1HOUR", "60MIN"):
+        return 120
+    if tf in ("2HOUR", "4HOUR"):
+        return 300
+    return 900
+
+
+def _format_scan_price(price) -> str:
+    try:
+        p = float(price)
+    except (TypeError, ValueError):
+        return "$0.00"
+    return f"${p:.4f}" if p < 10 else f"${p:.2f}"
+
+
+def _get_cached_chart_analysis(ticker: str, timeframe: str, force: bool = False):
+    ticker_key = _normalize_quote_symbol(ticker)
+    timeframe_key = timeframe or get_user_config().DEFAULT_TIMEFRAME
+    cache_key = (ticker_key, timeframe_key)
+    now_ts = time.time()
+    cached = _chart_analysis_cache.get(cache_key)
+    if cached and not force and now_ts - cached["timestamp"] < _chart_cache_ttl(timeframe_key):
+        return cached["analysis"], True
+
+    analysis = get_full_analysis(ticker_key, timeframe=timeframe_key, data_source="webull")
+    if analysis:
+        _chart_analysis_cache[cache_key] = {
+            "analysis": analysis,
+            "timestamp": now_ts
+        }
+    return analysis, False
+
+
+def _technical_scan_from_analysis(ticker: str, timeframe: str, analysis: dict, use_bot_settings: bool = False):
+    if not analysis:
+        return None
+
+    decision = get_confluence_decision(
+        ticker,
+        analysis,
+        ai_sentiment_score=0.0,
+        ai_sentiment_confidence=0.0,
+        use_bot_settings=use_bot_settings
+    )
+    price = analysis.get("price", 0.0)
+    return {
+        "time": get_now().isoformat(),
+        "ticker": _normalize_quote_symbol(ticker),
+        "timeframe": timeframe,
+        "action": decision.get("action", "HOLD"),
+        "reason": decision.get("reason", ""),
+        "price": _format_scan_price(price),
+        "price_raw": price,
+        "signals": decision.get("signals", {}),
+        "bullish_count": decision.get("bullish_count", 0),
+        "bearish_count": decision.get("bearish_count", 0),
+        "total_signals": len(analysis.get("signals", {})),
+        "atr": analysis.get("atr", 0.0),
+        "rsi": analysis.get("rsi", 50.0),
+        "sentiment_score": 0.0,
+        "sentiment_confidence": 0.0,
+        "sentiment_summary": "",
+        "sentiment_key_factor": "Technical signals",
+        "position_sizing": {},
+        "price_history": analysis.get("price_history", []),
+        "risk_status": {},
+        "is_custom": False,
+    }
+
+
+def _normalize_quote_symbol(symbol: str) -> str:
+    return str(symbol or "").upper().replace("/", "").strip()
+
+
+def _format_quote_price(symbol: str, price) -> str:
+    try:
+        price_float = float(price)
+    except (TypeError, ValueError):
+        return ""
+    clean = _normalize_quote_symbol(symbol)
+    is_crypto = any(clean.endswith(base) for base in ["USD", "USDT", "USDC"])
+    decimals = 4 if is_crypto or price_float < 10 else 2
+    return f"${price_float:.{decimals}f}"
+
+
+def _lookup_quote_price(latest_prices: dict, symbol: str):
+    clean = _normalize_quote_symbol(symbol)
+    for key in (symbol, clean):
+        if key in latest_prices:
+            return latest_prices[key]
+    return None
+
+
+def _get_webull_market_data_broker():
+    """Return a data-only Webull broker for realtime quotes, independent of the trading broker."""
+    global _webull_market_data_broker
+
+    if _webull_market_data_broker and getattr(_webull_market_data_broker, "market_client", None):
+        return _webull_market_data_broker
+
+    app_key = getattr(global_config, "WEBULL_APP_KEY", "")
+    app_secret = getattr(global_config, "WEBULL_APP_SECRET", "")
+    if not app_key or app_key == "your_webull_app_key_here" or not app_secret:
+        return None
+
+    try:
+        from webull_broker import WebullBroker
+        broker = WebullBroker(data_only=True)
+        if getattr(broker, "market_client", None):
+            _webull_market_data_broker = broker
+            return broker
+    except Exception as e:
+        print(f"[dashboard] Webull quote client unavailable: {e}")
+    return None
+
+
+def _fetch_latest_watchlist_prices(eng: UserEngine, tickers: list) -> dict:
+    if not tickers:
+        return {}
+
+    clean_tickers = list(dict.fromkeys(_normalize_quote_symbol(t) for t in tickers if _normalize_quote_symbol(t)))
+    provider = (
+        eng.broker
+        if hasattr(eng.broker, "get_latest_prices") and getattr(eng.broker, "market_client", None)
+        else None
+    )
+
+    if provider is None:
+        provider = _get_webull_market_data_broker()
+
+    if provider is None:
+        return {}
+
+    try:
+        return provider.get_latest_prices(clean_tickers) or {}
+    except Exception as e:
+        print(f"[dashboard] Live Webull price fetch failed: {e}")
+        return {}
 
 async def verify_token(authorization: str = Header(None)):
     if not authorization:
@@ -213,7 +364,175 @@ async def get_portfolio_history(
     except Exception as e:
         print(f"[api] Error getting portfolio history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+@app.get("/api/market-data")
+async def get_market_data(eng: UserEngine = Depends(get_user_engine)):
+    try:
+        # Run yfinance operations in a background thread to prevent blocking the async event loop
+        def fetch_data():
+            import yfinance as yf
+            # 1. Fetch Sector Data
+            sector_tickers = (
+                "AAPL MSFT GOOG NVDA META TSLA AVGO AMD QCOM NFLX AMZN ADBE CRM INTC CSCO ORCL "
+                "JPM BAC WFC MS GS V MA AXP BLK C SCHW HDB "
+                "LLY UNH JNJ MRK ABBV PFE WMT COST PG KO PEP NKE MCD EL "
+                "XOM CVX COP OXY SLB CAT GE HON UNP LMT DE MMM "
+                "BTC-USD ETH-USD SOL-USD ADA-USD XRP-USD DOGE-USD DOT-USD LINK-USD LTC-USD NEAR-USD BCH-USD AVAX-USD"
+            )
+            # Disable yfinance logging
+            df_sector = yf.download(sector_tickers, period="5d", progress=False)
+            
+            sector_data = {}
+            for ticker in sector_tickers.split():
+                try:
+                    valid_closes = df_sector['Close'][ticker].dropna()
+                    if len(valid_closes) >= 2:
+                        current_price = valid_closes.iloc[-1]
+                        prev_price = valid_closes.iloc[-2]
+                        pct_change = ((current_price / prev_price) - 1) * 100
+                        sector_data[ticker] = round(pct_change, 2)
+                    else:
+                        sector_data[ticker] = 0.0
+                except:
+                    sector_data[ticker] = 0.0
 
+            # 2. Market Breadth via Watchlist
+            user_config = eng.config
+            raw_list = list(set(user_config.WATCHLIST + user_config.TRADELIST))
+            
+            # Fallback to market leaders if watchlist and tradelist are empty
+            if not raw_list:
+                raw_list = ["AAPL", "MSFT", "GOOG", "NVDA", "TSLA", "META", "AMD", "NFLX", "AMZN", "COIN"]
+            
+            # yfinance requires hyphens for crypto (e.g., BTC-USD instead of BTCUSD)
+            combined_list = []
+            for t in raw_list:
+                if t.endswith("USD") and "-" not in t:
+                    combined_list.append(t.replace("USD", "-USD"))
+                else:
+                    combined_list.append(t)
+            
+            advancing = 0
+            declining = 0
+            new_highs = 0
+            new_lows = 0
+            above_50 = 0
+            above_200 = 0
+            tickers_list = []
+            
+            if len(combined_list) > 0:
+                df_breadth = yf.download(" ".join(combined_list), period="200d", progress=False)
+                for ticker in combined_list:
+                    try:
+                        if len(combined_list) == 1:
+                            valid_closes = df_breadth['Close'].dropna()
+                            valid_highs = df_breadth['High'].dropna()
+                            valid_lows = df_breadth['Low'].dropna()
+                        else:
+                            valid_closes = df_breadth['Close'][ticker].dropna()
+                            valid_highs = df_breadth['High'][ticker].dropna()
+                            valid_lows = df_breadth['Low'][ticker].dropna()
+                            
+                        if len(valid_closes) >= 2:
+                            curr = valid_closes.iloc[-1]
+                            prev = valid_closes.iloc[-2]
+                            
+                            is_adv = bool(curr > prev)
+                            if is_adv: advancing += 1
+                            else: declining += 1
+                            
+                            year_high = valid_highs.max()
+                            year_low = valid_lows.min()
+                            
+                            is_high = bool(curr >= year_high * 0.98)
+                            is_low = bool(curr <= year_low * 1.02)
+                            if is_high: new_highs += 1
+                            if is_low: new_lows += 1
+                            
+                            sma50 = None
+                            above_50_status = None
+                            if len(valid_closes) >= 50:
+                                sma50 = float(valid_closes.iloc[-50:].mean())
+                                above_50_status = bool(curr > sma50)
+                                if above_50_status: above_50 += 1
+                                
+                            sma200 = None
+                            above_200_status = None
+                            if len(valid_closes) >= 200:
+                                sma200 = float(valid_closes.iloc[-200:].mean())
+                                above_200_status = bool(curr > sma200)
+                                if above_200_status: above_200 += 1
+                                
+                            tickers_list.append({
+                                "ticker": ticker,
+                                "price": round(float(curr), 2),
+                                "change_pct": round(float(((curr / prev) - 1) * 100), 2) if prev else 0.0,
+                                "above_50": above_50_status,
+                                "above_200": above_200_status,
+                                "is_high": is_high,
+                                "is_low": is_low
+                            })
+                    except Exception:
+                        pass
+                        
+            total = max(1, len(tickers_list))
+            breadth_data = {
+                "advancing": advancing,
+                "declining": declining,
+                "new_highs": new_highs,
+                "new_lows": new_lows,
+                "above_50_pct": round((above_50 / total) * 100),
+                "above_200_pct": round((above_200 / total) * 100),
+                "tickers": tickers_list
+            }
+            
+            return {
+                "sectors": sector_data,
+                "breadth": breadth_data
+            }
+            
+        data = await asyncio.to_thread(fetch_data)
+        return data
+    except Exception as e:
+        print(f"Error fetching market data: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/macro-events")
+async def get_macro_events():
+    try:
+        from macro_service import get_macro_data
+        
+        def fetch_calendar():
+            import requests
+            try:
+                url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+                headers = {'User-Agent': 'Mozilla/5.0'}
+                r = requests.get(url, headers=headers, timeout=5)
+                r.raise_for_status()
+                data = r.json()
+                
+                # Expand to High/Medium USD and High major global economies
+                def is_relevant(e):
+                    if e.get('country') == 'USD' and e.get('impact') in ['High', 'Medium']: return True
+                    if e.get('country') in ['EUR', 'GBP', 'CNY', 'JPY'] and e.get('impact') == 'High': return True
+                    return False
+                    
+                return [e for e in data if is_relevant(e)]
+            except Exception as e:
+                print(f"Error fetching forex calendar: {e}")
+                return []
+                
+        # Run both operations concurrently
+        indicators_task = asyncio.to_thread(get_macro_data, False)
+        calendar_task = asyncio.to_thread(fetch_calendar)
+        
+        indicators, calendar = await asyncio.gather(indicators_task, calendar_task)
+        
+        return {"status": "success", "indicators": indicators, "calendar": calendar}
+    except Exception as e:
+        print(f"Error fetching macro events: {e}")
+        return {"status": "error", "message": str(e), "indicators": {}, "calendar": []}
 
 @app.get("/api/dashboard")
 async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None, timeframe: str = None, source: str = "dashboard", eng: UserEngine = Depends(get_user_engine)):
@@ -334,6 +653,34 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
     else:
         sentiment_label = "Neutral"
 
+    # Fetch live Webull prices for every visible ticker, even when trading uses Alpaca.
+    all_tickers = list(dict.fromkeys(eng.config.WATCHLIST + eng.config.TRADELIST + [primary_ticker]))
+    latest_prices = await asyncio.to_thread(_fetch_latest_watchlist_prices, eng, all_tickers)
+
+    def _inject_price(scan_ui, t):
+        live_price = _lookup_quote_price(latest_prices, t)
+        if live_price:
+            scan_ui['price'] = _format_quote_price(t, live_price)
+            scan_ui['price_raw'] = live_price
+        if not scan_ui.get('ticker'):
+            scan_ui['ticker'] = t
+        return scan_ui
+
+    def _price_only_scan(t):
+        return _inject_price({
+            "ticker": t,
+            "price": "",
+            "price_raw": 0.0,
+            "action": "HOLD",
+            "reason": "",
+            "bullish_count": 0,
+            "bearish_count": 0,
+            "total_signals": 0,
+            "signals": {}
+        }, t)
+
+    formatted_primary = _inject_price(formatted_primary, primary_ticker)
+
     # Build the final payload
     payload = {
         "simulation": account.get('simulation', True),
@@ -358,30 +705,30 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
         "recentTrades": ui_trade_log,
         
         "watchlistScans": {
-            t: _format_scan_for_ui(
-                eng._pick_scan(t, timeframe, prefer_bot=False) or 
-                eng._pick_scan(t, eng.config.TICKER_SETTINGS.get(t, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME), prefer_bot=False, ignore_freshness=True) or {},
-                use_global_settings=True
-            )
+            t: _price_only_scan(t)
             for t in eng.config.WATCHLIST
         },
         "botScans": {
-            t: _format_scan_for_ui(
+            t: _inject_price(_format_scan_for_ui(
                 eng._pick_scan(t, timeframe, prefer_bot=True) or 
                 eng._pick_scan(t, eng.config.TICKER_SETTINGS.get(t, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME), prefer_bot=True, ignore_freshness=True) or {},
                 use_global_settings=False
-            )
+            ), t)
             for t in eng.config.TRADELIST
         },
 
         # Strategy Signals (primary ticker)
         "primaryTicker": primary_ticker,
+        "primaryScan": formatted_primary,
         "signals": formatted_primary.get('signals', {}),
         "priceHistory": primary_scan.get('price_history', []),
 
         # Risk Management
         "risk": risk_mgr.get_risk_status(account['equity']),
-        "ticker_settings": eng.config.TICKER_SETTINGS,
+        "ticker_settings": {
+            t: {'timeframe': eng.config.TICKER_SETTINGS.get(t, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME)}
+            for t in eng.config.WATCHLIST
+        },
 
         # Bot Meta
         "botRunning": eng.bot_running,
@@ -412,6 +759,9 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
 
     if mode == "fast":
         payload["signals"] = {}
+        payload["primaryScan"]["signals"] = {}
+        if "price_history" in payload["primaryScan"]:
+            del payload["primaryScan"]["price_history"]
         payload["priceHistory"] = []
         for k, v in payload["watchlistScans"].items():
             v["signals"] = {}
@@ -423,6 +773,86 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                 del v["price_history"]
 
     return payload
+
+
+@app.get("/api/chart/{ticker}")
+async def get_chart_data(
+    ticker: str,
+    timeframe: str = None,
+    force: bool = False,
+    source: str = "dashboard",
+    eng: UserEngine = Depends(get_user_engine)
+):
+    """Fast chart endpoint: OHLCV + overlay indicators + technical confluence only."""
+    ticker = _normalize_quote_symbol(ticker)
+    if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
+        return {"error": "Invalid ticker format"}
+
+    timeframe = timeframe or eng.config.TICKER_SETTINGS.get(ticker, {}).get('timeframe') or eng.config.DEFAULT_TIMEFRAME
+    prefer_bot = ticker in eng.config.TRADELIST and source == "bots"
+    started = time.perf_counter()
+
+    analysis, cached = await asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, force)
+    if not analysis:
+        raise HTTPException(status_code=404, detail=f"Could not load chart data for {ticker}")
+
+    scan = _technical_scan_from_analysis(ticker, timeframe, analysis, use_bot_settings=prefer_bot)
+    formatted_scan = _format_scan_for_ui(scan, use_global_settings=(not prefer_bot))
+    print(f"[perf] /api/chart {ticker} {timeframe}: {(time.perf_counter() - started) * 1000:.1f}ms cached={cached}")
+    return {
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "cached": cached,
+        "primaryScan": formatted_scan,
+        "signals": formatted_scan.get("signals", {}),
+        "priceHistory": scan.get("price_history", []),
+        "price_history": scan.get("price_history", []),
+        "action": formatted_scan.get("action", "HOLD"),
+        "reason": formatted_scan.get("reason", ""),
+        "bullish_count": formatted_scan.get("bullish_count", 0),
+        "bearish_count": formatted_scan.get("bearish_count", 0),
+        "total_signals": formatted_scan.get("total_signals", 0),
+        "performance": {
+            "total_ms": (time.perf_counter() - started) * 1000,
+            "cached": cached
+        }
+    }
+
+
+@app.get("/api/signals/{ticker}")
+async def get_fast_signals(
+    ticker: str,
+    timeframe: str = None,
+    source: str = "dashboard",
+    eng: UserEngine = Depends(get_user_engine)
+):
+    """Fast signal endpoint reusing cached chart analysis when available."""
+    ticker = _normalize_quote_symbol(ticker)
+    if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
+        return {"error": "Invalid ticker format"}
+
+    timeframe = timeframe or eng.config.TICKER_SETTINGS.get(ticker, {}).get('timeframe') or eng.config.DEFAULT_TIMEFRAME
+    prefer_bot = ticker in eng.config.TRADELIST and source == "bots"
+    analysis, cached = await asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, False)
+    if not analysis:
+        raise HTTPException(status_code=404, detail=f"Could not load signals for {ticker}")
+
+    scan = _technical_scan_from_analysis(ticker, timeframe, analysis, use_bot_settings=prefer_bot)
+    formatted_scan = _format_scan_for_ui(scan, use_global_settings=(not prefer_bot))
+    if "price_history" in formatted_scan:
+        del formatted_scan["price_history"]
+    return {
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "cached": cached,
+        "primaryScan": formatted_scan,
+        "signals": formatted_scan.get("signals", {}),
+        "action": formatted_scan.get("action", "HOLD"),
+        "reason": formatted_scan.get("reason", ""),
+        "bullish_count": formatted_scan.get("bullish_count", 0),
+        "bearish_count": formatted_scan.get("bearish_count", 0),
+        "total_signals": formatted_scan.get("total_signals", 0),
+    }
 
 
 @app.get("/api/scan/{ticker}")
@@ -660,11 +1090,10 @@ async def update_timeframe(data: dict, eng: UserEngine = Depends(get_user_engine
             if tf == new_tf
         }
         await eng.save_settings()
-        print(f"[settings] Global Timeframe synced to {new_tf} for {eng.uid}. Triggering immediate scan.")
+        print(f"[settings] Global Timeframe synced to {new_tf} for {eng.uid}. Chart data will refresh on next dashboard request.")
         
         if eng.force_scan_trigger:
             eng.force_scan_trigger.set()
-        asyncio.create_task(eng._warm_timeframe_scans(new_tf, limit=5))
         
         return {"status": "success", "timeframe": new_tf}
     return {"status": "error", "message": "Invalid timeframe"}
@@ -693,15 +1122,11 @@ async def remove_from_watchlist(ticker: str, eng: UserEngine = Depends(get_user_
     ticker = ticker.upper()
     if ticker in eng.config.WATCHLIST:
         eng.config.WATCHLIST.remove(ticker)
-        if ticker in eng.config.TRADELIST:
-            eng.config.TRADELIST.remove(ticker)
-            print(f"[settings] {ticker} removed from watchlist & deactivated")
-        else:
-            print(f"[settings] Removed {ticker} from watchlist")
+        print(f"[settings] Removed {ticker} from watchlist")
         await eng.save_settings()
         if eng.force_scan_trigger:
             eng.force_scan_trigger.set()
-    return {"status": "success", "watchlist": eng.config.WATCHLIST, "tradelist": eng.config.TRADELIST}
+    return {"status": "success", "watchlist": eng.config.WATCHLIST}
 
 
 @app.get("/api/tradelist")
@@ -724,8 +1149,6 @@ async def add_to_tradelist(data: dict, eng: UserEngine = Depends(get_user_engine
         eng.config.TICKER_SETTINGS[ticker]['timeframe'] = timeframe
         print(f"[settings] Activated {ticker} on locked {timeframe} timeframe")
 
-        if ticker not in eng.config.WATCHLIST:
-            eng.config.WATCHLIST.append(ticker)
         await eng.save_settings()
         if eng.force_scan_trigger:
             eng.force_scan_trigger.set()
@@ -793,7 +1216,8 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         if rk in data:
             eng.config.TICKER_SETTINGS[symbol][rk] = float(data[rk])
 
-    if symbol not in eng.config.WATCHLIST:
+    add_to_watchlist = data.get("add_to_watchlist", False)
+    if add_to_watchlist and symbol not in eng.config.WATCHLIST:
         eng.config.WATCHLIST.append(symbol)
         
     if symbol not in eng.config.TRADELIST:
@@ -944,6 +1368,9 @@ def _format_scan_for_ui(scan: dict, use_global_settings: bool = False) -> dict:
         'Candle Patterns': 'ENABLE_CANDLE_PATTERNS',
         'ADX Trend': 'ENABLE_ADX_TREND',
         'SMA': 'ENABLE_SMA',
+        'BotBulls1': 'ENABLE_BOTBULLS1',
+        'BotBulls2': 'ENABLE_BOTBULLS2',
+        'BotBulls3': 'ENABLE_BOTBULLS3',
     }
 
     raw_signals = scan.get("signals", {})

@@ -72,6 +72,9 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
         'Candle Patterns': 'ENABLE_CANDLE_PATTERNS',
         'ADX Trend': 'ENABLE_ADX_TREND',
         'SMA': 'ENABLE_SMA',
+        'BotBulls1': 'ENABLE_BOTBULLS1',
+        'BotBulls2': 'ENABLE_BOTBULLS2',
+        'BotBulls3': 'ENABLE_BOTBULLS3',
     }
 
     raw_signals = analysis_results.get('signals', {})

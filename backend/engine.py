@@ -252,9 +252,13 @@ class UserEngine:
                 portfolio_count = len(all_positions)
 
                 viewed = self.dashboard_primary_ticker
-                bots_minus_viewed = [t for t in self.config.TRADELIST if t != viewed]
-                watch_minus_both = [t for t in self.config.WATCHLIST if t not in self.config.TRADELIST and t != viewed]
-                scan_order = ([viewed] if viewed and viewed in self.config.WATCHLIST else []) + bots_minus_viewed + watch_minus_both
+                # Watchlist rows are quote-only. Full indicator scans are reserved for active bots
+                # and the ticker currently loaded by the dashboard chart.
+                all_tickers_to_scan = list(dict.fromkeys(self.config.TRADELIST))
+                if viewed and viewed in all_tickers_to_scan:
+                    scan_order = [viewed] + [t for t in all_tickers_to_scan if t != viewed]
+                else:
+                    scan_order = all_tickers_to_scan
                 
                 for ticker in scan_order:
                     try:
@@ -278,7 +282,6 @@ class UserEngine:
                         self.last_scan_timestamps[ticker] = now
 
                         avail_cash = account.get('non_marginable_buying_power') or account['cash'] if is_crypto else account['cash']
-                        is_watched = ticker in self.config.WATCHLIST
                         tf_to_use = t_settings.get('timeframe') or self.config.DEFAULT_TIMEFRAME
                         
                         result = None
@@ -294,21 +297,6 @@ class UserEngine:
                             if bot_result:
                                 self._record_bot_scan(bot_result)
                                 result = bot_result
-
-                        if is_watched:
-                            # Always fetch global evaluation for the dashboard using global settings
-                            global_result = await asyncio.to_thread(
-                                evaluate_trade,
-                                ticker, 
-                                account_equity=equity, 
-                                available_cash=avail_cash,
-                                timeframe=self.config.DEFAULT_TIMEFRAME,
-                                use_bot_settings=False
-                            )
-                            if global_result:
-                                self._record_scan(global_result)
-                                if not is_active:
-                                    result = global_result
                                     
                         if result:
                             trade_executed = False
@@ -508,4 +496,3 @@ class UserManager:
             if engine.bot_running:
                 engine.bot_running = False
                 if engine.task: engine.task.cancel()
-

@@ -77,6 +77,10 @@ ENABLE_AI_SENTIMENT = True
 ENABLE_CANDLE_PATTERNS = True
 ENABLE_ADX_TREND = True
 ENABLE_SMA = True
+ENABLE_BOTBULLS1 = True
+ENABLE_BOTBULLS2 = True
+ENABLE_BOTBULLS3 = True
+
 
 # ──────────────────────────────────────────────
 # Technical Indicator Parameters

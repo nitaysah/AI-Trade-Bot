@@ -19,7 +19,15 @@ async function getAuthHeaders() {
     const auth = window.auth;
     const user = auth ? auth.currentUser : null;
 
-    if (!user) return { 'Content-Type': 'application/json' };
+    if (!user) {
+        if (localStorage.getItem('dev_mode') === 'true') {
+            return {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer dev-token`
+            };
+        }
+        return { 'Content-Type': 'application/json' };
+    }
     const token = await user.getIdToken();
     return {
         'Content-Type': 'application/json',
@@ -115,7 +123,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Start Alpaca Status Polling once auth is ready
     const checkAuth = setInterval(() => {
-        if (window.auth && window.auth.currentUser) {
+        if (window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true')) {
             clearInterval(checkAuth);
             pollAlpacaStatus();
             setInterval(pollAlpacaStatus, 30000); // Check every 30s
@@ -197,6 +205,25 @@ async function runBacktest() {
     const capital = document.getElementById('btCapital').value;
     const threshold = document.getElementById('btThreshold').value;
     const sellThreshold = document.getElementById('btSellThreshold').value;
+
+    // Validate requested days based on timeframe limits (Yahoo Finance constraints)
+    let maxDays = 1825;
+    let limitDesc = "5 years";
+    if (timeframe === '1Min') {
+        maxDays = 7;
+        limitDesc = "7 days";
+    } else if (['5Min', '15Min', '30Min'].includes(timeframe)) {
+        maxDays = 60;
+        limitDesc = "60 days";
+    } else if (['1Hour', '4Hour'].includes(timeframe)) {
+        maxDays = 730;
+        limitDesc = "2 years (730 days)";
+    }
+
+    if (parseInt(days) > maxDays) {
+        alert(`Yahoo Finance only supports a maximum of ${limitDesc} of historical data for the ${timeframe} interval. Please reduce "Simulation Days" to ${maxDays} or less.`);
+        return;
+    }
 
     const extHoursVal = document.getElementById('btExtHours') ? (document.getElementById('btExtHours').value === 'true') : true;
 
@@ -492,7 +519,10 @@ const INDICATOR_TOOLTIPS = {
     "Candle patterns": "Candlestick Patterns identify specific OHLC price formations. Purpose: Provides visual clues about market psychology and potential reversals.",
     "ADX Trend": "Average Directional Index (ADX) quantifies trend strength. Purpose: Determines if the market is trending strongly (ADX > 25) or ranging.",
     "VWAP": "Volume Weighted Average Price (VWAP) is the ratio of value traded to total volume. Purpose: Provides the true average price a security traded at throughout the day.",
-    "Strategy Confidence": "Strategy Confidence combines multiple indicator signals into a single probability score. Purpose: Measures the overall conviction of a bullish or bearish trend."
+    "Strategy Confidence": "Strategy Confidence combines multiple indicator signals into a single probability score. Purpose: Measures the overall conviction of a bullish or bearish trend.",
+    "BotBulls1": "WaveTrend momentum oscillator + Money Flow analysis. Detects reversals when momentum and institutional volume flow align at oversold/overbought extremes.",
+    "BotBulls2": "Adaptive ATR trailing stop with trend-smoothed EMA and reversal zone detection. Fires on trend flips confirmed by multi-condition confluence scoring (1-4 strength rating).",
+    "BotBulls3": "Heikin-Ashi noise filter + ATR-based trailing stop. Generates buy/sell alerts only on confirmed momentum flips — removing false signals from choppy markets."
 };
 
 const INDICATOR_CONFIG_MAP = {
