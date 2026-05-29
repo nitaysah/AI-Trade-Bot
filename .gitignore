@@ -60,5 +60,7 @@ add_info_icons.py
 move_block.py
 *.log*
 
-
-
+# Temporary dumps and local keys
+backend/payload.json
+dash_out.json
+conf/
