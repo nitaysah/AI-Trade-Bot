@@ -614,8 +614,8 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
 
         # --- BotBulls1: WaveTrend + MFI (Market Cipher B / VuManChu) --------
         try:
-            _n1 = 10   # Channel Length
-            _n2 = 21   # Average Length
+            _n1 = int(getattr(get_user_config(), "BOTBULLS1_WT_CHANNEL", 10))   # Channel Length
+            _n2 = int(getattr(get_user_config(), "BOTBULLS1_WT_AVERAGE", 21))   # Average Length
             ap = (high + low + close) / 3  # hlc3
             esa = ta_lib.trend.ema_indicator(ap, window=_n1)
             d_wt = ta_lib.trend.ema_indicator((ap - esa).abs(), window=_n1)
@@ -643,9 +643,10 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
                     cross_up = wt1_arr[i] > wt2_arr[i] and wt1_arr[i-1] <= wt2_arr[i-1]
                     cross_dn = wt1_arr[i] < wt2_arr[i] and wt1_arr[i-1] >= wt2_arr[i-1]
                     mfi_v = mfi_arr[i] if not np.isnan(mfi_arr[i]) else 50
-                    if cross_up and wt1_arr[i] < -53 and mfi_v < 30:
+                    mfi_thres = int(getattr(get_user_config(), "BOTBULLS1_MFI_CONFIRM", 30))
+                    if cross_up and wt1_arr[i] < -53 and mfi_v < mfi_thres:
                         ba1_buy[i] = True
-                    elif cross_dn and wt1_arr[i] > 53 and mfi_v > 70:
+                    elif cross_dn and wt1_arr[i] > 53 and mfi_v > (100 - mfi_thres):
                         ba1_sell[i] = True
             df["BA1_Buy"] = ba1_buy
             df["BA1_Sell"] = ba1_sell
@@ -660,7 +661,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
         # --- BotBulls2: Smart Trail + Trend Tracer + Reversal Zones (LuxAlgo) --
         try:
             _lx_atr_len = 14
-            _lx_atr_mult = 2.0
+            _lx_atr_mult = float(getattr(get_user_config(), "BOTBULLS2_ATR_MULT", 2.0))
             # Reuse existing ATR or compute dedicated one
             lx_atr = df["ATR"].values
             close_arr_lx = close.to_numpy()
@@ -697,13 +698,13 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
             df["LX_SmartTrend"] = lx_trend
 
             # Component 2: Trend Tracer (Hull-inspired double-smooth EMA)
-            _tt_period = 50
+            _tt_period = int(getattr(get_user_config(), "BOTBULLS2_TREND_TRACER_PERIOD", 50))
             ema_full = ta_lib.trend.ema_indicator(close, window=_tt_period)
             ema_half = ta_lib.trend.ema_indicator(close, window=max(_tt_period // 2, 2))
             df["LX_TrendTracer"] = 2 * ema_half - ema_full
 
             # Component 3: Reversal Zones (±2σ from 50-SMA)
-            _rz_period = 50
+            _rz_period = int(getattr(get_user_config(), "BOTBULLS2_REVERSAL_ZONE_PERIOD", 50))
             rz_mean = close.rolling(window=_rz_period).mean()
             rz_std = close.rolling(window=_rz_period).std()
             df["LX_RZ_Upper"] = rz_mean + 2 * rz_std
@@ -744,8 +745,8 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
 
         # --- BotBulls3: Heikin-Ashi + UT Bot ATR Trailing Stop ---------------
         try:
-            _ut_key = 1.0       # Sensitivity multiplier (QuantNomad default)
-            _ut_atr_period = 10 # ATR lookback (QuantNomad default)
+            _ut_key = float(getattr(get_user_config(), "BOTBULLS3_ATR_MULT", 1.0))       # Sensitivity multiplier (QuantNomad default)
+            _ut_atr_period = int(getattr(get_user_config(), "BOTBULLS3_ATR_PERIOD", 10)) # ATR lookback (QuantNomad default)
             open_arr = df["Open"].to_numpy()
             high_arr = high.to_numpy()
             low_arr = low.to_numpy()
@@ -1070,13 +1071,8 @@ def _generate_signals(latest, prev):
             },
             "BotBulls2": {
                 "signal": (
-                    # Fire on Smart Trail FLIP with score >= 2
-                    "BULLISH" if (bool(latest.get("LX_SmartTrend", True)) and not bool(prev.get("LX_SmartTrend", True)) and int(latest.get("LX_Score", 0)) >= 2)
-                    else "BEARISH" if (not bool(latest.get("LX_SmartTrend", True)) and bool(prev.get("LX_SmartTrend", True)) and (4 - int(latest.get("LX_Score", 0))) >= 2)
-                    # Also show directional bias when trending (no flip)
-                    else "BULLISH" if (bool(latest.get("LX_SmartTrend", True)) and int(latest.get("LX_Score", 0)) >= 3)
-                    else "BEARISH" if (not bool(latest.get("LX_SmartTrend", True)) and int(latest.get("LX_Score", 0)) <= 1)
-                    else "NEUTRAL"
+                    # Continuous zone signal: BULLISH if in Smart Trend, else BEARISH
+                    "BULLISH" if bool(latest.get("LX_SmartTrend", True)) else "BEARISH"
                 ),
                 "reason": (
                     f"Trail {'↑' if bool(latest.get('LX_SmartTrend', True)) else '↓'} | "
@@ -1088,12 +1084,8 @@ def _generate_signals(latest, prev):
             },
             "BotBulls3": {
                 "signal": (
-                    # Signal on FLIP only
-                    "BULLISH" if (bool(latest.get("UT_Above", True)) and not bool(prev.get("UT_Above", True)))
-                    else "BEARISH" if (not bool(latest.get("UT_Above", True)) and bool(prev.get("UT_Above", True)))
-                    # Show directional bias when no flip
-                    else "BULLISH" if bool(latest.get("UT_Above", True))
-                    else "BEARISH"
+                    # Continuous zone signal: BULLISH if above UT Trail, else BEARISH
+                    "BULLISH" if bool(latest.get("UT_Above", True)) else "BEARISH"
                 ),
                 "reason": (
                     f"HA {'Above' if bool(latest.get('UT_Above', True)) else 'Below'} Trail ({float(latest.get('UT_Trail', 0)):.2f})"

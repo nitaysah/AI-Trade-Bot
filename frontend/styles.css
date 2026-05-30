@@ -121,15 +121,15 @@
 
 /* ── Premium Signal Cards (Gold) ── */
 .signal-card.premium-bullish {
-    border: 1px solid rgba(251, 191, 36, 0.5);
-    background: linear-gradient(135deg, rgba(16, 185, 129, 0.05), rgba(251, 191, 36, 0.08));
-    box-shadow: 0 2px 8px rgba(251, 191, 36, 0.08);
+    border: 2px solid #00ff00;
+    background: rgba(0, 255, 0, 0.15);
+    box-shadow: 0 0 12px rgba(0, 255, 0, 0.5);
 }
 
 .signal-card.premium-bearish {
-    border: 1px solid rgba(251, 191, 36, 0.5);
-    background: linear-gradient(135deg, rgba(239, 68, 68, 0.05), rgba(251, 191, 36, 0.08));
-    box-shadow: 0 2px 8px rgba(251, 191, 36, 0.08);
+    border: 2px solid #ff0000;
+    background: rgba(255, 0, 0, 0.15);
+    box-shadow: 0 0 12px rgba(255, 0, 0, 0.5);
 }
 
 .signal-card.premium-neutral {
@@ -137,8 +137,18 @@
     background: linear-gradient(135deg, rgba(168, 85, 247, 0.03), rgba(251, 191, 36, 0.05));
 }
 
-.signal-card.premium-bullish:hover,
-.signal-card.premium-bearish:hover,
+.signal-card.premium-bullish:hover {
+    border-color: #00ff00;
+    box-shadow: 0 0 20px rgba(0, 255, 0, 0.8);
+    background: rgba(0, 255, 0, 0.25);
+}
+
+.signal-card.premium-bearish:hover {
+    border-color: #ff0000;
+    box-shadow: 0 0 20px rgba(255, 0, 0, 0.8);
+    background: rgba(255, 0, 0, 0.25);
+}
+
 .signal-card.premium-neutral:hover {
     border-color: rgba(245, 158, 11, 0.7);
     box-shadow: 0 4px 16px rgba(251, 191, 36, 0.18);
@@ -606,5 +616,280 @@
     opacity: 1;
     filter: grayscale(0%);
     transition: all 0.3s ease;
+}
+
+/* ── Backtest Chart ── */
+#btChartSection {
+    transition: opacity 0.3s ease;
+}
+
+/* Trade row highlight ring from chart navigator */
+#btTradeLog tr.ring-2 {
+    background: rgba(99, 102, 241, 0.06) !important;
+}
+
+#btTradeLog tr {
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+/* Tooltip inside chart wrap */
+#btChartTooltip {
+    transition: opacity 0.1s ease;
+}
+
+/* ══════════════════════════════════════════════════
+   AI Indicator Card — Light Glow Purple Glassmorphism
+   ══════════════════════════════════════════════════ */
+
+/* Breathing glow keyframes */
+@keyframes ai-glow-breathe {
+    0%, 100% { opacity: 0.4; transform: scale(1); }
+    50%      { opacity: 0.7; transform: scale(1.05); }
+}
+
+@keyframes ai-shimmer {
+    0%   { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+}
+
+@keyframes ai-orb-float {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    25%      { transform: translate(12px, -8px) scale(1.1); }
+    50%      { transform: translate(-6px, -14px) scale(0.95); }
+    75%      { transform: translate(-10px, 4px) scale(1.05); }
+}
+
+.ai-indicator-card {
+    position: relative;
+    padding: 1.15rem 1.25rem;
+    border-radius: 16px;
+    border: 1px solid rgba(168, 85, 247, 0.3);
+    background: linear-gradient(
+        135deg,
+        rgba(255, 255, 255, 0.72) 0%,
+        rgba(245, 238, 255, 0.68) 40%,
+        rgba(237, 225, 255, 0.6) 100%
+    );
+    backdrop-filter: blur(20px) saturate(1.4);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    overflow: hidden;
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow:
+        0 4px 24px rgba(139, 92, 246, 0.08),
+        0 1px 4px rgba(139, 92, 246, 0.04),
+        inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.ai-indicator-card:hover {
+    border-color: rgba(139, 92, 246, 0.5);
+    box-shadow:
+        0 8px 40px rgba(139, 92, 246, 0.16),
+        0 2px 8px rgba(168, 85, 247, 0.1),
+        inset 0 1px 0 rgba(255, 255, 255, 0.7);
+    transform: translateY(-2px);
+}
+
+/* Soft purple glow aura (breathing) */
+.ai-indicator-card::before {
+    content: '';
+    position: absolute;
+    inset: -30%;
+    border-radius: 50%;
+    background: radial-gradient(
+        circle at 30% 30%,
+        rgba(168, 85, 247, 0.12) 0%,
+        rgba(139, 92, 246, 0.06) 40%,
+        transparent 70%
+    );
+    animation: ai-glow-breathe 6s ease-in-out infinite;
+    pointer-events: none;
+    z-index: 0;
+}
+
+/* Glowing top accent line */
+.ai-indicator-card::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    border-radius: 16px 16px 0 0;
+    background: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(168, 85, 247, 0.5) 20%,
+        rgba(139, 92, 246, 0.8) 50%,
+        rgba(168, 85, 247, 0.5) 80%,
+        transparent 100%
+    );
+    z-index: 2;
+}
+
+/* Floating orb particle */
+.ai-indicator-card .ai-orb {
+    position: absolute;
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(168, 85, 247, 0.1) 0%, transparent 70%);
+    top: -10px;
+    right: -10px;
+    animation: ai-orb-float 10s ease-in-out infinite;
+    pointer-events: none;
+    z-index: 0;
+}
+
+/* Ensure content sits above glow layers */
+.ai-indicator-card > * {
+    position: relative;
+    z-index: 1;
+}
+
+/* ── Signal-specific glow variants ── */
+
+.ai-indicator-buy {
+    border-color: rgba(16, 185, 129, 0.35);
+    background: linear-gradient(
+        135deg,
+        rgba(255, 255, 255, 0.72) 0%,
+        rgba(236, 253, 245, 0.65) 40%,
+        rgba(209, 250, 229, 0.55) 100%
+    );
+    box-shadow:
+        0 4px 28px rgba(16, 185, 129, 0.12),
+        0 0 20px rgba(16, 185, 129, 0.06),
+        inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+.ai-indicator-buy:hover {
+    border-color: rgba(16, 185, 129, 0.55);
+    box-shadow:
+        0 8px 44px rgba(16, 185, 129, 0.2),
+        0 0 32px rgba(16, 185, 129, 0.1),
+        inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+.ai-indicator-buy::before {
+    background: radial-gradient(
+        circle at 30% 30%,
+        rgba(16, 185, 129, 0.1) 0%,
+        rgba(52, 211, 153, 0.05) 40%,
+        transparent 70%
+    );
+}
+.ai-indicator-buy::after {
+    background: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(16, 185, 129, 0.4) 20%,
+        rgba(52, 211, 153, 0.85) 50%,
+        rgba(16, 185, 129, 0.4) 80%,
+        transparent 100%
+    );
+}
+
+.ai-indicator-sell {
+    border-color: rgba(239, 68, 68, 0.3);
+    background: linear-gradient(
+        135deg,
+        rgba(255, 255, 255, 0.72) 0%,
+        rgba(254, 242, 242, 0.65) 40%,
+        rgba(254, 226, 226, 0.55) 100%
+    );
+    box-shadow:
+        0 4px 28px rgba(239, 68, 68, 0.1),
+        0 0 20px rgba(239, 68, 68, 0.05),
+        inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+.ai-indicator-sell:hover {
+    border-color: rgba(239, 68, 68, 0.5);
+    box-shadow:
+        0 8px 44px rgba(239, 68, 68, 0.18),
+        0 0 32px rgba(239, 68, 68, 0.08),
+        inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+.ai-indicator-sell::before {
+    background: radial-gradient(
+        circle at 30% 30%,
+        rgba(239, 68, 68, 0.08) 0%,
+        rgba(252, 165, 165, 0.04) 40%,
+        transparent 70%
+    );
+}
+.ai-indicator-sell::after {
+    background: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(239, 68, 68, 0.35) 20%,
+        rgba(248, 113, 113, 0.8) 50%,
+        rgba(239, 68, 68, 0.35) 80%,
+        transparent 100%
+    );
+}
+
+.ai-indicator-hold {
+    border-color: rgba(245, 158, 11, 0.3);
+    background: linear-gradient(
+        135deg,
+        rgba(255, 255, 255, 0.72) 0%,
+        rgba(255, 251, 235, 0.65) 40%,
+        rgba(254, 243, 199, 0.55) 100%
+    );
+    box-shadow:
+        0 4px 28px rgba(245, 158, 11, 0.1),
+        0 0 20px rgba(245, 158, 11, 0.05),
+        inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+.ai-indicator-hold:hover {
+    border-color: rgba(245, 158, 11, 0.5);
+    box-shadow:
+        0 8px 44px rgba(245, 158, 11, 0.16),
+        0 0 32px rgba(245, 158, 11, 0.08),
+        inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+.ai-indicator-hold::before {
+    background: radial-gradient(
+        circle at 30% 30%,
+        rgba(245, 158, 11, 0.08) 0%,
+        rgba(252, 211, 77, 0.04) 40%,
+        transparent 70%
+    );
+}
+.ai-indicator-hold::after {
+    background: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(245, 158, 11, 0.4) 20%,
+        rgba(252, 211, 77, 0.8) 50%,
+        rgba(245, 158, 11, 0.4) 80%,
+        transparent 100%
+    );
+}
+
+/* ── Loading state ── */
+.ai-indicator-loading {
+    border-color: rgba(168, 85, 247, 0.2);
+    min-height: 96px;
+}
+.ai-indicator-loading::after {
+    background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(168, 85, 247, 0.4),
+        rgba(139, 92, 246, 0.7),
+        rgba(168, 85, 247, 0.4),
+        transparent
+    );
+    background-size: 200% 100%;
+    animation: ai-shimmer 2s linear infinite;
+}
+
+/* ── Error state ── */
+.ai-indicator-error {
+    border-color: rgba(239, 68, 68, 0.2);
+    background: linear-gradient(
+        135deg,
+        rgba(255, 255, 255, 0.65) 0%,
+        rgba(254, 242, 242, 0.6) 100%
+    );
+    box-shadow: 0 4px 16px rgba(239, 68, 68, 0.06);
 }
 

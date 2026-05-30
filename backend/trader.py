@@ -12,7 +12,7 @@ This is the "brain" that orchestrates:
 from datetime import datetime
 import pytz
 from indicators import get_full_analysis
-from sentiment import get_ai_sentiment
+from ai_indicator import get_ai_sentiment
 from risk_manager import RiskManager
 import config as global_config
 from user_config import get_user_config
@@ -208,16 +208,20 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
     analysis = None
     ai_data = {"score": 0.0, "confidence": 0.0}
 
+    import contextvars
+
     def _compute():
-        # 1. Start both Technical Analysis and AI Sentiment IN PARALLEL
-        tech_future = executor.submit(get_full_analysis, ticker_key, timeframe=timeframe, data_source=data_source)
-        ai_future = executor.submit(get_ai_sentiment, ticker_key)
+        tech_ctx = contextvars.copy_context()
+        ai_ctx = contextvars.copy_context()
+        tech_future = executor.submit(tech_ctx.run, get_full_analysis, ticker_key, timeframe=timeframe, data_source=data_source)
+        ai_future = executor.submit(ai_ctx.run, get_ai_sentiment, ticker_key)
         return tech_future.result(), ai_future.result()
 
     with IN_FLIGHT_LOCK:
         shared_future = IN_FLIGHT_EVALS.get(cache_key)
         if shared_future is None:
-            shared_future = executor.submit(_compute)
+            compute_ctx = contextvars.copy_context()
+            shared_future = executor.submit(compute_ctx.run, _compute)
             IN_FLIGHT_EVALS[cache_key] = shared_future
 
     try:

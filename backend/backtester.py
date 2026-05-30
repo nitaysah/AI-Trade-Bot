@@ -8,7 +8,7 @@ import config as global_config
 from user_config import get_user_config
 
 class Backtester:
-    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=0.02, max_pos_pct=0.25, ext_hours=True, sell_mode="indicator", atr_stop_multiplier=2.0, atr_trail_multiplier=3.0, atr_take_profit_multiplier=4.0):
+    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=0.02, max_pos_pct=0.25, ext_hours=True, sell_mode="indicator", atr_stop_multiplier=2.0, atr_trail_multiplier=3.0, atr_take_profit_multiplier=4.0, ai_autopilot=False, ai_interval=10, ai_model="llama-3.3-70b-versatile"):
         self.ticker = ticker
         self.timeframe = timeframe
         self.start_date = start_date
@@ -24,6 +24,10 @@ class Backtester:
         self.atr_stop_multiplier = atr_stop_multiplier
         self.atr_trail_multiplier = atr_trail_multiplier
         self.atr_take_profit_multiplier = atr_take_profit_multiplier
+        self.ai_autopilot = ai_autopilot or (sell_mode == "ai_autopilot")
+        self.ai_interval = ai_interval
+        self.ai_model = ai_model
+        self._last_ai_decision = None
         
         self.equity = initial_capital
         self.position = None 
@@ -70,82 +74,117 @@ class Backtester:
             prev_bar = self.df.iloc[i-1]
             current_price = current_bar['Close']
             
-            # Check for SL / TP if in position and using sltp/hybrid/trend_rider sell mode
-            if self.position and self.sell_mode in ["sltp", "hybrid", "trend_rider"]:
-                atr = current_bar['ATR']
-                trail_distance = atr * self.atr_trail_multiplier
-                
-                # Dynamic Trailing Stop movement
-                if self.position.get('qty', 0) > 0:
-                    new_stop = current_price - trail_distance
-                    if new_stop > self.position['stop_loss']:
-                        self.position['stop_loss'] = round(new_stop, 2)
-                
-                # Check exit hits
+            # Check for SL / TP if in position
+            if self.position:
+                # Standard / AI Autopilot hard stop/target checks
                 if current_bar['Low'] <= self.position['stop_loss']:
                     self._exit_trade(current_bar, timestamp, f"Stop Loss Hit (${self.position['stop_loss']:.2f})", exit_price_override=self.position['stop_loss'])
+                    self._last_ai_decision = None  # Reset AI decision after exit
                     continue
                 elif current_bar['High'] >= self.position['take_profit']:
                     self._exit_trade(current_bar, timestamp, f"Take Profit Hit (${self.position['take_profit']:.2f})", exit_price_override=self.position['take_profit'])
+                    self._last_ai_decision = None  # Reset AI decision after exit
                     continue
+                
+                # Dynamic Trailing Stop movement for standard hybrid/sltp modes
+                if self.sell_mode in ["sltp", "hybrid", "trend_rider"]:
+                    atr = current_bar['ATR']
+                    trail_distance = atr * self.atr_trail_multiplier
+                    if self.position.get('qty', 0) > 0:
+                        new_stop = current_price - trail_distance
+                        if new_stop > self.position['stop_loss']:
+                            self.position['stop_loss'] = round(new_stop, 2)
 
-            # Get Strategy Decision
-            signals = _generate_signals(current_bar, prev_bar)
-            
-            # Filter signals based on enabled indicators
-            filtered_signals = {k: v for k, v in signals.items() if k in self.enabled_indicators}
-            
-            analysis = {
-                'bullish_count': sum(s.get('weight', 1) for s in filtered_signals.values() if s['signal'] == 'BULLISH'),
-                'bearish_count': sum(s.get('weight', 1) for s in filtered_signals.values() if s['signal'] == 'BEARISH'),
-                'signals': filtered_signals
-            }
-            
-            # Use Manual Thresholds
             action = "HOLD"
             reason = "Neutral"
-            
-            if self.sell_mode == "trend_rider":
-                ema_f = current_bar.get("EMA_Fast", 0)
-                ema_s = current_bar.get("EMA_Slow", 0)
-                prev_ema_f = prev_bar.get("EMA_Fast", 0)
-                prev_ema_s = prev_bar.get("EMA_Slow", 0)
-                st_bull = current_bar.get("Supertrend_Trend", True)
-                sma_val = current_bar.get("SMA", 0)
+
+            if self.ai_autopilot:
+                # Call AI every N bars, or if we have no last decision
+                if (i % self.ai_interval == 0) or (self._last_ai_decision is None):
+                    from ai_indicator import get_ai_decision_for_bar
+                    
+                    bar_dict = current_bar.to_dict()
+                    ai_pos = None
+                    if self.position:
+                        ai_pos = {
+                            'entry_price': self.position['entry_price'],
+                            'qty': self.position['qty'],
+                            'stop_loss': self.position['stop_loss'],
+                            'take_profit': self.position['take_profit'],
+                        }
+                    
+                    self._last_ai_decision = get_ai_decision_for_bar(
+                        ticker=self.ticker,
+                        bar_data=bar_dict,
+                        account_equity=self.equity,
+                        available_cash=self.equity,
+                        position=ai_pos,
+                        timeframe=self.timeframe,
+                        model=self.ai_model
+                    )
                 
-                # Entry: Golden Cross (or already crossed) AND Supertrend Bullish
-                golden_cross = (ema_f > ema_s) and (prev_ema_f <= prev_ema_s)
-                if golden_cross and st_bull:
-                    action = "BUY"
-                    reason = "Trend Rider Entry (Golden Cross + Supertrend)"
-                elif analysis['bullish_count'] >= self.threshold:
-                    # Fallback to normal entry if strong momentum
-                    action = "BUY"
-                    names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
-                    reason = f"Trend Rider Entry: {analysis['bullish_count']} signals ({', '.join(names)})"
-
-                # Exit: Trend Break (Death Cross or below SMA)
-                death_cross = (ema_f < ema_s) and (prev_ema_f >= prev_ema_s)
-                if death_cross or current_price < sma_val:
-                    action = "SELL"
-                    reason = "Trend Rider Exit: Trend Broken (Death Cross or < SMA 200)"
-
+                if self._last_ai_decision:
+                    action = self._last_ai_decision.get("signal", "HOLD")
+                    reason = self._last_ai_decision.get("reason", "AI Autopilot Decision")
+                    
+                    if action == "BUY" and not self.position:
+                        self._enter_trade_ai(current_bar, timestamp, self._last_ai_decision)
+                        self._last_ai_decision = None  # Reset to re-evaluate next bars
+                    elif action == "SELL" and self.position:
+                        self._exit_trade(current_bar, timestamp, f"AI Exit: {reason}")
+                        self._last_ai_decision = None  # Reset to re-evaluate next bars
             else:
-                if analysis['bullish_count'] >= self.threshold:
-                    action = "BUY"
-                    names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
-                    reason = f"{analysis['bullish_count']} signals ({', '.join(names)})"
-                elif analysis['bearish_count'] >= self.sell_threshold:
-                    # Dynamic exits hit only if sell mode supports indicators
-                    if self.sell_mode in ["indicator", "hybrid"]:
-                        action = "SELL"
-                        names = [k for k, v in filtered_signals.items() if v['signal'] == 'BEARISH']
-                        reason = f"Dynamic Sell: {analysis['bearish_count']} signals ({', '.join(names)})"
+                # Get Strategy Decision
+                signals = _generate_signals(current_bar, prev_bar)
+                
+                # Filter signals based on enabled indicators
+                filtered_signals = {k: v for k, v in signals.items() if k in self.enabled_indicators}
+                
+                analysis = {
+                    'bullish_count': sum(s.get('weight', 1) for s in filtered_signals.values() if s['signal'] == 'BULLISH'),
+                    'bearish_count': sum(s.get('weight', 1) for s in filtered_signals.values() if s['signal'] == 'BEARISH'),
+                    'signals': filtered_signals
+                }
+                
+                if self.sell_mode == "trend_rider":
+                    ema_f = current_bar.get("EMA_Fast", 0)
+                    ema_s = current_bar.get("EMA_Slow", 0)
+                    prev_ema_f = prev_bar.get("EMA_Fast", 0)
+                    prev_ema_s = prev_bar.get("EMA_Slow", 0)
+                    st_bull = current_bar.get("Supertrend_Trend", True)
+                    sma_val = current_bar.get("SMA", 0)
+                    
+                    # Entry: Golden Cross (or already crossed) AND Supertrend Bullish
+                    golden_cross = (ema_f > ema_s) and (prev_ema_f <= prev_ema_s)
+                    if golden_cross and st_bull:
+                        action = "BUY"
+                        reason = "Trend Rider Entry (Golden Cross + Supertrend)"
+                    elif analysis['bullish_count'] >= self.threshold:
+                        action = "BUY"
+                        names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
+                        reason = f"Trend Rider Entry: {analysis['bullish_count']} signals ({', '.join(names)})"
 
-            if action == 'BUY' and not self.position:
-                self._enter_trade(current_bar, timestamp, reason)
-            elif action == 'SELL' and self.position:
-                self._exit_trade(current_bar, timestamp, reason)
+                    # Exit: Trend Break (Death Cross or below SMA)
+                    death_cross = (ema_f < ema_s) and (prev_ema_f >= prev_ema_s)
+                    if death_cross or current_price < sma_val:
+                        action = "SELL"
+                        reason = "Trend Rider Exit: Trend Broken (Death Cross or < SMA 200)"
+
+                else:
+                    if analysis['bullish_count'] >= self.threshold:
+                        action = "BUY"
+                        names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
+                        reason = f"{analysis['bullish_count']} signals ({', '.join(names)})"
+                    elif analysis['bearish_count'] >= self.sell_threshold:
+                        if self.sell_mode in ["indicator", "hybrid"]:
+                            action = "SELL"
+                            names = [k for k, v in filtered_signals.items() if v['signal'] == 'BEARISH']
+                            reason = f"Dynamic Sell: {analysis['bearish_count']} signals ({', '.join(names)})"
+
+                if action == 'BUY' and not self.position:
+                    self._enter_trade(current_bar, timestamp, reason)
+                elif action == 'SELL' and self.position:
+                    self._exit_trade(current_bar, timestamp, reason)
 
             self.equity_history.append({
                 'time': timestamp.strftime("%Y-%m-%d %H:%M"),
@@ -163,6 +202,41 @@ class Backtester:
             print(f"\n[backtest] COMPLETED for {self.ticker}")
             print(f"[backtest] ROI: {s['roi_pct']}% | Trades: {s['total_trades']} | Win Rate: {s['win_rate_pct']}%")
         return results
+
+    def _enter_trade_ai(self, bar, timestamp, ai_decision):
+        price = bar['Close']
+        
+        # Use AI's suggested position size percent (default to 10% if not specified)
+        pos_pct = ai_decision.get("position_size_pct", 0.10)
+        if pos_pct <= 0:
+            pos_pct = 0.10
+        # Limit to max_pos_pct
+        pos_pct = min(pos_pct, self.max_pos_pct)
+        
+        # Calculate quantity based on cash allocation
+        allocated_cash = self.equity * pos_pct
+        qty = allocated_cash / price
+        
+        # Use AI suggested stop loss and take profit
+        stop_loss = ai_decision.get("stop_loss")
+        take_profit = ai_decision.get("sell_target")
+        
+        # Fallbacks if AI didn't provide stop/target
+        atr = bar.get('ATR', price * 0.02)
+        if not stop_loss:
+            stop_loss = round(price - atr * self.atr_stop_multiplier, 2)
+        if not take_profit:
+            take_profit = round(price + atr * self.atr_take_profit_multiplier, 2)
+            
+        self.position = {
+            'qty': qty,
+            'entry_price': price,
+            'entry_time': timestamp,
+            'stop_loss': stop_loss,
+            'take_profit': take_profit,
+            'reason': ai_decision.get("summary", "AI Autopilot Entry")
+        }
+        print(f"[{timestamp.strftime('%Y-%m-%d %H:%M')}] BUY  {self.ticker} @ ${price:.2f} | Stop: ${stop_loss:.2f} | Target: ${take_profit:.2f} | Reason: AI Autopilot Entry (Conf: {ai_decision.get('confidence'):.0%})")
 
     def _enter_trade(self, bar, timestamp, reason):
         price = bar['Close']
@@ -223,9 +297,10 @@ class Backtester:
             'fees': fee,
             'pl': round(pl, 2),
             'pl_pct': round(pl_pct, 2),
-            'reason': reason
+            'reason': reason,
+            'stop_loss': round(self.position.get('stop_loss', 0), 2),
+            'take_profit': round(self.position.get('take_profit', 0), 2),
         })
-        self.position = None
         self.position = None
 
     def _check_exit_conditions(self, bar, timestamp):
@@ -242,7 +317,7 @@ class Backtester:
             return {"error": "No trades executed during the period. Try lowering your 'Buy Threshold' or enabling more indicators."}
         df_trades = pd.DataFrame(self.trades)
         win_rate = (df_trades['pl'] > 0).mean() * 100
-        total_pl = df_trades['pl'].sum()
+        total_pl = self.equity - self.initial_capital
         roi = (total_pl / self.initial_capital) * 100
         
         # Calculate Buy & Hold from the very first available bar
@@ -250,7 +325,32 @@ class Backtester:
         end_price = self.df.iloc[-1]['Close']
         buy_hold_equity = (end_price / start_price) * self.initial_capital
         buy_hold_roi = ((end_price - start_price) / start_price) * 100
-        
+        # Downsample to max 500 bars to keep JSON payload manageable (~150KB)
+        total_bars = len(self.df)
+        step = max(1, total_bars // 500)
+        candles = []
+        for i in range(0, total_bars, step):
+            row = self.df.iloc[i]
+            ts = self.df.index[i]
+            try:
+                unix_time = int(ts.timestamp())
+                o = float(row.get('Open', row.get('open', 0)))
+                h = float(row.get('High', row.get('high', 0)))
+                l = float(row.get('Low', row.get('low', 0)))
+                c = float(row.get('Close', row.get('close', 0)))
+                v = int(row.get('Volume', row.get('volume', 0)))
+                if o > 0 and c > 0:
+                    candles.append({
+                        "time": unix_time,
+                        "open": round(o, 4),
+                        "high": round(h, 4),
+                        "low": round(l, 4),
+                        "close": round(c, 4),
+                        "volume": v,
+                    })
+            except Exception:
+                continue
+
         return {
             "summary": {
                 "initial_capital": self.initial_capital,
@@ -268,5 +368,6 @@ class Backtester:
                 "worst_trade": round(df_trades['pl'].min(), 2)
             },
             "equity_curve": self.equity_history[::max(1, len(self.equity_history)//200)],
-            "trades": self.trades[::-1]
+            "trades": self.trades[::-1],
+            "candles": candles,
         }

@@ -34,6 +34,7 @@ from data_manager import get_historical_data
 from engine import UserManager, UserEngine
 import config as global_config
 from user_config import set_user_config, get_user_config
+from ai_indicator import get_ai_indicator, clear_ai_cache
 
 # ──────────────────────────────────────────────
 # Secret Encryption Vault
@@ -819,6 +820,52 @@ async def get_chart_data(
     }
 
 
+@app.get("/api/ai-indicator")
+async def get_ai_indicator_endpoint(
+    ticker: str,
+    timeframe: str = "4Hour",
+    force: bool = False,
+    eng: UserEngine = Depends(get_user_engine)
+):
+    """
+    Agentic AI Indicator — Groq-powered autonomous market research.
+    Returns a BUY/SELL/HOLD signal with position sizing, leverage guidance,
+    sell targets, and a detailed institutional-grade reasoning summary.
+    """
+    ticker = _normalize_quote_symbol(ticker)
+    if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
+        return {"error": "Invalid ticker format"}
+
+    if not getattr(eng.config, "ENABLE_AI_INDICATOR", True):
+        return {"error": "AI Indicator is disabled in settings", "signal": "HOLD", "confidence": 0}
+
+    if force:
+        clear_ai_cache(ticker, timeframe)
+
+    account = eng.broker.get_account_info()
+    available_cash = float(account.get("cash", 10000.0))
+    account_equity = float(account.get("equity", 10000.0))
+
+    try:
+        result = await asyncio.to_thread(
+            get_ai_indicator,
+            ticker,
+            timeframe,
+            available_cash,
+            account_equity,
+        )
+        return result
+    except Exception as e:
+        print(f"[api] AI indicator error for {ticker}: {e}")
+        return {
+            "error": str(e),
+            "signal": "HOLD",
+            "confidence": 0,
+            "summary": "AI Indicator temporarily unavailable.",
+            "cached": False,
+        }
+
+
 @app.get("/api/signals/{ticker}")
 async def get_fast_signals(
     ticker: str,
@@ -916,6 +963,10 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
     atr_trail_multiplier = float(data.get("atr_trail_multiplier", 3.0))
     atr_take_profit_multiplier = float(data.get("atr_take_profit_multiplier", 4.0))
     
+    ai_autopilot = data.get("ai_autopilot", False) or (sell_mode == "ai_autopilot")
+    ai_interval = int(data.get("ai_interval", 10))
+    ai_model = data.get("ai_model", "llama-3.3-70b-versatile")
+    
     from backtester import Backtester
     bt = Backtester(
         ticker=ticker,
@@ -932,7 +983,10 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
         sell_mode=sell_mode,
         atr_stop_multiplier=atr_stop_multiplier,
         atr_trail_multiplier=atr_trail_multiplier,
-        atr_take_profit_multiplier=atr_take_profit_multiplier
+        atr_take_profit_multiplier=atr_take_profit_multiplier,
+        ai_autopilot=ai_autopilot,
+        ai_interval=ai_interval,
+        ai_model=ai_model
     )
     
     try:

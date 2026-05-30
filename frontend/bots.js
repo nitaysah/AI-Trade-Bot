@@ -608,6 +608,10 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyTimeframe').value = "1Hour";
         document.getElementById('strategySellMode').value = "indicator";
         window._strategyPaused = false;
+        
+        const autopilotEl = document.getElementById('strategyAiAutopilot');
+        if (autopilotEl) autopilotEl.checked = false;
+        window.handleStrategyAutopilotToggle(false);
 
         // Reset Risk Overrides to defaults
         document.getElementById('strategyRiskPerTrade').value = 2.0;
@@ -638,6 +642,11 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyTimeframe').value = settings.timeframe || '1Hour';
         document.getElementById('strategySellMode').value = settings.sell_mode || 'indicator';
         window._strategyPaused = settings.paused || false;
+        
+        const aiAutopilot = settings.ai_autopilot || false;
+        const autopilotEl = document.getElementById('strategyAiAutopilot');
+        if (autopilotEl) autopilotEl.checked = aiAutopilot;
+        window.handleStrategyAutopilotToggle(aiAutopilot);
 
         // Load Risk Overrides
         document.getElementById('strategyRiskPerTrade').value = settings.risk_per_trade !== undefined ? (settings.risk_per_trade * 100).toFixed(1) : 2.0;
@@ -759,6 +768,37 @@ function updateStrategyPauseButton() {
     }
 }
 
+window.handleStrategyAutopilotToggle = function (enabled) {
+    const warning = document.getElementById('strategyAiAutopilotWarning');
+    const sellModeSelect = document.getElementById('strategySellMode');
+    
+    if (enabled) {
+        warning?.classList.remove('hidden');
+        if (sellModeSelect) {
+            sellModeSelect.disabled = true;
+            sellModeSelect.style.opacity = '0.5';
+        }
+        // Dim and disable indicators
+        document.querySelectorAll('.strategy-indicator-check').forEach(chk => {
+            chk.disabled = true;
+            chk.parentElement.style.opacity = '0.5';
+            chk.parentElement.style.pointerEvents = 'none';
+        });
+    } else {
+        warning?.classList.add('hidden');
+        if (sellModeSelect) {
+            sellModeSelect.disabled = false;
+            sellModeSelect.style.opacity = '1';
+        }
+        // Enable indicators
+        document.querySelectorAll('.strategy-indicator-check').forEach(chk => {
+            chk.disabled = false;
+            chk.parentElement.style.opacity = '1';
+            chk.parentElement.style.pointerEvents = 'auto';
+        });
+    }
+};
+
 window.handleStrategyAction = async function () {
     if (strategyModalMode === 'deploy') {
         await confirmAndDeployBot();
@@ -787,6 +827,7 @@ async function saveTickerSettings() {
             sell_mode: document.getElementById('strategySellMode').value,
             indicators: indicators,
             paused: window._strategyPaused || false,
+            ai_autopilot: document.getElementById('strategyAiAutopilot').checked || false,
             risk_per_trade: parseFloat(document.getElementById('strategyRiskPerTrade').value) / 100.0,
             max_daily_drawdown: parseFloat(document.getElementById('strategyMaxDailyDrawdown').value) / 100.0,
             max_position_pct: parseFloat(document.getElementById('strategyMaxPositionPct').value) / 100.0,
@@ -1220,6 +1261,7 @@ window.confirmAndDeployBot = async function () {
                 indicators: indicators,
                 timeframe: timeframe,
                 paused: window._strategyPaused || false,
+                ai_autopilot: document.getElementById('strategyAiAutopilot').checked || false,
                 risk_per_trade: parseFloat(document.getElementById('strategyRiskPerTrade').value) / 100.0,
                 max_daily_drawdown: parseFloat(document.getElementById('strategyMaxDailyDrawdown').value) / 100.0,
                 max_position_pct: parseFloat(document.getElementById('strategyMaxPositionPct').value) / 100.0,
@@ -1313,10 +1355,21 @@ const INDICATOR_CONFIG_MAP = {
     'SMA': ['SMA_PERIOD'],
     'ATR Volatility': ['ATR_PERIOD', 'ATR_STOP_MULTIPLIER', 'ATR_TRAIL_MULTIPLIER', 'ATR_TAKE_PROFIT_MULTIPLIER'],
     'Strategy Confidence': ['MIN_BULLISH_SIGNALS', 'MIN_BEARISH_SIGNALS'],
-    'Sentiment AI': ['SENTIMENT_BULLISH_THRESHOLD', 'SENTIMENT_BEARISH_THRESHOLD']
+    'Sentiment AI': ['SENTIMENT_BULLISH_THRESHOLD', 'SENTIMENT_BEARISH_THRESHOLD'],
+    'BotBulls1': ['BOTBULLS1_WT_CHANNEL', 'BOTBULLS1_WT_AVERAGE', 'BOTBULLS1_MFI_CONFIRM'],
+    'BotBulls2': ['BOTBULLS2_ATR_MULT', 'BOTBULLS2_TREND_TRACER_PERIOD', 'BOTBULLS2_REVERSAL_ZONE_PERIOD'],
+    'BotBulls3': ['BOTBULLS3_ATR_PERIOD', 'BOTBULLS3_ATR_MULT']
 };
 
 const INDICATOR_DEFAULTS = {
+    'BOTBULLS1_WT_CHANNEL': 10,
+    'BOTBULLS1_WT_AVERAGE': 21,
+    'BOTBULLS1_MFI_CONFIRM': 30,
+    'BOTBULLS2_ATR_MULT': 2.0,
+    'BOTBULLS2_TREND_TRACER_PERIOD': 50,
+    'BOTBULLS2_REVERSAL_ZONE_PERIOD': 50,
+    'BOTBULLS3_ATR_PERIOD': 10,
+    'BOTBULLS3_ATR_MULT': 1.0,
     'RSI_PERIOD': 14,
     'RSI_OVERBOUGHT': 70,
     'RSI_OVERSOLD': 30,
@@ -1459,6 +1512,9 @@ async function saveIndicatorSettings() {
 }
 
 function toggleIndicatorCard(card, event) {
+    if (document.getElementById('strategyAiAutopilot')?.checked) {
+        return;
+    }
     if (event.target.closest('button') || event.target.closest('input[type="checkbox"]')) {
         return;
     }

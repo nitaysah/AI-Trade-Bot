@@ -81,6 +81,17 @@ ENABLE_BOTBULLS1 = True
 ENABLE_BOTBULLS2 = True
 ENABLE_BOTBULLS3 = True
 
+# AI Indicator (Groq Agentic)
+ENABLE_AI_INDICATOR = True
+AI_INDICATOR_MODEL = "llama-3.3-70b-versatile"
+AI_INDICATOR_CACHE_MINUTES = 10
+
+# AI Autopilot (uses AI Indicator for autonomous trade decisions in bots & backtest)
+AI_AUTOPILOT_ENABLED = False                # Master toggle (per-ticker override via TICKER_SETTINGS)
+AI_AUTOPILOT_BACKTEST_INTERVAL = 10         # Call Groq every N bars in backtest mode
+AI_AUTOPILOT_MIN_CONFIDENCE = 0.55          # Minimum AI confidence to execute a trade
+AI_AUTOPILOT_MODE = "override"              # "override" = AI replaces confluence, "confirm" = AI must agree with confluence
+
 
 # ──────────────────────────────────────────────
 # Technical Indicator Parameters
@@ -105,6 +116,18 @@ MYSTIC_PULSE_THRESHOLD = 5
 VOL_MA_PERIOD = 20
 VOL_SPIKE_MULTIPLIER = 1.5
 SMA_PERIOD = 200
+
+# Premium BotBulls Parameters
+BOTBULLS1_WT_CHANNEL = 10
+BOTBULLS1_WT_AVERAGE = 21
+BOTBULLS1_MFI_CONFIRM = 30
+
+BOTBULLS2_ATR_MULT = 2.0
+BOTBULLS2_TREND_TRACER_PERIOD = 50
+BOTBULLS2_REVERSAL_ZONE_PERIOD = 50
+
+BOTBULLS3_ATR_PERIOD = 10
+BOTBULLS3_ATR_MULT = 1.0
 
 # ──────────────────────────────────────────────
 # Strategy — Signal Confluence Thresholds

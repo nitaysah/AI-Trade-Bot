@@ -286,17 +286,93 @@ class UserEngine:
                         
                         result = None
                         if is_active:
-                            bot_result = await asyncio.to_thread(
-                                evaluate_trade,
-                                ticker, 
-                                account_equity=equity, 
-                                available_cash=avail_cash,
-                                timeframe=tf_to_use,
-                                use_bot_settings=True
-                            )
-                            if bot_result:
+                            if t_settings.get('ai_autopilot', False):
+                                from ai_indicator import get_ai_decision_for_bar
+                                
+                                pos_info = next((p for p in all_positions if p['symbol'].replace("/", "").upper() == ticker_norm), None)
+                                ai_pos = None
+                                if pos_info:
+                                    ai_pos = {
+                                        'entry_price': float(pos_info.get('avg_price', 0.0)),
+                                        'qty': float(pos_info.get('qty', 0.0)),
+                                        'stop_loss': float(pos_info.get('stop_loss', 0.0)) or self.last_trailing_stops.get(ticker, 0.0),
+                                        'take_profit': float(pos_info.get('take_profit', 0.0)),
+                                    }
+                                
+                                ai_decision = await asyncio.to_thread(
+                                    get_ai_decision_for_bar,
+                                    ticker=ticker,
+                                    bar_data=None,
+                                    account_equity=equity,
+                                    available_cash=avail_cash,
+                                    position=ai_pos,
+                                    timeframe=tf_to_use
+                                )
+                                
+                                price_raw = ai_decision.get('price') or ai_decision.get('entry_price') or 0.0
+                                action = ai_decision.get('signal', 'HOLD')
+                                
+                                stop_loss = ai_decision.get('stop_loss') or 0.0
+                                take_profit = ai_decision.get('sell_target') or 0.0
+                                pos_pct = ai_decision.get('position_size_pct', 0.10)
+                                if pos_pct <= 0:
+                                    pos_pct = 0.10
+                                    
+                                notional_size = min(equity * pos_pct, avail_cash)
+                                
+                                position_sizing = {
+                                    "qty": notional_size / price_raw if price_raw > 0 else 0,
+                                    "notional": notional_size,
+                                    "stop_loss": stop_loss,
+                                    "take_profit": take_profit,
+                                    "risk_pct": pos_pct,
+                                    "stop_distance": abs(price_raw - stop_loss) if stop_loss > 0 else 0.0,
+                                }
+                                
+                                bot_result = {
+                                    "time": self.get_now().isoformat(),
+                                    "action": action,
+                                    "ticker": ticker,
+                                    "price": f"${price_raw:.4f}" if price_raw < 10 else f"${price_raw:.2f}",
+                                    "price_raw": price_raw,
+                                    "reason": ai_decision.get('summary', 'AI Autopilot Decision'),
+                                    "sentiment_score": 1.0 if action == 'BUY' else -1.0 if action == 'SELL' else 0.0,
+                                    "sentiment_confidence": ai_decision.get('confidence', 0.5),
+                                    "sentiment_summary": ai_decision.get('summary', ''),
+                                    "sentiment_key_factor": ai_decision.get('key_catalyst', ''),
+                                    "signals": {
+                                        "AI Autopilot": {
+                                            "signal": "BULLISH" if action == 'BUY' else "BEARISH" if action == 'SELL' else "NEUTRAL",
+                                            "weight": 5,
+                                            "description": ai_decision.get('summary', '')
+                                        }
+                                    },
+                                    "bullish_count": 5 if action == 'BUY' else 0,
+                                    "bearish_count": 5 if action == 'SELL' else 0,
+                                    "total_signals": 1,
+                                    "atr": ai_decision.get('atr', price_raw * 0.02),
+                                    "rsi": ai_decision.get('rsi', 50.0),
+                                    "position_sizing": position_sizing,
+                                    "price_history": [],
+                                    "risk_status": {},
+                                    "is_custom": True,
+                                    "timeframe": tf_to_use
+                                }
+                                
                                 self._record_bot_scan(bot_result)
                                 result = bot_result
+                            else:
+                                bot_result = await asyncio.to_thread(
+                                    evaluate_trade,
+                                    ticker, 
+                                    account_equity=equity, 
+                                    available_cash=avail_cash,
+                                    timeframe=tf_to_use,
+                                    use_bot_settings=True
+                                )
+                                if bot_result:
+                                    self._record_bot_scan(bot_result)
+                                    result = bot_result
                                     
                         if result:
                             trade_executed = False
@@ -327,34 +403,49 @@ class UserEngine:
                                     entry_price = float(pos_info.get('avg_price', result['price_raw']))
                                     current_price = result['price_raw']
                                     
-                                    stop_mult = t_settings.get('atr_stop_multiplier', self.config.get('ATR_STOP_MULTIPLIER', 2.0))
-                                    trail_mult = t_settings.get('atr_trail_multiplier', self.config.get('ATR_TRAIL_MULTIPLIER', 3.0))
-                                    tp_mult = t_settings.get('take_profit_multiplier', self.config.get('ATR_TAKE_PROFIT_MULTIPLIER', 4.0))
-                                    
-                                    base_stop_loss = entry_price - (result['atr'] * stop_mult)
-                                    take_profit = entry_price + (result['atr'] * tp_mult)
-                                    
-                                    if ticker not in self.last_trailing_stops:
-                                        self.last_trailing_stops[ticker] = base_stop_loss
-                                    
-                                    trail_distance = result['atr'] * trail_mult
-                                    candidate_stop = current_price - trail_distance
-                                    if candidate_stop > self.last_trailing_stops[ticker]:
-                                        self.last_trailing_stops[ticker] = round(candidate_stop, 2)
-                                    
-                                    stop_loss = max(base_stop_loss, self.last_trailing_stops[ticker])
-                                    
-                                    if sell_mode == 'sltp' and result['action'] == 'SELL':
-                                        result['action'] = 'HOLD'
-                                        result['reason'] = 'Sell Signal Ignored (Fixed SL/TP Mode)'
+                                    if t_settings.get('ai_autopilot', False):
+                                        # AI Autopilot hard stop/target checks
+                                        stop_loss = result['position_sizing'].get('stop_loss') or self.last_trailing_stops.get(ticker)
+                                        take_profit = result['position_sizing'].get('take_profit')
                                         
-                                    if sell_mode in ['sltp', 'hybrid']:
-                                        if current_price <= stop_loss:
-                                            result['action'] = 'SELL'
-                                            result['reason'] = f'Stop Loss Hit (${current_price:.2f} <= ${stop_loss:.2f})'
-                                        elif current_price >= take_profit:
-                                            result['action'] = 'SELL'
-                                            result['reason'] = f'Take Profit Hit (${current_price:.2f} >= ${take_profit:.2f})'
+                                        if stop_loss:
+                                            self.last_trailing_stops[ticker] = stop_loss
+                                            if current_price <= stop_loss:
+                                                result['action'] = 'SELL'
+                                                result['reason'] = f'AI Stop Loss Hit (${current_price:.2f} <= ${stop_loss:.2f})'
+                                        if take_profit:
+                                            if current_price >= take_profit:
+                                                result['action'] = 'SELL'
+                                                result['reason'] = f'AI Take Profit Hit (${current_price:.2f} >= ${take_profit:.2f})'
+                                    else:
+                                        stop_mult = t_settings.get('atr_stop_multiplier', self.config.get('ATR_STOP_MULTIPLIER', 2.0))
+                                        trail_mult = t_settings.get('atr_trail_multiplier', self.config.get('ATR_TRAIL_MULTIPLIER', 3.0))
+                                        tp_mult = t_settings.get('take_profit_multiplier', self.config.get('ATR_TAKE_PROFIT_MULTIPLIER', 4.0))
+                                        
+                                        base_stop_loss = entry_price - (result['atr'] * stop_mult)
+                                        take_profit = entry_price + (result['atr'] * tp_mult)
+                                        
+                                        if ticker not in self.last_trailing_stops:
+                                            self.last_trailing_stops[ticker] = base_stop_loss
+                                        
+                                        trail_distance = result['atr'] * trail_mult
+                                        candidate_stop = current_price - trail_distance
+                                        if candidate_stop > self.last_trailing_stops[ticker]:
+                                            self.last_trailing_stops[ticker] = round(candidate_stop, 2)
+                                        
+                                        stop_loss = max(base_stop_loss, self.last_trailing_stops[ticker])
+                                        
+                                        if sell_mode == 'sltp' and result['action'] == 'SELL':
+                                            result['action'] = 'HOLD'
+                                            result['reason'] = 'Sell Signal Ignored (Fixed SL/TP Mode)'
+                                            
+                                        if sell_mode in ['sltp', 'hybrid']:
+                                            if current_price <= stop_loss:
+                                                result['action'] = 'SELL'
+                                                result['reason'] = f'Stop Loss Hit (${current_price:.2f} <= ${stop_loss:.2f})'
+                                            elif current_price >= take_profit:
+                                                result['action'] = 'SELL'
+                                                result['reason'] = f'Take Profit Hit (${current_price:.2f} >= ${take_profit:.2f})'
 
                                 # Buy Execution
                                 if result['action'] == 'BUY' and not is_market_closed_skip:

@@ -14,6 +14,9 @@
     <link rel="icon"
         href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📊</text></svg>">
 
+    <!-- Lightweight Charts v4 for backtest trade visualization -->
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+
     <!-- Firebase Sentinel (Auth Guard) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
@@ -137,7 +140,7 @@
                         </svg>
                         <input type="text" id="btTicker" autocomplete="off"
                             class="w-full h-10 bg-white border border-indigo-100 rounded-xl pl-9 pr-10 text-xs uppercase font-bold text-indigo-900 focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all"
-                            value="BTCUSD">
+                            value="SPY">
                         <button onclick="bulkDownloadTicker()"
                             class="absolute right-1.5 top-1/2 -translate-y-1/2 h-7 w-7 flex items-center justify-center rounded-lg text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-all"
                             title="Bulk Download History">
@@ -193,11 +196,57 @@
             </div>
 
 
+            <!-- Inline Strategy Configuration Section -->
+            <div class="space-y-6 my-6">
+
+                        <!-- AI Autopilot (Llama 3.3-70B) Card -->
+                        <div class="p-6 border border-purple-300/50 rounded-3xl bg-gradient-to-br from-purple-900/10 via-indigo-900/10 to-transparent backdrop-blur-xl shadow-xl shadow-purple-500/5 space-y-4 relative overflow-hidden transition-all duration-300 z-10">
+                <!-- Glowing blur details -->
+                <div class="absolute -top-16 -left-16 w-32 h-32 bg-purple-500/15 rounded-full blur-3xl pointer-events-none"></div>
+                <div class="absolute -bottom-16 -right-16 w-32 h-32 bg-indigo-500/15 rounded-full blur-3xl pointer-events-none"></div>
+                
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-3.5">
+                        <span class="text-3xl">🤖</span>
+                        <div class="text-left">
+                            <h3 class="text-sm font-black text-purple-950 uppercase tracking-widest leading-none">AI Autopilot Backtest</h3>
+                            <p class="text-[0.65rem] font-bold text-purple-500 uppercase tracking-wider mt-1.5">Llama 3.3-70B Sentient Strategy</p>
+                        </div>
+                    </div>
+                    <label class="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" id="btAiAutopilotToggle" class="sr-only peer" onchange="handleBacktestAutopilotToggle(this.checked)">
+                        <div class="w-11 h-6 bg-indigo-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600 shadow-md"></div>
+                    </label>
+                </div>
+                
+                <!-- Expanded autopilot parameters & warnings -->
+                <div id="btAiAutopilotSection" class="hidden space-y-4 pt-2 border-t border-purple-200/40">
+                    <div class="p-3.5 bg-purple-50/80 border border-purple-200/50 rounded-2xl text-[11px] text-purple-700 font-bold leading-relaxed text-left">
+                        ⚠️ <strong>Groq API Rate Limits Warning:</strong> AI Autopilot runs live Llama-3.3-70b calls on historical backtest bars. To prevent rate limit blocks, it will execute every N bars (configured below) and use trailing SL/TP in between.
+                    </div>
+                    
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div class="space-y-1 text-left">
+                            <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">AI Indicator Model</label>
+                            <select id="btAiModel" class="w-full bg-white border border-indigo-100 rounded-xl px-3 py-2 text-xs font-black text-indigo-900 shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none cursor-pointer">
+                                <option value="llama-3.3-70b-versatile" selected>llama-3.3-70b-versatile (Default)</option>
+                                <option value="mixtral-8x7b-32768">mixtral-8x7b-32768</option>
+                                <option value="gemma2-9b-it">gemma2-9b-it (Fast / Lightweight)</option>
+                            </select>
+                        </div>
+                        <div class="space-y-1 text-left">
+                            <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">AI Check Interval (Bars)</label>
+                            <input type="number" id="btAiInterval" value="10" min="1" max="50" class="w-full bg-white border border-indigo-100 rounded-xl px-3 py-2 text-xs font-black text-indigo-900 shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Backtest Exit Strategy & Risk Controls -->
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <!-- Exit Strategy Card -->
                 <div
-                    class="bg-white/60 backdrop-blur-xl border border-white p-6 rounded-3xl shadow-xl space-y-4 relative z-10">
+                    class="bg-white/60 backdrop-blur-xl border border-white p-6 rounded-3xl shadow-xl space-y-4 relative z-10" id="btExitStrategyCard">
                     <div class="flex items-center gap-3">
                         <div class="h-5 w-1.5 bg-gradient-to-b from-indigo-400 to-purple-500 rounded-full"></div>
                         <span class="text-sm font-black text-indigo-900 uppercase tracking-widest text-left">Exit
@@ -208,8 +257,7 @@
                             <select id="btSellMode"
                                 class="w-full bg-white border border-indigo-100 rounded-2xl pl-4 pr-10 py-3 text-xs font-black text-indigo-900 shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none cursor-pointer appearance-none">
                                 <option value="indicator" selected>Sells when Bearish Signals hit Threshold (Dynamic)</option>
-                                <option value="sltp">Stop-Loss & Take-Profit (Fixed) - Ignores Signals, Relies on ATR target
-                                </option>
+                                <option value="sltp">Stop-Loss & Take-Profit (Fixed) - Ignores Signals, Relies on ATR target</option>
                                 <option value="hybrid">Hybrid (Both) - Sells whichever hits first</option>
                             </select>
                             <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
@@ -588,7 +636,21 @@
                                         <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900"></div>
                                     </div>
                                 </div></span>
-                                <div class="indicator-check-mark border-amber-400"></div>
+                                <div class="flex items-center gap-2">
+                                    <button
+                                        onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('BotBulls1')"
+                                        class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-100/50"
+                                        title="BotBulls1 Settings">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-600"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                                d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                        </svg>
+                                    </button>
+                                    <div class="indicator-check-mark border-amber-400"></div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -606,7 +668,21 @@
                                         <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900"></div>
                                     </div>
                                 </div></span>
-                                <div class="indicator-check-mark border-amber-400"></div>
+                                <div class="flex items-center gap-2">
+                                    <button
+                                        onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('BotBulls2')"
+                                        class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-100/50"
+                                        title="BotBulls2 Settings">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-600"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                                d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                        </svg>
+                                    </button>
+                                    <div class="indicator-check-mark border-amber-400"></div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -624,7 +700,21 @@
                                         <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900"></div>
                                     </div>
                                 </div></span>
-                                <div class="indicator-check-mark border-amber-400"></div>
+                                <div class="flex items-center gap-2">
+                                    <button
+                                        onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('BotBulls3')"
+                                        class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-100/50"
+                                        title="BotBulls3 Settings">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-600"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                                d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                        </svg>
+                                    </button>
+                                    <div class="indicator-check-mark border-amber-400"></div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -633,7 +723,7 @@
 
         <!-- Strategy Brain Group -->
         <!-- Signal Threshold Card -->
-        <div class="bg-white/60 backdrop-blur-xl border border-white p-6 rounded-3xl shadow-xl relative z-10">
+        <div id="btThresholdsCard" class="bg-white/60 backdrop-blur-xl border border-white p-6 rounded-3xl shadow-xl relative z-10">
             <div class="relative z-10 flex flex-col lg:flex-row items-center justify-between gap-4">
                 <div class="text-center lg:text-left">
                     <h2 class="text-sm font-black uppercase tracking-widest text-indigo-900 leading-tight">Strategy
@@ -687,6 +777,9 @@
                 </div>
             </div>
         </div>
+
+            </div>
+
         <button id="runBtBtn" onclick="runBacktest()"
             class="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-black py-6 rounded-[2rem] hover:shadow-indigo-500/40 hover:shadow-2xl transition-all active:scale-[0.98] uppercase tracking-[0.5em] text-sm md:text-base shadow-xl">
             🚀 RUN STRATEGY ALPHA SIMULATION
@@ -798,6 +891,65 @@
                         <div class="absolute top-0 right-0 w-1/2 h-full bg-gradient-to-l from-white/60 to-transparent">
                         </div>
                     </div>
+
+                    <!-- ─── Backtest Trade Chart ─── -->
+                    <div id="btChartSection" class="space-y-3 hidden">
+                        <!-- Toolbar Row -->
+                        <div class="flex justify-between items-center px-1">
+                            <div class="flex items-center gap-2.5">
+                                <div class="w-1 h-5 bg-gradient-to-b from-emerald-500 to-indigo-600 rounded-full"></div>
+                                <h3 class="text-xs font-black text-indigo-950 uppercase tracking-tight">Trade Chart</h3>
+                                <span id="btChartTradeCount"
+                                    class="text-[0.55rem] font-black text-indigo-300 uppercase tracking-widest bg-indigo-50 px-2 py-0.5 rounded-lg border border-indigo-100">
+                                    0 trades plotted
+                                </span>
+                            </div>
+                            <div class="flex items-center gap-1.5">
+                                <!-- Trade Navigator -->
+                                <button id="btChartPrevBtn"
+                                    onclick="btNavigateTrade(-1)"
+                                    class="w-7 h-7 flex items-center justify-center bg-white text-indigo-600 rounded-lg border border-indigo-100 hover:bg-indigo-600 hover:text-white transition-all shadow-sm text-xs font-black"
+                                    title="Previous trade">◀</button>
+                                <span id="btChartTradeLabel"
+                                    class="text-[0.6rem] font-black text-indigo-500 px-2.5 py-1 bg-indigo-50 rounded-lg border border-indigo-100 min-w-[70px] text-center">
+                                    —
+                                </span>
+                                <button id="btChartNextBtn"
+                                    onclick="btNavigateTrade(1)"
+                                    class="w-7 h-7 flex items-center justify-center bg-white text-indigo-600 rounded-lg border border-indigo-100 hover:bg-indigo-600 hover:text-white transition-all shadow-sm text-xs font-black"
+                                    title="Next trade">▶</button>
+                                <!-- Show All -->
+                                <button onclick="btFitAll()"
+                                    class="h-7 px-2.5 flex items-center bg-white text-indigo-600 rounded-lg border border-indigo-100 hover:bg-indigo-600 hover:text-white transition-all shadow-sm text-[0.6rem] font-black uppercase tracking-wider"
+                                    title="Fit all trades">↔ All</button>
+                            </div>
+                        </div>
+
+                        <!-- Chart Canvas -->
+                        <div id="btChartWrap"
+                            class="bg-white rounded-2xl border border-indigo-50 shadow-sm overflow-hidden"
+                            style="height: 280px; position: relative;">
+                            <!-- Crosshair Tooltip -->
+                            <div id="btChartTooltip"
+                                class="hidden absolute top-3 left-3 z-10 bg-white/95 border border-indigo-100 rounded-xl shadow-lg px-3 py-2 text-[0.6rem] font-mono text-indigo-900 pointer-events-none backdrop-blur-sm"
+                                style="min-width: 160px;">
+                            </div>
+                        </div>
+
+                        <!-- Legend Row -->
+                        <div class="flex flex-wrap gap-3 px-1 text-[0.58rem] font-black uppercase tracking-widest text-slate-400">
+                            <span class="flex items-center gap-1">
+                                <span class="w-2.5 h-2.5 rounded-sm bg-emerald-500 inline-block"></span>Buy Entry
+                            </span>
+                            <span class="flex items-center gap-1">
+                                <span class="w-2.5 h-2.5 rounded-sm bg-rose-500 inline-block"></span>Sell Exit
+                            </span>
+                            <span class="flex items-center gap-1">
+                                <span class="w-3 h-0.5 bg-violet-400 inline-block rounded opacity-70"></span>Equity Curve
+                            </span>
+                        </div>
+                    </div>
+                    <!-- ─── End Backtest Trade Chart ─── -->
 
                     <!-- Trade Log -->
                     <div class="space-y-4">
@@ -921,7 +1073,7 @@
         </div>
     </div>
 
-    <script src="backtest.js?v=5"></script>
+    <script src="backtest.js?v=6"></script>
 </body>
 
 </html>

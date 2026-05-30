@@ -11,6 +11,16 @@ let btPage = 1;
 const btPageSize = 10;
 window.lastDashboardData = null;
 
+// ── Backtest Chart State ─────────────────────────────────────────────────
+let btChart = null;            // LightweightCharts chart instance
+let btCandleSeries = null;     // Candlestick series
+let btEqSeries = null;         // Equity curve line series
+let btChartTradeIdx = 0;       // Currently highlighted trade (0-based, newest-first order)
+let btChartTradesRef = [];     // Reference to trades array (newest-first, same as allBtTrades)
+let btChartCandlesRef = [];    // Reference to candles array
+let btChartResizeObserver = null; // ResizeObserver for responsive chart
+// ────────────────────────────────────────────────────────────────────────
+
 /**
  * Retrieves the current Firebase ID token and prepares headers.
  */
@@ -58,6 +68,49 @@ document.addEventListener('DOMContentLoaded', () => {
         // Trigger initially so it matches the default selected dropdown value
         updateDaysVal();
     }
+
+    // Setup AI Autopilot Toggle handlers
+    window.handleBacktestAutopilotToggle = function (enabled) {
+        const section = document.getElementById('btAiAutopilotSection');
+        const exitCard = document.getElementById('btExitStrategyCard');
+        const thresholds = document.getElementById('btThresholdsCard');
+        
+        if (enabled) {
+            section?.classList.remove('hidden');
+            if (exitCard) {
+                exitCard.style.opacity = '0.5';
+                exitCard.style.pointerEvents = 'none';
+            }
+            document.querySelectorAll('.indicator-card').forEach(card => {
+                card.style.opacity = '0.5';
+                card.style.pointerEvents = 'none';
+            });
+            if (thresholds) {
+                thresholds.style.opacity = '0.5';
+                thresholds.style.pointerEvents = 'none';
+            }
+        } else {
+            section?.classList.add('hidden');
+            if (exitCard) {
+                exitCard.style.opacity = '1';
+                exitCard.style.pointerEvents = 'auto';
+            }
+            document.querySelectorAll('.indicator-card').forEach(card => {
+                card.style.opacity = '1';
+                card.style.pointerEvents = 'auto';
+            });
+            if (thresholds) {
+                thresholds.style.opacity = '1';
+                thresholds.style.pointerEvents = 'auto';
+            }
+        }
+    };
+
+    // Initialize/Sync strategy settings display on load
+    setTimeout(() => {
+        const isAiOnLoad = document.getElementById('btAiAutopilotToggle')?.checked || false;
+        window.handleBacktestAutopilotToggle(isAiOnLoad);
+    }, 50);
 
     // Setup Ticker Search Dropdown
     const btTickerInput = document.getElementById('btTicker');
@@ -235,11 +288,15 @@ async function runBacktest() {
     const atrTrailMult = parseFloat(document.getElementById('btAtrTrailMult').value);
     const atrTpMult = parseFloat(document.getElementById('btAtrTpMult').value);
 
+    const aiAutopilot = document.getElementById('btAiAutopilotToggle')?.checked || false;
+    const aiInterval = parseInt(document.getElementById('btAiInterval')?.value || '10');
+    const aiModel = document.getElementById('btAiModel')?.value || 'llama-3.3-70b-versatile';
+
     // Collect checked indicators
     const indicators = Array.from(document.querySelectorAll('.bt-indicator-check:checked'))
         .map(cb => cb.value);
 
-    if (indicators.length === 0) {
+    if (!aiAutopilot && indicators.length === 0) {
         alert("Please select at least one indicator for the strategy matrix.");
         return;
     }
@@ -262,14 +319,17 @@ async function runBacktest() {
                 capital: parseFloat(capital),
                 threshold: parseInt(threshold),
                 sell_threshold: parseInt(sellThreshold),
-                indicators: indicators,
+                indicators: aiAutopilot ? [] : indicators,
                 ext_hours: extHoursVal,
                 sell_mode: sellMode,
                 risk_per_trade: riskPerTrade,
                 max_position_pct: maxPositionPct,
                 atr_stop_multiplier: atrStopMult,
                 atr_trail_multiplier: atrTrailMult,
-                take_profit_multiplier: atrTpMult
+                take_profit_multiplier: atrTpMult,
+                ai_autopilot: aiAutopilot,
+                ai_interval: aiInterval,
+                ai_model: aiModel
             })
         });
 
@@ -325,6 +385,19 @@ function displayResults(res) {
     allBtTrades = res.trades || [];
     btPage = 1;
     renderBtTradesPage();
+
+    // ── NEW: Build backtest chart ────────────────────────────────────────
+    btChartTradesRef = res.trades || [];         // newest-first
+    btChartCandlesRef = res.candles || [];
+    btChartTradeIdx = 0;
+
+    if (btChartCandlesRef.length > 0) {
+        document.getElementById('btChartSection').classList.remove('hidden');
+        _btInitChart(btChartCandlesRef, btChartTradesRef, res.equity_curve || []);
+    } else {
+        document.getElementById('btChartSection').classList.add('hidden');
+    }
+    // ─────────────────────────────────────────────────────────────────────
 }
 
 function renderBtTradesPage() {
@@ -366,6 +439,9 @@ function renderBtTradesPage() {
         `;
         tbody.insertAdjacentHTML('beforeend', row);
     });
+
+    // NEW: Wire trade row clicks for chart sync
+    if (btChart) _btWireTradeRowClicks();
 }
 
 function changeBtPage(dir) {
@@ -379,12 +455,305 @@ function changeBtPage(dir) {
 
 // 4. Helper Functions
 function resetBacktestUI() {
+    // ── NEW: Destroy chart to prevent stale renders on next run ──────────
+    if (btChart) {
+        try { btChart.remove(); } catch (e) {}
+        btChart = null;
+        btCandleSeries = null;
+        btEqSeries = null;
+    }
+    if (btChartResizeObserver) {
+        try { btChartResizeObserver.disconnect(); } catch (e) {}
+        btChartResizeObserver = null;
+    }
+    document.getElementById('btChartSection').classList.add('hidden');
+    
+    // Remove keyboard navigator to avoid leaking listeners
+    if (window._btKeyHandler) {
+        document.removeEventListener('keydown', window._btKeyHandler);
+        window._btKeyHandler = null;
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
     document.getElementById('btResultsModal').classList.add('hidden');
     document.getElementById('btResults').classList.add('hidden');
     document.getElementById('btSettingsContainer').classList.remove('hidden');
     document.getElementById('runBtBtn').disabled = false;
     document.getElementById('btLoading').classList.add('hidden');
 }
+
+// ── Backtest Chart Functions ─────────────────────────────────────────────
+
+function _btParseDate(ds) {
+    if (!ds) return null;
+    let ts = ds;
+    if (!ds.includes('Z') && !/[+-]\d{2}:\d{2}$/.test(ds)) {
+        ts += 'Z';
+    }
+    // Cross-browser compatibility fix (e.g., Safari requires 'T' separator)
+    ts = ts.replace(' ', 'T');
+    return new Date(ts);
+}
+
+function _btInitChart(candles, trades, equityCurve) {
+    const wrap = document.getElementById('btChartWrap');
+    if (!wrap) return;
+
+    // ── Create chart (same options pattern as app.js line 373) ────────────
+    btChart = LightweightCharts.createChart(wrap, {
+        layout: {
+            background: { color: '#ffffff' },
+            textColor: '#334155',
+        },
+        grid: {
+            vertLines: { color: 'rgba(168, 85, 247, 0.05)' },
+            horzLines: { color: 'rgba(168, 85, 247, 0.05)' },
+        },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+        rightPriceScale: { borderColor: 'rgba(197, 203, 206, 0.8)' },
+        timeScale: {
+            borderColor: 'rgba(197, 203, 206, 0.8)',
+            timeVisible: true,
+            secondsVisible: false,
+        },
+        width: wrap.clientWidth,
+        height: wrap.clientHeight,
+    });
+
+    // ── Candlestick series (same as app.js line 410) ──────────────────────
+    btCandleSeries = btChart.addCandlestickSeries({
+        upColor: '#10b981',
+        downColor: '#ef4444',
+        borderVisible: false,
+        wickUpColor: '#10b981',
+        wickDownColor: '#ef4444',
+    });
+    btCandleSeries.setData(candles);
+
+    // ── Equity curve (removed per user request) ─────────────────────────
+
+    // ── Build buy/sell markers (same shape/position API as app.js 719–737) ─
+    // NOTE: trades array is newest-first; markers need chronological order
+    const markers = [];
+    const sortedTrades = [...trades].reverse(); // oldest-first for markers
+
+    sortedTrades.forEach((trade, idx) => {
+        const entryDt = _btParseDate(trade.entry_time);
+        const exitDt = _btParseDate(trade.exit_time);
+        const entryTs = entryDt ? Math.floor(entryDt.getTime() / 1000) : 0;
+        const exitTs = exitDt ? Math.floor(exitDt.getTime() / 1000) : 0;
+        const isWin = trade.pl >= 0;
+        const plLabel = `${isWin ? '+' : ''}${trade.pl_pct.toFixed(1)}%`;
+
+        const strategy = document.getElementById('btStrategy') ? document.getElementById('btStrategy').value : '';
+        const stratPrefix = strategy === 'BotBulls2' ? 'BB2 ' : strategy === 'BotBulls3' ? 'BB3 ' : '';
+
+        // Buy should be green (arrowUp)
+        markers.push({
+            time: entryTs,
+            position: 'belowBar',
+            color: '#10b981',
+            shape: 'arrowUp',
+            text: `${stratPrefix}Buy $${trade.entry_price.toFixed(2)}`,
+            size: 1,
+        });
+
+        // Sell should be red (arrowDown) by default, only mark green check if profit and red x for loss
+        markers.push({
+            time: exitTs,
+            position: 'aboveBar',
+            color: isWin ? '#10b981' : '#ef4444',
+            shape: 'arrowDown',
+            text: `${isWin ? '✓' : 'x'} ${stratPrefix}Sell $${trade.exit_price.toFixed(2)} (${plLabel})`,
+            size: 1,
+        });
+    });
+
+    // Deduplicate by time (LightweightCharts requires unique times per marker array)
+    // If two trades share entry/exit timestamps, merge their labels
+    const markerMap = {};
+    markers.forEach(m => {
+        const key = `${m.time}_${m.position}`;
+        if (!markerMap[key]) {
+            markerMap[key] = { ...m };
+        } else {
+            markerMap[key].text += ` | ${m.text}`;
+        }
+    });
+    const dedupedMarkers = Object.values(markerMap).sort((a, b) => a.time - b.time);
+    btCandleSeries.setMarkers(dedupedMarkers);
+
+    // ── Crosshair tooltip (shows OHLCV + position status on hover) ────────
+    const tooltip = document.getElementById('btChartTooltip');
+    btChart.subscribeCrosshairMove(param => {
+        if (!param || !param.time || !param.seriesData || !tooltip) {
+            if (tooltip) tooltip.classList.add('hidden');
+            return;
+        }
+        const bar = param.seriesData.get(btCandleSeries);
+        if (!bar) { tooltip.classList.add('hidden'); return; }
+
+        // Check if bot was in a position at this bar's time
+        const barTime = param.time;
+        const activePos = sortedTrades.find(t => {
+            const entryDt = _btParseDate(t.entry_time);
+            const exitDt = _btParseDate(t.exit_time);
+            const eTs = entryDt ? Math.floor(entryDt.getTime() / 1000) : 0;
+            const xTs = exitDt ? Math.floor(exitDt.getTime() / 1000) : 0;
+            return barTime >= eTs && barTime <= xTs;
+        });
+
+        const posLine = activePos
+            ? `<div class="mt-1 pt-1 border-t border-indigo-50 text-[0.55rem]">
+                 <span class="text-emerald-600 font-black">IN POSITION</span>
+                 <span class="text-slate-400 ml-1">@ $${activePos.entry_price}</span>
+                 <span class="ml-1 ${((bar.close - activePos.entry_price) / activePos.entry_price * 100) >= 0 ? 'text-emerald-500' : 'text-rose-500'}">
+                   (${((bar.close - activePos.entry_price) / activePos.entry_price * 100).toFixed(2)}%)
+                 </span>
+               </div>`
+            : '';
+
+        tooltip.innerHTML = `
+            <div class="text-[0.55rem] text-slate-400 mb-1">${new Date(param.time * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}</div>
+            <div class="grid grid-cols-2 gap-x-3 gap-y-0.5">
+                <span class="text-slate-400">O</span><span class="font-bold">$${bar.open.toFixed(2)}</span>
+                <span class="text-slate-400">H</span><span class="font-bold text-emerald-600">$${bar.high.toFixed(2)}</span>
+                <span class="text-slate-400">L</span><span class="font-bold text-rose-500">$${bar.low.toFixed(2)}</span>
+                <span class="text-slate-400">C</span><span class="font-bold">$${bar.close.toFixed(2)}</span>
+            </div>
+            ${posLine}
+        `;
+        tooltip.classList.remove('hidden');
+    });
+
+    // ── Update trade count badge ──────────────────────────────────────────
+    const countEl = document.getElementById('btChartTradeCount');
+    if (countEl) countEl.textContent = `${trades.length} trade${trades.length !== 1 ? 's' : ''} plotted`;
+
+    // ── Responsive resize ─────────────────────────────────────────────────
+    if (btChartResizeObserver) {
+        try { btChartResizeObserver.disconnect(); } catch (e) {}
+    }
+    btChartResizeObserver = new ResizeObserver(entries => {
+        if (!btChart || !entries.length) return;
+        const { width } = entries[0].contentRect;
+        btChart.applyOptions({ width });
+    });
+    btChartResizeObserver.observe(wrap);
+
+    // ── Keyboard navigation (arrow keys when modal is open) ───────────────
+    window._btKeyHandler = (e) => {
+        if (!btChart) return;
+        if (e.key === 'ArrowLeft') btNavigateTrade(-1);
+        else if (e.key === 'ArrowRight') btNavigateTrade(1);
+    };
+    document.addEventListener('keydown', window._btKeyHandler);
+
+    // ── Initial view: show latest trade so candles fit correctly ───────────
+    if (btChartTradesRef.length > 0) {
+        btChartTradeIdx = 0;
+        _btScrollToTrade(0);
+    } else {
+        btChart.timeScale().applyOptions({ rightOffset: 5, barSpacing: 10 });
+        btChart.timeScale().scrollToPosition(0, false);
+    }
+
+    // ── Update navigator label ────────────────────────────────────────────
+    _btUpdateNavLabel();
+}
+
+// ─── Trade Navigator ─────────────────────────────────────────────────────
+
+function btNavigateTrade(dir) {
+    if (!btChart || btChartTradesRef.length === 0) return;
+    const total = btChartTradesRef.length;
+    btChartTradeIdx = Math.max(0, Math.min(total - 1, btChartTradeIdx + dir));
+    _btScrollToTrade(btChartTradeIdx);
+    _btUpdateNavLabel();
+    _btSyncTradeRow(btChartTradeIdx);
+}
+
+function btFitAll() {
+    if (!btChart) return;
+    // Industry standard "All Trades" view: restore standard candle sizing and scroll to the end
+    btChart.timeScale().applyOptions({ rightOffset: 5, barSpacing: 10 });
+    btChart.timeScale().scrollToPosition(0, false);
+    
+    btChartTradeIdx = -1;   // No single trade selected
+    const lbl = document.getElementById('btChartTradeLabel');
+    if (lbl) lbl.textContent = 'All trades';
+}
+
+function _btScrollToTrade(idx) {
+    if (!btChart || !btChartTradesRef[idx]) return;
+    const trade = btChartTradesRef[idx];
+
+    const entryDt = _btParseDate(trade.entry_time);
+    const entryTs = entryDt ? Math.floor(entryDt.getTime() / 1000) : 0;
+
+    // Find the candle index for the entry time
+    let entryIdx = btChartCandlesRef.findIndex(c => c.time >= entryTs);
+    if (entryIdx === -1) entryIdx = btChartCandlesRef.length - 1;
+
+    // Calculate how many candles fit on screen given a standard 12px TradingView candle width
+    const wrap = document.getElementById('btChartWrap');
+    const containerWidth = wrap ? wrap.clientWidth : 800;
+    const visibleCandles = Math.floor(containerWidth / 12);
+
+    // Show 30% past context and 70% forward context from entry
+    const paddingBefore = Math.floor(visibleCandles * 0.3);
+    const paddingAfter = visibleCandles - paddingBefore;
+
+    btChart.timeScale().setVisibleLogicalRange({
+        from: entryIdx - paddingBefore,
+        to: entryIdx + paddingAfter
+    });
+}
+
+function _btUpdateNavLabel() {
+    const lbl = document.getElementById('btChartTradeLabel');
+    if (!lbl) return;
+    const total = btChartTradesRef.length;
+    if (total === 0) { lbl.textContent = '—'; return; }
+    if (btChartTradeIdx === -1) { lbl.textContent = 'All trades'; return; }
+    lbl.textContent = `Trade ${total - btChartTradeIdx} / ${total}`;
+}
+
+function _btSyncTradeRow(idx) {
+    // idx is in newest-first order (same as allBtTrades / btChartTradesRef)
+    // Calculate which page this trade is on
+    const targetPage = Math.floor(idx / btPageSize) + 1;
+    if (targetPage !== btPage) {
+        btPage = targetPage;
+        renderBtTradesPage();
+    }
+    // Highlight the target row in the currently visible page
+    const rowInPage = idx % btPageSize;
+    const rows = document.querySelectorAll('#btTradeLog tr');
+    rows.forEach(r => r.classList.remove('ring-2', 'ring-indigo-400', 'ring-inset'));
+    if (rows[rowInPage]) {
+        rows[rowInPage].classList.add('ring-2', 'ring-indigo-400', 'ring-inset');
+        rows[rowInPage].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+}
+
+// ─── Chart → Table Sync: clicking trade row scrolls chart to that trade ──
+// Called from renderBtTradesPage() after building the trade log HTML
+function _btWireTradeRowClicks() {
+    const rows = document.querySelectorAll('#btTradeLog tr');
+    rows.forEach((row, rowInPage) => {
+        row.style.cursor = 'pointer';
+        row.addEventListener('click', () => {
+            const globalIdx = (btPage - 1) * btPageSize + rowInPage;
+            if (globalIdx >= btChartTradesRef.length) return;
+            btChartTradeIdx = globalIdx;
+            _btScrollToTrade(btChartTradeIdx);
+            _btUpdateNavLabel();
+            _btSyncTradeRow(btChartTradeIdx);
+        });
+    });
+}
+// ─────────────────────────────────────────────────────────────────────────
 
 function syncBacktestSliderRange() {
     // Called when indicators are toggled — update the labels for both B and S
@@ -460,13 +829,8 @@ function updateBtAggressiveness(val) {
 }
 
 function formatDate(ds) {
-    if (!ds) return "---";
-    // If naive, treat as UTC
-    let timestamp = ds;
-    if (ds && !ds.includes('Z') && !/[+-]\d{2}:\d{2}$/.test(ds)) {
-        timestamp += 'Z';
-    }
-    const date = new Date(timestamp);
+    const date = _btParseDate(ds);
+    if (!date) return "---";
     // Force Central Time (Chicago)
     const options = { 
         timeZone: 'America/Chicago',
@@ -489,9 +853,10 @@ async function bulkDownloadTicker() {
     btn.innerHTML = `<svg class="animate-spin h-5 w-5" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`;
 
     try {
+        const headers = await getAuthHeaders();
         const response = await fetch(`${API_BASE}/api/download_all`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: headers,
             body: JSON.stringify({ ticker })
         });
         const data = await response.json();
@@ -536,11 +901,22 @@ const INDICATOR_CONFIG_MAP = {
     'SMA': ['SMA_PERIOD'],
     'ATR Volatility': ['ATR_PERIOD', 'ATR_STOP_MULTIPLIER', 'ATR_TRAIL_MULTIPLIER', 'ATR_TAKE_PROFIT_MULTIPLIER'],
     'Strategy Confidence': ['MIN_BULLISH_SIGNALS', 'MIN_BEARISH_SIGNALS'],
-    'Sentiment AI': ['SENTIMENT_BULLISH_THRESHOLD', 'SENTIMENT_BEARISH_THRESHOLD']
+    'Sentiment AI': ['SENTIMENT_BULLISH_THRESHOLD', 'SENTIMENT_BEARISH_THRESHOLD'],
+    'BotBulls1': ['BOTBULLS1_WT_CHANNEL', 'BOTBULLS1_WT_AVERAGE', 'BOTBULLS1_MFI_CONFIRM'],
+    'BotBulls2': ['BOTBULLS2_ATR_MULT', 'BOTBULLS2_TREND_TRACER_PERIOD', 'BOTBULLS2_REVERSAL_ZONE_PERIOD'],
+    'BotBulls3': ['BOTBULLS3_ATR_PERIOD', 'BOTBULLS3_ATR_MULT']
 };
 
 // Industry Defaults for indicators based on config.py
 const INDICATOR_DEFAULTS = {
+    'BOTBULLS1_WT_CHANNEL': 10,
+    'BOTBULLS1_WT_AVERAGE': 21,
+    'BOTBULLS1_MFI_CONFIRM': 30,
+    'BOTBULLS2_ATR_MULT': 2.0,
+    'BOTBULLS2_TREND_TRACER_PERIOD': 50,
+    'BOTBULLS2_REVERSAL_ZONE_PERIOD': 50,
+    'BOTBULLS3_ATR_PERIOD': 10,
+    'BOTBULLS3_ATR_MULT': 1.0,
     'RSI_PERIOD': 14,
     'RSI_OVERBOUGHT': 70,
     'RSI_OVERSOLD': 30,

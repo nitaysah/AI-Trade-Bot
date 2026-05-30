@@ -631,6 +631,30 @@
                     </div>
                 </div>
 
+                <!-- AI Autopilot Toggle -->
+                <div class="p-5 border border-purple-300/50 rounded-2xl bg-gradient-to-br from-purple-900/10 via-indigo-900/10 to-transparent backdrop-blur-md shadow-lg shadow-purple-500/5 space-y-3 relative overflow-hidden transition-all duration-300">
+                    <!-- Glassmorphism glowing background elements -->
+                    <div class="absolute -top-12 -left-12 w-24 h-24 bg-purple-500/10 rounded-full blur-2xl pointer-events-none"></div>
+                    <div class="absolute -bottom-12 -right-12 w-24 h-24 bg-indigo-500/10 rounded-full blur-2xl pointer-events-none"></div>
+                    
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-3">
+                            <span class="text-xl">🤖</span>
+                            <div class="text-left">
+                                <h4 class="text-xs font-black text-purple-950 uppercase tracking-widest">AI Autopilot</h4>
+                                <p class="text-[0.6rem] font-semibold text-purple-400 uppercase tracking-tighter mt-0.5">Llama 3.3-70B Sentient Agent</p>
+                            </div>
+                        </div>
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" id="strategyAiAutopilot" class="sr-only peer" onchange="handleStrategyAutopilotToggle(this.checked)">
+                            <div class="w-11 h-6 bg-indigo-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600 shadow-md"></div>
+                        </label>
+                    </div>
+                    <div id="strategyAiAutopilotWarning" class="hidden text-[0.65rem] text-purple-700/80 font-bold leading-normal bg-purple-50/50 border border-purple-200/50 p-2.5 rounded-xl text-left">
+                        ⚠️ <strong>AI Autopilot Active:</strong> The Llama model will autonomously handle all entry, exit, stop-loss, take-profit, and risk-management decisions. Manual strategy indicators are disabled while Autopilot is ON.
+                    </div>
+                </div>
+
                 <!-- Risk Management Overrides -->
                 <div
                     class="border border-white/40 rounded-2xl bg-white/20 backdrop-blur-md p-4 space-y-4 shadow-sm transition-all">
@@ -1089,6 +1113,18 @@
                             <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium Trend</span>
                         </div>
                         <div class="flex items-center gap-2">
+                            <button
+                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('BotBulls1')"
+                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-100/50"
+                                title="BotBulls1 Settings">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-600" fill="none"
+                                    viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </button>
                             <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded"
                                 value="BotBulls1" onclick="event.stopPropagation()" onchange="updateStrategySignalLabels()">
                         </div>
@@ -1116,6 +1152,18 @@
                             <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium Stop</span>
                         </div>
                         <div class="flex items-center gap-2">
+                            <button
+                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('BotBulls2')"
+                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-100/50"
+                                title="BotBulls2 Settings">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-600" fill="none"
+                                    viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </button>
                             <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded"
                                 value="BotBulls2" onclick="event.stopPropagation()" onchange="updateStrategySignalLabels()">
                         </div>
@@ -1143,6 +1191,18 @@
                             <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium HA</span>
                         </div>
                         <div class="flex items-center gap-2">
+                            <button
+                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('BotBulls3')"
+                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-100/50"
+                                title="BotBulls3 Settings">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-600" fill="none"
+                                    viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </button>
                             <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded"
                                 value="BotBulls3" onclick="event.stopPropagation()" onchange="updateStrategySignalLabels()">
                         </div>

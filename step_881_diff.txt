@@ -1,0 +1,89 @@
+Created At: 2026-05-30T18:53:29Z
+Completed At: 2026-05-30T18:53:29Z
+
+				The command completed successfully.
+				Output:
+				<truncated 600 lines>
+             const dec_pct = total > 0 ? (data.breadth.declining / total) * 100 : 50;
+-            
++
+             document.getElementById('bm-adv-bar').style.width = `${adv_pct}%`;
+             document.getElementById('bm-dec-bar').style.width = `${dec_pct}%`;
+-            
++
+             if (data.breadth.declining > 0) {
+                 document.getElementById('bm-ad-ratio').innerText = `Ratio: ${(data.breadth.advancing / data.breadth.declining).toFixed(2)}`;
+             } else {
+                 document.getElementById('bm-ad-ratio').innerText = `Ratio: ${data.breadth.advancing} Adv / 0 Dec`;
+             }
+-            
++
+             const ad_label = document.getElementById('bm-ad-label');
+             if (adv_pct > 60) {
+                 ad_label.innerText = 'Bullish Bias';
+@@ -3307,7 +3604,7 @@ async function fetchMarketData() {
+ 
+             document.getElementById('bm-highs').innerText = data.breadth.new_highs;
+             document.getElementById('bm-lows').innerText = data.breadth.new_lows;
+-            
++
+             const hl_label = document.getElementById('bm-hl-label');
+             const hl_text = document.getElementById('bm-hl-text');
+             if (data.breadth.new_highs > data.breadth.new_lows * 2) {
+@@ -3329,7 +3626,7 @@ async function fetchMarketData() {
+             gauge50.setAttribute('stroke-dasharray', `${data.breadth.above_50_pct}, 100`);
+             if (data.breadth.above_50_pct > 50) gauge50.className.baseVal = "text-emerald-500";
+             else gauge50.className.baseVal = "text-red-500";
+-            
++
+             document.getElementById('bm-200-val').innerText = `${data.breadth.above_200_pct}%`;
+             const gauge200 = document.getElementById('bm-200-gauge');
+             gauge200.setAttribute('stroke-dasharray', `${data.breadth.above_200_pct}, 100`);
+@@ -3344,32 +3641,32 @@ async function fetchMarketData() {
+           
+<truncated 4212 bytes>
+forEach(ind => {
+-                if(ind.error) return;
+-                
++                if (ind.error) return;
++
+                 const isUp = ind.direction === 'up';
+                 const colorClass = isUp ? 'text-emerald-500' : 'text-red-500';
+                 const bgClass = isUp ? 'bg-emerald-100' : 'bg-red-100';
+                 const arrow = isUp ? '↑' : '↓';
+-                
++
+                 let newsHtml = '';
+-                if(ind.recent_news && ind.recent_news.length > 0) {
++                if (ind.recent_news && ind.recent_news.length > 0) {
+                     const topNews = ind.recent_news[0];
+                     newsHtml = `
+                     <div class="mt-3 pt-3 border-t border-slate-100">
+@@ -3440,7 +3737,7 @@ async function fetchMacroEvents() {
+                     ${newsHtml}
+                 </div>`;
+             });
+-            
++
+             html += '</div>';
+             indList.innerHTML = html;
+         }
+@@ -3456,7 +3753,7 @@ async function fetchMacroEvents() {
+                     const dateObj = new Date(e.date);
+                     const dayStr = dateObj.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+                     const timeStr = dateObj.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+-                    
++
+                     html += `
+                     <div class="relative pl-12 mb-8">
+                         <div class="absolute left-[-5px] top-1.5 w-3 h-3 bg-red-500 rounded-full border-4 border-white shadow-sm ring-2 ring-red-100"></div>
+@@ -3534,7 +3831,7 @@ function switchMacroTab(tab) {
+     tabs.forEach(t => {
+         const btn = document.getElementById(`tab-macro-${t}`);
+         const view = document.getElementById(`view-macro-${t}`);
+-        if(t === tab) {
++        if (t === tab) {
+             btn.classList.replace('border-transparent', 'border-indigo-600');
+             btn.classList.replace('text-slate-500', 'text-indigo-700');
+             view.classList.remove('hidden');
+

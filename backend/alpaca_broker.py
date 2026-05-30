@@ -194,7 +194,7 @@ class AlpacaBroker:
             return self.sim_orders  # Contains historical orders if in sim
 
         try:
-            req = GetOrdersRequest(status=QueryOrderStatus.ALL, limit=500)
+            req = GetOrdersRequest(status=QueryOrderStatus.ALL, limit=50)
             orders = self.client.get_orders(filter=req)
             history_list = []
             
