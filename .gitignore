@@ -64,3 +64,18 @@ move_block.py
 backend/payload.json
 dash_out.json
 conf/
+
+# Additional local files and caches
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+htmlcov/
+.coverage
+node_modules/
+generate_*.py
+*_diff.txt
+extracted_diffs.txt
+*.pem
+*.key
+*.cert
