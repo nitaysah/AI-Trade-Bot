@@ -231,46 +231,55 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         }
 
         item.innerHTML = `
-                <!-- Top Layer: Ticker, Status, Price, Action & Signals -->
+                <!-- 1st Line: Ticker Name, Price, Watchlist Star, Settings Gear, and Remove Bot Cross -->
                 <div class="flex items-center justify-between cursor-pointer" onclick="selectTicker('${ticker}')">
                     <div class="flex items-center gap-2">
                         <div class="${dotClass}"></div>
                         <span class="font-black text-sm ${isPaused ? 'text-slate-400' : 'text-indigo-950'} tracking-tight">${ticker}</span>
+                        <span class="text-[0.75rem] font-black text-slate-600 font-mono tracking-tight ml-1">${price}</span>
+                    </div>
+                    
+                    <div class="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity ml-1">
+                        <button class="p-1 rounded hover:bg-amber-50 ${inWatchlist ? 'text-amber-400' : 'text-slate-300 hover:text-amber-400'} transition-all" 
+                            title="Toggle Watchlist"
+                            onclick="event.stopPropagation(); toggleWatchlist('${ticker}')">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 ${inWatchlist ? 'fill-current' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+                            </svg>
+                        </button>
+                        <button class="p-1 rounded hover:bg-indigo-50 text-indigo-400 transition-all" 
+                            title="Configure Strategy"
+                            onclick="event.stopPropagation(); openStrategyModal('${ticker}', 'edit')">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                        </button>
+                        <button class="p-1 rounded hover:bg-rose-50 text-rose-400 transition-all" 
+                            title="Remove Bot"
+                            onclick="event.stopPropagation(); removeFromTradelist('${ticker}')">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 2nd Line: Active/Passive Status, Timeframe (TF), and Signal Indicators -->
+                <div class="flex items-center justify-between cursor-pointer" onclick="selectTicker('${ticker}')">
+                    <div class="flex items-center gap-1.5">
                         ${isPaused ? '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-500 border border-amber-200">PAUSED</span>' : '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-100">ACTIVE</span>'}
                         <span class="px-1.5 py-0.5 rounded bg-indigo-50/50 text-indigo-500 font-mono font-black text-[0.55rem] border border-indigo-100/50 uppercase">${tfLabel}</span>
-                        <span class="text-[0.75rem] font-black text-slate-600 font-mono tracking-tight ml-1">${price}</span>
                     </div>
                     
                     <div class="flex items-center gap-1.5">
                         <span class="px-1.5 py-0.5 rounded border ${actionColor} font-black text-[0.5rem] tracking-widest uppercase">${action}</span>
                         <span class="text-[0.6rem] font-bold text-emerald-600 bg-emerald-50 px-1 rounded border border-emerald-100">${bullish}B</span>
                         <span class="text-[0.6rem] font-bold text-red-600 bg-red-50 px-1 rounded border border-red-100">${bearish}S</span>
-
-                        <div class="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity ml-1">
-                            <button class="p-1 rounded hover:bg-amber-50 ${inWatchlist ? 'text-amber-400' : 'text-slate-300 hover:text-amber-400'} transition-all" 
-                                title="Toggle Watchlist"
-                                onclick="event.stopPropagation(); toggleWatchlist('${ticker}')">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 ${inWatchlist ? 'fill-current' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
-                                </svg>
-                            </button>
-                            <button class="p-1 rounded hover:bg-indigo-50 text-indigo-400 transition-all" 
-                                onclick="event.stopPropagation(); openStrategyModal('${ticker}', 'edit')">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                </svg>
-                            </button>
-                            <button class="p-1 rounded hover:bg-rose-50 text-rose-400 transition-all" 
-                                onclick="event.stopPropagation(); removeFromTradelist('${ticker}')">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" />
-                                </svg>
-                            </button>
-                        </div>
                     </div>
                 </div>
 
+                <!-- 3rd Line: Position Details or Standing By Message -->
                 ${positionHtml}
         `;
         container.appendChild(item);
@@ -601,10 +610,9 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         actionBtn.className = "w-full bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-black py-4 rounded-2xl hover:shadow-lg hover:shadow-emerald-500/30 transition-all active:scale-[0.98] uppercase tracking-[0.2em] shadow-md flex items-center justify-center gap-2";
 
         // Defaults for deployment
-        const globalParams = window.lastBotsData?.indicator_parameters || {};
         document.getElementById('strategyCapital').value = 100;
-        document.getElementById('strategyBuyThreshold').value = globalParams.MIN_BULLISH_SIGNALS || 4;
-        document.getElementById('strategySellThreshold').value = globalParams.MIN_BEARISH_SIGNALS || 4;
+        document.getElementById('strategyBuyThreshold').value = 0;
+        document.getElementById('strategySellThreshold').value = 0;
         document.getElementById('strategyTimeframe').value = "1Hour";
         document.getElementById('strategySellMode').value = "indicator";
         window._strategyPaused = false;
@@ -635,10 +643,9 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
 
         // Load existing settings
         const settings = (window.lastBotsData?.ticker_settings || {})[currentStrategySymbol] || {};
-        const globalParams = window.lastBotsData?.indicator_parameters || {};
         document.getElementById('strategyCapital').value = settings.amount || '';
-        document.getElementById('strategyBuyThreshold').value = settings.min_buy_signals !== undefined ? settings.min_buy_signals : (globalParams.MIN_BULLISH_SIGNALS || 4);
-        document.getElementById('strategySellThreshold').value = settings.min_sell_signals !== undefined ? settings.min_sell_signals : (globalParams.MIN_BEARISH_SIGNALS || 4);
+        document.getElementById('strategyBuyThreshold').value = settings.min_buy_signals !== undefined ? settings.min_buy_signals : 0;
+        document.getElementById('strategySellThreshold').value = settings.min_sell_signals !== undefined ? settings.min_sell_signals : 0;
         document.getElementById('strategyTimeframe').value = settings.timeframe || '1Hour';
         document.getElementById('strategySellMode').value = settings.sell_mode || 'indicator';
         window._strategyPaused = settings.paused || false;
@@ -660,7 +667,7 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('riskControlsContent').classList.add('hidden');
         document.getElementById('riskArrowIcon').classList.remove('rotate-180');
 
-        const enabledIndicators = settings.indicators || ['RSI', 'MACD', 'EMA Cross', 'Supertrend', 'Bollinger', 'VWAP', 'Mystic Pulse', 'Candle Patterns'];
+        const enabledIndicators = settings.indicators || [];
         document.querySelectorAll('.strategy-indicator-check').forEach(chk => {
             chk.checked = enabledIndicators.includes(chk.value);
         });
@@ -973,15 +980,9 @@ async function fetchBotsData() {
             selectedTicker = data.tradelist[0];
         }
 
-        // AI Summary
-        if (document.getElementById('aiSummary')) {
-            let summaryText = "";
-            if (selectedTicker && data.botScans && data.botScans[selectedTicker] && data.botScans[selectedTicker].sentiment_summary) {
-                summaryText = data.botScans[selectedTicker].sentiment_summary;
-            } else if (data.sentiment_summary) {
-                summaryText = data.sentiment_summary;
-            }
-            document.getElementById('aiSummary').textContent = summaryText || "Waiting for scan analysis...";
+        // Fetch AI Indicator for selected bot (reuses caching mechanism)
+        if (selectedTicker) {
+            fetchAIIndicator(selectedTicker, currentBackendTf);
         }
 
         // Execution log
@@ -1423,11 +1424,12 @@ function openIndicatorSettings(indicatorName) {
         container.innerHTML = '<p class="text-xs text-slate-500 italic">No adjustable parameters for this indicator.</p>';
     }
 
-    const currentParams = window.lastDashboardData?.indicator_parameters || {};
+    const currentParams = window.lastBotsData?.indicator_parameters || {};
+    const overrides = window.lastBotsData?.indicator_overrides || {};
 
     configKeys.forEach(key => {
-        const hasValue = currentParams[key] !== undefined && currentParams[key] !== null && currentParams[key] !== '';
-        const val = hasValue ? currentParams[key] : (INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : '');
+        const hasOverride = overrides[key] !== undefined && overrides[key] !== null && overrides[key] !== '';
+        const val = currentParams[key] !== undefined ? currentParams[key] : (INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : '');
         const label = key.replace(/_/g, ' ').toLowerCase();
 
         const div = document.createElement('div');
@@ -1435,9 +1437,9 @@ function openIndicatorSettings(indicatorName) {
         div.innerHTML = `
             <div class="flex justify-between items-center mb-0.5">
                 <label class="text-[0.65rem] font-black text-indigo-950 uppercase tracking-widest opacity-60">${label}</label>
-                ${!hasValue ? '<span class="text-[0.55rem] font-extrabold text-emerald-500 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded-md">System Default</span>' : ''}
+                ${!hasOverride ? '<span class="text-[0.55rem] font-extrabold text-emerald-500 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded-md">System Default</span>' : ''}
             </div>
-            <input type="number" step="any" data-key="${key}" value="${val}" 
+            <input type="number" step="any" data-key="${key}" value="${hasOverride ? val : ''}" placeholder="${INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : ''}" 
                 class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-bold text-indigo-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all">
         `;
         container.appendChild(div);
@@ -1455,17 +1457,14 @@ function resetIndicatorSettingsToDefaults() {
     if (!currentEditingIndicator) return;
     const inputs = document.querySelectorAll('#indicatorModalContent input');
     inputs.forEach(input => {
-        const key = input.dataset.key;
-        if (INDICATOR_DEFAULTS[key] !== undefined) {
-            input.value = INDICATOR_DEFAULTS[key];
-            const container = input.closest('.flex-col');
-            if (container) {
-                const header = container.querySelector('.flex.justify-between.items-center');
-                if (header) {
-                    const badge = header.querySelector('span');
-                    if (!badge) {
-                        header.insertAdjacentHTML('beforeend', '<span class="text-[0.55rem] font-extrabold text-emerald-500 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded-md">System Default</span>');
-                    }
+        input.value = ''; // Revert to system default (empty value)
+        const container = input.closest('.flex-col');
+        if (container) {
+            const header = container.querySelector('.flex.justify-between.items-center');
+            if (header) {
+                const badge = header.querySelector('span');
+                if (!badge) {
+                    header.insertAdjacentHTML('beforeend', '<span class="text-[0.55rem] font-extrabold text-emerald-500 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded-md">System Default</span>');
                 }
             }
         }
@@ -1486,7 +1485,7 @@ async function saveIndicatorSettings() {
 
     try {
         const headers = await getAuthHeaders();
-        const response = await fetch(`${API_BASE}/api/settings/indicators`, {
+        const response = await fetch(`${API_BASE}/api/settings/indicators?context=bots`, {
             method: 'POST',
             headers: headers,
             body: JSON.stringify(updates)
@@ -1494,13 +1493,24 @@ async function saveIndicatorSettings() {
 
         if (response.ok) {
             console.log(`[settings] Updated settings for ${currentEditingIndicator}`);
-            if (!window.lastDashboardData) {
-                window.lastDashboardData = { indicator_parameters: {} };
+            if (!window.lastBotsData) {
+                window.lastBotsData = { indicator_parameters: {}, indicator_overrides: {} };
             }
-            if (!window.lastDashboardData.indicator_parameters) {
-                window.lastDashboardData.indicator_parameters = {};
+            if (!window.lastBotsData.indicator_parameters) {
+                window.lastBotsData.indicator_parameters = {};
             }
-            Object.assign(window.lastDashboardData.indicator_parameters, updates);
+            if (!window.lastBotsData.indicator_overrides) {
+                window.lastBotsData.indicator_overrides = {};
+            }
+            for (const [k, v] of Object.entries(updates)) {
+                if (v === "" || v === null) {
+                    delete window.lastBotsData.indicator_overrides[k];
+                    delete window.lastBotsData.indicator_parameters[k];
+                } else {
+                    window.lastBotsData.indicator_overrides[k] = v;
+                    window.lastBotsData.indicator_parameters[k] = v;
+                }
+            }
             closeIndicatorSettings();
         } else {
             alert("Error saving indicator settings.");
@@ -1534,6 +1544,7 @@ function getChartTimeframe(period) {
         case '1W': return '1H';
         case '1M': return '1D';
         case '1Y': return '1D';
+        case 'ALL': return '1D';
         default: return '1D';
     }
 }
@@ -1542,7 +1553,7 @@ async function setChartPeriod(period) {
     currentChartPeriod = period;
 
     // Update active period button styling
-    const buttons = ['1D', '1W', '1M', '1Y'];
+    const buttons = ['1D', '1W', '1M', '1Y', 'ALL'];
     buttons.forEach(btn => {
         const el = document.getElementById(`period-${btn}`);
         if (el) {
@@ -1597,17 +1608,47 @@ async function fetchPortfolioHistory() {
         const yMax = Math.ceil(maxEquity + padding);
 
         // Update performance metric text based on first and last points of active curve
-        if (equities && equities.length > 0) {
+        if (equities && equities.length > 0 && data.timestamp && data.timestamp.length > 0) {
             const firstEq = equities[0];
             const lastEq = equities[equities.length - 1];
-            const finalPl = lastEq - firstEq;
-            const finalPlPct = firstEq > 0 ? (finalPl / firstEq * 100) : 0.0;
+            
+            // Align 1D Performance metric with standard brokerage Daily P/L (inclusive of overnight gaps)
+            let finalPl = lastEq - firstEq;
+            let finalPlPct = firstEq > 0 ? (finalPl / firstEq * 100) : 0.0;
+            
+            if (currentChartPeriod.toUpperCase() === '1D' && data.profit_loss && data.profit_loss.length > 0) {
+                finalPl = data.profit_loss[data.profit_loss.length - 1];
+                if (data.profit_loss_pct && data.profit_loss_pct.length > 0) {
+                    finalPlPct = data.profit_loss_pct[data.profit_loss_pct.length - 1];
+                } else {
+                    const baseVal = data.base_value || firstEq;
+                    finalPlPct = baseVal > 0 ? (finalPl / baseVal * 100) : 0.0;
+                }
+            }
 
             const subEl = document.getElementById('equityPerformanceSub');
             if (subEl) {
                 const sign = finalPl >= 0 ? '+' : '';
                 const colorClass = finalPl >= 0 ? 'text-emerald-500' : 'text-rose-500';
-                subEl.innerHTML = `Performance: <span class="${colorClass} font-black">${sign}$${finalPl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${sign}${finalPlPct.toFixed(2)}%)</span> over this ${currentChartPeriod}`;
+                
+                const firstTs = data.timestamp[0];
+                const lastTs = data.timestamp[data.timestamp.length - 1];
+                const firstDate = new Date(firstTs * 1000);
+                const lastDate = new Date(lastTs * 1000);
+                
+                let dateRangeStr = '';
+                if (currentChartPeriod.toUpperCase() === '1D') {
+                    const optTime = { hour: '2-digit', minute: '2-digit', hour12: false };
+                    dateRangeStr = `from ${firstDate.toLocaleTimeString('en-US', optTime)} to ${lastDate.toLocaleTimeString('en-US', optTime)}`;
+                } else if (currentChartPeriod.toUpperCase() === '1W') {
+                    const optDate = { month: 'short', day: 'numeric' };
+                    dateRangeStr = `from ${firstDate.toLocaleDateString('en-US', optDate)} to ${lastDate.toLocaleDateString('en-US', optDate)}`;
+                } else {
+                    const optDate = { month: 'short', day: 'numeric', year: 'numeric' };
+                    dateRangeStr = `from ${firstDate.toLocaleDateString('en-US', optDate)} to ${lastDate.toLocaleDateString('en-US', optDate)}`;
+                }
+                
+                subEl.innerHTML = `Performance: <span class="${colorClass} font-black">${sign}$${finalPl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${sign}${finalPlPct.toFixed(2)}%)</span> ${dateRangeStr}`;
             }
         }
 
@@ -1625,6 +1666,48 @@ async function fetchPortfolioHistory() {
         gradient.addColorStop(1, 'rgba(99, 102, 241, 0)');
 
         // Premium chart configuration
+        const currentEquityLinePlugin = {
+            id: 'currentEquityLine',
+            afterDraw: (chart) => {
+                const { ctx, chartArea: { left, right }, scales: { y } } = chart;
+                if (equities && equities.length > 0) {
+                    const lastEquity = equities[equities.length - 1];
+                    const yPos = y.getPixelForValue(lastEquity);
+                    
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.setLineDash([4, 4]); // Dashed line
+                    ctx.strokeStyle = 'rgba(168, 85, 247, 0.6)'; // Purple dashed line
+                    ctx.lineWidth = 1.5;
+                    ctx.moveTo(left, yPos);
+                    ctx.lineTo(right, yPos);
+                    ctx.stroke();
+                    
+                    // Draw a little badge showing the current equity value at the right end
+                    ctx.font = 'bold 9px Inter, sans-serif';
+                    ctx.textBaseline = 'middle';
+                    const text = `$${lastEquity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                    const textWidth = ctx.measureText(text).width;
+                    
+                    // Background badge
+                    ctx.beginPath();
+                    if (ctx.roundRect) {
+                        ctx.roundRect(right - textWidth - 8, yPos - 7, textWidth + 8, 14, 4);
+                    } else {
+                        ctx.rect(right - textWidth - 8, yPos - 7, textWidth + 8, 14);
+                    }
+                    ctx.fillStyle = 'rgba(147, 51, 234, 0.95)';
+                    ctx.fill();
+                    
+                    // Text
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillText(text, right - textWidth - 4, yPos);
+                    
+                    ctx.restore();
+                }
+            }
+        };
+
         portfolioChartInstance = new Chart(ctx, {
             type: 'line',
             data: {
@@ -1686,7 +1769,7 @@ async function fetchPortfolioHistory() {
                 scales: {
                     x: {
                         grid: {
-                            display: false, // Clean look
+                            display: false,
                         },
                         ticks: {
                             color: 'rgb(156, 163, 175)', // Gray-400
@@ -1698,15 +1781,16 @@ async function fetchPortfolioHistory() {
                             maxTicksLimit: currentChartPeriod.toUpperCase() === '1D' ? 6 : 8
                         },
                         border: {
-                            display: false
+                            display: true,
+                            color: 'rgba(99, 102, 241, 0.15)', // Subtle indigo axis line
+                            width: 1
                         }
                     },
                     y: {
                         min: yMin,
                         max: yMax,
                         grid: {
-                            color: 'rgba(243, 244, 246, 0.8)', // Light gridlines
-                            drawBorder: false
+                            color: 'rgba(99, 102, 241, 0.05)', // Super clean subtle gridlines
                         },
                         ticks: {
                             color: 'rgb(156, 163, 175)',
@@ -1720,7 +1804,9 @@ async function fetchPortfolioHistory() {
                             }
                         },
                         border: {
-                            display: false
+                            display: true,
+                            color: 'rgba(99, 102, 241, 0.15)', // Left vertical axis line
+                            width: 1
                         }
                     }
                 },
@@ -1729,11 +1815,324 @@ async function fetchPortfolioHistory() {
                     axis: 'x',
                     intersect: false
                 }
-            }
+            },
+            plugins: [currentEquityLinePlugin]
         });
 
     } catch (e) {
         console.error("[chart] Error rendering portfolio history:", e);
     }
 }
+
+// ──────────────────────────────────────────────
+// premium AI indicator & news sentiment briefing engine (decoupled & cached)
+// ──────────────────────────────────────────────
+const AI_INDICATOR_CACHE = new Map();
+const AI_INDICATOR_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+let _aiIndicatorFetchId = 0; // prevents stale response rendering
+
+async function fetchAIIndicator(ticker, timeframe, force = false) {
+    if (!ticker) return;
+    const key = `${ticker}|${timeframe}`;
+
+    // Check client-side cache first (unless forced)
+    if (!force) {
+        const cached = AI_INDICATOR_CACHE.get(key);
+        if (cached && (Date.now() - cached.timestamp) < AI_INDICATOR_CACHE_TTL) {
+            renderAIIndicatorCard(cached.data, true);
+            return;
+        }
+    }
+
+    // Show loading skeleton
+    _showAIIndicatorLoading(ticker);
+
+    const fetchId = ++_aiIndicatorFetchId;
+    try {
+        const headers = await getAuthHeaders();
+        const url = `${API_BASE}/api/ai-indicator?ticker=${encodeURIComponent(ticker)}&timeframe=${encodeURIComponent(timeframe)}${force ? '&force=true' : ''}`;
+        const res = await fetch(url, { headers });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        if (fetchId !== _aiIndicatorFetchId) return;
+
+        if (data.error) {
+            _showAIIndicatorError(data.error, ticker);
+            return;
+        }
+
+        // Cache the response locally
+        AI_INDICATOR_CACHE.set(key, {
+            data: data,
+            timestamp: Date.now()
+        });
+
+        renderAIIndicatorCard(data, false);
+
+    } catch (err) {
+        if (fetchId === _aiIndicatorFetchId) {
+            _showAIIndicatorError('Could not load AI analysis', ticker);
+        }
+        console.error('AI analysis load error:', err);
+    }
+}
+
+function _showAIIndicatorLoading(ticker) {
+    const el = document.getElementById('aiIndicatorCard');
+    if (!el) return;
+
+    el.className = 'ai-indicator-card p-4 rounded-xl border relative overflow-hidden transition-all duration-300 border-indigo-100 bg-white/40 backdrop-blur-md animate-pulse shadow-sm';
+    el.innerHTML = `
+        <div class="flex items-center justify-between mb-3 relative z-10">
+            <div class="flex items-center gap-2">
+                <span class="text-base">🤖</span>
+                <span class="font-black text-xs text-indigo-400 tracking-wide uppercase">BotBulls AI Analysis - ${ticker || '---'}</span>
+                <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-bold bg-indigo-50 text-indigo-400 border border-indigo-200/50">Groq</span>
+            </div>
+        </div>
+        <div class="space-y-2 mt-4 relative z-10 text-left">
+            <div class="h-3 bg-slate-200/60 rounded w-1/4"></div>
+            <div class="h-2.5 bg-slate-200/50 rounded w-full"></div>
+            <div class="h-2.5 bg-slate-200/50 rounded w-5/6"></div>
+            <div class="h-2 bg-slate-200/40 rounded w-1/2"></div>
+        </div>
+    `;
+}
+
+function _showAIIndicatorError(err, ticker) {
+    const el = document.getElementById('aiIndicatorCard');
+    if (!el) return;
+
+    el.className = 'ai-indicator-card p-4 rounded-xl border relative overflow-hidden transition-all duration-300 border-red-200/60 bg-red-50/20 shadow-sm';
+    el.innerHTML = `
+        <div class="flex items-center justify-between mb-3 relative z-10">
+            <div class="flex items-center gap-2">
+                <span class="text-base">🤖</span>
+                <span class="font-black text-xs text-red-800 tracking-wide uppercase">BotBulls AI Analysis - ${ticker || '---'}</span>
+                <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-bold bg-red-100 text-red-600 border border-red-200/50">Groq</span>
+            </div>
+            <div class="flex items-center gap-2 relative z-30">
+                <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-red-500 hover:text-red-700 bg-red-100/50 hover:bg-red-100 transition-colors border border-red-300/30">
+                    ℹ
+                </button>
+                <button id="aiRefreshBtn" onclick="refreshAIIndicator()" title="Force refresh AI analysis" class="w-5 h-5 rounded-full flex items-center justify-center text-xs text-red-500 hover:text-red-700 bg-red-100/50 hover:bg-red-100 transition-colors border border-red-300/30">
+                    ↻
+                </button>
+            </div>
+        </div>
+        <p class="text-[0.6rem] text-red-500 relative z-10">${err || 'Could not load AI analysis'}</p>
+    `;
+}
+
+function renderAIIndicatorCard(data, fromCache = false) {
+    const el = document.getElementById('aiIndicatorCard');
+    if (!el) return;
+
+    const signal = data.signal || 'HOLD';
+    const confidence = data.confidence || 0;
+    const confPct = Math.round(confidence * 100);
+    const summary = data.summary || '';
+    const catalyst = data.key_catalyst || '';
+    const risks = data.risk_factors || '';
+    const regime = data.volatility_regime || 'NORMAL';
+    const posUsd = data.position_size_usd;
+    const posPct = data.position_size_pct;
+    const leverage = data.leverage || '1x';
+    const headlineCount = data.headline_count || 0;
+    const cached = fromCache || data.cached || false;
+
+    const sentSummary = data.sentiment_summary || '';
+    const sentKeyFactor = data.sentiment_key_factor || 'Mixed Catalysts';
+    const sentConfidence = data.sentiment_confidence != null ? data.sentiment_confidence : confidence;
+    const sentConfPct = Math.round(sentConfidence * 100);
+
+    const fmtPrice = (v) => (v == null || parseFloat(v) === 0) ? '—' : (parseFloat(v) < 10 ? `$${parseFloat(v).toFixed(4)}` : `$${parseFloat(v).toFixed(2)}`);
+    const fmtUsd   = (v) => (v == null || parseFloat(v) === 0) ? '—' : `$${parseFloat(v).toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0})}`;
+
+    const confBarWidth = `${confPct}%`;
+    const confBarColor = confPct >= 70 ? 'bg-emerald-500' : confPct >= 45 ? 'bg-amber-500' : 'bg-rose-500';
+    const confTextColor = confPct >= 70 ? 'text-emerald-600' : confPct >= 45 ? 'text-amber-600' : 'text-rose-600';
+
+    const sentScore = data.sentiment_score != null ? parseFloat(data.sentiment_score) : 0.0;
+    const sentPct = Math.round(((sentScore + 1.0) / 2.0) * 100);
+    const sentBarWidth = `${sentPct}%`;
+    let sentBarColor = 'bg-slate-400';
+    let sentTextColor = 'text-slate-500';
+
+    if (sentPct > 75) {
+        sentBarColor = 'bg-emerald-500';
+        sentTextColor = 'text-emerald-600';
+    } else if (sentPct > 55) {
+        sentBarColor = 'bg-amber-500';
+        sentTextColor = 'text-amber-600';
+    } else if (sentPct < 25) {
+        sentBarColor = 'bg-rose-500';
+        sentTextColor = 'text-rose-600';
+    } else if (sentPct < 45) {
+        sentBarColor = 'bg-amber-500';
+        sentTextColor = 'text-amber-600';
+    }
+
+    const sigColors = {
+        BUY:  { bg: 'ai-indicator-buy',  badge: 'bg-emerald-100 text-emerald-700 border-emerald-300/50', icon: '▲', iconCls: 'text-emerald-600', regimeCls: 'text-emerald-600' },
+        SELL: { bg: 'ai-indicator-sell', badge: 'bg-rose-100 text-rose-700 border-rose-300/50',       icon: '▼', iconCls: 'text-rose-600',    regimeCls: 'text-rose-600' },
+        HOLD: { bg: 'ai-indicator-hold', badge: 'bg-slate-100 text-slate-700 border-slate-300/50',    icon: '●', iconCls: 'text-slate-500',   regimeCls: 'text-slate-500' }
+    };
+    const colors = sigColors[signal] || sigColors['HOLD'];
+
+    const cachedBadge = cached
+        ? `<span class="text-[0.5rem] text-violet-500 opacity-60 ml-1">cached</span>`
+        : '';
+
+    el.className = `ai-indicator-card ${colors.bg} relative overflow-hidden p-4 rounded-xl border transition-all duration-300`;
+    el.innerHTML = `
+        <div class="ai-orb"></div>
+        <div class="flex items-center justify-between mb-3 relative z-10">
+            <div class="flex items-center gap-2">
+                <span class="text-base">🤖</span>
+                <span class="font-black text-xs text-violet-800 tracking-wide uppercase" id="aiIndicatorHeader">BotBulls AI Analysis - ${data.ticker || selectedTicker || '---'}</span>
+                <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-bold bg-violet-100 text-violet-600 border border-violet-300/50">Groq</span>
+                ${cachedBadge}
+            </div>
+            <div class="flex items-center gap-2 relative z-30">
+                <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-violet-500 hover:text-violet-700 bg-violet-100/50 hover:bg-violet-100 transition-colors border border-violet-300/30">
+                    ℹ
+                </button>
+                <button id="aiRefreshBtn" onclick="refreshAIIndicator()" title="Force refresh AI analysis" class="w-5 h-5 rounded-full flex items-center justify-center text-xs text-violet-500 hover:text-violet-700 bg-violet-100/50 hover:bg-violet-100 transition-colors border border-violet-300/30">
+                    ↻
+                </button>
+            </div>
+        </div>
+
+        <div class="flex items-center justify-between mb-3 relative z-10">
+            <div class="flex items-center gap-2 text-left">
+                <div>
+                    <div class="text-[0.55rem] text-slate-400 uppercase font-black tracking-wider">Trade Signal</div>
+                    <div class="flex items-center gap-1.5 mt-0.5">
+                        <span class="px-2 py-0.5 text-xs font-black rounded-full border ${colors.badge} flex items-center gap-1">
+                            ${signal} <span class="text-[9px] ${colors.iconCls}">${colors.icon}</span>
+                        </span>
+                    </div>
+                </div>
+            </div>
+            <div class="text-right">
+                <div class="text-[0.55rem] text-slate-400 uppercase font-black tracking-wider">Volatility Regime</div>
+                <div class="text-xs font-black ${colors.regimeCls}">${regime}</div>
+            </div>
+        </div>
+
+        <div class="mb-3.5 relative z-10 text-left">
+            <div class="text-[0.55rem] text-slate-500 font-extrabold uppercase tracking-wider mb-1">Decision Confidence</div>
+            <div class="flex items-center gap-2">
+                <div class="flex-1 bg-slate-200/50 rounded-full h-1.5 overflow-hidden">
+                    <div class="h-1.5 rounded-full ${confBarColor} transition-all duration-500" style="width: ${confBarWidth}"></div>
+                </div>
+                <span class="text-[10px] font-black leading-none ${confTextColor} px-1.5 py-0.5 rounded bg-white/60 border border-slate-200/50 shadow-sm">${confPct}%</span>
+            </div>
+        </div>
+
+        <div class="mb-3.5 relative z-10 text-left">
+            <div class="text-[0.55rem] text-slate-500 font-extrabold uppercase tracking-wider mb-1">News Sentiment Score</div>
+            <div class="flex items-center gap-2">
+                <div class="flex-1 bg-slate-200/50 rounded-full h-1.5 overflow-hidden">
+                    <div class="h-1.5 rounded-full ${sentBarColor} transition-all duration-500" style="width: ${sentBarWidth}"></div>
+                </div>
+                <span class="text-[10px] font-black leading-none ${sentTextColor} px-1.5 py-0.5 rounded bg-white/60 border border-slate-200/50 shadow-sm">${sentPct}%</span>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-3 gap-2 mb-3.5 relative z-10">
+            <div class="p-1.5 rounded-lg bg-white/40 border border-slate-200/50 text-center">
+                <div class="text-[0.5rem] text-slate-400 uppercase tracking-wider mb-0.5">Entry Price</div>
+                <div class="text-[0.65rem] font-black text-slate-800">${fmtPrice(data.entry_price !== undefined ? data.entry_price : data.price)}</div>
+            </div>
+            <div class="p-1.5 rounded-lg bg-white/40 border border-slate-200/50 text-center">
+                <div class="text-[0.5rem] text-slate-400 uppercase tracking-wider mb-0.5">Stop Loss</div>
+                <div class="text-[0.65rem] font-black text-rose-600">${fmtPrice(data.stop_loss)}</div>
+            </div>
+            <div class="p-1.5 rounded-lg bg-white/40 border border-slate-200/50 text-center">
+                <div class="text-[0.5rem] text-slate-400 uppercase tracking-wider mb-0.5">Sell Target</div>
+                <div class="text-[0.65rem] font-black text-emerald-600">${fmtPrice(data.sell_target !== undefined ? data.sell_target : data.target_price)}</div>
+            </div>
+        </div>
+
+        <div class="flex items-center gap-2 mb-3 relative z-10 p-1.5 rounded-lg bg-white/40 border border-violet-200/60">
+            <div class="flex-1 text-center">
+                <div class="text-[0.5rem] text-violet-500 uppercase tracking-wider mb-0.5">Position Size</div>
+                <div class="text-[0.6rem] font-black text-violet-900">${(posUsd == null || parseFloat(posUsd) === 0) ? '—' : `${fmtUsd(posUsd)} <span class="text-violet-500 font-normal">(${Math.round(posPct * 100)}%)</span>`}</div>
+            </div>
+            <div class="w-px h-6 bg-violet-200/60"></div>
+            <div class="flex-1 text-center">
+                <div class="text-[0.5rem] text-violet-500 uppercase tracking-wider mb-0.5">Leverage</div>
+                <div class="text-[0.6rem] font-black text-violet-900">${leverage}</div>
+            </div>
+        </div>
+
+        <div class="mb-3 p-2 rounded-lg bg-fuchsia-50/50 border border-fuchsia-200/50 text-left relative z-10">
+            <span class="text-[0.52rem] font-black text-fuchsia-600 uppercase tracking-widest block mb-0.5">🔥 Key Market Factor</span>
+            <p class="text-[0.65rem] font-bold text-fuchsia-800 leading-snug">${sentKeyFactor}</p>
+        </div>
+
+        ${sentSummary ? `
+        <div class="mb-3 p-2.5 rounded-lg bg-white/50 border border-purple-200/50 text-left relative z-10">
+            <span class="text-[0.52rem] font-black text-purple-600 uppercase tracking-widest block mb-0.5">📰 AI News Briefing & Catalyst Summary</span>
+            <p class="text-[0.6rem] text-violet-700 leading-relaxed font-medium">${sentSummary}</p>
+        </div>
+        ` : ''}
+
+        ${summary ? `
+        <div class="mb-3 p-3 rounded-lg bg-white/30 border border-violet-200/50 text-left relative z-10 shadow-sm">
+            <span class="text-[0.52rem] font-black text-violet-600 uppercase tracking-widest block mb-1">📝 Comprehensive Trade Thesis Summary</span>
+            <p class="text-[0.62rem] text-violet-700 leading-relaxed font-semibold">${summary}</p>
+        </div>
+        ` : ''}
+
+        <div class="grid grid-cols-2 gap-2 mb-3 relative z-10">
+            <div class="p-2.5 rounded-lg bg-emerald-50/40 border border-emerald-200/40 text-left shadow-sm">
+                <span class="text-[0.52rem] font-black text-emerald-600 uppercase tracking-widest block mb-1">⚡ Primary Catalyst</span>
+                <p class="text-[0.6rem] text-emerald-800 leading-snug font-bold">${catalyst || 'Confluence alignment'}</p>
+            </div>
+            <div class="p-2.5 rounded-lg bg-rose-50/40 border border-rose-200/40 text-left shadow-sm">
+                <span class="text-[0.52rem] font-black text-rose-600 uppercase tracking-widest block mb-1">⚠ Main Risk Factors</span>
+                <p class="text-[0.6rem] text-rose-800 leading-snug font-bold">${risks || 'Trend invalidation'}</p>
+            </div>
+        </div>
+
+        <div class="flex items-center justify-between pt-2 border-t border-violet-200/30 text-[8px] text-violet-400 relative z-10">
+            <span>${headlineCount} headlines analyzed</span>
+            <span>Advisory only — not investment advice</span>
+        </div>
+    `;
+}
+
+window.refreshAIIndicator = async function() {
+    const refreshBtn = document.getElementById('aiRefreshBtn');
+    if (refreshBtn) {
+        refreshBtn.disabled = true;
+        refreshBtn.classList.add('animate-spin');
+    }
+    const ticker = selectedTicker;
+    const timeframe = currentBackendTf;
+    try {
+        await fetchAIIndicator(ticker, timeframe, true);
+    } catch (err) {
+        console.error(err);
+    } finally {
+        if (refreshBtn) {
+            refreshBtn.disabled = false;
+            refreshBtn.classList.remove('animate-spin');
+        }
+    }
+};
+
+window.openAIInfoModal = function() {
+    const modal = document.getElementById('aiInfoModal');
+    if (modal) modal.classList.remove('hidden');
+};
+
+window.closeAIInfoModal = function() {
+    const modal = document.getElementById('aiInfoModal');
+    if (modal) modal.classList.add('hidden');
+};
 

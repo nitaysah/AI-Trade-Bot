@@ -358,7 +358,7 @@ async def get_portfolio_history(
     Get portfolio history for the current user's broker connection.
     Maps period '1Y' to Alpaca-compatible '1A'.
     """
-    alpaca_period = "1A" if period.upper() == "1Y" else period
+    alpaca_period = "1A" if period.upper() == "1Y" else ("all" if period.upper() == "ALL" else period)
     try:
         data = await asyncio.to_thread(eng.broker.get_portfolio_history, period=alpaca_period, timeframe=timeframe)
         return data
@@ -540,6 +540,9 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
     """
     Main dashboard endpoint — returns everything the UI needs in one call.
     """
+    from user_config import active_evaluation_context
+    ctx = source if source in ["dashboard", "bots", "backtest"] else "dashboard"
+    active_evaluation_context.set(ctx)
     overall_start = time.perf_counter()
 
     # Track dashboard primary ticker
@@ -736,8 +739,10 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
         "brokerConnected": not account.get('simulation', True),
         "has_keys": bool(eng.config.ALPACA_API_KEY),
         "lastScan": last_scan_time or "Starting...",
-        "indicator_settings": eng.config.toggles,
-        "indicator_parameters": eng.config.parameters,
+        "indicator_settings": eng.config.active_toggles,
+        "indicator_parameters": eng.config.active_parameters,
+        "indicator_overrides": eng.config.contexts.get(ctx, {}).get("parameters", {}),
+        "indicator_toggle_overrides": eng.config.contexts.get(ctx, {}).get("toggles", {}),
         "strategyTimeframe": timeframe,
         "watchlist": eng.config.WATCHLIST,
         "tradelist": eng.config.TRADELIST,
@@ -942,6 +947,8 @@ def scan_ticker(ticker: str, timeframe: str = "4Hour", eng: UserEngine = Depends
 @app.post("/api/backtest")
 async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
     """Runs a historical backtest for a ticker."""
+    from user_config import active_evaluation_context
+    active_evaluation_context.set("backtest")
     ticker = data.get("ticker", "AAPL").upper()
     if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
         return {"status": "error", "message": "Invalid ticker format"}
@@ -1060,9 +1067,12 @@ async def download_all_data(data: dict, eng: UserEngine = Depends(get_user_engin
 
 
 @app.get("/api/settings/indicators")
-def get_indicator_settings(eng: UserEngine = Depends(get_user_engine)):
+def get_indicator_settings(context: str = "dashboard", eng: UserEngine = Depends(get_user_engine)):
     """Returns all indicator toggles grouped by category."""
-    return {
+    from user_config import active_evaluation_context
+    token = active_evaluation_context.set(context)
+    try:
+        return {
         "Momentum": {
             "ENABLE_RSI": {"label": "RSI", "description": "Relative Strength Index — Overbought / Oversold", "enabled": getattr(eng.config, "ENABLE_RSI", True)},
             "ENABLE_MACD": {"label": "MACD", "description": "Moving Average Convergence Divergence", "enabled": getattr(eng.config, "ENABLE_MACD", True)},
@@ -1083,19 +1093,26 @@ def get_indicator_settings(eng: UserEngine = Depends(get_user_engine)):
             "ENABLE_CANDLE_PATTERNS": {"label": "Candle Patterns", "description": "Engulfing, Hammer, Shooting Star patterns", "enabled": getattr(eng.config, "ENABLE_CANDLE_PATTERNS", True)},
         },
     }
+    finally:
+        active_evaluation_context.reset(token)
 
 
 @app.post("/api/settings/risk")
-async def update_risk_settings(settings: dict, eng: UserEngine = Depends(get_user_engine)):
+async def update_risk_settings(settings: dict, context: str = "dashboard", eng: UserEngine = Depends(get_user_engine)):
     """Updates risk management parameters."""
-    for key, value in settings.items():
-        if key in ['MAX_DAILY_DRAWDOWN', 'RISK_PER_TRADE', 'MAX_POSITION_PCT']:
-            if isinstance(value, (int, float)) and value > 1:
-                value = value / 100.0
-        eng.config.set(key, value)
+    from user_config import active_evaluation_context
+    token = active_evaluation_context.set(context)
+    try:
+        for key, value in settings.items():
+            if key in ['MAX_DAILY_DRAWDOWN', 'RISK_PER_TRADE', 'MAX_POSITION_PCT']:
+                if isinstance(value, (int, float)) and value > 1:
+                    value = value / 100.0
+            eng.config.set(key, value)
+    finally:
+        active_evaluation_context.reset(token)
             
     await eng.save_settings()
-    print(f"[settings] Updated risk parameters for {eng.uid}: {', '.join(settings.keys())}")
+    print(f"[settings] Updated risk parameters ({context}) for {eng.uid}: {', '.join(settings.keys())}")
     return {"status": "success", "settings": settings}
 
 
@@ -1321,23 +1338,30 @@ async def cancel_order(data: dict, eng: UserEngine = Depends(get_user_engine)):
 
 
 @app.post("/api/settings/indicators")
-async def update_indicators(updates: dict, eng: UserEngine = Depends(get_user_engine)):
+async def update_indicators(updates: dict, context: str = "dashboard", eng: UserEngine = Depends(get_user_engine)):
     """Update indicator toggles or parameters dynamically. Instant in-memory + persists to Firestore."""
-    for k, v in updates.items():
-        if k.startswith("ENABLE_"):
-            eng.config.toggles[k] = bool(v)
-        else:
-            try:
-                default_val = getattr(global_config, k, None)
-                if isinstance(default_val, int):
-                    eng.config.parameters[k] = int(v)
-                elif isinstance(default_val, float):
-                    eng.config.parameters[k] = float(v)
-                else:
-                    eng.config.parameters[k] = v
-            except Exception as e:
-                print(f"[settings] Type conversion error for {k}: {e}")
-                eng.config.parameters[k] = v
+    from user_config import active_evaluation_context
+    token = active_evaluation_context.set(context)
+    try:
+        for k, v in updates.items():
+            if v == "" or v is None:
+                eng.config.set(k, None)
+            elif k.startswith("ENABLE_"):
+                eng.config.set(k, bool(v))
+            else:
+                try:
+                    default_val = getattr(global_config, k, None)
+                    if isinstance(default_val, int):
+                        eng.config.set(k, int(v))
+                    elif isinstance(default_val, float):
+                        eng.config.set(k, float(v))
+                    else:
+                        eng.config.set(k, v)
+                except Exception as e:
+                    print(f"[settings] Type conversion error for {k}: {e}")
+                    eng.config.set(k, v)
+    finally:
+        active_evaluation_context.reset(token)
 
     await eng.save_settings()
     clear_evaluation_cache()

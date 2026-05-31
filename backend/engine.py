@@ -46,7 +46,8 @@ class UserEngine:
                 "strategy_timeframe": self.config.DEFAULT_TIMEFRAME,
                 "ticker_settings": self.config.TICKER_SETTINGS,
                 "toggles": self.config.toggles,
-                "parameters": self.config.parameters
+                "parameters": self.config.parameters,
+                "contexts": getattr(self.config, 'contexts', {})
             }
             def _sync_save():
                 self.db.collection("users").document(self.uid).collection("settings").document("ui").set(data)
@@ -117,6 +118,19 @@ class UserEngine:
                 self.config.TICKER_SETTINGS = ui.get("ticker_settings", {})
                 self.config.toggles.update(ui.get("toggles", {}))
                 self.config.parameters.update(ui.get("parameters", {}))
+                
+                # Load isolated contexts if present
+                if not hasattr(self.config, 'contexts') or not self.config.contexts:
+                    self.config.contexts = {
+                        "dashboard": { "toggles": {}, "parameters": {} },
+                        "bots": { "toggles": {}, "parameters": {} },
+                        "backtest": { "toggles": {}, "parameters": {} }
+                    }
+                cloud_contexts = ui.get("contexts", {})
+                for ctx_name, ctx_data in cloud_contexts.items():
+                    if ctx_name in self.config.contexts:
+                        self.config.contexts[ctx_name]["toggles"].update(ctx_data.get("toggles", {}))
+                        self.config.contexts[ctx_name]["parameters"].update(ctx_data.get("parameters", {}))
                 
             # Load History
             doc_scans = self.db.collection("users").document(self.uid).collection("history").document("scans").get()
@@ -223,6 +237,8 @@ class UserEngine:
     async def trading_loop(self):
         self.bot_running = True
         print(f"[scheduler-{self.uid}] Trading loop started.")
+        from user_config import active_evaluation_context
+        active_evaluation_context.set("bots")
         while self.bot_running:
             set_user_config(self.config)
             try:

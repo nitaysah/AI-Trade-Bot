@@ -43,7 +43,7 @@ def clear_evaluation_cache(ticker: str = None, timeframe: str = None):
     ticker_key = ticker.upper() if ticker else None
     timeframe_key = timeframe.upper() if timeframe else None
     for cache_key in list(EVALUATION_CACHE.keys()):
-        cached_ticker, cached_timeframe = cache_key
+        cached_ticker, cached_timeframe = cache_key[0], cache_key[1]
         if ticker_key and cached_ticker != ticker_key:
             continue
         if timeframe_key and cached_timeframe != timeframe_key:
@@ -197,7 +197,7 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
     # --- Check Evaluation Cache ---
     ticker_key = ticker.upper()
     timeframe_key = timeframe.upper()
-    cache_key = (ticker_key, timeframe_key, data_source)
+    cache_key = (ticker_key, timeframe_key, data_source, use_bot_settings)
     now_ts = time.time()
     if cache_key in EVALUATION_CACHE:
         entry = EVALUATION_CACHE[cache_key]

@@ -1468,7 +1468,7 @@ function setGlobalIndicatorPref(indicatorName, enabled) {
             if (!wasDebouncing) window._indicatorToggleDebounce = setTimeout(() => { window._indicatorToggleDebounce = null; }, 2000);
 
             getAuthHeaders().then(headers => {
-                fetch(`${API_BASE}/api/settings/indicators`, {
+                fetch(`${API_BASE}/api/settings/indicators?context=dashboard`, {
                     method: 'POST',
                     headers: headers,
                     body: JSON.stringify({ [toggleKey]: enabled })
@@ -2748,7 +2748,7 @@ window._indicatorToggleDebounce = null;
 async function toggleIndicator(key, value) {
     try {
         const headers = await getAuthHeaders();
-        await fetch(`${API_BASE}/api/settings/indicators`, {
+        await fetch(`${API_BASE}/api/settings/indicators?context=dashboard`, {
             method: 'POST',
             headers: headers,
             body: JSON.stringify({ [key]: value })
@@ -3180,10 +3180,11 @@ function openIndicatorSettings(indicatorName) {
     }
 
     const currentParams = window.lastDashboardData?.indicator_parameters || {};
+    const overrides = window.lastDashboardData?.indicator_overrides || {};
 
     configKeys.forEach(key => {
-        const hasValue = currentParams[key] !== undefined && currentParams[key] !== null && currentParams[key] !== '';
-        const val = hasValue ? currentParams[key] : (INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : '');
+        const hasOverride = overrides[key] !== undefined && overrides[key] !== null && overrides[key] !== '';
+        const val = currentParams[key] !== undefined ? currentParams[key] : (INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : '');
         const label = key.replace(/_/g, ' ').toLowerCase();
 
         const div = document.createElement('div');
@@ -3191,9 +3192,9 @@ function openIndicatorSettings(indicatorName) {
         div.innerHTML = `
             <div class="flex justify-between items-center mb-0.5">
                 <label class="text-[0.65rem] font-black text-indigo-950 uppercase tracking-widest opacity-60">${label}</label>
-                ${!hasValue ? '<span class="text-[0.55rem] font-extrabold text-emerald-500 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded-md">System Default</span>' : ''}
+                ${!hasOverride ? '<span class="text-[0.55rem] font-extrabold text-emerald-500 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded-md">System Default</span>' : ''}
             </div>
-            <input type="number" step="any" data-key="${key}" value="${val}" 
+            <input type="number" step="any" data-key="${key}" value="${hasOverride ? val : ''}" placeholder="${INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : ''}" 
                 class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-bold text-indigo-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all">
         `;
         container.appendChild(div);
@@ -3211,17 +3212,14 @@ function resetIndicatorSettingsToDefaults() {
     if (!currentEditingIndicator) return;
     const inputs = document.querySelectorAll('#indicatorModalContent input');
     inputs.forEach(input => {
-        const key = input.dataset.key;
-        if (INDICATOR_DEFAULTS[key] !== undefined) {
-            input.value = INDICATOR_DEFAULTS[key];
-            const container = input.closest('.flex-col');
-            if (container) {
-                const header = container.querySelector('.flex.justify-between.items-center');
-                if (header) {
-                    const badge = header.querySelector('span');
-                    if (!badge) {
-                        header.insertAdjacentHTML('beforeend', '<span class="text-[0.55rem] font-extrabold text-emerald-500 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded-md">System Default</span>');
-                    }
+        input.value = ''; // Revert to system default (empty value)
+        const container = input.closest('.flex-col');
+        if (container) {
+            const header = container.querySelector('.flex.justify-between.items-center');
+            if (header) {
+                const badge = header.querySelector('span');
+                if (!badge) {
+                    header.insertAdjacentHTML('beforeend', '<span class="text-[0.55rem] font-extrabold text-emerald-500 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded-md">System Default</span>');
                 }
             }
         }
@@ -3242,7 +3240,7 @@ async function saveIndicatorSettings() {
 
     try {
         const headers = await getAuthHeaders();
-        const response = await fetch(`${API_BASE}/api/settings/indicators`, {
+        const response = await fetch(`${API_BASE}/api/settings/indicators?context=dashboard`, {
             method: 'POST',
             headers: headers,
             body: JSON.stringify(updates)

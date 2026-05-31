@@ -268,7 +268,7 @@ class AlpacaBroker:
                         # Realized P/L
                         exit_value = total_cost  # filled_qty * filled_avg
                         pl = round(exit_value - entry_cost, 2)
-                        pl_pct = round(((filled_avg / entry_price) - 1) * 100, 4) if entry_price > 0 else 0.0
+                        pl_pct = round((pl / entry_cost) * 100, 4) if entry_cost > 0 else 0.0
                         sign = "+" if pl >= 0 else ""
                         
                         # Format entry date nicely
@@ -679,21 +679,51 @@ class AlpacaBroker:
             step_seconds = 86400 # 1 day
             
             p_upper = period.upper()
-            if p_upper == "1D":
-                points = 24
-                step_seconds = 3600 # 1 hour
-            elif p_upper == "1W":
-                points = 7
-                step_seconds = 86400
-            elif p_upper == "1M":
-                points = 30
-                step_seconds = 86400
-            elif p_upper == "1Y" or p_upper == "1A":
-                points = 52
-                step_seconds = 86400 * 7 # 1 week steps
-            
             now_ts = int(time.time())
-            timestamps = [now_ts - (points - 1 - i) * step_seconds for i in range(points)]
+            
+            if p_upper == "1D":
+                # Start at 12:01 AM of the current day in configured timezone
+                import datetime
+                import pytz
+                try:
+                    from backend.config import TIMEZONE
+                    tz = pytz.timezone(TIMEZONE)
+                except Exception:
+                    tz = pytz.timezone("US/Central")
+                
+                now_dt = datetime.datetime.now(tz)
+                start_today = now_dt.replace(hour=0, minute=1, second=0, microsecond=0)
+                start_ts = int(start_today.timestamp())
+                now_ts = int(now_dt.timestamp())
+                
+                elapsed_seconds = int((now_dt - start_today).total_seconds())
+                elapsed_hours = max(1, elapsed_seconds // 3600)
+                
+                timestamps = [start_ts + i * 3600 for i in range(elapsed_hours + 1)]
+                if len(timestamps) < 6:
+                    # Pad to at least 6 points for a nice visual line early in the day
+                    timestamps = [start_ts + i * 3600 for i in range(6)]
+                
+                if timestamps[-1] < now_ts:
+                    timestamps.append(now_ts)
+                
+                points = len(timestamps)
+                step_seconds = 3600
+            else:
+                if p_upper == "1W":
+                    points = 7
+                    step_seconds = 86400
+                elif p_upper == "1M":
+                    points = 30
+                    step_seconds = 86400
+                elif p_upper == "1Y" or p_upper == "1A":
+                    points = 52
+                    step_seconds = 86400 * 7 # 1 week steps
+                elif p_upper == "ALL":
+                    points = 120
+                    step_seconds = 86400 * 3 # 3-day steps
+                
+                timestamps = [now_ts - (points - 1 - i) * step_seconds for i in range(points)]
             
             if self.client:
                 try:
@@ -776,6 +806,94 @@ class AlpacaBroker:
                     clean_equity.append(round(float(eq), 2))
                     clean_profit_loss.append(round(float(pl or 0.0), 2))
                     clean_profit_loss_pct.append(round(float(pl_pct or 0.0) * 100 if pl_pct is not None else 0.0, 4))
+            
+            if period.upper() == "1D" and len(clean_timestamp) > 0:
+                import datetime
+                import pytz
+                try:
+                    from backend.config import TIMEZONE
+                    tz = pytz.timezone(TIMEZONE)
+                except Exception:
+                    tz = pytz.timezone("US/Central")
+                
+                now_dt = datetime.datetime.now(tz)
+                now_ts = int(now_dt.timestamp())
+                
+                # Identify the active trading day by checking the latest returned timestamp
+                latest_ts_dt = datetime.datetime.fromtimestamp(clean_timestamp[-1], tz)
+                start_day = latest_ts_dt.replace(hour=0, minute=1, second=0, microsecond=0)
+                start_ts = int(start_day.timestamp())
+                
+                # Filter to keep points belonging to this active trading day (and onwards)
+                filtered_timestamp = []
+                filtered_equity = []
+                filtered_profit_loss = []
+                filtered_profit_loss_pct = []
+                
+                for i in range(len(clean_timestamp)):
+                    if clean_timestamp[i] >= start_ts:
+                        filtered_timestamp.append(clean_timestamp[i])
+                        filtered_equity.append(clean_equity[i])
+                        filtered_profit_loss.append(clean_profit_loss[i])
+                        filtered_profit_loss_pct.append(clean_profit_loss_pct[i])
+                
+                # 1. Prepend 12:01 AM baseline of the active trading day
+                if len(filtered_timestamp) > 0 and filtered_timestamp[0] > start_ts:
+                    base_eq = filtered_equity[0]
+                    filtered_timestamp.insert(0, start_ts)
+                    filtered_equity.insert(0, base_eq)
+                    filtered_profit_loss.insert(0, 0.0)
+                    filtered_profit_loss_pct.insert(0, 0.0)
+                
+                # 2. Append the current time point so the line extends all the way to now
+                if len(filtered_timestamp) > 0 and filtered_timestamp[-1] < now_ts:
+                    live_eq = final_equity
+                    live_pl = filtered_profit_loss[-1]
+                    live_pl_pct = filtered_profit_loss_pct[-1]
+                    
+                    if self.client and not self.simulation_mode:
+                        try:
+                            acc = self.client.get_account()
+                            live_eq = float(acc.equity)
+                            live_last_eq = float(acc.last_equity)
+                            live_pl = round(live_eq - live_last_eq, 2)
+                            live_pl_pct = round(live_pl / live_last_eq * 100, 4) if live_last_eq > 0 else 0.0
+                            final_equity = live_eq # Sync the outer final_equity value
+                        except Exception as acc_ex:
+                            print(f"[broker] Error getting live account details for daily timeline: {acc_ex}")
+                    
+                    filtered_timestamp.append(now_ts)
+                    filtered_equity.append(live_eq)
+                    filtered_profit_loss.append(live_pl)
+                    filtered_profit_loss_pct.append(live_pl_pct)
+                
+                # Fallback if filtered list is empty (generate flat line for today)
+                if len(filtered_timestamp) == 0:
+                    current_equity = last_valid_equity
+                    start_today = now_dt.replace(hour=0, minute=1, second=0, microsecond=0)
+                    start_today_ts = int(start_today.timestamp())
+                    
+                    elapsed_seconds = int((now_dt - start_today).total_seconds())
+                    elapsed_hours = max(1, elapsed_seconds // 3600)
+                    
+                    for h in range(elapsed_hours + 1):
+                        pt_ts = start_today_ts + h * 3600
+                        if pt_ts <= now_ts:
+                            filtered_timestamp.append(pt_ts)
+                            filtered_equity.append(current_equity)
+                            filtered_profit_loss.append(0.0)
+                            filtered_profit_loss_pct.append(0.0)
+                    
+                    if len(filtered_timestamp) > 0 and filtered_timestamp[-1] < now_ts:
+                        filtered_timestamp.append(now_ts)
+                        filtered_equity.append(current_equity)
+                        filtered_profit_loss.append(0.0)
+                        filtered_profit_loss_pct.append(0.0)
+                
+                clean_timestamp = filtered_timestamp
+                clean_equity = filtered_equity
+                clean_profit_loss = filtered_profit_loss
+                clean_profit_loss_pct = filtered_profit_loss_pct
             
             return {
                 "timestamp": clean_timestamp,

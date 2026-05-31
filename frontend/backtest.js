@@ -9,7 +9,7 @@ const API_BASE = window.location.hostname === 'localhost' || window.location.hos
 let allBtTrades = [];
 let btPage = 1;
 const btPageSize = 10;
-window.lastDashboardData = null;
+window.lastBacktestData = null;
 
 // ── Backtest Chart State ─────────────────────────────────────────────────
 let btChart = null;            // LightweightCharts chart instance
@@ -193,9 +193,9 @@ async function pollAlpacaStatus() {
 
     try {
         const headers = await getAuthHeaders();
-        const response = await fetch(`${API_BASE}/api/dashboard?mode=fast`, { headers });
+        const response = await fetch(`${API_BASE}/api/dashboard?mode=fast&source=backtest`, { headers });
         const data = await response.json();
-        window.lastDashboardData = data;
+        window.lastBacktestData = data;
 
         if (data.simulation) {
             if (data.has_keys) {
@@ -976,11 +976,12 @@ function openIndicatorSettings(indicatorName) {
         container.innerHTML = '<p class="text-xs text-slate-500 italic">No adjustable parameters for this indicator.</p>';
     }
 
-    const currentParams = window.lastDashboardData?.indicator_parameters || {};
+    const currentParams = window.lastBacktestData?.indicator_parameters || {};
+    const overrides = window.lastBacktestData?.indicator_overrides || {};
 
     configKeys.forEach(key => {
-        const hasValue = currentParams[key] !== undefined && currentParams[key] !== null && currentParams[key] !== '';
-        const val = hasValue ? currentParams[key] : (INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : '');
+        const hasOverride = overrides[key] !== undefined && overrides[key] !== null && overrides[key] !== '';
+        const val = currentParams[key] !== undefined ? currentParams[key] : (INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : '');
         const label = key.replace(/_/g, ' ').toLowerCase();
 
         const div = document.createElement('div');
@@ -988,9 +989,9 @@ function openIndicatorSettings(indicatorName) {
         div.innerHTML = `
             <div class="flex justify-between items-center mb-0.5">
                 <label class="text-[0.65rem] font-black text-indigo-950 uppercase tracking-widest opacity-60">${label}</label>
-                ${!hasValue ? '<span class="text-[0.55rem] font-extrabold text-emerald-500 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded-md">System Default</span>' : ''}
+                ${!hasOverride ? '<span class="text-[0.55rem] font-extrabold text-emerald-500 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded-md">System Default</span>' : ''}
             </div>
-            <input type="number" step="any" data-key="${key}" value="${val}" 
+            <input type="number" step="any" data-key="${key}" value="${hasOverride ? val : ''}" placeholder="${INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : ''}" 
                 class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-bold text-indigo-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all">
         `;
         container.appendChild(div);
@@ -1008,17 +1009,14 @@ function resetIndicatorSettingsToDefaults() {
     if (!currentEditingIndicator) return;
     const inputs = document.querySelectorAll('#indicatorModalContent input');
     inputs.forEach(input => {
-        const key = input.dataset.key;
-        if (INDICATOR_DEFAULTS[key] !== undefined) {
-            input.value = INDICATOR_DEFAULTS[key];
-            const container = input.closest('.flex-col');
-            if (container) {
-                const header = container.querySelector('.flex.justify-between.items-center');
-                if (header) {
-                    const badge = header.querySelector('span');
-                    if (!badge) {
-                        header.insertAdjacentHTML('beforeend', '<span class="text-[0.55rem] font-extrabold text-emerald-500 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded-md">System Default</span>');
-                    }
+        input.value = ''; // Revert to system default (empty value)
+        const container = input.closest('.flex-col');
+        if (container) {
+            const header = container.querySelector('.flex.justify-between.items-center');
+            if (header) {
+                const badge = header.querySelector('span');
+                if (!badge) {
+                    header.insertAdjacentHTML('beforeend', '<span class="text-[0.55rem] font-extrabold text-emerald-500 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded-md">System Default</span>');
                 }
             }
         }
@@ -1039,7 +1037,7 @@ async function saveIndicatorSettings() {
 
     try {
         const headers = await getAuthHeaders();
-        const response = await fetch(`${API_BASE}/api/settings/indicators`, {
+        const response = await fetch(`${API_BASE}/api/settings/indicators?context=backtest`, {
             method: 'POST',
             headers: headers,
             body: JSON.stringify(updates)
@@ -1047,13 +1045,24 @@ async function saveIndicatorSettings() {
 
         if (response.ok) {
             console.log(`[settings] Updated settings for ${currentEditingIndicator}`);
-            if (!window.lastDashboardData) {
-                window.lastDashboardData = { indicator_parameters: {} };
+            if (!window.lastBacktestData) {
+                window.lastBacktestData = { indicator_parameters: {}, indicator_overrides: {} };
             }
-            if (!window.lastDashboardData.indicator_parameters) {
-                window.lastDashboardData.indicator_parameters = {};
+            if (!window.lastBacktestData.indicator_parameters) {
+                window.lastBacktestData.indicator_parameters = {};
             }
-            Object.assign(window.lastDashboardData.indicator_parameters, updates);
+            if (!window.lastBacktestData.indicator_overrides) {
+                window.lastBacktestData.indicator_overrides = {};
+            }
+            for (const [k, v] of Object.entries(updates)) {
+                if (v === "" || v === null) {
+                    delete window.lastBacktestData.indicator_overrides[k];
+                    delete window.lastBacktestData.indicator_parameters[k];
+                } else {
+                    window.lastBacktestData.indicator_overrides[k] = v;
+                    window.lastBacktestData.indicator_parameters[k] = v;
+                }
+            }
             closeIndicatorSettings();
         } else {
             alert("Error saving indicator settings.");
