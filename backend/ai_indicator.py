@@ -64,7 +64,7 @@ def _fetch_news_headlines(ticker: str, max_headlines: int = 12) -> list[str]:
         query = urllib.parse.quote(f"{ticker} stock")
         url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        response = urllib.request.urlopen(req, timeout=6)
+        response = urllib.request.urlopen(req, timeout=15)
         root = ET.parse(response).getroot()
         headlines = []
         for item in root.findall(".//item")[:max_headlines]:
