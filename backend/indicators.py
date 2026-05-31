@@ -1062,8 +1062,8 @@ def _generate_signals(latest, prev):
                     else "NEUTRAL"
                 ),
                 "reason": (
-                    f"WT Cross ↑ Oversold ({float(latest.get('WT1', 0)):.0f}) + MFI {float(latest.get('MFI_14', 50)):.0f}" if bool(latest.get("BA1_Buy", False))
-                    else f"WT Cross ↓ Overbought ({float(latest.get('WT1', 0)):.0f}) + MFI {float(latest.get('MFI_14', 50)):.0f}" if bool(latest.get("BA1_Sell", False))
+                    f"BB1 BUY (WT Cross ↑ Oversold {float(latest.get('WT1', 0)):.0f}) + MFI {float(latest.get('MFI_14', 50)):.0f}" if bool(latest.get("BA1_Buy", False))
+                    else f"BB1 SELL (WT Cross ↓ Overbought {float(latest.get('WT1', 0)):.0f}) + MFI {float(latest.get('MFI_14', 50)):.0f}" if bool(latest.get("BA1_Sell", False))
                     else f"WT1: {float(latest.get('WT1', 0)):.1f} | MFI: {float(latest.get('MFI_14', 50)):.0f}"
                 ),
                 "weight": 1,
@@ -1075,9 +1075,9 @@ def _generate_signals(latest, prev):
                     "BULLISH" if bool(latest.get("LX_SmartTrend", True)) else "BEARISH"
                 ),
                 "reason": (
-                    f"Trail {'↑' if bool(latest.get('LX_SmartTrend', True)) else '↓'} | "
+                    f"BB2 {'BUY' if bool(latest.get('LX_SmartTrend', True)) else 'SELL'} (Trail {'↑' if bool(latest.get('LX_SmartTrend', True)) else '↓'} | "
                     f"Score {int(latest.get('LX_Score', 0))}/4 | "
-                    f"{'Trend ✓' if (not np.isnan(float(latest.get('LX_TrendTracer', 0))) and price > float(latest.get('LX_TrendTracer', 0))) else 'Trend ✗'}"
+                    f"{'Trend ✓' if (not np.isnan(float(latest.get('LX_TrendTracer', 0))) and price > float(latest.get('LX_TrendTracer', 0))) else 'Trend ✗'})"
                 ),
                 "weight": 1,
                 "premium": True,
@@ -1088,7 +1088,7 @@ def _generate_signals(latest, prev):
                     "BULLISH" if bool(latest.get("UT_Above", True)) else "BEARISH"
                 ),
                 "reason": (
-                    f"HA {'Above' if bool(latest.get('UT_Above', True)) else 'Below'} Trail ({float(latest.get('UT_Trail', 0)):.2f})"
+                    f"BB3 {'BUY' if bool(latest.get('UT_Above', True)) else 'SELL'} (HA {'Above' if bool(latest.get('UT_Above', True)) else 'Below'} Trail {float(latest.get('UT_Trail', 0)):.2f})"
                     + (" | FLIP ↑" if (bool(latest.get("UT_Above", True)) and not bool(prev.get("UT_Above", True))) else "")
                     + (" | FLIP ↓" if (not bool(latest.get("UT_Above", True)) and bool(prev.get("UT_Above", True))) else "")
                 ),

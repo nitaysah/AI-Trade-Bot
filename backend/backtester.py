@@ -76,15 +76,16 @@ class Backtester:
             
             # Check for SL / TP if in position
             if self.position:
-                # Standard / AI Autopilot hard stop/target checks
-                if current_bar['Low'] <= self.position['stop_loss']:
-                    self._exit_trade(current_bar, timestamp, f"Stop Loss Hit (${self.position['stop_loss']:.2f})", exit_price_override=self.position['stop_loss'])
-                    self._last_ai_decision = None  # Reset AI decision after exit
-                    continue
-                elif current_bar['High'] >= self.position['take_profit']:
-                    self._exit_trade(current_bar, timestamp, f"Take Profit Hit (${self.position['take_profit']:.2f})", exit_price_override=self.position['take_profit'])
-                    self._last_ai_decision = None  # Reset AI decision after exit
-                    continue
+                # Standard / AI Autopilot hard stop/target checks (guarded by sell_mode)
+                if self.sell_mode in ["sltp", "hybrid", "trend_rider", "ai_autopilot"]:
+                    if current_bar['Low'] <= self.position['stop_loss']:
+                        self._exit_trade(current_bar, timestamp, f"Stop Loss Hit (${self.position['stop_loss']:.2f})", exit_price_override=self.position['stop_loss'])
+                        self._last_ai_decision = None  # Reset AI decision after exit
+                        continue
+                    elif current_bar['High'] >= self.position['take_profit']:
+                        self._exit_trade(current_bar, timestamp, f"Take Profit Hit (${self.position['take_profit']:.2f})", exit_price_override=self.position['take_profit'])
+                        self._last_ai_decision = None  # Reset AI decision after exit
+                        continue
                 
                 # Dynamic Trailing Stop movement for standard hybrid/sltp modes
                 if self.sell_mode in ["sltp", "hybrid", "trend_rider"]:
@@ -131,8 +132,13 @@ class Backtester:
                         self._enter_trade_ai(current_bar, timestamp, self._last_ai_decision)
                         self._last_ai_decision = None  # Reset to re-evaluate next bars
                     elif action == "SELL" and self.position:
-                        self._exit_trade(current_bar, timestamp, f"AI Exit: {reason}")
-                        self._last_ai_decision = None  # Reset to re-evaluate next bars
+                        # Hybrid / Dynamic Sell check: exit only if sell_mode supports indicator/hybrid
+                        if self.sell_mode in ["indicator", "hybrid", "ai_autopilot"]:
+                            self._exit_trade(current_bar, timestamp, f"AI Exit: {reason}")
+                            self._last_ai_decision = None  # Reset to re-evaluate next bars
+                        else:
+                            # SL/TP only mode: ignore dynamic sell signal
+                            self._last_ai_decision = None
             else:
                 # Get Strategy Decision
                 signals = _generate_signals(current_bar, prev_bar)

@@ -545,8 +545,14 @@ function _btInitChart(candles, trades, equityCurve) {
         const isWin = trade.pl >= 0;
         const plLabel = `${isWin ? '+' : ''}${trade.pl_pct.toFixed(1)}%`;
 
-        const strategy = document.getElementById('btStrategy') ? document.getElementById('btStrategy').value : '';
-        const stratPrefix = strategy === 'BotBulls2' ? 'BB2 ' : strategy === 'BotBulls3' ? 'BB3 ' : '';
+        const isBB1 = document.querySelector('.bt-indicator-check[value="BotBulls1"]')?.checked;
+        const isBB2 = document.querySelector('.bt-indicator-check[value="BotBulls2"]')?.checked;
+        const isBB3 = document.querySelector('.bt-indicator-check[value="BotBulls3"]')?.checked;
+
+        let stratPrefix = '';
+        if (isBB2) stratPrefix = 'BB2 ';
+        else if (isBB3) stratPrefix = 'BB3 ';
+        else if (isBB1) stratPrefix = 'BB1 ';
 
         // Buy should be green (arrowUp)
         markers.push({
@@ -554,7 +560,7 @@ function _btInitChart(candles, trades, equityCurve) {
             position: 'belowBar',
             color: '#10b981',
             shape: 'arrowUp',
-            text: `${stratPrefix}Buy $${trade.entry_price.toFixed(2)}`,
+            text: `${stratPrefix}BUY $${trade.entry_price.toFixed(2)}`,
             size: 1,
         });
 
@@ -564,7 +570,7 @@ function _btInitChart(candles, trades, equityCurve) {
             position: 'aboveBar',
             color: isWin ? '#10b981' : '#ef4444',
             shape: 'arrowDown',
-            text: `${isWin ? '✓' : 'x'} ${stratPrefix}Sell $${trade.exit_price.toFixed(2)} (${plLabel})`,
+            text: `${isWin ? '✓' : 'x'} ${stratPrefix}SELL $${trade.exit_price.toFixed(2)} (${plLabel})`,
             size: 1,
         });
     });

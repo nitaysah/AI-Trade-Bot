@@ -760,7 +760,7 @@ function _refreshOverlays(bars) {
             color: b.lx_smart_trend ? '#10b981' : '#ef4444'
         }));
         _getOrCreate(_overlaySeries, 'lx_smart_trail', lwChart, {
-            lineWidth: 2,
+            lineWidth: 4,
             lineType: 2 // Curved
         }).setData(lxTrailData);
 
@@ -794,7 +794,7 @@ function _refreshOverlays(bars) {
                     position: 'belowBar',
                     color: '#c2410c', // Dark orange/rust
                     shape: 'arrowUp',
-                    text: 'Trail Buy',
+                    text: 'BB2 BUY',
                     size: 1.2
                 });
             } else if (!curr.lx_smart_trend && prev.lx_smart_trend) {
@@ -803,7 +803,7 @@ function _refreshOverlays(bars) {
                     position: 'aboveBar',
                     color: '#be123c', // Deep rose/crimson
                     shape: 'arrowDown',
-                    text: 'Trail Sell',
+                    text: 'BB2 SELL',
                     size: 1.2
                 });
             }
@@ -823,7 +823,7 @@ function _refreshOverlays(bars) {
             color: b.ut_above ? '#0ea5e9' : '#f43f5e'
         }));
         _getOrCreate(_overlaySeries, 'ut_trail', lwChart, {
-            lineWidth: 2,
+            lineWidth: 4,
             lineType: 2 // Curved
         }).setData(utTrailData);
 
@@ -839,7 +839,7 @@ function _refreshOverlays(bars) {
                     position: 'belowBar',
                     color: '#0ea5e9', // Blue
                     shape: 'arrowUp',
-                    text: 'UT Buy',
+                    text: 'BB3 BUY',
                     size: 1.5
                 });
             } else if (!curr.ut_above && prev.ut_above) {
@@ -848,7 +848,7 @@ function _refreshOverlays(bars) {
                     position: 'aboveBar',
                     color: '#f43f5e', // Red
                     shape: 'arrowDown',
-                    text: 'UT Sell',
+                    text: 'BB3 SELL',
                     size: 1.5
                 });
             }
@@ -867,7 +867,7 @@ function _refreshOverlays(bars) {
                     position: 'belowBar',
                     color: '#06b6d4', // Cyan
                     shape: 'arrowUp',
-                    text: 'WT Buy',
+                    text: 'BB1 BUY',
                     size: 1.2
                 });
             } else if (b.ba1_sell) {
@@ -876,7 +876,7 @@ function _refreshOverlays(bars) {
                     position: 'aboveBar',
                     color: '#f43f5e', // Rose
                     shape: 'arrowDown',
-                    text: 'WT Sell',
+                    text: 'BB1 SELL',
                     size: 1.2
                 });
             }
@@ -1393,11 +1393,22 @@ const INDICATOR_CONFIG_MAP = {
     'SMA': ['SMA_PERIOD'],
     'ATR Volatility': ['ATR_PERIOD', 'ATR_STOP_MULTIPLIER', 'ATR_TRAIL_MULTIPLIER', 'ATR_TAKE_PROFIT_MULTIPLIER'],
     'Strategy Confidence': ['MIN_BULLISH_SIGNALS', 'MIN_BEARISH_SIGNALS'],
-    'Sentiment AI': ['SENTIMENT_BULLISH_THRESHOLD', 'SENTIMENT_BEARISH_THRESHOLD']
+    'Sentiment AI': ['SENTIMENT_BULLISH_THRESHOLD', 'SENTIMENT_BEARISH_THRESHOLD'],
+    'BotBulls1': ['BOTBULLS1_WT_CHANNEL', 'BOTBULLS1_WT_AVERAGE', 'BOTBULLS1_MFI_CONFIRM'],
+    'BotBulls2': ['BOTBULLS2_ATR_MULT', 'BOTBULLS2_TREND_TRACER_PERIOD', 'BOTBULLS2_REVERSAL_ZONE_PERIOD'],
+    'BotBulls3': ['BOTBULLS3_ATR_PERIOD', 'BOTBULLS3_ATR_MULT']
 };
 
 // Industry Defaults for indicators based on config.py
 const INDICATOR_DEFAULTS = {
+    'BOTBULLS1_WT_CHANNEL': 10,
+    'BOTBULLS1_WT_AVERAGE': 21,
+    'BOTBULLS1_MFI_CONFIRM': 30,
+    'BOTBULLS2_ATR_MULT': 2.0,
+    'BOTBULLS2_TREND_TRACER_PERIOD': 50,
+    'BOTBULLS2_REVERSAL_ZONE_PERIOD': 50,
+    'BOTBULLS3_ATR_PERIOD': 10,
+    'BOTBULLS3_ATR_MULT': 1.0,
     'RSI_PERIOD': 14,
     'RSI_OVERBOUGHT': 70,
     'RSI_OVERSOLD': 30,
@@ -1920,6 +1931,14 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
                                     <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900"></div>
                                 </div>
                             </div>
+                            <button class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-100/50" 
+                                    onclick="event.stopPropagation(); openIndicatorSettings('${name}')"
+                                    title="Indicator Settings">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </button>
                         </div>
                         <span class="${iconColor} text-sm font-bold ${!isEnabled ? 'opacity-50 grayscale' : ''} transition-all duration-300">${icon}</span>
                     </div>

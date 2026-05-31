@@ -741,6 +741,18 @@ Output ONLY valid JSON:
             "resistance": ctx.get("resistance"),
         }
 
+        # Ensure we always have trade levels even for HOLD signals
+        if not result.get("entry_price") and ctx.get("price"):
+            result["entry_price"] = round(ctx["price"], 4)
+        if not result.get("stop_loss") and ctx.get("price"):
+            atr_val = ctx.get("atr") or (ctx["price"] * 0.02)
+            result["stop_loss"] = round(ctx["price"] - atr_val * 2, 4)
+        if not result.get("sell_target") and ctx.get("price"):
+            atr_val = ctx.get("atr") or (ctx["price"] * 0.02)
+            result["sell_target"] = round(ctx["price"] + atr_val * 4, 4)
+        if not result.get("sell_target_pct") and result.get("sell_target") and ctx.get("price"):
+            result["sell_target_pct"] = round((result["sell_target"] - ctx["price"]) / ctx["price"] * 100, 2)
+
         _AI_CACHE[cache_key] = {"data": result, "timestamp": now}
         print(f"[ai_indicator] {ticker}: {signal} (confidence={confidence:.0%})")
         return result
@@ -1086,6 +1098,18 @@ Output ONLY valid JSON:
             if k not in result:
                 result[k] = ctx.get(k)
                 
+        # Ensure we always have trade levels even for HOLD signals
+        if not result.get("entry_price") and ctx.get("price"):
+            result["entry_price"] = round(ctx["price"], 4)
+        if not result.get("stop_loss") and ctx.get("price"):
+            atr_val = ctx.get("atr") or (ctx["price"] * 0.02)
+            result["stop_loss"] = round(ctx["price"] - atr_val * 2, 4)
+        if not result.get("sell_target") and ctx.get("price"):
+            atr_val = ctx.get("atr") or (ctx["price"] * 0.02)
+            result["sell_target"] = round(ctx["price"] + atr_val * 4, 4)
+        if not result.get("sell_target_pct") and result.get("sell_target") and ctx.get("price"):
+            result["sell_target_pct"] = round((result["sell_target"] - ctx["price"]) / ctx["price"] * 100, 2)
+
         if bar_data is None:
             _AI_CACHE[cache_key] = {"data": result, "timestamp": now}
             

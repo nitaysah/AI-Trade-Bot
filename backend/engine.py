@@ -404,19 +404,24 @@ class UserEngine:
                                     current_price = result['price_raw']
                                     
                                     if t_settings.get('ai_autopilot', False):
-                                        # AI Autopilot hard stop/target checks
+                                        # AI Autopilot hybrid / SLTP / indicator exit checks
                                         stop_loss = result['position_sizing'].get('stop_loss') or self.last_trailing_stops.get(ticker)
                                         take_profit = result['position_sizing'].get('take_profit')
                                         
-                                        if stop_loss:
-                                            self.last_trailing_stops[ticker] = stop_loss
-                                            if current_price <= stop_loss:
-                                                result['action'] = 'SELL'
-                                                result['reason'] = f'AI Stop Loss Hit (${current_price:.2f} <= ${stop_loss:.2f})'
-                                        if take_profit:
-                                            if current_price >= take_profit:
-                                                result['action'] = 'SELL'
-                                                result['reason'] = f'AI Take Profit Hit (${current_price:.2f} >= ${take_profit:.2f})'
+                                        if sell_mode == 'sltp' and result['action'] == 'SELL':
+                                            result['action'] = 'HOLD'
+                                            result['reason'] = 'AI Dynamic Sell Signal Ignored (Fixed SL/TP Mode)'
+                                        
+                                        if sell_mode in ['sltp', 'hybrid', 'ai_autopilot']:
+                                            if stop_loss:
+                                                self.last_trailing_stops[ticker] = stop_loss
+                                                if current_price <= stop_loss:
+                                                    result['action'] = 'SELL'
+                                                    result['reason'] = f'AI Stop Loss Hit (${current_price:.2f} <= ${stop_loss:.2f})'
+                                            if take_profit:
+                                                if current_price >= take_profit:
+                                                    result['action'] = 'SELL'
+                                                    result['reason'] = f'AI Take Profit Hit (${current_price:.2f} >= ${take_profit:.2f})'
                                     else:
                                         stop_mult = t_settings.get('atr_stop_multiplier', self.config.get('ATR_STOP_MULTIPLIER', 2.0))
                                         trail_mult = t_settings.get('atr_trail_multiplier', self.config.get('ATR_TRAIL_MULTIPLIER', 3.0))
