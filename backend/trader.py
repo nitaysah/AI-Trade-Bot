@@ -110,7 +110,11 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
                 bearish_count += weight
 
     # 2. Factor in AI sentiment as a signal (only if enabled)
-    if getattr(uc, 'ENABLE_AI_SENTIMENT', True):
+    ai_sentiment_enabled_for_bot = True
+    if allowed_indicators is not None:
+        ai_sentiment_enabled_for_bot = 'Sentiment AI' in allowed_indicators
+
+    if ai_sentiment_enabled_for_bot and getattr(uc, 'ENABLE_AI_SENTIMENT', True):
         ai_enabled = True
         if ai_sentiment_score >= uc.SENTIMENT_BULLISH_THRESHOLD and ai_sentiment_confidence >= 0.4:
             bullish_count += 1
@@ -211,11 +215,16 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
     import contextvars
 
     def _compute():
-        tech_ctx = contextvars.copy_context()
-        ai_ctx = contextvars.copy_context()
-        tech_future = executor.submit(tech_ctx.run, get_full_analysis, ticker_key, timeframe=timeframe, data_source=data_source)
-        ai_future = executor.submit(ai_ctx.run, get_ai_sentiment, ticker_key)
-        return tech_future.result(), ai_future.result()
+        from user_config import active_ticker_context
+        token = active_ticker_context.set(ticker_key) if use_bot_settings else None
+        try:
+            tech_ctx = contextvars.copy_context()
+            ai_ctx = contextvars.copy_context()
+            tech_future = executor.submit(tech_ctx.run, get_full_analysis, ticker_key, timeframe=timeframe, data_source=data_source)
+            ai_future = executor.submit(ai_ctx.run, get_ai_sentiment, ticker_key)
+            return tech_future.result(), ai_future.result()
+        finally:
+            if token: active_ticker_context.reset(token)
 
     with IN_FLIGHT_LOCK:
         shared_future = IN_FLIGHT_EVALS.get(cache_key)

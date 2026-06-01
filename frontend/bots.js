@@ -611,8 +611,8 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
 
         // Defaults for deployment
         document.getElementById('strategyCapital').value = 100;
-        document.getElementById('strategyBuyThreshold').value = 0;
-        document.getElementById('strategySellThreshold').value = 0;
+        document.getElementById('strategyBuyThreshold').value = INDICATOR_DEFAULTS['MIN_BULLISH_SIGNALS'] || 4;
+        document.getElementById('strategySellThreshold').value = INDICATOR_DEFAULTS['MIN_BEARISH_SIGNALS'] || 4;
         document.getElementById('strategyTimeframe').value = "1Hour";
         document.getElementById('strategySellMode').value = "indicator";
         window._strategyPaused = false;
@@ -625,9 +625,9 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyRiskPerTrade').value = 2.0;
         document.getElementById('strategyMaxDailyDrawdown').value = 5.0;
         document.getElementById('strategyMaxPositionPct').value = 100.0;
-        document.getElementById('strategyAtrStopMult').value = 2.0;
-        document.getElementById('strategyAtrTrailMult').value = 3.0;
-        document.getElementById('strategyAtrTpMult').value = 4.0;
+        document.getElementById('strategyAtrStopMult').value = INDICATOR_DEFAULTS['ATR_STOP_MULTIPLIER'] || 2.0;
+        document.getElementById('strategyAtrTrailMult').value = INDICATOR_DEFAULTS['ATR_TRAIL_MULTIPLIER'] || 3.0;
+        document.getElementById('strategyAtrTpMult').value = INDICATOR_DEFAULTS['ATR_TAKE_PROFIT_MULTIPLIER'] || 4.0;
 
         // Ensure collapsed on open
         document.getElementById('riskControlsContent').classList.add('hidden');
@@ -635,6 +635,9 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
 
         // Reset Indicators
         document.querySelectorAll('.strategy-indicator-check').forEach(chk => chk.checked = false);
+
+        const addWatchlistEl = document.getElementById('strategyAddWatchlist');
+        if (addWatchlistEl) addWatchlistEl.checked = true;
     } else {
         titleEl.textContent = `${currentStrategySymbol} Settings`;
         subtitleEl.textContent = 'Adjust active bot strategy parameters';
@@ -644,8 +647,8 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         // Load existing settings
         const settings = (window.lastBotsData?.ticker_settings || {})[currentStrategySymbol] || {};
         document.getElementById('strategyCapital').value = settings.amount || '';
-        document.getElementById('strategyBuyThreshold').value = settings.min_buy_signals !== undefined ? settings.min_buy_signals : 0;
-        document.getElementById('strategySellThreshold').value = settings.min_sell_signals !== undefined ? settings.min_sell_signals : 0;
+        document.getElementById('strategyBuyThreshold').value = settings.min_buy_signals !== undefined ? settings.min_buy_signals : (INDICATOR_DEFAULTS['MIN_BULLISH_SIGNALS'] || 4);
+        document.getElementById('strategySellThreshold').value = settings.min_sell_signals !== undefined ? settings.min_sell_signals : (INDICATOR_DEFAULTS['MIN_BEARISH_SIGNALS'] || 4);
         document.getElementById('strategyTimeframe').value = settings.timeframe || '1Hour';
         document.getElementById('strategySellMode').value = settings.sell_mode || 'indicator';
         window._strategyPaused = settings.paused || false;
@@ -659,9 +662,9 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyRiskPerTrade').value = settings.risk_per_trade !== undefined ? (settings.risk_per_trade * 100).toFixed(1) : 2.0;
         document.getElementById('strategyMaxDailyDrawdown').value = settings.max_daily_drawdown !== undefined ? (settings.max_daily_drawdown * 100).toFixed(1) : 5.0;
         document.getElementById('strategyMaxPositionPct').value = settings.max_position_pct !== undefined ? (settings.max_position_pct * 100).toFixed(1) : 100.0;
-        document.getElementById('strategyAtrStopMult').value = settings.atr_stop_multiplier !== undefined ? settings.atr_stop_multiplier : 2.0;
-        document.getElementById('strategyAtrTrailMult').value = settings.atr_trail_multiplier !== undefined ? settings.atr_trail_multiplier : 3.0;
-        document.getElementById('strategyAtrTpMult').value = settings.take_profit_multiplier !== undefined ? settings.take_profit_multiplier : 4.0;
+        document.getElementById('strategyAtrStopMult').value = settings.atr_stop_multiplier !== undefined ? settings.atr_stop_multiplier : (INDICATOR_DEFAULTS['ATR_STOP_MULTIPLIER'] || 2.0);
+        document.getElementById('strategyAtrTrailMult').value = settings.atr_trail_multiplier !== undefined ? settings.atr_trail_multiplier : (INDICATOR_DEFAULTS['ATR_TRAIL_MULTIPLIER'] || 3.0);
+        document.getElementById('strategyAtrTpMult').value = settings.take_profit_multiplier !== undefined ? settings.take_profit_multiplier : (INDICATOR_DEFAULTS['ATR_TAKE_PROFIT_MULTIPLIER'] || 4.0);
 
         // Ensure collapsed on open
         document.getElementById('riskControlsContent').classList.add('hidden');
@@ -671,6 +674,10 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.querySelectorAll('.strategy-indicator-check').forEach(chk => {
             chk.checked = enabledIndicators.includes(chk.value);
         });
+
+        const inWatchlist = (window.lastBotsData?.watchlist || []).includes(currentStrategySymbol);
+        const addWatchlistEl = document.getElementById('strategyAddWatchlist');
+        if (addWatchlistEl) addWatchlistEl.checked = inWatchlist;
     }
 
     updateStrategySignalLabels();
@@ -826,6 +833,7 @@ async function saveTickerSettings() {
 
     const data = {
         ticker: currentStrategySymbol,
+        add_to_watchlist: document.getElementById('strategyAddWatchlist')?.checked || false,
         settings: {
             amount: parseFloat(document.getElementById('strategyCapital').value) || null,
             timeframe: document.getElementById('strategyTimeframe').value || null,
@@ -1342,7 +1350,8 @@ const INDICATOR_TOOLTIPS = {
     "Strategy Confidence": "Strategy Confidence combines multiple indicator signals into a single probability score. Purpose: Measures the overall conviction of a bullish or bearish trend.",
     "BotBulls1": "WaveTrend momentum oscillator + Money Flow analysis. Detects reversals when momentum and institutional volume flow align at oversold/overbought extremes.",
     "BotBulls2": "Adaptive ATR trailing stop with trend-smoothed EMA and reversal zone detection. Fires on trend flips confirmed by multi-condition confluence scoring (1-4 strength rating).",
-    "BotBulls3": "Heikin-Ashi noise filter + ATR-based trailing stop. Generates buy/sell alerts only on confirmed momentum flips — removing false signals from choppy markets."
+    "BotBulls3": "Heikin-Ashi noise filter + ATR-based trailing stop. Generates buy/sell alerts only on confirmed momentum flips — removing false signals from choppy markets.",
+    "Sentiment AI": "Analyzes current news headlines and assigns a bullish/bearish score based on natural language processing of market sentiment."
 };
 
 const INDICATOR_CONFIG_MAP = {
@@ -1424,8 +1433,19 @@ function openIndicatorSettings(indicatorName) {
         container.innerHTML = '<p class="text-xs text-slate-500 italic">No adjustable parameters for this indicator.</p>';
     }
 
-    const currentParams = window.lastBotsData?.indicator_parameters || {};
-    const overrides = window.lastBotsData?.indicator_overrides || {};
+    let currentParams = {};
+    let overrides = {};
+    
+    if (currentStrategySymbol) {
+        const tickerSettings = (window.lastBotsData?.ticker_settings || {})[currentStrategySymbol] || {};
+        const tickerOverrides = tickerSettings.indicator_overrides || {};
+        overrides = tickerOverrides;
+        // Do NOT merge with global indicator_parameters. Fall back to pure system defaults.
+        currentParams = { ...tickerOverrides };
+    } else {
+        currentParams = window.lastBotsData?.indicator_parameters || {};
+        overrides = window.lastBotsData?.indicator_overrides || {};
+    }
 
     configKeys.forEach(key => {
         const hasOverride = overrides[key] !== undefined && overrides[key] !== null && overrides[key] !== '';
@@ -1439,7 +1459,7 @@ function openIndicatorSettings(indicatorName) {
                 <label class="text-[0.65rem] font-black text-indigo-950 uppercase tracking-widest opacity-60">${label}</label>
                 ${!hasOverride ? '<span class="text-[0.55rem] font-extrabold text-emerald-500 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded-md">System Default</span>' : ''}
             </div>
-            <input type="number" step="any" data-key="${key}" value="${hasOverride ? val : ''}" placeholder="${INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : ''}" 
+            <input type="number" step="any" data-key="${key}" value="${val}" placeholder="${INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : ''}" 
                 class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-bold text-indigo-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all">
         `;
         container.appendChild(div);
@@ -1457,7 +1477,7 @@ function resetIndicatorSettingsToDefaults() {
     if (!currentEditingIndicator) return;
     const inputs = document.querySelectorAll('#indicatorModalContent input');
     inputs.forEach(input => {
-        input.value = ''; // Revert to system default (empty value)
+        input.value = input.placeholder; // Revert to system default (visible value)
         const container = input.closest('.flex-col');
         if (container) {
             const header = container.querySelector('.flex.justify-between.items-center');
@@ -1475,7 +1495,11 @@ async function saveIndicatorSettings() {
     const inputs = document.querySelectorAll('#indicatorModalContent input');
     const updates = {};
     inputs.forEach(input => {
-        updates[input.dataset.key] = input.value;
+        if (input.value === input.placeholder || input.value === "") {
+            updates[input.dataset.key] = "";
+        } else {
+            updates[input.dataset.key] = input.value;
+        }
     });
 
     if (Object.keys(updates).length === 0) {
@@ -1485,7 +1509,12 @@ async function saveIndicatorSettings() {
 
     try {
         const headers = await getAuthHeaders();
-        const response = await fetch(`${API_BASE}/api/settings/indicators?context=bots`, {
+        let url = `${API_BASE}/api/settings/indicators?context=bots`;
+        if (currentStrategySymbol) {
+            url += `&ticker=${encodeURIComponent(currentStrategySymbol)}`;
+        }
+        
+        const response = await fetch(url, {
             method: 'POST',
             headers: headers,
             body: JSON.stringify(updates)
@@ -1494,23 +1523,36 @@ async function saveIndicatorSettings() {
         if (response.ok) {
             console.log(`[settings] Updated settings for ${currentEditingIndicator}`);
             if (!window.lastBotsData) {
-                window.lastBotsData = { indicator_parameters: {}, indicator_overrides: {} };
+                window.lastBotsData = { indicator_parameters: {}, indicator_overrides: {}, ticker_settings: {} };
             }
-            if (!window.lastBotsData.indicator_parameters) {
-                window.lastBotsData.indicator_parameters = {};
-            }
-            if (!window.lastBotsData.indicator_overrides) {
-                window.lastBotsData.indicator_overrides = {};
-            }
-            for (const [k, v] of Object.entries(updates)) {
-                if (v === "" || v === null) {
-                    delete window.lastBotsData.indicator_overrides[k];
-                    delete window.lastBotsData.indicator_parameters[k];
-                } else {
-                    window.lastBotsData.indicator_overrides[k] = v;
-                    window.lastBotsData.indicator_parameters[k] = v;
+            
+            if (currentStrategySymbol) {
+                if (!window.lastBotsData.ticker_settings) window.lastBotsData.ticker_settings = {};
+                if (!window.lastBotsData.ticker_settings[currentStrategySymbol]) window.lastBotsData.ticker_settings[currentStrategySymbol] = {};
+                if (!window.lastBotsData.ticker_settings[currentStrategySymbol].indicator_overrides) window.lastBotsData.ticker_settings[currentStrategySymbol].indicator_overrides = {};
+                
+                for (const [k, v] of Object.entries(updates)) {
+                    if (v === "" || v === null) {
+                        delete window.lastBotsData.ticker_settings[currentStrategySymbol].indicator_overrides[k];
+                    } else {
+                        window.lastBotsData.ticker_settings[currentStrategySymbol].indicator_overrides[k] = v;
+                    }
+                }
+            } else {
+                if (!window.lastBotsData.indicator_parameters) window.lastBotsData.indicator_parameters = {};
+                if (!window.lastBotsData.indicator_overrides) window.lastBotsData.indicator_overrides = {};
+                
+                for (const [k, v] of Object.entries(updates)) {
+                    if (v === "" || v === null) {
+                        delete window.lastBotsData.indicator_overrides[k];
+                        delete window.lastBotsData.indicator_parameters[k];
+                    } else {
+                        window.lastBotsData.indicator_overrides[k] = v;
+                        window.lastBotsData.indicator_parameters[k] = v;
+                    }
                 }
             }
+            
             closeIndicatorSettings();
         } else {
             alert("Error saving indicator settings.");

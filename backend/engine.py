@@ -9,6 +9,24 @@ from firebase_admin import firestore
 import config as global_config
 from user_config import UserConfig, set_user_config
 
+def parse_timeframe_to_seconds(timeframe: str) -> int:
+    tf = timeframe.upper().strip()
+    if tf in ["1D", "1DAY", "DAY"]:
+        return 86400
+    
+    import re
+    match = re.search(r'\d+', tf)
+    val = int(match.group()) if match else 5
+    
+    if "HOUR" in tf or "H" in tf:
+        return val * 3600
+    elif "MIN" in tf or "M" in tf:
+        return val * 60
+    elif "SEC" in tf or "S" in tf:
+        return val
+        
+    return 300 # Default fallback (5 mins)
+
 class UserEngine:
     def __init__(self, uid: str, db):
         self.uid = uid
@@ -116,8 +134,6 @@ class UserEngine:
                 self.config.TRADELIST = ui.get("tradelist", self.config.TRADELIST)
                 self.config.DEFAULT_TIMEFRAME = ui.get("strategy_timeframe", self.config.DEFAULT_TIMEFRAME)
                 self.config.TICKER_SETTINGS = ui.get("ticker_settings", {})
-                self.config.toggles.update(ui.get("toggles", {}))
-                self.config.parameters.update(ui.get("parameters", {}))
                 
                 # Load isolated contexts if present
                 if not hasattr(self.config, 'contexts') or not self.config.contexts:
@@ -398,11 +414,13 @@ class UserEngine:
                                 if is_market_closed_skip:
                                     result['reason'] = "Market Closed. Trade execution skipped."
 
-                                cooldown_secs = self.config.get('TRADE_COOLDOWN_SECONDS', 300)
-                                if cooldown_secs > 0 and ticker in self.last_trade_timestamps:
+                                tf_seconds = parse_timeframe_to_seconds(tf_to_use)
+                                cooldown_secs = tf_seconds * 4
+                                if ticker in self.last_trade_timestamps:
                                     elapsed = (self.get_now() - self.last_trade_timestamps[ticker]).total_seconds()
                                     if elapsed < cooldown_secs:
-                                        if result['action'] in ['BUY', 'SELL']:
+                                        # ONLY block BUY orders during cooldown to prevent trapping the bot in a bad position
+                                        if result['action'] == 'BUY':
                                             result['action'] = 'HOLD'
                                             result['reason'] = f"Trade Cooldown Active ({int(cooldown_secs - elapsed)}s remaining)"
 

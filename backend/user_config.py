@@ -2,6 +2,7 @@ import config as global_config
 import contextvars
 
 active_evaluation_context = contextvars.ContextVar('active_evaluation_context', default='dashboard')
+active_ticker_context = contextvars.ContextVar('active_ticker_context', default=None)
 
 class UserConfig:
     def __init__(self, uid: str):
@@ -39,23 +40,42 @@ class UserConfig:
 
     @property
     def active_parameters(self):
+        ticker = active_ticker_context.get()
+        merged = self.parameters.copy()
+        
+        # If evaluating a specific ticker, DO NOT inherit context (global) overrides.
+        # Only use base global_config defaults + ticker specific overrides.
+        if ticker and ticker in self.TICKER_SETTINGS:
+            overrides = self.TICKER_SETTINGS[ticker].get('indicator_overrides', {})
+            merged.update(overrides)
+            return merged
+            
         ctx = active_evaluation_context.get()
         contexts_dict = self.__dict__.get('contexts', {})
-        merged = self.parameters.copy()
         if ctx in contexts_dict:
             merged.update(contexts_dict[ctx].get('parameters', {}))
+            
         return merged
 
     def __getattr__(self, name):
-        """Allow dot-notation access to configs, falling back to context-specific parameters/toggles, then global, then default."""
-        ctx = active_evaluation_context.get()
-        contexts_dict = self.__dict__.get('contexts', {})
-        if ctx in contexts_dict:
-            ctx_data = contexts_dict[ctx]
-            if name in ctx_data.get('parameters', {}):
-                return ctx_data['parameters'][name]
-            if name in ctx_data.get('toggles', {}):
-                return ctx_data['toggles'][name]
+        """Allow dot-notation access to configs, falling back to ticker-specific, then context, then global, then default."""
+        ticker = active_ticker_context.get()
+        if ticker and ticker in self.TICKER_SETTINGS:
+            overrides = self.TICKER_SETTINGS[ticker].get('indicator_overrides', {})
+            if name in overrides:
+                return overrides[name]
+                
+        # If we have a specific ticker context, skip the intermediate 'context' overrides
+        # to ensure pure isolation between bots, avoiding bleeding from legacy global overrides.
+        if not ticker:
+            ctx = active_evaluation_context.get()
+            contexts_dict = self.__dict__.get('contexts', {})
+            if ctx in contexts_dict:
+                ctx_data = contexts_dict[ctx]
+                if name in ctx_data.get('parameters', {}):
+                    return ctx_data['parameters'][name]
+                if name in ctx_data.get('toggles', {}):
+                    return ctx_data['toggles'][name]
 
         if name in self.__dict__:
             return self.__dict__[name]

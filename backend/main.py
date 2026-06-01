@@ -729,10 +729,7 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
 
         # Risk Management
         "risk": risk_mgr.get_risk_status(account['equity']),
-        "ticker_settings": {
-            t: {'timeframe': eng.config.TICKER_SETTINGS.get(t, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME)}
-            for t in eng.config.WATCHLIST
-        },
+        "ticker_settings": eng.config.TICKER_SETTINGS,
 
         # Bot Meta
         "botRunning": eng.bot_running,
@@ -1290,6 +1287,8 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
     add_to_watchlist = data.get("add_to_watchlist", False)
     if add_to_watchlist and symbol not in eng.config.WATCHLIST:
         eng.config.WATCHLIST.append(symbol)
+    elif not add_to_watchlist and symbol in eng.config.WATCHLIST:
+        eng.config.WATCHLIST.remove(symbol)
         
     if symbol not in eng.config.TRADELIST:
         eng.config.TRADELIST.append(symbol)
@@ -1338,30 +1337,51 @@ async def cancel_order(data: dict, eng: UserEngine = Depends(get_user_engine)):
 
 
 @app.post("/api/settings/indicators")
-async def update_indicators(updates: dict, context: str = "dashboard", eng: UserEngine = Depends(get_user_engine)):
+async def update_indicators(updates: dict, context: str = "dashboard", ticker: str = None, eng: UserEngine = Depends(get_user_engine)):
     """Update indicator toggles or parameters dynamically. Instant in-memory + persists to Firestore."""
-    from user_config import active_evaluation_context
-    token = active_evaluation_context.set(context)
-    try:
+    
+    if ticker:
+        ticker = ticker.upper()
+        if ticker not in eng.config.TICKER_SETTINGS:
+            eng.config.TICKER_SETTINGS[ticker] = {}
+        if 'indicator_overrides' not in eng.config.TICKER_SETTINGS[ticker]:
+            eng.config.TICKER_SETTINGS[ticker]['indicator_overrides'] = {}
+            
         for k, v in updates.items():
             if v == "" or v is None:
-                eng.config.set(k, None)
-            elif k.startswith("ENABLE_"):
-                eng.config.set(k, bool(v))
+                if k in eng.config.TICKER_SETTINGS[ticker]['indicator_overrides']:
+                    del eng.config.TICKER_SETTINGS[ticker]['indicator_overrides'][k]
             else:
                 try:
                     default_val = getattr(global_config, k, None)
-                    if isinstance(default_val, int):
-                        eng.config.set(k, int(v))
-                    elif isinstance(default_val, float):
-                        eng.config.set(k, float(v))
-                    else:
+                    if isinstance(default_val, int): v = int(v)
+                    elif isinstance(default_val, float): v = float(v)
+                except Exception:
+                    pass
+                eng.config.TICKER_SETTINGS[ticker]['indicator_overrides'][k] = v
+    else:
+        from user_config import active_evaluation_context
+        token = active_evaluation_context.set(context)
+        try:
+            for k, v in updates.items():
+                if v == "" or v is None:
+                    eng.config.set(k, None)
+                elif k.startswith("ENABLE_"):
+                    eng.config.set(k, bool(v))
+                else:
+                    try:
+                        default_val = getattr(global_config, k, None)
+                        if isinstance(default_val, int):
+                            eng.config.set(k, int(v))
+                        elif isinstance(default_val, float):
+                            eng.config.set(k, float(v))
+                        else:
+                            eng.config.set(k, v)
+                    except Exception as e:
+                        print(f"[settings] Type conversion error for {k}: {e}")
                         eng.config.set(k, v)
-                except Exception as e:
-                    print(f"[settings] Type conversion error for {k}: {e}")
-                    eng.config.set(k, v)
-    finally:
-        active_evaluation_context.reset(token)
+        finally:
+            active_evaluation_context.reset(token)
 
     await eng.save_settings()
     clear_evaluation_cache()
@@ -1386,6 +1406,12 @@ async def update_ticker_settings(data: dict, eng: UserEngine = Depends(get_user_
             eng.config.TICKER_SETTINGS[ticker][k] = v
         elif k in eng.config.TICKER_SETTINGS[ticker]:
             del eng.config.TICKER_SETTINGS[ticker][k]
+            
+    add_to_watchlist = data.get("add_to_watchlist")
+    if add_to_watchlist is True and ticker not in eng.config.WATCHLIST:
+        eng.config.WATCHLIST.append(ticker)
+    elif add_to_watchlist is False and ticker in eng.config.WATCHLIST:
+        eng.config.WATCHLIST.remove(ticker)
     
     await eng.save_settings()
     return {"status": "success"}

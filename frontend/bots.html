@@ -1222,6 +1222,45 @@
                                 value="BotBulls3" onclick="event.stopPropagation()" onchange="updateStrategySignalLabels()">
                         </div>
                     </div>
+
+                    <div class="indicator-card group p-4 border border-amber-300/30 bg-amber-50/5 hover:bg-amber-50/15 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
+                        onclick="toggleIndicatorCard(this, event)">
+                        <div class="flex flex-col">
+                            <span class="font-black text-amber-800 uppercase">✦ Sentiment AI<div
+                                    class="group/tooltip relative inline-flex items-center ml-1">
+                                    <svg xmlns="http://www.w3.org/2000/svg"
+                                        class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors"
+                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    <div
+                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
+                                        Analyzes current news headlines and assigns a bullish/bearish score based on natural language processing of market sentiment.
+                                        <div
+                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
+                                        </div>
+                                    </div>
+                                </div></span>
+                            <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium AI</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button
+                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('Sentiment AI')"
+                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-100/50"
+                                title="Sentiment AI Settings">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-600" fill="none"
+                                    viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </button>
+                            <input type="checkbox" class="strategy-indicator-check w-5 h-5 accent-indigo-600 rounded"
+                                value="Sentiment AI" onclick="event.stopPropagation()" onchange="updateStrategySignalLabels()">
+                        </div>
+                    </div>
                 </div>
             </div>
 

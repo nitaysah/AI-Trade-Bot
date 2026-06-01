@@ -3194,7 +3194,7 @@ function openIndicatorSettings(indicatorName) {
                 <label class="text-[0.65rem] font-black text-indigo-950 uppercase tracking-widest opacity-60">${label}</label>
                 ${!hasOverride ? '<span class="text-[0.55rem] font-extrabold text-emerald-500 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded-md">System Default</span>' : ''}
             </div>
-            <input type="number" step="any" data-key="${key}" value="${hasOverride ? val : ''}" placeholder="${INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : ''}" 
+            <input type="number" step="any" data-key="${key}" value="${val}" placeholder="${INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : ''}" 
                 class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-bold text-indigo-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all">
         `;
         container.appendChild(div);
@@ -3212,7 +3212,7 @@ function resetIndicatorSettingsToDefaults() {
     if (!currentEditingIndicator) return;
     const inputs = document.querySelectorAll('#indicatorModalContent input');
     inputs.forEach(input => {
-        input.value = ''; // Revert to system default (empty value)
+        input.value = input.placeholder; // Revert to system default (visible value)
         const container = input.closest('.flex-col');
         if (container) {
             const header = container.querySelector('.flex.justify-between.items-center');
@@ -3230,7 +3230,11 @@ async function saveIndicatorSettings() {
     const inputs = document.querySelectorAll('#indicatorModalContent input');
     const updates = {};
     inputs.forEach(input => {
-        updates[input.dataset.key] = input.value;
+        if (input.value === input.placeholder || input.value === "") {
+            updates[input.dataset.key] = "";
+        } else {
+            updates[input.dataset.key] = input.value;
+        }
     });
 
     if (Object.keys(updates).length === 0) {

@@ -832,8 +832,14 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
             if col in df.columns:
                 df[col] = df[col].ffill().bfill()
 
-        latest = df.iloc[-1]
-        prev = df.iloc[-2]
+        from user_config import active_evaluation_context
+        if active_evaluation_context.get() == "bots":
+            latest = df.iloc[-2]  # Active bot execution uses fully closed/completed candle
+            prev = df.iloc[-3]
+        else:
+            latest = df.iloc[-1]  # Manual chart/dashboard uses live forming candle
+            prev = df.iloc[-2]
+
         signals = _generate_signals(latest, prev)
 
         def _safe(val):
@@ -1075,9 +1081,10 @@ def _generate_signals(latest, prev):
                     "BULLISH" if bool(latest.get("LX_SmartTrend", True)) else "BEARISH"
                 ),
                 "reason": (
-                    f"BB2 {'BUY' if bool(latest.get('LX_SmartTrend', True)) else 'SELL'} (Trail {'↑' if bool(latest.get('LX_SmartTrend', True)) else '↓'} | "
-                    f"Score {int(latest.get('LX_Score', 0))}/4 | "
-                    f"{'Trend ✓' if (not np.isnan(float(latest.get('LX_TrendTracer', 0))) and price > float(latest.get('LX_TrendTracer', 0))) else 'Trend ✗'})"
+                    f"BB2 {'BUY' if bool(latest.get('LX_SmartTrend', True)) else 'SELL'} "
+                    f"(SmartTrail: {'↑' if bool(latest.get('LX_SmartTrend', True)) else '↓'}, "
+                    f"Confluence: {int(latest.get('LX_Score', 0))}/4, "
+                    f"Tracer: {'Bullish' if (not np.isnan(float(latest.get('LX_TrendTracer', 0))) and price > float(latest.get('LX_TrendTracer', 0))) else 'Bearish'})"
                 ),
                 "weight": 1,
                 "premium": True,
