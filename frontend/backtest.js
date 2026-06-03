@@ -265,7 +265,7 @@ async function runBacktest() {
     if (timeframe === '1Min') {
         maxDays = 7;
         limitDesc = "7 days";
-    } else if (['5Min', '15Min', '30Min'].includes(timeframe)) {
+    } else if (['5Min', '10Min', '15Min', '30Min'].includes(timeframe)) {
         maxDays = 60;
         limitDesc = "60 days";
     } else if (['1Hour', '4Hour'].includes(timeframe)) {

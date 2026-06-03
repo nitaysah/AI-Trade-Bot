@@ -39,8 +39,8 @@ def get_firestore_db():
                 cred = credentials.Certificate(cred_path)
                 firebase_admin.initialize_app(cred)
             else:
-                firebase_admin.initialize_app(options={'projectId': 'trading-bot-engine-df3de'})
-        return firestore.client(database_id="trading-bot")
+                firebase_admin.initialize_app(options={'projectId': 'bot-bulls'})
+        return firestore.client()
     except Exception as e:
         print(f"[webull] Could not get Firestore client: {e}")
         return None

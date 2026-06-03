@@ -80,7 +80,7 @@ def _resample_df(df, timeframe):
         return df
 
 
-def get_historical_data(ticker, timeframe, start_date, end_date):
+def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=False):
     """
     Return a DataFrame of OHLCV data for *ticker* between *start_date* and
     *end_date*.  Uses a local CSV cache; downloads from Webull (if configured)
@@ -108,7 +108,7 @@ def get_historical_data(ticker, timeframe, start_date, end_date):
     # 1. Try the local cache
     # ------------------------------------------------------------------
     df = None
-    if os.path.exists(filepath):
+    if not force_yahoo and os.path.exists(filepath):
         try:
             df = pd.read_csv(filepath, index_col=0, parse_dates=True)
             if not df.empty:
@@ -137,7 +137,7 @@ def get_historical_data(ticker, timeframe, start_date, end_date):
     webull_success = False
     new_df = None
 
-    if config and getattr(config, "WEBULL_APP_KEY", ""):
+    if not force_yahoo and config and getattr(config, "WEBULL_APP_KEY", ""):
         try:
             print(f"[data] Attempting Webull fetch for {ticker} ({timeframe})...")
             wb_map = {

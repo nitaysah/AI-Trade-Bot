@@ -80,12 +80,12 @@ if not firebase_admin._apps:
             cred = credentials.Certificate(cred_path)
             firebase_admin.initialize_app(cred)
         else:
-            firebase_admin.initialize_app(options={'projectId': 'trading-bot-engine-df3de'})
+            firebase_admin.initialize_app(options={'projectId': 'bot-bulls'})
         print("[main] Firebase Admin initialized.")
     except Exception as e:
         print(f"[main] Firebase Admin init error: {e}")
 
-db = firestore.client(database_id="trading-bot")
+db = firestore.client()
 user_manager = UserManager(db)
 _webull_market_data_broker = None
 _chart_analysis_cache = {}
@@ -775,6 +775,15 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
             if "price_history" in v:
                 del v["price_history"]
 
+    # --- INJECT DUMP FOR LIVE SIGNALS ---
+    try:
+        import json
+        with open("/Users/nitaysah/.gemini/antigravity-ide/brain/14ababac-c92f-49e8-8fd2-fc1bdd26f4f4/scratch/live_payload.json", "w") as f:
+            json.dump(payload, f)
+    except Exception as e:
+        print(f"Failed to dump payload: {e}")
+    # ------------------------------------
+    
     return payload
 
 
@@ -801,6 +810,16 @@ async def get_chart_data(
 
     scan = _technical_scan_from_analysis(ticker, timeframe, analysis, use_bot_settings=prefer_bot)
     formatted_scan = _format_scan_for_ui(scan, use_global_settings=(not prefer_bot))
+    
+    # --- TEMPORARY LOGGING FOR DEBUGGING ---
+    print(f"=== LIVE DASHBOARD SIGNALS FOR {ticker} {timeframe} ===")
+    from pprint import pprint
+    signals = formatted_scan.get("signals", {})
+    bb3_signal = signals.get("BotBulls3")
+    print(f"BotBulls3 Signal: {bb3_signal}")
+    print(f"BotBulls3 Indicator Parameters: {eng.config.BOTBULLS3_ATR_MULT}, {eng.config.BOTBULLS3_ATR_PERIOD}")
+    # ---------------------------------------
+    
     print(f"[perf] /api/chart {ticker} {timeframe}: {(time.perf_counter() - started) * 1000:.1f}ms cached={cached}")
     return {
         "ticker": ticker,
@@ -944,9 +963,11 @@ def scan_ticker(ticker: str, timeframe: str = "4Hour", eng: UserEngine = Depends
 @app.post("/api/backtest")
 async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
     """Runs a historical backtest for a ticker."""
-    from user_config import active_evaluation_context
+    from user_config import active_evaluation_context, active_ticker_context
     active_evaluation_context.set("backtest")
     ticker = data.get("ticker", "AAPL").upper()
+    active_ticker_context.set(ticker)
+    
     if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
         return {"status": "error", "message": "Invalid ticker format"}
     timeframe = data.get("timeframe", "1Day")

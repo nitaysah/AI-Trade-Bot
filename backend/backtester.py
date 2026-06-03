@@ -36,9 +36,18 @@ class Backtester:
         self.df = None
 
     def run(self):
-        # 1. Fetch Data
-        self.df = get_historical_data(self.ticker, self.timeframe, self.start_date, self.end_date)
-        if self.df is None or self.df.empty:
+        # Force naive datetimes to match pandas index
+        if hasattr(self.start_date, "tzinfo") and self.start_date.tzinfo is not None:
+            self.start_date = self.start_date.replace(tzinfo=None)
+        if hasattr(self.end_date, "tzinfo") and self.end_date.tzinfo is not None:
+            self.end_date = self.end_date.replace(tzinfo=None)
+
+        # 1. Fetch Data with 100 days of padding to ensure indicators (EMA200, etc) can warm up
+        from datetime import timedelta
+        padded_start = self.start_date - timedelta(days=100)
+        raw_df = get_historical_data(self.ticker, self.timeframe, padded_start, self.end_date, force_yahoo=True)
+        
+        if raw_df is None or raw_df.empty:
             return {"error": "No data found for the selected range."}
 
         # Filter for Regular Hours (RTH) if stocks & self.ext_hours is False and not daily
@@ -46,23 +55,29 @@ class Backtester:
         is_crypto = any(clean_ticker.endswith(base) for base in ["USD", "USDT", "USDC"])
         if not is_crypto and not self.ext_hours and self.timeframe != "1Day":
             try:
-                time_idx = self.df.index.time
+                time_idx = raw_df.index.time
                 start_time = pd.to_datetime("09:30:00").time()
                 end_time = pd.to_datetime("16:00:00").time()
                 rth_mask = (time_idx >= start_time) & (time_idx <= end_time)
-                self.df = self.df[rth_mask]
-                print(f"[backtest] Filtered for Regular Trading Hours (RTH) only. {len(self.df)} bars remaining.")
+                raw_df = raw_df[rth_mask]
+                print(f"[backtest] Filtered for Regular Trading Hours (RTH) only. {len(raw_df)} bars remaining.")
             except Exception as rth_exc:
                 print(f"[backtest] RTH filtering failed: {rth_exc}")
 
-        # 2. Pre-calculate indicators
-        result = calculate_indicators_for_df(self.df, self.timeframe, self.ticker)
+        # 2. Pre-calculate indicators on the massive padded dataframe
+        result = calculate_indicators_for_df(raw_df, self.timeframe, self.ticker)
         if not result:
             return {"error": "Failed to calculate indicators."}
         
-        self.df = result['df']
+        full_df = result['df']
         
-        # 3. Simulate bar-by-bar
+        # 3. Slice the dataframe perfectly back down to the user's requested date window
+        self.df = full_df.loc[self.start_date:self.end_date]
+        
+        if self.df.empty:
+            return {"error": "No data available in the requested range after filtering."}
+        
+        # 4. Simulate bar-by-bar
         for i in range(len(self.df)):
             current_bar = self.df.iloc[i]
             timestamp = self.df.index[i]
