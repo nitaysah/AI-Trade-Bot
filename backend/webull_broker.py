@@ -132,6 +132,30 @@ class WebullBroker:
         # Auto-connect if keys are configured
         app_key = getattr(config, 'WEBULL_APP_KEY', '')
         app_secret = getattr(config, 'WEBULL_APP_SECRET', '')
+        account_id = getattr(config, 'WEBULL_ACCOUNT_ID', '')
+        
+        # Fallback to Firestore if .env keys are missing or default
+        if not app_key or app_key == "your_webull_app_key_here":
+            db = get_firestore_db()
+            if db:
+                try:
+                    doc = db.collection("system").document("webull_api").get()
+                    if doc.exists:
+                        data = doc.to_dict()
+                        app_key = data.get("app_key", app_key)
+                        app_secret = data.get("app_secret", app_secret)
+                        if not account_id:
+                            account_id = data.get("account_id", "")
+                        print("[webull] Fetched Webull API credentials from Firestore.")
+                except Exception as e:
+                    print(f"[webull] Error fetching API credentials from Firestore: {e}")
+
+        # Update config dynamically so other parts of the app know
+        config.WEBULL_APP_KEY = app_key
+        config.WEBULL_APP_SECRET = app_secret
+        if account_id:
+            config.WEBULL_ACCOUNT_ID = account_id
+
         if auto_connect and app_key and app_key != "your_webull_app_key_here":
             if data_only is None:
                 data_only = getattr(config, 'WEBULL_DATA_ONLY', False)

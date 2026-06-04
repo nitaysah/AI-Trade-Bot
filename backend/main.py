@@ -200,11 +200,6 @@ def _get_webull_market_data_broker():
     if _webull_market_data_broker and getattr(_webull_market_data_broker, "market_client", None):
         return _webull_market_data_broker
 
-    app_key = getattr(global_config, "WEBULL_APP_KEY", "")
-    app_secret = getattr(global_config, "WEBULL_APP_SECRET", "")
-    if not app_key or app_key == "your_webull_app_key_here" or not app_secret:
-        return None
-
     try:
         from webull_broker import WebullBroker
         broker = WebullBroker(data_only=True)
