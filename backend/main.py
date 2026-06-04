@@ -1555,7 +1555,3 @@ def _format_scan_for_ui(scan: dict, use_global_settings: bool = False) -> dict:
         "position_size_usd": scan.get("position_size_usd"),
         "position_size_pct": scan.get("position_size_pct"),
     }
-
-# Mount the frontend directory at the root to serve static files
-app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
-
