@@ -312,7 +312,7 @@
             <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
 
                 <!-- LEFT: Chart + Signals (2 cols) -->
-                <div class="lg:col-span-2 space-y-4">
+                <div class="lg:col-span-2 space-y-4 order-2 lg:order-1">
 
                     <!-- Price Chart — Webull Style -->
                     <div class="panel-glass relative">
@@ -604,31 +604,39 @@
 
 
                 <!-- RIGHT: Sidebar (1 col) -->
-                <div class="space-y-4">
+                <div class="space-y-4 order-1 lg:order-2">
 
                     <!-- Watchlist -->
-                    <div class="panel-glass relative">
+                    <div class="panel-glass relative" id="watchlistPanel">
                         <div class="panel-top-bar bg-gradient-to-r from-cyan-400 to-blue-400"></div>
-                        <div class="flex flex-col mb-4">
-                            <h2 class="text-lg font-bold text-indigo-900 mb-2">My Watchlist</h2>
-                            <div
-                                class="flex bg-slate-100/60 backdrop-blur-sm p-1 rounded-lg border border-purple-100/50 w-full text-xs">
-                                <button id="wlTabAll" onclick="setWatchlistTab('all')"
-                                    class="flex-1 py-1.5 text-center rounded-md font-bold transition-all text-indigo-900 bg-white shadow-sm">
-                                    All
-                                </button>
-                                <button id="wlTabStocks" onclick="setWatchlistTab('stocks')"
-                                    class="flex-1 py-1.5 text-center rounded-md font-bold transition-all text-slate-500 hover:text-indigo-900">
-                                    Stocks
-                                </button>
-                                <button id="wlTabCrypto" onclick="setWatchlistTab('crypto')"
-                                    class="flex-1 py-1.5 text-center rounded-md font-bold transition-all text-slate-500 hover:text-indigo-900">
-                                    Crypto
-                                </button>
-                            </div>
+                        
+                        <div class="flex justify-between items-center mb-4 cursor-pointer group" onclick="toggleWatchlistCollapse()">
+                            <h2 class="text-lg font-bold text-indigo-900 group-hover:text-indigo-600 transition-colors">My Watchlist</h2>
+                            <svg id="watchlistChevron" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500 transition-transform duration-300 transform rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
+                            </svg>
                         </div>
-                        <div id="watchlistContainer" class="space-y-2">
-                            <!-- Watchlist items injected by JS -->
+                        
+                        <div id="watchlistCollapsibleArea" class="transition-all duration-300 overflow-hidden" style="max-height: 1000px; opacity: 1;">
+                            <div class="flex flex-col mb-4">
+                                <div class="flex bg-slate-100/60 backdrop-blur-sm p-1 rounded-lg border border-purple-100/50 w-full text-xs">
+                                    <button id="wlTabAll" onclick="setWatchlistTab('all')"
+                                        class="flex-1 py-1.5 text-center rounded-md font-bold transition-all text-indigo-900 bg-white shadow-sm">
+                                        All
+                                    </button>
+                                    <button id="wlTabStocks" onclick="setWatchlistTab('stocks')"
+                                        class="flex-1 py-1.5 text-center rounded-md font-bold transition-all text-slate-500 hover:text-indigo-900">
+                                        Stocks
+                                    </button>
+                                    <button id="wlTabCrypto" onclick="setWatchlistTab('crypto')"
+                                        class="flex-1 py-1.5 text-center rounded-md font-bold transition-all text-slate-500 hover:text-indigo-900">
+                                        Crypto
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="watchlistContainer" class="space-y-2">
+                                <!-- Watchlist items injected by JS -->
+                            </div>
                         </div>
                     </div>
 

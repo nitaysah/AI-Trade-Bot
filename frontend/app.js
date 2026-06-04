@@ -2148,6 +2148,12 @@ function setWatchlistTab(tab) {
 function selectTicker(ticker) {
     const normalizedTicker = normalizeTicker(ticker);
     if (!normalizedTicker) return;
+    
+    // Auto-collapse watchlist on mobile when selecting a ticker
+    if (window.innerWidth < 1024 && typeof window.toggleWatchlistCollapse === 'function') {
+        window.toggleWatchlistCollapse(true);
+    }
+
     if (selectedTicker === normalizedTicker) {
         rememberSelectedTicker(normalizedTicker);
         updateActiveTickerDisplay(normalizedTicker);
@@ -3914,3 +3920,29 @@ function switchMacroTab(tab) {
         }
     });
 }
+
+// ──────────────────────────────────────────────
+// Watchlist Mobile UI Toggles
+// ──────────────────────────────────────────────
+window.toggleWatchlistCollapse = function(forceCollapse = false) {
+    const area = document.getElementById('watchlistCollapsibleArea');
+    const chevron = document.getElementById('watchlistChevron');
+    if (!area || !chevron) return;
+    
+    // Check if it's currently expanded
+    const isExpanded = area.style.maxHeight !== '0px';
+    
+    if (isExpanded || forceCollapse === true) {
+        // Collapse it
+        area.style.maxHeight = '0px';
+        area.style.opacity = '0';
+        area.style.marginTop = '0';
+        chevron.style.transform = 'rotate(0deg)';
+    } else {
+        // Expand it
+        area.style.maxHeight = '1000px';
+        area.style.opacity = '1';
+        area.style.marginTop = '1rem';
+        chevron.style.transform = 'rotate(180deg)';
+    }
+};
