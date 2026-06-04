@@ -2,7 +2,7 @@
 // BACKTEST CENTER LOGIC v2.0
 // ──────────────────────────────────────────────
 
-const CLOUD_URL = 'https://ai-trade-bot-backend-946557219642.us-central1.run.app';
+const CLOUD_URL = 'https://sighing-sift-dropout.ngrok-free.dev';
 const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
     ? 'http://localhost:8000' 
     : CLOUD_URL;
@@ -25,22 +25,25 @@ let btChartResizeObserver = null; // ResizeObserver for responsive chart
  * Retrieves the current Firebase ID token and prepares headers.
  */
 async function getAuthHeaders() {
-    // Use the globally exposed auth instance from the HTML module block
     const auth = window.auth;
-    const user = auth ? auth.currentUser : null;
-
+    const baseHeaders = { 
+        'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true'
+    };
+    
+    if (!auth) return baseHeaders;
+    const user = auth.currentUser;
     if (!user) {
         if (localStorage.getItem('dev_mode') === 'true') {
             return {
-                'Content-Type': 'application/json',
+                ...baseHeaders,
                 'Authorization': `Bearer dev-token`
             };
         }
-        return { 'Content-Type': 'application/json' };
     }
     const token = await user.getIdToken();
     return {
-        'Content-Type': 'application/json',
+        ...baseHeaders,
         'Authorization': `Bearer ${token}`
     };
 }

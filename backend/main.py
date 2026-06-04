@@ -11,6 +11,7 @@ Production-grade trading engine with:
 """
 
 from fastapi import FastAPI, Query, Header, HTTPException, Depends, Request
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
@@ -291,6 +292,8 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "https://bot-bulls.web.app",
+        "https://bot-bulls.firebaseapp.com",
         "https://trading-bot-engine-df3de.firebaseapp.com",
         "https://trading-bot-engine-df3de.web.app",
         "http://localhost:5000",
@@ -1552,3 +1555,7 @@ def _format_scan_for_ui(scan: dict, use_global_settings: bool = False) -> dict:
         "position_size_usd": scan.get("position_size_usd"),
         "position_size_pct": scan.get("position_size_pct"),
     }
+
+# Mount the frontend directory at the root to serve static files
+app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
+

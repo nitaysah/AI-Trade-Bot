@@ -1,0 +1,36 @@
+name: Deploy Backend to Oracle VM
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'backend/**'
+      - '.github/workflows/deploy-backend.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Deploy via Rsync
+        uses: easingthemes/ssh-deploy@main
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+          REMOTE_HOST: ${{ secrets.ORACLE_HOST }}
+          REMOTE_USER: ${{ secrets.ORACLE_USER }}
+          SOURCE: "backend/"
+          TARGET: "/home/ubuntu/backend/"
+          EXCLUDE: "/venv/, /__pycache__/, /.env, /stdout.log"
+
+      - name: Restart Systemd Service
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          script: |
+            sudo systemctl restart botbulls.service
+            sudo systemctl status botbulls.service --no-pager

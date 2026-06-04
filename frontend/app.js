@@ -4,7 +4,7 @@
 // ═══════════════════════════════════════════════════
 
 // 6. Production API Configuration (Auto-switch between Local and Cloud)
-const CLOUD_URL = 'https://ai-trade-bot-backend-946557219642.us-central1.run.app';
+const CLOUD_URL = 'https://sighing-sift-dropout.ngrok-free.dev';
 const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
     ? 'http://localhost:8000'
     : CLOUD_URL;
@@ -228,31 +228,36 @@ const CHART_RANGES = {
  */
 async function getAuthHeaders() {
     const auth = window.auth;
+    const baseHeaders = { 
+        'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true'
+    };
+    
     if (!auth) {
         console.warn('[auth] window.auth is NOT defined yet');
-        return { 'Content-Type': 'application/json' };
+        return baseHeaders;
     }
     const user = auth.currentUser;
     if (!user) {
         if (localStorage.getItem('dev_mode') === 'true') {
             return {
-                'Content-Type': 'application/json',
+                ...baseHeaders,
                 'Authorization': `Bearer dev-token`
             };
         }
         console.warn('[auth] No current user found in auth instance');
-        return { 'Content-Type': 'application/json' };
+        return baseHeaders;
     }
 
     try {
         const token = await user.getIdToken();
         return {
-            'Content-Type': 'application/json',
+            ...baseHeaders,
             'Authorization': `Bearer ${token}`
         };
     } catch (e) {
         console.error('[auth] Error getting ID token:', e);
-        return { 'Content-Type': 'application/json' };
+        return baseHeaders;
     }
 }
 
