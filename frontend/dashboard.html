@@ -103,6 +103,11 @@
             <div class="flex flex-wrap justify-center items-center gap-2 md:gap-3 w-full">
 
 
+                <a href="dashboard.html"
+                    class="flex items-center justify-center h-9 text-xs font-black bg-indigo-600 text-white border-2 border-indigo-600 rounded-full px-5 hover:bg-indigo-700 hover:border-indigo-700 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
+                    📈 Dashboard
+                </a>
+
                 <a href="bots.html"
                     class="flex items-center justify-center h-9 text-xs font-black bg-purple-50 text-indigo-600 border-2 border-purple-100 rounded-full px-5 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
                     🤖 Active Bots
@@ -118,27 +123,29 @@
                     🧠 Strategies
                 </a>
 
-                <div id="alpacaConnectionContainer" class="flex items-center">
-                    <button onclick="window.location.href='bots.html'"
-                        id="alpacaLinkRedirectBtn"
-                        class="flex items-center justify-center h-9 text-xs font-black bg-emerald-50 text-emerald-600 border-2 border-emerald-100 rounded-full px-5 hover:bg-emerald-600 hover:text-white transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
-                        🔗 Connect Alpaca
-                    </button>
-                    <span id="alpacaLinkStatus"
-                        class="hidden flex items-center justify-center h-9 text-xs font-black px-5 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider">
-                        <span class="h-2 w-2 rounded-full mr-2" id="alpacaStatusDot"></span>
-                        <span id="alpacaStatusText">Checking...</span>
-                        <button id="btnUnlinkAlpaca" onclick="unlinkAlpacaDashboard()"
-                            class="hidden ml-3 px-2 py-0.5 bg-rose-500 text-white rounded-full text-[9px] hover:bg-rose-600 transition-all uppercase tracking-tighter">
-                            Unlink
+                <div class="flex items-center gap-2 md:gap-3">
+                    <div id="alpacaConnectionContainer" class="flex items-center">
+                        <button onclick="window.location.href='bots.html'"
+                            id="alpacaLinkRedirectBtn"
+                            class="flex items-center justify-center h-9 text-xs font-black bg-emerald-50 text-emerald-600 border-2 border-emerald-100 rounded-full px-5 hover:bg-emerald-600 hover:text-white transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
+                            🔗 Connect Alpaca
                         </button>
-                    </span>
-                </div>
+                        <span id="alpacaLinkStatus"
+                            class="hidden flex items-center justify-center h-9 text-xs font-black px-5 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider">
+                            <span class="h-2 w-2 rounded-full mr-2" id="alpacaStatusDot"></span>
+                            <span id="alpacaStatusText">Checking...</span>
+                            <button id="btnUnlinkAlpaca" onclick="unlinkAlpacaDashboard()"
+                                class="hidden ml-3 px-2 py-0.5 bg-rose-500 text-white rounded-full text-[9px] hover:bg-rose-600 transition-all uppercase tracking-tighter">
+                                Unlink
+                            </button>
+                        </span>
+                    </div>
 
-                <button onclick="logoutCommander()"
-                    class="flex items-center justify-center h-9 text-xs font-black bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white transition-all px-5 rounded-full border-2 border-rose-100 shadow-sm whitespace-nowrap uppercase tracking-wider">
-                    Logout
-                </button>
+                    <button onclick="logoutCommander()"
+                        class="flex items-center justify-center h-9 text-xs font-black bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white transition-all px-5 rounded-full border-2 border-rose-100 shadow-sm whitespace-nowrap uppercase tracking-wider">
+                        Logout
+                    </button>
+                </div>
             </div>
         </header>
 

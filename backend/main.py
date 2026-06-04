@@ -1252,13 +1252,18 @@ async def debug_history(eng: UserEngine = Depends(get_user_engine)):
     }
 
 @app.delete("/api/tradelist/{ticker}")
-async def remove_from_tradelist(ticker: str, eng: UserEngine = Depends(get_user_engine)):
+async def remove_from_tradelist(ticker: str, liquidate: bool = False, eng: UserEngine = Depends(get_user_engine)):
     """Remove a ticker from the active trade list."""
     ticker = ticker.upper()
     if ticker in eng.config.TRADELIST:
         eng.config.TRADELIST.remove(ticker)
         await eng.save_settings()
         print(f"[settings] Removed {ticker} from active tradelist (Bot Deactivated) for {eng.uid}")
+        
+    if liquidate:
+        res = eng.broker.close_position(ticker)
+        print(f"[tradelist] Liquidating {ticker}: {res}")
+
     return {"status": "success", "tradelist": eng.config.TRADELIST}
 
 

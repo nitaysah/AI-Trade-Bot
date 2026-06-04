@@ -229,10 +229,19 @@ class AlpacaBroker:
                     
                     # Resolve trade reason
                     matched = self._find_matching_trade(sym, side, trade_log)
-                    if matched and matched.get('reason'):
-                        reason = matched.get('reason')
+                    
+                    if status == 'filled' and filled_qty > 0:
+                        import re
+                        raw_reason = matched.get('reason') if matched else ""
+                        clean_reason = re.sub(r"^✅ BOUGHT .*?: ", "", raw_reason).strip()
+                        if not clean_reason:
+                            clean_reason = f"Buying momentum crossover confirmed."
+                        reason = f"✅ BOUGHT {filled_qty:.6f} shares at ${self._round_price(sym, filled_avg)} (Total: ${total_cost:.2f}): {clean_reason}"
                     else:
-                        reason = f"AI Entry: Buying momentum crossover confirmed at ${self._round_price(sym, filled_avg)}."
+                        if matched and matched.get('reason'):
+                            reason = matched.get('reason')
+                        else:
+                            reason = f"Order {status.upper()}: Pending execution."
                 
                 elif side == 'sell':
                     entry = None
@@ -349,7 +358,7 @@ class AlpacaBroker:
 
                 # Link open pending trade with original bot trigger reasons
                 matched = self._find_matching_trade(sym, side, trade_log)
-                reason = matched.get('reason') if matched else 'AI Strategy: Trigger awaiting limit order target.'
+                reason = matched.get('reason') if matched else 'AI Strategy: Order pending execution.'
 
                 open_list.append({
                     'id': str(o.id),
@@ -428,7 +437,8 @@ class AlpacaBroker:
             request_symbol = symbol.upper().replace("/", "")
             is_crypto = any(request_symbol.endswith(base) for base in ["USD", "USDT", "USDC"])
             
-            tif = TimeInForce.GTC if is_crypto else TimeInForce.DAY
+            # Crypto market orders often fill instantly when using IOC (Immediate Or Cancel)
+            tif = TimeInForce.IOC if is_crypto else TimeInForce.DAY
             if is_crypto:
                 # Format as BASE/QUOTE (e.g., BTC/USD)
                 for base in ["USDT", "USDC", "USD"]:

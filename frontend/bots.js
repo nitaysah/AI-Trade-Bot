@@ -292,14 +292,31 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
 }
 
 function selectTicker(ticker) {
+    if (selectedTicker === ticker) return;
     selectedTicker = ticker;
-    fetchBotsData();
+
+    // Instantly swap the 'active' highlight on the DOM – no network call needed
+    document.querySelectorAll('#tradelistContainer .watchlist-item').forEach(el => {
+        // Each item's first onclick contains the ticker string
+        const isMatch = el.innerHTML.includes(`selectTicker('${ticker}')`);
+        if (isMatch) {
+            el.classList.add('active');
+        } else {
+            el.classList.remove('active');
+        }
+    });
+
+    // Load AI summary for the newly selected ticker (uses client cache if available)
+    fetchAIIndicator(ticker, currentBackendTf);
 }
 
 async function removeFromTradelist(ticker) {
+    if (!confirm(`Warning: If you delete the bot for ${ticker}, any open position for this stock will be automatically liquidated.\n\nAre you sure you want to proceed?`)) {
+        return;
+    }
     try {
         const headers = await getAuthHeaders();
-        const response = await fetch(`${API_BASE}/api/tradelist/${ticker}`, {
+        const response = await fetch(`${API_BASE}/api/tradelist/${ticker}?liquidate=true`, {
             method: 'DELETE',
             headers: headers
         });
@@ -532,7 +549,7 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders) {
             const totalValueStr = item.total_cost ? `$${Number(item.total_cost).toFixed(2)}` : '—';
             
             const tifBadge = `<span class="px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-500 font-black text-[0.55rem] border border-indigo-100 uppercase">${item.time_in_force || 'GTC'}</span>`;
-            const aiReason = item.reason || 'AI Strategy: Trigger awaiting limit order criteria.';
+            const aiReason = item.reason || 'AI Strategy: Order pending execution.';
 
             row.innerHTML = `
                 <td class="py-2.5 pr-4 text-purple-600 text-xs">${formatLocalTime(item.created_at)}</td>

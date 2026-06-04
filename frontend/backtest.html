@@ -111,25 +111,32 @@
                     🤖 Active Bots
                 </a>
 
+                <a href="backtest.html"
+                    class="flex items-center justify-center h-9 text-xs font-black bg-indigo-600 text-white border-2 border-indigo-600 rounded-full px-5 hover:bg-indigo-700 hover:border-indigo-700 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
+                    📊 Backtest Center
+                </a>
+
                 <a href="strategy.html"
                     class="flex items-center justify-center h-9 text-xs font-black bg-purple-50 text-indigo-600 border-2 border-purple-100 rounded-full px-5 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
                     🧠 Strategies
                 </a>
 
-                <span id="alpacaLinkStatus"
-                    class="flex items-center justify-center h-9 text-xs font-black px-5 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider">
-                    <span class="h-2 w-2 rounded-full mr-2" id="alpacaStatusDot"></span>
-                    <span id="alpacaStatusText">Checking...</span>
-                    <button id="btnUnlinkAlpaca" onclick="unlinkAlpaca()"
-                        class="hidden ml-3 px-2 py-0.5 bg-rose-500 text-white rounded-full text-[9px] hover:bg-rose-600 transition-all uppercase tracking-tighter">
-                        Unlink
-                    </button>
-                </span>
+                <div class="flex items-center gap-2 md:gap-3">
+                    <span id="alpacaLinkStatus"
+                        class="flex items-center justify-center h-9 text-xs font-black px-5 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider">
+                        <span class="h-2 w-2 rounded-full mr-2" id="alpacaStatusDot"></span>
+                        <span id="alpacaStatusText">Checking...</span>
+                        <button id="btnUnlinkAlpaca" onclick="unlinkAlpaca()"
+                            class="hidden ml-3 px-2 py-0.5 bg-rose-500 text-white rounded-full text-[9px] hover:bg-rose-600 transition-all uppercase tracking-tighter">
+                            Unlink
+                        </button>
+                    </span>
 
-                <button onclick="logoutCommander()"
-                    class="flex items-center justify-center h-9 text-xs font-black bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white transition-all px-5 rounded-full border-2 border-rose-100 shadow-sm whitespace-nowrap uppercase tracking-wider">
-                    Logout
-                </button>
+                    <button onclick="logoutCommander()"
+                        class="flex items-center justify-center h-9 text-xs font-black bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white transition-all px-5 rounded-full border-2 border-rose-100 shadow-sm whitespace-nowrap uppercase tracking-wider">
+                        Logout
+                    </button>
+                </div>
             </div>
         </header>
 

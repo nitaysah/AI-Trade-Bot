@@ -69,6 +69,74 @@
             await signOut(auth);
             window.location.href = "index.html";
         };
+
+        const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
+            ? 'http://localhost:8000' 
+            : 'https://bot-bulls.web.app';
+
+        async function pollAlpacaStatus() {
+            const statusPill = document.getElementById('alpacaLinkStatus');
+            const statusDot = document.getElementById('alpacaStatusDot');
+            const statusText = document.getElementById('alpacaStatusText');
+            const btnUnlink = document.getElementById('btnUnlinkAlpaca');
+            if (!statusPill) return;
+
+            try {
+                const user = window.auth.currentUser;
+                const token = user ? await user.getIdToken() : null;
+                const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+
+                const response = await fetch(`${API_BASE}/api/dashboard?mode=fast&source=strategy`, { headers });
+                const data = await response.json();
+
+                if (data.simulation) {
+                    if (data.has_keys) {
+                        statusPill.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-amber-50 text-amber-600 border-2 border-amber-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
+                        statusDot.className = "h-2 w-2 rounded-full mr-2 bg-amber-500 animate-pulse";
+                        statusText.textContent = "RETRYING...";
+                    } else {
+                        statusPill.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-rose-50 text-rose-600 border-2 border-rose-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
+                        statusDot.className = "h-2 w-2 rounded-full mr-2 bg-rose-500 animate-pulse";
+                        statusText.textContent = "SIMULATION";
+                    }
+                    if (btnUnlink) btnUnlink.classList.add('hidden');
+                } else {
+                    statusPill.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-emerald-50 text-emerald-600 border-2 border-emerald-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
+                    statusDot.className = "h-2 w-2 rounded-full mr-2 bg-emerald-500 animate-pulse";
+                    statusText.textContent = "Alpaca";
+                    if (btnUnlink) btnUnlink.classList.remove('hidden');
+                }
+                statusPill.classList.remove('hidden');
+            } catch (e) {
+                console.error('[strategy] Alpaca status check failed:', e);
+            }
+        }
+
+        window.unlinkAlpaca = async () => {
+            if (!confirm("Are you sure you want to unlink your Alpaca account?")) return;
+            try {
+                const user = window.auth.currentUser;
+                const token = user ? await user.getIdToken() : null;
+                const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+                const response = await fetch(`${API_BASE}/api/alpaca_config`, {
+                    method: 'DELETE',
+                    headers: headers
+                });
+                const data = await response.json();
+                if (data.status === 'success') {
+                    alert(data.message);
+                    pollAlpacaStatus();
+                }
+            } catch (err) {}
+        };
+
+        const checkAuth = setInterval(() => {
+            if (window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true')) {
+                clearInterval(checkAuth);
+                pollAlpacaStatus();
+                setInterval(pollAlpacaStatus, 30000);
+            }
+        }, 500);
     </script>
 
     <style>
@@ -150,10 +218,22 @@
                     🧠 Strategies
                 </a>
 
-                <button onclick="window.logoutCommander()"
-                    class="flex items-center justify-center h-9 text-xs font-black bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white transition-all px-5 rounded-full border-2 border-rose-100 shadow-sm whitespace-nowrap uppercase tracking-wider">
-                    Logout
-                </button>
+                <div class="flex items-center gap-2 md:gap-3">
+                    <span id="alpacaLinkStatus"
+                        class="flex items-center justify-center h-9 text-xs font-black px-5 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider">
+                        <span class="h-2 w-2 rounded-full mr-2" id="alpacaStatusDot"></span>
+                        <span id="alpacaStatusText">Checking...</span>
+                        <button id="btnUnlinkAlpaca" onclick="unlinkAlpaca()"
+                            class="hidden ml-3 px-2 py-0.5 bg-rose-500 text-white rounded-full text-[9px] hover:bg-rose-600 transition-all uppercase tracking-tighter">
+                            Unlink
+                        </button>
+                    </span>
+
+                    <button onclick="window.logoutCommander()"
+                        class="flex items-center justify-center h-9 text-xs font-black bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white transition-all px-5 rounded-full border-2 border-rose-100 shadow-sm whitespace-nowrap uppercase tracking-wider">
+                        Logout
+                    </button>
+                </div>
             </div>
         </header>
 
