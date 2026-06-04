@@ -27,14 +27,30 @@ jobs:
           key: ${{ secrets.ORACLE_SSH_KEY }}
           envs: PRODUCTION_ENV
           script: |
-            # Pull latest changes from GitHub directly on the server
+            # Clone if doesn't exist, otherwise fetch and reset
+            if [ ! -d "/home/ubuntu/backend/.git" ]; then
+              rm -rf /home/ubuntu/backend
+              git clone git@github.com:nitaysah/AI-Trade-Bot.git /home/ubuntu/backend
+            fi
+            
             cd /home/ubuntu/backend
             git fetch origin
             git reset --hard origin/main
             
+            # Setup virtual environment if missing, and install dependencies
+            if [ ! -d "venv" ]; then
+              python3 -m venv venv
+            fi
+            source venv/bin/activate
+            pip install -r backend/requirements.txt
+            
             # Recreate environment variables
-            echo "$PRODUCTION_ENV" > /home/ubuntu/backend/.env
-            chmod 600 /home/ubuntu/backend/.env
+            if [ -n "$PRODUCTION_ENV" ]; then
+              echo "$PRODUCTION_ENV" > /home/ubuntu/backend/.env
+              chmod 600 /home/ubuntu/backend/.env
+            else
+              echo "Warning: PRODUCTION_ENV secret is empty or missing!"
+            fi
             
             # Restart the bot
             sudo systemctl restart botbulls.service
