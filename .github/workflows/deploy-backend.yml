@@ -15,17 +15,9 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Deploy via Rsync
-        uses: easingthemes/ssh-deploy@main
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.ORACLE_SSH_KEY }}
-          REMOTE_HOST: ${{ secrets.ORACLE_HOST }}
-          REMOTE_USER: ${{ secrets.ORACLE_USER }}
-          SOURCE: "backend/"
-          TARGET: "/home/ubuntu/backend/"
-          EXCLUDE: "/venv/, /__pycache__/, /.env, /stdout.log"
 
-      - name: Inject Production Secrets
+
+      - name: Native Git Pull and Restart
         uses: appleboy/ssh-action@master
         env:
           PRODUCTION_ENV: ${{ secrets.PRODUCTION_ENV }}
@@ -35,15 +27,15 @@ jobs:
           key: ${{ secrets.ORACLE_SSH_KEY }}
           envs: PRODUCTION_ENV
           script: |
+            # Pull latest changes from GitHub directly on the server
+            cd /home/ubuntu/backend
+            git fetch origin
+            git reset --hard origin/main
+            
+            # Recreate environment variables
             echo "$PRODUCTION_ENV" > /home/ubuntu/backend/.env
             chmod 600 /home/ubuntu/backend/.env
-
-      - name: Restart Systemd Service
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.ORACLE_HOST }}
-          username: ${{ secrets.ORACLE_USER }}
-          key: ${{ secrets.ORACLE_SSH_KEY }}
-          script: |
+            
+            # Restart the bot
             sudo systemctl restart botbulls.service
             sudo systemctl status botbulls.service --no-pager
