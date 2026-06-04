@@ -20,12 +20,16 @@ jobs:
       - name: Native Git Pull and Restart
         uses: appleboy/ssh-action@master
         env:
-          PRODUCTION_ENV: ${{ secrets.PRODUCTION_ENV }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          WEBULL_APP_KEY: ${{ secrets.WEBULL_APP_KEY }}
+          WEBULL_APP_SECRET: ${{ secrets.WEBULL_APP_SECRET }}
         with:
           host: ${{ secrets.ORACLE_HOST }}
           username: ${{ secrets.ORACLE_USER }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
-          envs: PRODUCTION_ENV
+          envs: GROQ_API_KEY,ALPACA_API_KEY,ALPACA_SECRET_KEY,WEBULL_APP_KEY,WEBULL_APP_SECRET
           script: |
             # Clone if doesn't exist, otherwise fetch and reset
             if [ ! -d "/home/ubuntu/backend/.git" ]; then
@@ -44,13 +48,18 @@ jobs:
             source venv/bin/activate
             pip install -r backend/requirements.txt
             
-            # Recreate environment variables
-            if [ -n "$PRODUCTION_ENV" ]; then
-              echo "$PRODUCTION_ENV" > /home/ubuntu/backend/.env
-              chmod 600 /home/ubuntu/backend/.env
-            else
-              echo "Warning: PRODUCTION_ENV secret is empty or missing!"
-            fi
+            # Recreate environment variables from individual secrets
+            cat <<EOF > /home/ubuntu/backend/.env
+            GROQ_API_KEY=$GROQ_API_KEY
+            ALPACA_API_KEY=$ALPACA_API_KEY
+            ALPACA_SECRET_KEY=$ALPACA_SECRET_KEY
+            ALPACA_PAPER=true
+            BROKER_TYPE=alpaca
+            WEBULL_APP_KEY=$WEBULL_APP_KEY
+            WEBULL_APP_SECRET=$WEBULL_APP_SECRET
+            WEBULL_DATA_ONLY=true
+            EOF
+            chmod 600 /home/ubuntu/backend/.env
             
             # Restart the bot
             sudo systemctl restart botbulls.service
