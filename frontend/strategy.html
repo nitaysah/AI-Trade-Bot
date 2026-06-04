@@ -72,7 +72,7 @@
 
         const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
             ? 'http://localhost:8000' 
-            : 'https://bot-bulls.web.app';
+            : 'https://sighing-sift-dropout.ngrok-free.dev';
 
         async function pollAlpacaStatus() {
             const statusPill = document.getElementById('alpacaLinkStatus');
@@ -84,7 +84,9 @@
             try {
                 const user = window.auth.currentUser;
                 const token = user ? await user.getIdToken() : null;
-                const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+                const headers = token 
+                    ? { 'Authorization': `Bearer ${token}`, 'ngrok-skip-browser-warning': 'true' } 
+                    : { 'ngrok-skip-browser-warning': 'true' };
 
                 const response = await fetch(`${API_BASE}/api/dashboard?mode=fast&source=strategy`, { headers });
                 const data = await response.json();
@@ -117,7 +119,9 @@
             try {
                 const user = window.auth.currentUser;
                 const token = user ? await user.getIdToken() : null;
-                const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+                const headers = token 
+                    ? { 'Authorization': `Bearer ${token}`, 'ngrok-skip-browser-warning': 'true' } 
+                    : { 'ngrok-skip-browser-warning': 'true' };
                 const response = await fetch(`${API_BASE}/api/alpaca_config`, {
                     method: 'DELETE',
                     headers: headers
