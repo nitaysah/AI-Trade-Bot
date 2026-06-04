@@ -25,6 +25,19 @@ jobs:
           TARGET: "/home/ubuntu/backend/"
           EXCLUDE: "/venv/, /__pycache__/, /.env, /stdout.log"
 
+      - name: Inject Production Secrets
+        uses: appleboy/ssh-action@master
+        env:
+          PRODUCTION_ENV: ${{ secrets.PRODUCTION_ENV }}
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          envs: PRODUCTION_ENV
+          script: |
+            echo "$PRODUCTION_ENV" > /home/ubuntu/backend/.env
+            chmod 600 /home/ubuntu/backend/.env
+
       - name: Restart Systemd Service
         uses: appleboy/ssh-action@master
         with:
