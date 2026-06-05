@@ -8,7 +8,7 @@ const CLOUD_URL = 'https://sighing-sift-dropout.ngrok-free.dev';
 const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
     ? 'http://localhost:8000'
     : CLOUD_URL;
-const REFRESH_INTERVAL = 60000; // 60 seconds (1 minute)
+const REFRESH_INTERVAL = 10000; // 10 seconds (faster real-time tracking)
 
 let selectedTicker = null;
 let currentBackendTf = "5Min";
@@ -76,6 +76,48 @@ function formatLocalTime(isoString) {
     }
 }
 
+function formatUptime(isoString) {
+    if (!isoString) return '';
+    let timestamp = isoString;
+    if (isoString && !isoString.includes('Z') && !/[+-]\d{2}:\d{2}$/.test(isoString)) {
+        timestamp += 'Z';
+    }
+    const diffMs = new Date() - new Date(timestamp);
+    if (isNaN(diffMs) || diffMs < 0) return 'Running for < 1m';
+    const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 1) {
+        return 'Running for < 1m';
+    }
+    if (diffMins < 60) {
+        return `Running for ${diffMins}m`;
+    }
+    const diffHours = Math.floor(diffMins / 60);
+    const remainingMins = diffMins % 60;
+    if (diffHours < 24) {
+        return `Running for ${diffHours}h ${remainingMins}m`;
+    }
+    const diffDays = Math.floor(diffHours / 24);
+    const remainingHours = diffHours % 24;
+    return `Running for ${diffDays}d ${remainingHours}h`;
+}
+
+function formatRelativeTime(isoString) {
+    if (!isoString) return 'No trades yet';
+    let timestamp = isoString;
+    if (isoString && !isoString.includes('Z') && !/[+-]\d{2}:\d{2}$/.test(isoString)) {
+        timestamp += 'Z';
+    }
+    const diffMs = new Date() - new Date(timestamp);
+    if (isNaN(diffMs) || diffMs < 0) return 'Just now';
+    const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    const diffDays = Math.floor(diffHours / 24);
+    return `${diffDays}d ago`;
+}
+
 // ──────────────────────────────────────────────
 // Render Active Bots List
 // ──────────────────────────────────────────────
@@ -106,6 +148,65 @@ function setBotTab(tab) {
         renderTradelist(window.lastBotsData.botScans || window.lastBotsData.watchlistScans, window.lastBotsData.tradelist, window.lastBotsData.tickerAmounts);
     }
 }
+
+window.goToDashboardChart = async function(ticker) {
+    try {
+        if (window.lastBotsData && window.lastBotsData.ticker_settings) {
+            const settings = window.lastBotsData.ticker_settings[ticker];
+            if (settings) {
+                const headers = await getAuthHeaders();
+                
+                // Update timeframe
+                if (settings.timeframe) {
+                    localStorage.setItem('lastChartTf', settings.timeframe);
+                    await fetch(`${API_BASE}/api/settings/timeframe`, {
+                        method: 'POST',
+                        headers: headers,
+                        body: JSON.stringify({ timeframe: settings.timeframe })
+                    });
+                }
+                
+                // Overwrite global dashboard indicators
+                if (settings.indicators) {
+                    const SIGNAL_TO_TOGGLE = {
+                        'RSI': 'ENABLE_RSI', 'MACD': 'ENABLE_MACD', 'EMA Cross': 'ENABLE_EMA',
+                        'Supertrend': 'ENABLE_SUPERTREND', 'Bollinger': 'ENABLE_BOLLINGER',
+                        'VWAP': 'ENABLE_VWAP', 'Mystic Pulse': 'ENABLE_MYSTIC_PULSE',
+                        'Botbulls4 News AI': 'ENABLE_AI_SENTIMENT', 'Candle Patterns': 'ENABLE_CANDLE_PATTERNS',
+                        'ADX Trend': 'ENABLE_ADX_TREND', 'SMA': 'ENABLE_SMA',
+                        'BotBulls1': 'ENABLE_BOTBULLS1', 'BotBulls2': 'ENABLE_BOTBULLS2', 'BotBulls3': 'ENABLE_BOTBULLS3'
+                    };
+                    
+                    const payload = {};
+                    const newPrefs = {};
+                    Object.values(SIGNAL_TO_TOGGLE).forEach(k => payload[k] = false); // Disable all
+                    Object.keys(SIGNAL_TO_TOGGLE).forEach(ind => newPrefs[ind] = false);
+                    
+                    settings.indicators.forEach(ind => {
+                        if (SIGNAL_TO_TOGGLE[ind]) {
+                            payload[SIGNAL_TO_TOGGLE[ind]] = true; // Enable bot's in backend
+                            newPrefs[ind] = true; // Enable in frontend
+                        }
+                    });
+                    
+                    // Save to local storage so the UI updates immediately
+                    localStorage.setItem('globalIndicatorPrefs', JSON.stringify(newPrefs));
+                    
+                    await fetch(`${API_BASE}/api/settings/indicators?context=dashboard`, {
+                        method: 'POST',
+                        headers: headers,
+                        body: JSON.stringify(payload)
+                    });
+                }
+            }
+        }
+    } catch(e) {
+        console.error("Failed to transfer settings:", e);
+    }
+
+    localStorage.setItem('lastViewedTicker', ticker);
+    window.location.href = 'dashboard.html';
+};
 
 function renderTradelist(scans, tradelist, tickerAmounts = {}) {
     const container = document.getElementById('tradelistContainer');
@@ -150,7 +251,16 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
     filteredTradelist.forEach(ticker => {
         const scan = (scans || {})[ticker];
         const item = document.createElement('div');
-        item.className = `watchlist-item group active-bot ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2 flex flex-col gap-2`;
+        item.className = `watchlist-item group active-bot ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2 flex flex-col gap-2 transition-transform duration-200`;
+        item.draggable = true;
+        item.dataset.ticker = ticker;
+        
+        item.addEventListener('dragstart', handleDragStart);
+        item.addEventListener('dragend', handleDragEnd);
+        item.addEventListener('dragover', handleDragOver);
+        item.addEventListener('dragenter', handleDragEnter);
+        item.addEventListener('dragleave', handleDragLeave);
+        item.addEventListener('drop', handleDrop);
 
         const action = scan?.action || '—';
         let price = '---';
@@ -175,14 +285,38 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         const positions = window.lastBotsData?.positions || [];
         const activePosition = positions.find(p => p.symbol === ticker);
 
+        const pauseReason = (window.lastBotsData?.ticker_settings || {})[ticker]?.pause_reason || '';
+        let pauseReasonHtml = '';
+        if (isPaused && pauseReason) {
+            pauseReasonHtml = `
+                <div class="mt-1 px-2.5 py-1.5 bg-amber-500/10 border border-amber-500/20 rounded-xl text-[0.58rem] font-black text-amber-700 flex items-center gap-1.5 leading-snug">
+                    <span>⚠️</span>
+                    <span>${pauseReason}</span>
+                </div>
+            `;
+        }
+
         let positionHtml = '';
         if (activePosition) {
             const qty = activePosition.qty;
             const avgCostVal = activePosition.avg_price;
-            const avgCost = isCrypto ? avgCostVal.toFixed(4) : avgCostVal.toFixed(2);
+            
+            // Dynamic price formatting helper
+            const formatPrice = (val) => {
+                if (val === undefined || val === null) return '---';
+                const v = parseFloat(val);
+                if (v === 0) return '0.00';
+                if (v < 0.0001) return v.toFixed(8);
+                if (v < 0.01) return v.toFixed(6);
+                if (v < 1.0) return v.toFixed(5);
+                if (v < 10.0) return v.toFixed(4);
+                return v.toFixed(2);
+            };
+
+            const avgCost = formatPrice(avgCostVal);
             const mktValue = activePosition.market_value.toFixed(2);
             const currPriceVal = activePosition.current_price;
-            const currPrice = isCrypto ? currPriceVal.toFixed(4) : currPriceVal.toFixed(2);
+            const currPrice = formatPrice(currPriceVal);
 
             const dailyPl = activePosition.unrealized_intraday_pl || 0;
             const dailyPlPc = activePosition.unrealized_intraday_plpc || 0;
@@ -196,7 +330,9 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             const totalPlPcStr = totalPlPc >= 0 ? `(+${totalPlPc.toFixed(2)}%)` : `(${totalPlPc.toFixed(2)}%)`;
             const totalColorClass = totalPl >= 0 ? 'text-emerald-500 bg-emerald-50/50' : 'text-rose-500 bg-rose-50/50';
 
-            const costBasis = (qty * avgCostVal).toFixed(2);
+            const costBasis = activePosition.cost_basis !== undefined 
+                ? activePosition.cost_basis.toFixed(2) 
+                : (qty * avgCostVal).toFixed(2);
             const qtyDisp = qty % 1 === 0 ? qty : (qty < 1 ? qty.toFixed(6) : qty.toFixed(4));
 
             positionHtml = `
@@ -233,6 +369,31 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                     </span>
                 </div>
             `;
+        }
+
+        const tickerSettings = (window.lastBotsData?.ticker_settings || {})[ticker] || {};
+        const startedAt = tickerSettings.started_at;
+        const lastTradeAt = tickerSettings.last_trade_at;
+        const totalTrades = tickerSettings.total_trades || 0;
+        const todayTrades = tickerSettings.today_trades || 0;
+
+        let runtimeText = 'Not started';
+        if (isPaused) {
+            runtimeText = 'Paused';
+        } else if (startedAt) {
+            runtimeText = formatUptime(startedAt);
+        }
+
+        let lastTradeText = 'No trades yet';
+        if (lastTradeAt) {
+            lastTradeText = `Last trade: ${formatRelativeTime(lastTradeAt)}`;
+        }
+
+        let tradeBadgeHtml = '';
+        if (todayTrades > 0) {
+            tradeBadgeHtml = `<span class="px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-600 font-black text-[0.55rem] border border-indigo-100/50 uppercase tracking-tight">${todayTrades} trades today</span>`;
+        } else {
+            tradeBadgeHtml = `<span class="px-1.5 py-0.5 rounded-md bg-slate-50 text-slate-500 font-black text-[0.55rem] border border-slate-200 uppercase tracking-tight">${totalTrades} trades total</span>`;
         }
 
         item.innerHTML = `
@@ -275,6 +436,12 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                     <div class="flex items-center gap-1.5">
                         ${isPaused ? '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-500 border border-amber-200">PAUSED</span>' : '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-100">ACTIVE</span>'}
                         <span class="px-1.5 py-0.5 rounded bg-indigo-50/50 text-indigo-500 font-mono font-black text-[0.55rem] border border-indigo-100/50 uppercase">${tfLabel}</span>
+                        <button class="px-1.5 py-0.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-600 font-black text-[0.5rem] border border-blue-200 transition-colors uppercase tracking-widest flex items-center gap-0.5" onclick="event.stopPropagation(); window.goToDashboardChart('${ticker}')">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-2.5 w-2.5" viewBox="0 0 20 20" fill="currentColor">
+                                <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
+                            </svg>
+                            GO TO CHART
+                        </button>
                     </div>
                     
                     <div class="flex items-center gap-1.5">
@@ -284,11 +451,129 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                     </div>
                 </div>
 
+                <!-- Metadata Row: Runtime, Last Trade, and Trade Counts -->
+                <div class="flex items-center justify-between mt-1 text-[0.58rem] text-slate-500 font-semibold cursor-pointer" onclick="selectTicker('${ticker}')">
+                    <div class="flex items-center gap-1">
+                        <span class="flex items-center gap-0.5 ${isPaused ? 'text-slate-400' : 'text-slate-600'}" title="Bot Running Time">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 ${isPaused ? 'text-slate-300' : 'text-indigo-400'}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            <span>${runtimeText}</span>
+                        </span>
+                        <span class="text-slate-300">•</span>
+                        <span class="text-slate-400 font-normal" title="Last Trade Time">${lastTradeText}</span>
+                    </div>
+                    <div class="flex items-center">
+                        ${tradeBadgeHtml}
+                    </div>
+                </div>
+
+                ${pauseReasonHtml}
+
                 <!-- 3rd Line: Position Details or Standing By Message -->
                 ${positionHtml}
         `;
         container.appendChild(item);
     });
+}
+
+let draggedItem = null;
+
+function handleDragStart(e) {
+    draggedItem = this;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', this.dataset.ticker);
+    setTimeout(() => this.classList.add('opacity-50', 'scale-95'), 0); // Visual feedback
+}
+
+function handleDragEnd(e) {
+    this.classList.remove('opacity-50', 'scale-95');
+    document.querySelectorAll('.watchlist-item').forEach(el => {
+        el.classList.remove('border-t-2', 'border-b-2', 'border-indigo-500');
+    });
+    draggedItem = null;
+}
+
+function handleDragOver(e) {
+    if (e.preventDefault) {
+        e.preventDefault();
+    }
+    e.dataTransfer.dropEffect = 'move';
+    
+    // Visual feedback
+    const bounding = this.getBoundingClientRect();
+    const offset = bounding.y + (bounding.height / 2);
+    if (e.clientY - offset > 0) {
+        this.classList.add('border-b-2', 'border-indigo-500');
+        this.classList.remove('border-t-2');
+    } else {
+        this.classList.add('border-t-2', 'border-indigo-500');
+        this.classList.remove('border-b-2');
+    }
+    return false;
+}
+
+function handleDragEnter(e) {}
+
+function handleDragLeave(e) {
+    this.classList.remove('border-t-2', 'border-b-2', 'border-indigo-500');
+}
+
+async function handleDrop(e) {
+    if (e.stopPropagation) e.stopPropagation();
+    this.classList.remove('border-t-2', 'border-b-2', 'border-indigo-500');
+    
+    if (draggedItem !== this) {
+        const container = document.getElementById('tradelistContainer');
+        const bounding = this.getBoundingClientRect();
+        const offset = bounding.y + (bounding.height / 2);
+        
+        if (e.clientY - offset > 0) {
+            this.parentNode.insertBefore(draggedItem, this.nextSibling);
+        } else {
+            this.parentNode.insertBefore(draggedItem, this);
+        }
+        
+        const newVisibleTickers = [];
+        container.querySelectorAll('.watchlist-item').forEach(el => {
+            if (el.dataset.ticker) newVisibleTickers.push(el.dataset.ticker);
+        });
+        
+        const currentFullList = window.lastBotsData?.tradelist || [];
+        const originalVisibleSet = new Set(newVisibleTickers);
+        
+        let visibleIdx = 0;
+        const newFullList = currentFullList.map(t => {
+            if (originalVisibleSet.has(t)) {
+                return newVisibleTickers[visibleIdx++];
+            }
+            return t;
+        });
+
+        // Add any tickers that might have been lost just in case
+        newVisibleTickers.forEach(t => {
+            if (!newFullList.includes(t)) newFullList.push(t);
+        });
+
+        container.classList.add('opacity-75', 'pointer-events-none');
+        
+        try {
+            const headers = await getAuthHeaders();
+            const response = await fetch(`${API_BASE}/api/bots/reorder`, {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify({ tradelist: newFullList })
+            });
+            if (response.ok) {
+                await fetchBotsData();
+            }
+        } catch (err) {
+            console.error("Error reordering:", err);
+        } finally {
+            container.classList.remove('opacity-75', 'pointer-events-none');
+        }
+    }
+    return false;
 }
 
 function selectTicker(ticker) {
@@ -311,7 +596,7 @@ function selectTicker(ticker) {
 }
 
 async function removeFromTradelist(ticker) {
-    if (!confirm(`Warning: If you delete the bot for ${ticker}, any open position for this stock will be automatically liquidated.\n\nAre you sure you want to proceed?`)) {
+    if (!confirm(`Warning: If you delete the bot for ${ticker}, any open position for this stock will be automatically liquidated, and all pending orders will be cancelled.\n\nAre you sure you want to proceed?`)) {
         return;
     }
     try {
@@ -332,20 +617,24 @@ async function removeFromTradelist(ticker) {
 let latestScanHistory = [];
 let latestOrderHistory = [];
 let latestPendingOrders = [];
+let latestPositions = [];
 let currentScanPage = 1;
 let currentTradePage = 1;
 let currentPendingPage = 1;
+let currentPositionsPage = 1;
 const LOG_PAGE_SIZE = 20;
 
 function setLogTab(tab) {
     currentLogTab = tab;
     if (tab === 'all') currentScanPage = 1;
     else if (tab === 'trades') currentTradePage = 1;
-    else currentPendingPage = 1;
+    else if (tab === 'pending') currentPendingPage = 1;
+    else currentPositionsPage = 1;
 
     const allBtn = document.getElementById('tabLogAll');
     const tradesBtn = document.getElementById('tabLogTrades');
     const pendingBtn = document.getElementById('tabLogPending');
+    const positionsBtn = document.getElementById('tabLogPositions');
 
     if (allBtn && tradesBtn && pendingBtn) {
         allBtn.className = "px-4 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all " +
@@ -354,9 +643,13 @@ function setLogTab(tab) {
             (tab === 'trades' ? "bg-white text-indigo-600 shadow-sm border border-indigo-100" : "text-indigo-400 hover:text-indigo-600");
         pendingBtn.className = "px-4 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all " +
             (tab === 'pending' ? "bg-white text-indigo-600 shadow-sm border border-indigo-100" : "text-indigo-400 hover:text-indigo-600");
+        if (positionsBtn) {
+            positionsBtn.className = "px-4 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all " +
+                (tab === 'positions' ? "bg-white text-indigo-600 shadow-sm border border-indigo-100" : "text-indigo-400 hover:text-indigo-600");
+        }
     }
 
-    renderTradeLog(latestScanHistory, latestOrderHistory, latestPendingOrders);
+    renderTradeLog(latestScanHistory, latestOrderHistory, latestPendingOrders, latestPositions);
 }
 
 async function cancelOrder(orderId) {
@@ -381,7 +674,7 @@ async function cancelOrder(orderId) {
     }
 }
 
-function renderTradeLog(scanHistory, orderHistory, pendingOrders) {
+function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
     const tbody = document.getElementById('tradeLogBody');
     const thead = document.getElementById('tradeLogHeader');
     const noMsg = document.getElementById('noTradesMsg');
@@ -429,6 +722,18 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders) {
                     <th class="pb-3 pr-4 text-center">Action</th>
                 </tr>
             `;
+        } else if (currentLogTab === 'positions') {
+            thead.innerHTML = `
+                <tr class="border-b border-purple-200 text-purple-700 text-[10px] md:text-xs uppercase tracking-wider">
+                    <th class="pb-3 pr-4">Ticker</th>
+                    <th class="pb-3 pr-4 text-center">Qty</th>
+                    <th class="pb-3 pr-4 text-center">Avg Price</th>
+                    <th class="pb-3 pr-4 text-center">Current Price</th>
+                    <th class="pb-3 pr-4 text-center">Market Value</th>
+                    <th class="pb-3 pr-4 text-center">Total P/L</th>
+                    <th class="pb-3 pr-4 text-center">Daily Change</th>
+                </tr>
+            `;
         }
     }
 
@@ -444,6 +749,9 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders) {
     } else if (currentLogTab === 'pending') {
         items = pendingOrders || [];
         currentPage = currentPendingPage;
+    } else if (currentLogTab === 'positions') {
+        items = positions || [];
+        currentPage = currentPositionsPage;
     }
 
     if (!items || items.length === 0) {
@@ -453,8 +761,10 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders) {
                 noMsg.textContent = "Waiting for first scan...";
             } else if (currentLogTab === 'trades') {
                 noMsg.textContent = "No order history found.";
-            } else {
+            } else if (currentLogTab === 'pending') {
                 noMsg.textContent = "No pending/working orders.";
+            } else {
+                noMsg.textContent = "No open positions found.";
             }
         }
         updatePaginationUI(0, 1);
@@ -495,7 +805,7 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders) {
                 <td class="py-2.5 pr-4 text-xs">
                     <span class="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-mono text-[0.6rem]">${signalBadge}</span>
                 </td>
-                <td class="py-2.5 pr-4 text-purple-500 italic text-xs max-w-xs truncate" title="${item.reason}">${item.reason}</td>
+                <td class="py-2.5 pr-4 text-purple-500 italic text-xs min-w-[250px] max-w-[400px] whitespace-normal" title="${item.reason}">${item.reason}</td>
             `;
         } else if (currentLogTab === 'trades') {
             const sideColor = item.side === 'buy' ? 'text-emerald-600 font-bold' : 'text-rose-500 font-bold';
@@ -534,7 +844,7 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders) {
                 <td class="py-2.5 pr-4 text-center text-xs text-indigo-700 font-medium">$${avgPriceStr}</td>
                 <td class="py-2.5 pr-4 text-center text-xs text-indigo-900 font-bold">$${totalCostStr}</td>
                 ${plHtml}
-                <td class="py-2.5 pr-4 text-purple-500 italic text-[11px] max-w-[200px] truncate" title="${aiReason}">${aiReason}</td>
+                <td class="py-2.5 pr-4 text-purple-500 italic text-[11px] min-w-[250px] max-w-[400px] whitespace-normal" title="${aiReason}">${aiReason}</td>
             `;
         } else if (currentLogTab === 'pending') {
             const sideColor = item.side === 'buy' ? 'text-emerald-600 font-bold' : 'text-rose-500 font-bold';
@@ -559,12 +869,46 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders) {
                 <td class="py-2.5 pr-4 text-center text-[0.65rem] font-bold text-indigo-900">${item.qty ? item.qty.toFixed(4) : '0.0000'}</td>
                 <td class="py-2.5 pr-4 text-center text-xs text-indigo-700 font-medium">${limitPriceStr}</td>
                 <td class="py-2.5 pr-4 text-center text-xs text-indigo-900 font-bold">${totalValueStr}</td>
-                <td class="py-2.5 pr-4 text-purple-500 italic text-[11px] max-w-[200px] truncate" title="${aiReason}">${aiReason}</td>
+                <td class="py-2.5 pr-4 text-purple-500 italic text-[11px] min-w-[250px] max-w-[400px] whitespace-normal" title="${aiReason}">${aiReason}</td>
                 <td class="py-2.5 pr-4 text-center">
                     <button onclick="cancelOrder('${item.id}')"
                         class="px-2 py-1 bg-rose-500 text-white rounded hover:bg-rose-600 transition-all font-black text-[9px] uppercase tracking-wider">
                         Cancel
                     </button>
+                </td>
+            `;
+        } else if (currentLogTab === 'positions') {
+            const isCrypto = String(item.symbol).toUpperCase().includes("USD");
+            const decimals = (isCrypto || (item.current_price && item.current_price < 10)) ? 4 : 2;
+            
+            const qtyStr = Number(item.qty).toFixed(4);
+            const avgPriceStr = `$${Number(item.avg_price || 0).toFixed(decimals)}`;
+            const currentPriceStr = `$${Number(item.current_price || 0).toFixed(decimals)}`;
+            const marketValueStr = `$${Number(item.market_value || 0).toFixed(2)}`;
+            
+            const plVal = Number(item.unrealized_pl || 0);
+            const plPct = Number(item.unrealized_pl_pct || 0);
+            const plColor = plVal >= 0 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold';
+            const sign = plVal >= 0 ? '+' : '';
+            
+            const dayPlVal = Number(item.unrealized_intraday_pl || 0);
+            const dayPlPct = Number(item.unrealized_intraday_plpc || 0);
+            const dayPlColor = dayPlVal >= 0 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold';
+            const daySign = dayPlVal >= 0 ? '+' : '';
+
+            row.innerHTML = `
+                <td class="py-2.5 pr-4 text-indigo-950 font-semibold text-xs">${item.symbol}</td>
+                <td class="py-2.5 pr-4 text-center text-[0.65rem] font-bold text-indigo-900">${qtyStr}</td>
+                <td class="py-2.5 pr-4 text-center text-xs text-indigo-700 font-medium">${avgPriceStr}</td>
+                <td class="py-2.5 pr-4 text-center text-xs text-indigo-700 font-medium">${currentPriceStr}</td>
+                <td class="py-2.5 pr-4 text-center text-xs text-indigo-900 font-bold">${marketValueStr}</td>
+                <td class="py-2.5 pr-4 text-center ${plColor} text-[11px]">
+                    <div>${sign}$${plVal.toFixed(2)}</div>
+                    <div class="text-[9px] opacity-80 font-semibold">${sign}${plPct.toFixed(2)}%</div>
+                </td>
+                <td class="py-2.5 pr-4 text-center ${dayPlColor} text-[11px]">
+                    <div>${daySign}$${dayPlVal.toFixed(2)}</div>
+                    <div class="text-[9px] opacity-80 font-semibold">${daySign}${dayPlPct.toFixed(2)}%</div>
                 </td>
             `;
         }
@@ -592,11 +936,14 @@ function changeLogPage(delta) {
     } else if (currentLogTab === 'trades') {
         const total = Math.ceil(latestOrderHistory.length / LOG_PAGE_SIZE) || 1;
         currentTradePage = Math.max(1, Math.min(total, currentTradePage + delta));
-    } else {
+    } else if (currentLogTab === 'pending') {
         const total = Math.ceil(latestPendingOrders.length / LOG_PAGE_SIZE) || 1;
         currentPendingPage = Math.max(1, Math.min(total, currentPendingPage + delta));
+    } else {
+        const total = Math.ceil(latestPositions.length / LOG_PAGE_SIZE) || 1;
+        currentPositionsPage = Math.max(1, Math.min(total, currentPositionsPage + delta));
     }
-    renderTradeLog(latestScanHistory, latestOrderHistory, latestPendingOrders);
+    renderTradeLog(latestScanHistory, latestOrderHistory, latestPendingOrders, latestPositions);
 }
 
 // ──────────────────────────────────────────────
@@ -650,6 +997,9 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyAtrStopMult').value = INDICATOR_DEFAULTS['ATR_STOP_MULTIPLIER'] || 2.0;
         document.getElementById('strategyAtrTrailMult').value = INDICATOR_DEFAULTS['ATR_TRAIL_MULTIPLIER'] || 3.0;
         document.getElementById('strategyAtrTpMult').value = INDICATOR_DEFAULTS['ATR_TAKE_PROFIT_MULTIPLIER'] || 4.0;
+        document.getElementById('strategyCooldownMinutes').value = "60";
+        document.getElementById('strategyCooldownCustomContainer').classList.add('hidden');
+        document.getElementById('strategyCooldownCustomMinutes').value = "";
 
         // Ensure collapsed on open
         document.getElementById('riskControlsContent').classList.add('hidden');
@@ -687,6 +1037,18 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyAtrStopMult').value = settings.atr_stop_multiplier !== undefined ? settings.atr_stop_multiplier : (INDICATOR_DEFAULTS['ATR_STOP_MULTIPLIER'] || 2.0);
         document.getElementById('strategyAtrTrailMult').value = settings.atr_trail_multiplier !== undefined ? settings.atr_trail_multiplier : (INDICATOR_DEFAULTS['ATR_TRAIL_MULTIPLIER'] || 3.0);
         document.getElementById('strategyAtrTpMult').value = settings.take_profit_multiplier !== undefined ? settings.take_profit_multiplier : (INDICATOR_DEFAULTS['ATR_TAKE_PROFIT_MULTIPLIER'] || 4.0);
+        
+        const cooldownVal = settings.cooldown_minutes !== undefined ? settings.cooldown_minutes : 60;
+        const standardCooldowns = [5, 15, 30, 60, 240];
+        if (standardCooldowns.includes(cooldownVal)) {
+            document.getElementById('strategyCooldownMinutes').value = cooldownVal.toString();
+            document.getElementById('strategyCooldownCustomContainer').classList.add('hidden');
+            document.getElementById('strategyCooldownCustomMinutes').value = "";
+        } else {
+            document.getElementById('strategyCooldownMinutes').value = "custom";
+            document.getElementById('strategyCooldownCustomContainer').classList.remove('hidden');
+            document.getElementById('strategyCooldownCustomMinutes').value = cooldownVal;
+        }
 
         // Ensure collapsed on open
         document.getElementById('riskControlsContent').classList.add('hidden');
@@ -870,7 +1232,10 @@ async function saveTickerSettings() {
             max_position_pct: parseFloat(document.getElementById('strategyMaxPositionPct').value) / 100.0,
             atr_stop_multiplier: parseFloat(document.getElementById('strategyAtrStopMult').value),
             atr_trail_multiplier: parseFloat(document.getElementById('strategyAtrTrailMult').value),
-            take_profit_multiplier: parseFloat(document.getElementById('strategyAtrTpMult').value)
+            take_profit_multiplier: parseFloat(document.getElementById('strategyAtrTpMult').value),
+            cooldown_minutes: document.getElementById('strategyCooldownMinutes').value === 'custom' 
+                ? (parseInt(document.getElementById('strategyCooldownCustomMinutes').value) || 60) 
+                : (parseInt(document.getElementById('strategyCooldownMinutes').value) || 60)
         }
     };
 
@@ -1019,7 +1384,8 @@ async function fetchBotsData() {
         latestScanHistory = data.recentTrades || [];
         latestOrderHistory = data.orderHistory || [];
         latestPendingOrders = data.pendingOrders || [];
-        renderTradeLog(latestScanHistory, latestOrderHistory, latestPendingOrders);
+        latestPositions = data.positions || [];
+        renderTradeLog(latestScanHistory, latestOrderHistory, latestPendingOrders, latestPositions);
 
     } catch (error) {
         console.error('[bots] Fetch error:', error);
@@ -1162,7 +1528,7 @@ const INDICATOR_META = {
     'VWAP': { key: 'ENABLE_VWAP', desc: 'Volume Weighted Avg', icon: '⚖️' },
     'Mystic Pulse': { key: 'ENABLE_MYSTIC_PULSE', desc: 'Trend Persistence', icon: '🔮' },
     'Candle Patterns': { key: 'ENABLE_CANDLE_PATTERNS', desc: 'Reversal Detection', icon: '🕯️' },
-    'News Sentiment': { key: 'ENABLE_AI_SENTIMENT', desc: 'AI News Analysis', icon: '🧠' },
+    'Botbulls4 News AI': { key: 'ENABLE_AI_SENTIMENT', desc: 'AI News Analysis', icon: '🧠' },
 };
 
 
@@ -1298,7 +1664,10 @@ window.confirmAndDeployBot = async function () {
                 max_position_pct: parseFloat(document.getElementById('strategyMaxPositionPct').value) / 100.0,
                 atr_stop_multiplier: parseFloat(document.getElementById('strategyAtrStopMult').value),
                 atr_trail_multiplier: parseFloat(document.getElementById('strategyAtrTrailMult').value),
-                take_profit_multiplier: parseFloat(document.getElementById('strategyAtrTpMult').value)
+                take_profit_multiplier: parseFloat(document.getElementById('strategyAtrTpMult').value),
+                cooldown_minutes: document.getElementById('strategyCooldownMinutes').value === 'custom' 
+                    ? (parseInt(document.getElementById('strategyCooldownCustomMinutes').value) || 60) 
+                    : (parseInt(document.getElementById('strategyCooldownMinutes').value) || 60)
             })
         });
 
@@ -1373,7 +1742,7 @@ const INDICATOR_TOOLTIPS = {
     "BotBulls1": "WaveTrend momentum oscillator + Money Flow analysis. Detects reversals when momentum and institutional volume flow align at oversold/overbought extremes.",
     "BotBulls2": "Adaptive ATR trailing stop with trend-smoothed EMA and reversal zone detection. Fires on trend flips confirmed by multi-condition confluence scoring (1-4 strength rating).",
     "BotBulls3": "Heikin-Ashi noise filter + ATR-based trailing stop. Generates buy/sell alerts only on confirmed momentum flips — removing false signals from choppy markets.",
-    "Sentiment AI": "Analyzes current news headlines and assigns a bullish/bearish score based on natural language processing of market sentiment."
+    "Botbulls4 News AI": "Analyzes current news headlines and assigns a bullish/bearish score based on natural language processing of market sentiment."
 };
 
 const INDICATOR_CONFIG_MAP = {
@@ -1387,7 +1756,7 @@ const INDICATOR_CONFIG_MAP = {
     'SMA': ['SMA_PERIOD'],
     'ATR Volatility': ['ATR_PERIOD', 'ATR_STOP_MULTIPLIER', 'ATR_TRAIL_MULTIPLIER', 'ATR_TAKE_PROFIT_MULTIPLIER'],
     'Strategy Confidence': ['MIN_BULLISH_SIGNALS', 'MIN_BEARISH_SIGNALS'],
-    'Sentiment AI': ['SENTIMENT_BULLISH_THRESHOLD', 'SENTIMENT_BEARISH_THRESHOLD'],
+    'Botbulls4 News AI': ['SENTIMENT_BULLISH_PERCENTAGE', 'SENTIMENT_BEARISH_PERCENTAGE'],
     'BotBulls1': ['BOTBULLS1_WT_CHANNEL', 'BOTBULLS1_WT_AVERAGE', 'BOTBULLS1_MFI_CONFIRM'],
     'BotBulls2': ['BOTBULLS2_ATR_MULT', 'BOTBULLS2_TREND_TRACER_PERIOD', 'BOTBULLS2_REVERSAL_ZONE_PERIOD'],
     'BotBulls3': ['BOTBULLS3_ATR_PERIOD', 'BOTBULLS3_ATR_MULT']
@@ -1424,8 +1793,8 @@ const INDICATOR_DEFAULTS = {
     'ATR_TAKE_PROFIT_MULTIPLIER': 4.0,
     'MIN_BULLISH_SIGNALS': 4,
     'MIN_BEARISH_SIGNALS': 4,
-    'SENTIMENT_BULLISH_THRESHOLD': 0.5,
-    'SENTIMENT_BEARISH_THRESHOLD': -0.5
+    'SENTIMENT_BULLISH_PERCENTAGE': 70,
+    'SENTIMENT_BEARISH_PERCENTAGE': 30
 };
 
 let currentEditingIndicator = null;

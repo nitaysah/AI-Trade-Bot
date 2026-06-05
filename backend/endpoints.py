@@ -466,7 +466,7 @@ async def update_ticker_amount(data: dict, user: dict = Depends(verify_token)):
 @app.post("/api/settings/timeframe")
 async def update_timeframe(data: dict, user: dict = Depends(verify_token)):
     """Updates the default trading timeframe and triggers a re-scan."""
-    global bot_scans_by_tf
+    eng = user_manager.get_engine(user['uid'])
     new_tf = data.get("timeframe")
     if new_tf in ["30Sec", "1Min", "2Min", "3Min", "5Min", "10Min", "15Min", "30Min", "1Hour", "2Hour", "4Hour", "1Day"]:
         eng.config.DEFAULT_TIMEFRAME = new_tf
@@ -484,8 +484,8 @@ async def update_timeframe(data: dict, user: dict = Depends(verify_token)):
             tf: scans for tf, scans in eng.latest_scans_by_tf.items()
             if tf == new_tf
         }
-        bot_scans_by_tf = {
-            tf: scans for tf, scans in bot_scans_by_tf.items()
+        eng.bot_scans_by_tf = {
+            tf: scans for tf, scans in eng.bot_scans_by_tf.items()
             if tf == new_tf
         }
         asyncio.create_task(save_settings_to_cloud())
@@ -600,12 +600,44 @@ def search_symbols(query: str, user: dict = Depends(verify_token)):
     return eng.broker.search_assets(query)
 
 
+@app.post("/api/bots/reorder")
+async def reorder_bots(data: dict, user: dict = Depends(verify_token)):
+    """Reorder the priority of active bots."""
+    eng = user_manager.get_engine(user['uid'])
+    new_order = data.get("tradelist", [])
+    if not new_order or not isinstance(new_order, list):
+        return {"status": "error", "message": "Invalid tradelist format"}
+    
+    # Verify that all provided tickers are currently active bots
+    valid_tickers = [t for t in new_order if t in eng.config.TRADELIST]
+    
+    # Ensure any tickers currently active that weren't in the new order are appended to the end
+    for t in eng.config.TRADELIST:
+        if t not in valid_tickers:
+            valid_tickers.append(t)
+            
+    eng.config.TRADELIST = valid_tickers
+    asyncio.create_task(save_settings_to_cloud())
+    
+    return {"status": "success", "tradelist": eng.config.TRADELIST}
+
+
 @app.post("/api/bots/create")
 async def create_bot(data: dict, user: dict = Depends(verify_token)):
     """Creates a new active bot with custom settings (adds to watchlist, tradelist, and TICKER_SETTINGS)."""
     symbol = data.get("symbol", "").upper().strip()
     if not symbol:
         return {"status": "error", "message": "Symbol is required"}
+        
+    eng = user_manager.get_engine(user['uid'])
+    
+    # Check if the asset is tradable in Alpaca
+    tradable_check = eng.broker.check_tradable(symbol)
+    if not tradable_check.get("success") or not tradable_check.get("tradable"):
+        return {
+            "status": "error", 
+            "message": tradable_check.get("error", f"Ticker '{symbol}' doesn't allow trading in Alpaca or does not exist.")
+        }
         
     # Apply custom settings
     if symbol not in eng.config.TICKER_SETTINGS:
@@ -634,6 +666,20 @@ async def create_bot(data: dict, user: dict = Depends(verify_token)):
     for rk in ["risk_per_trade", "max_daily_drawdown", "max_position_pct", "atr_stop_multiplier", "atr_trail_multiplier", "take_profit_multiplier"]:
         if rk in data:
             eng.config.TICKER_SETTINGS[symbol][rk] = float(data[rk])
+            
+    if "cooldown_minutes" in data:
+        eng.config.TICKER_SETTINGS[symbol]["cooldown_minutes"] = int(data["cooldown_minutes"])
+
+    if "paused" in data:
+        eng.config.TICKER_SETTINGS[symbol]["paused"] = bool(data["paused"])
+        if not data["paused"]:
+            eng.config.TICKER_SETTINGS[symbol]["pause_reason"] = ""
+            eng.config.TICKER_SETTINGS[symbol]["realized_pl"] = 0.0
+            eng.config.TICKER_SETTINGS[symbol]["started_at"] = get_now().isoformat()
+    else:
+        if not eng.config.TICKER_SETTINGS[symbol].get("paused", False):
+            if not eng.config.TICKER_SETTINGS[symbol].get("started_at"):
+                eng.config.TICKER_SETTINGS[symbol]["started_at"] = get_now().isoformat()
 
     # Ensure it's in watchlist to be scanned
     if symbol not in eng.config.WATCHLIST:
@@ -720,12 +766,19 @@ async def update_ticker_settings(data: dict, user: dict = Depends(verify_token))
 
     if ticker not in eng.config.TICKER_SETTINGS:
         eng.config.TICKER_SETTINGS[ticker] = {}
+    previously_paused = eng.config.TICKER_SETTINGS.get(ticker, {}).get('paused', False)
     # Filter out null values to keep global defaults if not specified
     for k, v in settings.items():
         if v is not None:
             eng.config.TICKER_SETTINGS[ticker][k] = v
         elif k in eng.config.TICKER_SETTINGS[ticker]:
             del eng.config.TICKER_SETTINGS[ticker][k]
+
+    if settings.get('paused') is False:
+        eng.config.TICKER_SETTINGS[ticker]['pause_reason'] = ""
+        eng.config.TICKER_SETTINGS[ticker]['realized_pl'] = 0.0
+        if previously_paused or not eng.config.TICKER_SETTINGS[ticker].get('started_at'):
+            eng.config.TICKER_SETTINGS[ticker]['started_at'] = get_now().isoformat()
     
     asyncio.create_task(save_settings_to_cloud())
     return {"status": "success"}

@@ -111,14 +111,53 @@ class AlpacaBroker:
                 'error': str(e)
             }
 
+    def check_tradable(self, symbol: str) -> dict:
+        """Checks if an asset exists and is tradable in Alpaca."""
+        if self.simulation_mode:
+            return {'success': True, 'tradable': True, 'symbol': symbol}
+        try:
+            request_symbol = symbol.upper().replace("/", "")
+            is_crypto = any(request_symbol.endswith(base) for base in ["USD", "USDT", "USDC"])
+            
+            formats_to_try = [request_symbol]
+            if is_crypto:
+                for base in ["USDT", "USDC", "USD"]:
+                    if request_symbol.endswith(base):
+                        formats_to_try.append(request_symbol.replace(base, f"/{base}"))
+                        break
+            
+            for sym in formats_to_try:
+                try:
+                    asset = self.client.get_asset(sym)
+                    if asset.tradable:
+                        return {'success': True, 'tradable': True, 'symbol': sym}
+                    else:
+                        return {'success': True, 'tradable': False, 'symbol': sym, 'error': f"Asset {sym} is not tradable."}
+                except Exception as e:
+                    if "not found" in str(e).lower():
+                        continue
+                    return {'success': False, 'error': str(e)}
+                    
+            return {'success': False, 'error': f"Asset {symbol} not found in Alpaca."}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
     def _round_price(self, symbol: str, price) -> float:
         try:
             p = float(price)
-            clean = symbol.upper().replace("/", "")
-            is_crypto = any(clean.endswith(base) for base in ["USD", "USDT", "USDC"])
-            if is_crypto or p < 10:
+            if p == 0:
+                return 0.0
+            # Dynamic rounding based on size of the price
+            if p < 0.0001:
+                return round(p, 8)
+            elif p < 0.01:
+                return round(p, 6)
+            elif p < 1.0:
+                return round(p, 5)
+            elif p < 10.0:
                 return round(p, 4)
-            return round(p, 2)
+            else:
+                return round(p, 2)
         except:
             return price
 
@@ -140,6 +179,7 @@ class AlpacaBroker:
                     'avg_price': avg_p,
                     'current_price': curr_p,
                     'market_value': round(current_val, 2),
+                    'cost_basis': round(cost_basis, 2),
                     'unrealized_pl': round(pl, 2),
                     'unrealized_pl_pct': round((pl / cost_basis) * 100, 2) if cost_basis > 0 else 0,
                     'unrealized_intraday_pl': round(daily_pl, 2),
@@ -162,6 +202,7 @@ class AlpacaBroker:
                     'avg_price': avg_p,
                     'current_price': curr_p,
                     'market_value': round(float(p.market_value), 2),
+                    'cost_basis': round(float(getattr(p, 'cost_basis', float(p.qty) * float(p.avg_entry_price))), 2),
                     'unrealized_pl': round(float(p.unrealized_pl), 2),
                     'unrealized_pl_pct': round(float(p.unrealized_plpc) * 100, 2),
                     'unrealized_intraday_pl': round(float(p.unrealized_intraday_pl), 2),

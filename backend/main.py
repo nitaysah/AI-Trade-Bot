@@ -1105,7 +1105,7 @@ def get_indicator_settings(context: str = "dashboard", eng: UserEngine = Depends
         },
         "Custom": {
             "ENABLE_MYSTIC_PULSE": {"label": "Mystic Pulse", "description": "DMI-based Consecutive Trend Strength", "enabled": getattr(eng.config, "ENABLE_MYSTIC_PULSE", True)},
-            "ENABLE_AI_SENTIMENT": {"label": "News Sentiment", "description": "Groq-powered News Sentiment Analysis", "enabled": getattr(eng.config, "ENABLE_AI_SENTIMENT", True)},
+            "ENABLE_AI_SENTIMENT": {"label": "Botbulls4 News AI", "description": "Groq-powered News Sentiment Analysis", "enabled": getattr(eng.config, "ENABLE_AI_SENTIMENT", True)},
             "ENABLE_CANDLE_PATTERNS": {"label": "Candle Patterns", "description": "Engulfing, Hammer, Shooting Star patterns", "enabled": getattr(eng.config, "ENABLE_CANDLE_PATTERNS", True)},
         },
     }
@@ -1260,6 +1260,9 @@ async def remove_from_tradelist(ticker: str, liquidate: bool = False, eng: UserE
         await eng.save_settings()
         print(f"[settings] Removed {ticker} from active tradelist (Bot Deactivated) for {eng.uid}")
         
+    res_cancel = eng.broker.cancel_orders_for_ticker(ticker)
+    print(f"[tradelist] Cancelled pending orders for {ticker}: {res_cancel}")
+
     if liquidate:
         res = eng.broker.close_position(ticker)
         print(f"[tradelist] Liquidating {ticker}: {res}")
@@ -1275,12 +1278,41 @@ def search_symbols(query: str, eng: UserEngine = Depends(get_user_engine)):
     return eng.broker.search_assets(query)
 
 
+@app.post("/api/bots/reorder")
+async def reorder_bots(data: dict, eng: UserEngine = Depends(get_user_engine)):
+    """Reorder the priority of active bots."""
+    new_order = data.get("tradelist", [])
+    if not new_order or not isinstance(new_order, list):
+        return {"status": "error", "message": "Invalid tradelist format"}
+    
+    # Verify that all provided tickers are currently active bots
+    valid_tickers = [t for t in new_order if t in eng.config.TRADELIST]
+    
+    # Ensure any tickers currently active that weren't in the new order are appended to the end
+    for t in eng.config.TRADELIST:
+        if t not in valid_tickers:
+            valid_tickers.append(t)
+            
+    eng.config.TRADELIST = valid_tickers
+    await eng.save_settings()
+    
+    return {"status": "success", "tradelist": eng.config.TRADELIST}
+
+
 @app.post("/api/bots/create")
 async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
     """Creates a new active bot with custom settings (adds to watchlist, tradelist, and TICKER_SETTINGS)."""
     symbol = data.get("symbol", "").upper().strip()
     if not symbol:
         return {"status": "error", "message": "Symbol is required"}
+        
+    # Check if the asset is tradable in Alpaca
+    tradable_check = eng.broker.check_tradable(symbol)
+    if not tradable_check.get("success") or not tradable_check.get("tradable"):
+        return {
+            "status": "error", 
+            "message": tradable_check.get("error", f"Ticker '{symbol}' doesn't allow trading in Alpaca or does not exist.")
+        }
         
     if symbol not in eng.config.TICKER_SETTINGS:
         eng.config.TICKER_SETTINGS[symbol] = {}
@@ -1307,6 +1339,17 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
     for rk in ["risk_per_trade", "max_daily_drawdown", "max_position_pct", "atr_stop_multiplier", "atr_trail_multiplier", "take_profit_multiplier"]:
         if rk in data:
             eng.config.TICKER_SETTINGS[symbol][rk] = float(data[rk])
+
+    if "paused" in data:
+        eng.config.TICKER_SETTINGS[symbol]["paused"] = bool(data["paused"])
+        if not data["paused"]:
+            eng.config.TICKER_SETTINGS[symbol]["pause_reason"] = ""
+            eng.config.TICKER_SETTINGS[symbol]["realized_pl"] = 0.0
+            eng.config.TICKER_SETTINGS[symbol]["started_at"] = get_now().isoformat()
+    else:
+        if not eng.config.TICKER_SETTINGS[symbol].get("paused", False):
+            if not eng.config.TICKER_SETTINGS[symbol].get("started_at"):
+                eng.config.TICKER_SETTINGS[symbol]["started_at"] = get_now().isoformat()
 
     add_to_watchlist = data.get("add_to_watchlist", False)
     if add_to_watchlist and symbol not in eng.config.WATCHLIST:
@@ -1425,11 +1468,18 @@ async def update_ticker_settings(data: dict, eng: UserEngine = Depends(get_user_
 
     if ticker not in eng.config.TICKER_SETTINGS:
         eng.config.TICKER_SETTINGS[ticker] = {}
+    previously_paused = eng.config.TICKER_SETTINGS.get(ticker, {}).get('paused', False)
     for k, v in settings.items():
         if v is not None:
             eng.config.TICKER_SETTINGS[ticker][k] = v
         elif k in eng.config.TICKER_SETTINGS[ticker]:
             del eng.config.TICKER_SETTINGS[ticker][k]
+
+    if settings.get('paused') is False:
+        eng.config.TICKER_SETTINGS[ticker]['pause_reason'] = ""
+        eng.config.TICKER_SETTINGS[ticker]['realized_pl'] = 0.0
+        if previously_paused or not eng.config.TICKER_SETTINGS[ticker].get('started_at'):
+            eng.config.TICKER_SETTINGS[ticker]['started_at'] = get_now().isoformat()
             
     add_to_watchlist = data.get("add_to_watchlist")
     if add_to_watchlist is True and ticker not in eng.config.WATCHLIST:
@@ -1492,7 +1542,7 @@ def _format_scan_for_ui(scan: dict, use_global_settings: bool = False) -> dict:
         'Bollinger': 'ENABLE_BOLLINGER',
         'VWAP': 'ENABLE_VWAP',
         'Mystic Pulse': 'ENABLE_MYSTIC_PULSE',
-        'News Sentiment': 'ENABLE_AI_SENTIMENT',
+        'Botbulls4 News AI': 'ENABLE_AI_SENTIMENT',
         'Candle Patterns': 'ENABLE_CANDLE_PATTERNS',
         'ADX Trend': 'ENABLE_ADX_TREND',
         'SMA': 'ENABLE_SMA',
@@ -1510,14 +1560,14 @@ def _format_scan_for_ui(scan: dict, use_global_settings: bool = False) -> dict:
 
     for name, data in raw_signals.items():
         toggle_key = SIGNAL_TO_TOGGLE.get(name, '')
-        if name == 'News Sentiment':
+        if name == 'Botbulls4 News AI':
             enabled = getattr(uc, 'ENABLE_AI_SENTIMENT', True)
         elif allowed_indicators is not None:
             enabled = name in allowed_indicators
         else:
             enabled = getattr(uc, toggle_key, True) if toggle_key else True
             
-        all_signals[name] = {**data, 'enabled': enabled, 'toggle_key': toggle_key if name != 'News Sentiment' else 'ENABLE_AI_SENTIMENT'}
+        all_signals[name] = {**data, 'enabled': enabled, 'toggle_key': toggle_key if name != 'Botbulls4 News AI' else 'ENABLE_AI_SENTIMENT'}
 
     bullish = sum(s.get('weight', 1) for s in all_signals.values() if s.get('signal') == 'BULLISH' and s.get('enabled'))
     bearish = sum(s.get('weight', 1) for s in all_signals.values() if s.get('signal') == 'BEARISH' and s.get('enabled'))

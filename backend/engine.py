@@ -152,7 +152,18 @@ class UserEngine:
             doc_scans = self.db.collection("users").document(self.uid).collection("history").document("scans").get()
             if doc_scans.exists:
                 raw_logs = doc_scans.to_dict().get("data", [])
-                self.trade_log = [log for log in raw_logs if log.get('ticker') in self.config.TRADELIST or log.get('action') in ['BUY', 'SELL']]
+                self.trade_log = []
+                for log in raw_logs:
+                    ticker = log.get('ticker')
+                    action = log.get('action')
+                    reason = log.get('reason', '')
+                    if ticker not in self.config.TRADELIST:
+                        # Skip ignored/skipped logs for deactivated bots
+                        if "ignored" in reason.lower() or "skipped" in reason.lower() or action == 'HOLD':
+                            continue
+                    if ticker in self.config.TRADELIST or action in ['BUY', 'SELL']:
+                        self.trade_log.append(log)
+
                 
             doc_bot = self.db.collection("users").document(self.uid).collection("history").document("bot_scans").get()
             if doc_bot.exists:
@@ -301,6 +312,64 @@ class UserEngine:
                         if t_settings.get('paused', False):
                             continue
 
+                        # --- Bot Loss Limit (Drawdown Limit on Allocated Bot Capital) ---
+                        allocated_capital = float(t_settings.get('amount', 0.0))
+                        loss_limit_pct = float(t_settings.get('max_daily_drawdown', 0.0))
+                        
+                        if is_active and allocated_capital > 0 and loss_limit_pct > 0:
+                            realized_pl = float(t_settings.get('realized_pl', 0.0))
+                            
+                            # Find if there is an active position for this ticker
+                            pos_info = next((p for p in all_positions if p['symbol'].replace("/", "").upper() == ticker_norm), None)
+                            unrealized_pl = float(pos_info['unrealized_pl']) if pos_info else 0.0
+                            
+                            total_bot_pl = realized_pl + unrealized_pl
+                            allowed_loss = allocated_capital * loss_limit_pct
+                            
+                            if total_bot_pl < 0 and abs(total_bot_pl) >= allowed_loss:
+                                print(f"[engine-{self.uid}] Loss limit breached for {ticker}: -${abs(total_bot_pl):.2f} >= limit -${allowed_loss:.2f} ({loss_limit_pct*100:.1f}% of ${allocated_capital:.2f})")
+                                
+                                # Liquidate active position if any
+                                if pos_info:
+                                    print(f"[engine-{self.uid}] Liquidating active position in {ticker} due to loss limit breach...")
+                                    close_res = self.broker.close_position(ticker)
+                                    if close_res.get('success'):
+                                        realized_pl += unrealized_pl
+                                        total_bot_pl = realized_pl
+                                
+                                # Auto-pause the bot permanently
+                                t_settings['paused'] = True
+                                t_settings['pause_reason'] = f"Loss limit exceeded (-${abs(total_bot_pl):.2f} / -{(abs(total_bot_pl)/allocated_capital)*100:.1f}%)"
+                                t_settings['realized_pl'] = 0.0  # reset for unpause
+                                
+                                # Cancel any pending orders
+                                try:
+                                    self.broker.cancel_orders_for_ticker(ticker)
+                                except Exception as err:
+                                    print(f"[engine-{self.uid}] Error cancelling orders for {ticker}: {err}")
+                                
+                                # Add log entry for the auto-pause
+                                result = {
+                                    "time": self.get_now().isoformat(),
+                                    "action": "HALT",
+                                    "ticker": ticker,
+                                    "price": f"${pos_info['current_price']}" if pos_info else "$0.00",
+                                    "price_raw": pos_info['current_price'] if pos_info else 0.0,
+                                    "reason": f"🛑 BOT AUTO-PAUSED: Loss limit breached. Total Loss: -${abs(total_bot_pl):.2f} ({loss_limit_pct*100:.1f}% limit exceeded).",
+                                    "signals": {},
+                                    "bullish_count": 0,
+                                    "bearish_count": 0,
+                                    "total_signals": 0,
+                                    "atr": 0.0,
+                                    "rsi": 50.0,
+                                    "position_sizing": {},
+                                    "log_type": "Active Bot"
+                                }
+                                self.trade_log.insert(0, result)
+                                await self.save_history()
+                                await self.save_settings()
+                                continue
+
                         is_crypto = any(ticker_norm.endswith(base) for base in ["USD", "USDT", "USDC"]) or ticker.upper() in ["BTC", "ETH", "XRP", "DOGE", "LTC", "ADA", "SOL"]
                         sell_mode = t_settings.get('sell_mode', 'indicator')
 
@@ -413,16 +482,31 @@ class UserEngine:
                                 is_market_closed_skip = not is_crypto and self.config.get('MARKET_HOURS_ONLY', True) and not self.is_market_open()
                                 if is_market_closed_skip:
                                     result['reason'] = "Market Closed. Trade execution skipped."
+                                    if result['action'] in ['BUY', 'SELL']:
+                                        result['action'] = 'HOLD'
 
                                 tf_seconds = parse_timeframe_to_seconds(tf_to_use)
-                                cooldown_secs = tf_seconds * 4
+                                
+                                # Use custom cooldown if set, otherwise default to 4 candles
+                                custom_cooldown_min = t_settings.get("cooldown_minutes")
+                                if custom_cooldown_min is not None:
+                                    cooldown_secs = custom_cooldown_min * 60
+                                else:
+                                    cooldown_secs = tf_seconds * 4
+
                                 if ticker in self.last_trade_timestamps:
                                     elapsed = (self.get_now() - self.last_trade_timestamps[ticker]).total_seconds()
                                     if elapsed < cooldown_secs:
                                         # ONLY block BUY orders during cooldown to prevent trapping the bot in a bad position
                                         if result['action'] == 'BUY':
                                             result['action'] = 'HOLD'
-                                            result['reason'] = f"Trade Cooldown Active ({int(cooldown_secs - elapsed)}s remaining)"
+                                            rem = int(cooldown_secs - elapsed)
+                                            if rem >= 3600:
+                                                result['reason'] = f"Trade Cooldown Active ({rem // 3600}h {(rem % 3600) // 60}m remaining)"
+                                            elif rem >= 60:
+                                                result['reason'] = f"Trade Cooldown Active ({rem // 60}m {rem % 60}s remaining)"
+                                            else:
+                                                result['reason'] = f"Trade Cooldown Active ({rem}s remaining)"
 
                                 has_this_pos = any(p['symbol'].replace("/", "").upper() == ticker_norm and float(p.get('qty', 0)) > 0 for p in all_positions)
                                 has_open_order = any(o['symbol'] == ticker_norm and o['side'].lower() == 'buy' for o in all_orders)
@@ -519,6 +603,7 @@ class UserEngine:
                                             result['fees'] = float(order_result.get('fees', 0))
                                             result['reason'] = f"✅ BOUGHT {result['qty']:.6f} shares at {result['price']}: {result['reason']}"
                                             self.last_trade_timestamps[ticker] = self.get_now()
+                                            await self._increment_trade_count(ticker)
                                             
                                 # Sell Execution
                                 elif result['action'] == 'SELL' and not is_market_closed_skip:
@@ -551,13 +636,20 @@ class UserEngine:
                                                 result['pl'] = round(pl, 2)
                                                 result['pl_pct'] = round(pl_pct, 2)
                                                 result['reason'] = f"✅ SOLD at {result['price']} (Entry: ${entry_price:.4f}): {result['reason']}"
+                                                
+                                                # Accumulate realized P/L for the bot
+                                                current_realized = t_settings.get('realized_pl', 0.0)
+                                                t_settings['realized_pl'] = round(current_realized + pl, 2)
+                                                await self.save_settings()
                                             else:
                                                 result['reason'] = f"✅ SOLD at {result['price']}: {result['reason']}"
                                             self.last_trade_timestamps[ticker] = self.get_now()
+                                            await self._increment_trade_count(ticker)
                                         else:
                                             result['reason'] = f"Sell order failed: {order_result.get('error', 'Broker Error')}"
                                     else:
                                         result['reason'] = "Signal SELL ignored: No open position detected."
+                                        result['action'] = "HOLD"
                             
                             result['log_type'] = "Active Bot" if is_active else "Watchlist"
                             log_time_min = self.get_now().strftime("%Y-%m-%dT%H:%M")
@@ -592,6 +684,28 @@ class UserEngine:
                 self.force_scan_trigger.clear()
             except asyncio.TimeoutError:
                 pass
+
+    async def _increment_trade_count(self, ticker: str):
+        t_settings = self.config.TICKER_SETTINGS.get(ticker, {})
+        if not t_settings:
+            return
+            
+        now = self.get_now()
+        today_str = now.strftime("%Y-%m-%d")
+        
+        # Increment total trades
+        t_settings['total_trades'] = t_settings.get('total_trades', 0) + 1
+        t_settings['last_trade_at'] = now.isoformat()
+        
+        # Increment today trades
+        last_trade_date = t_settings.get('last_trade_date', '')
+        if last_trade_date == today_str:
+            t_settings['today_trades'] = t_settings.get('today_trades', 0) + 1
+        else:
+            t_settings['last_trade_date'] = today_str
+            t_settings['today_trades'] = 1
+            
+        await self.save_settings()
 
 
 class UserManager:

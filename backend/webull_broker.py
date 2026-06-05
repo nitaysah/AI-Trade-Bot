@@ -326,6 +326,25 @@ class WebullBroker:
                 'error': str(e)
             }
 
+    def _round_price(self, symbol: str, price) -> float:
+        try:
+            p = float(price)
+            if p == 0:
+                return 0.0
+            # Dynamic rounding based on size of the price
+            if p < 0.0001:
+                return round(p, 8)
+            elif p < 0.01:
+                return round(p, 6)
+            elif p < 1.0:
+                return round(p, 5)
+            elif p < 10.0:
+                return round(p, 4)
+            else:
+                return round(p, 2)
+        except:
+            return price
+
     def get_positions(self) -> list:
         """Returns list of open positions."""
         if self.simulation_mode:
@@ -348,12 +367,14 @@ class WebullBroker:
                 cost_basis = qty * avg_price
                 pl = market_value - cost_basis
 
+                sym = p.get('symbol', '').replace('/', '').upper()
                 positions.append({
-                    'symbol': p.get('symbol', '').replace('/', '').upper(),
+                    'symbol': sym,
                     'qty': qty,
-                    'avg_price': round(avg_price, 2),
-                    'current_price': round(current_price, 2),
+                    'avg_price': self._round_price(sym, avg_price),
+                    'current_price': self._round_price(sym, current_price),
                     'market_value': round(market_value, 2),
+                    'cost_basis': round(cost_basis, 2),
                     'unrealized_pl': round(pl, 2),
                     'unrealized_pl_pct': round((pl / cost_basis) * 100, 2) if cost_basis > 0 else 0,
                     'stop_loss': 0,
@@ -802,9 +823,10 @@ class WebullBroker:
             positions.append({
                 'symbol': symbol,
                 'qty': round(pos['qty'], 6),
-                'avg_price': round(pos['avg_price'], 2),
-                'current_price': round(pos.get('current_price', pos['avg_price']), 2),
+                'avg_price': self._round_price(symbol, pos['avg_price']),
+                'current_price': self._round_price(symbol, pos.get('current_price', pos['avg_price'])),
                 'market_value': round(current_val, 2),
+                'cost_basis': round(cost_basis, 2),
                 'unrealized_pl': round(pl, 2),
                 'unrealized_pl_pct': round((pl / cost_basis) * 100, 2) if cost_basis > 0 else 0,
                 'stop_loss': 0,

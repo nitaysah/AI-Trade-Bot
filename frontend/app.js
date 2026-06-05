@@ -228,11 +228,11 @@ const CHART_RANGES = {
  */
 async function getAuthHeaders() {
     const auth = window.auth;
-    const baseHeaders = { 
+    const baseHeaders = {
         'Content-Type': 'application/json',
         'ngrok-skip-browser-warning': 'true'
     };
-    
+
     if (!auth) {
         console.warn('[auth] window.auth is NOT defined yet');
         return baseHeaders;
@@ -1012,7 +1012,7 @@ function _refreshOscillators(bars) {
             .setData(bars.filter(b => b.di_plus != null).map(b => ({ time: b.time, value: b.di_plus })));
         _getOrCreate(_oscSeries, 'di_minus', oscChartAdx, { color: IND_COLORS.di_minus, lineWidth: 1 })
             .setData(bars.filter(b => b.di_minus != null).map(b => ({ time: b.time, value: b.di_minus })));
-        
+
         // Threshold line at 25 (trending vs choppy)
         const adxThreshold = _getOrCreate(_oscSeries, 'adx_threshold', oscChartAdx, { color: 'rgba(99,102,241,0.25)', lineWidth: 1, lineStyle: 2 });
         adxThreshold.setData(bars.map(b => ({ time: b.time, value: 25 })));
@@ -1040,7 +1040,7 @@ function _refreshOscillators(bars) {
         // wt1 line
         _getOrCreate(_oscSeries, 'wt1', oscChartBotbulls1, { color: IND_COLORS.wt1, lineWidth: 1.5 })
             .setData(bars.filter(b => b.wt1 != null).map(b => ({ time: b.time, value: b.wt1 })));
-        
+
         // wt2 line
         _getOrCreate(_oscSeries, 'wt2', oscChartBotbulls1, { color: IND_COLORS.wt2, lineWidth: 1, lineStyle: 2 })
             .setData(bars.filter(b => b.wt2 != null).map(b => ({ time: b.time, value: b.wt2 })));
@@ -1398,7 +1398,7 @@ const INDICATOR_CONFIG_MAP = {
     'SMA': ['SMA_PERIOD'],
     'ATR Volatility': ['ATR_PERIOD', 'ATR_STOP_MULTIPLIER', 'ATR_TRAIL_MULTIPLIER', 'ATR_TAKE_PROFIT_MULTIPLIER'],
     'Strategy Confidence': ['MIN_BULLISH_SIGNALS', 'MIN_BEARISH_SIGNALS'],
-    'Sentiment AI': ['SENTIMENT_BULLISH_THRESHOLD', 'SENTIMENT_BEARISH_THRESHOLD'],
+    'Botbulls4 News AI': ['SENTIMENT_BULLISH_PERCENTAGE', 'SENTIMENT_BEARISH_PERCENTAGE'],
     'BotBulls1': ['BOTBULLS1_WT_CHANNEL', 'BOTBULLS1_WT_AVERAGE', 'BOTBULLS1_MFI_CONFIRM'],
     'BotBulls2': ['BOTBULLS2_ATR_MULT', 'BOTBULLS2_TREND_TRACER_PERIOD', 'BOTBULLS2_REVERSAL_ZONE_PERIOD'],
     'BotBulls3': ['BOTBULLS3_ATR_PERIOD', 'BOTBULLS3_ATR_MULT']
@@ -1436,8 +1436,8 @@ const INDICATOR_DEFAULTS = {
     'ATR_TAKE_PROFIT_MULTIPLIER': 4.0,
     'MIN_BULLISH_SIGNALS': 4,
     'MIN_BEARISH_SIGNALS': 4,
-    'SENTIMENT_BULLISH_THRESHOLD': 0.5,
-    'SENTIMENT_BEARISH_THRESHOLD': -0.5
+    'SENTIMENT_BULLISH_PERCENTAGE': 70,
+    'SENTIMENT_BEARISH_PERCENTAGE': 30
 };
 
 let currentEditingIndicator = null;
@@ -1448,7 +1448,7 @@ let currentEditingIndicator = null;
 const GLOBAL_INDICATOR_PREFS_KEY = 'globalIndicatorPrefs';
 const ALL_SIGNAL_NAMES = [
     'RSI', 'MACD', 'EMA Cross', 'ADX Trend', 'Supertrend',
-    'Bollinger', 'VWAP', 'SMA', 'Mystic Pulse', 'Candle Patterns', 'News Sentiment'
+    'Bollinger', 'VWAP', 'SMA', 'Mystic Pulse', 'Candle Patterns', 'Botbulls4 News AI'
 ];
 
 function getGlobalIndicatorPrefs() {
@@ -1533,6 +1533,7 @@ async function fetchAIIndicator(ticker, timeframe, force = false) {
         const cached = AI_INDICATOR_CACHE.get(key);
         if (cached && (Date.now() - cached.timestamp) < AI_INDICATOR_CACHE_TTL) {
             renderAIIndicatorCard(cached.data, true);
+            recomputeConfluence();
             return;
         }
     }
@@ -1557,6 +1558,9 @@ async function fetchAIIndicator(ticker, timeframe, force = false) {
 
         AI_INDICATOR_CACHE.set(key, { data, timestamp: Date.now() });
         renderAIIndicatorCard(data, false);
+
+        // Refresh the signal grid so the Botbulls4 News AI row syncs with the fresh score
+        recomputeConfluence();
     } catch (e) {
         if (fetchId === _aiIndicatorFetchId) {
             console.error('[ai-indicator] Fetch error:', e);
@@ -1568,32 +1572,32 @@ async function fetchAIIndicator(ticker, timeframe, force = false) {
 function _showAIIndicatorLoading(ticker) {
     const el = document.getElementById('aiIndicatorCard');
     if (!el) return;
-    el.className = 'ai-indicator-card ai-indicator-loading';
+    el.className = 'ai-indicator-card ai-indicator-loading border-amber-200/60 bg-gradient-to-br from-amber-50/50 to-orange-50/30';
     el.innerHTML = `
-        <div class="ai-orb"></div>
+        <div class="ai-orb bg-gradient-to-r from-amber-400 to-orange-500 opacity-20"></div>
         <div class="flex items-center justify-between mb-3 relative z-10">
             <div class="flex items-center gap-2">
-                <span class="text-base">🤖</span>
-                <span class="font-black text-xs text-violet-800 tracking-wide uppercase">BotBulls AI Analysis - ${ticker || '---'}</span>
-                <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-bold bg-violet-100 text-violet-600 border border-violet-300/50">Groq</span>
+                <span class="text-base drop-shadow-sm">🤖</span>
+                <span class="font-black text-xs text-amber-900 tracking-wide uppercase">BotBulls AI Analysis - ${ticker || '---'}</span>
+                <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-amber-200 to-amber-300 text-amber-800 border border-amber-400/50 shadow-sm">GROQ AI</span>
             </div>
             <div class="flex items-center gap-2 relative z-30">
-                <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-violet-500 hover:text-violet-700 bg-violet-100/50 hover:bg-violet-100 transition-colors border border-violet-300/30">
+                <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm">
                     ℹ
                 </button>
-                <button disabled class="w-5 h-5 rounded-full flex items-center justify-center text-xs text-violet-300 bg-slate-100/50 border border-slate-200/30 animate-spin">
+                <button disabled class="w-5 h-5 rounded-full flex items-center justify-center text-xs text-amber-300 bg-amber-50 border border-amber-200 animate-spin">
                     ↻
                 </button>
             </div>
         </div>
-        <div class="space-y-2 animate-pulse">
-            <div class="h-8 bg-violet-200/60 rounded-lg w-2/3"></div>
-            <div class="h-4 bg-violet-200/40 rounded w-full"></div>
-            <div class="h-4 bg-violet-200/40 rounded w-4/5"></div>
-            <div class="h-4 bg-violet-200/40 rounded w-3/5"></div>
+        <div class="space-y-2 animate-pulse relative z-10">
+            <div class="h-8 bg-amber-200/60 rounded-lg w-2/3"></div>
+            <div class="h-4 bg-amber-200/40 rounded w-full"></div>
+            <div class="h-4 bg-amber-200/40 rounded w-4/5"></div>
+            <div class="h-4 bg-amber-200/40 rounded w-3/5"></div>
         </div>
-        <p class="text-[0.6rem] text-violet-500 mt-3 flex items-center gap-1">
-            <svg class="h-3 w-3 animate-spin text-violet-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <p class="text-[0.6rem] text-amber-700 mt-3 flex items-center gap-1 font-bold relative z-10">
+            <svg class="h-3 w-3 animate-spin text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 4v4m0 8v4m4-12h-4m4 8h-4" />
             </svg>
             Analyzing market catalysts and news sentiment...
@@ -1648,7 +1652,7 @@ function renderAIIndicatorCard(data, fromCache = false) {
     const sentConfPct = Math.round(sentConfidence * 100);
 
     const fmtPrice = (v) => (v == null || parseFloat(v) === 0) ? '—' : (parseFloat(v) < 10 ? `$${parseFloat(v).toFixed(4)}` : `$${parseFloat(v).toFixed(2)}`);
-    const fmtUsd   = (v) => (v == null || parseFloat(v) === 0) ? '—' : `$${parseFloat(v).toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0})}`;
+    const fmtUsd = (v) => (v == null || parseFloat(v) === 0) ? '—' : `$${parseFloat(v).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 
     const confBarWidth = `${confPct}%`;
     const confBarColor = confPct >= 70 ? 'bg-emerald-500' : confPct >= 45 ? 'bg-amber-500' : 'bg-rose-500';
@@ -1675,31 +1679,31 @@ function renderAIIndicatorCard(data, fromCache = false) {
     }
 
     const sigColors = {
-        BUY:  { bg: 'ai-indicator-buy',  badge: 'bg-emerald-100 text-emerald-700 border-emerald-300/50', icon: '▲', iconCls: 'text-emerald-600', regimeCls: 'text-emerald-600' },
-        SELL: { bg: 'ai-indicator-sell', badge: 'bg-rose-100 text-rose-700 border-rose-300/50',       icon: '▼', iconCls: 'text-rose-600',    regimeCls: 'text-rose-600' },
-        HOLD: { bg: 'ai-indicator-hold', badge: 'bg-slate-100 text-slate-700 border-slate-300/50',    icon: '●', iconCls: 'text-slate-500',   regimeCls: 'text-slate-500' }
+        BUY: { bg: 'ai-indicator-buy', badge: 'bg-emerald-100 text-emerald-700 border-emerald-300/50', icon: '▲', iconCls: 'text-emerald-600', regimeCls: 'text-emerald-600' },
+        SELL: { bg: 'ai-indicator-sell', badge: 'bg-rose-100 text-rose-700 border-rose-300/50', icon: '▼', iconCls: 'text-rose-600', regimeCls: 'text-rose-600' },
+        HOLD: { bg: 'ai-indicator-hold', badge: 'bg-slate-100 text-slate-700 border-slate-300/50', icon: '●', iconCls: 'text-slate-500', regimeCls: 'text-slate-500' }
     };
     const colors = sigColors[signal] || sigColors['HOLD'];
 
     const cachedBadge = cached
-        ? `<span class="text-[0.5rem] text-violet-500 opacity-60 ml-1">cached</span>`
+        ? `<span class="text-[0.5rem] text-amber-600 opacity-60 ml-1">cached</span>`
         : '';
 
-    el.className = `ai-indicator-card ${colors.bg} relative overflow-hidden p-4 rounded-xl border transition-all duration-300`;
+    el.className = `ai-indicator-card ${colors.bg} relative overflow-hidden p-4 rounded-xl border border-amber-200/60 bg-gradient-to-br from-amber-50/50 to-orange-50/30 transition-all duration-300`;
     el.innerHTML = `
-        <div class="ai-orb"></div>
+        <div class="ai-orb bg-gradient-to-r from-amber-400 to-orange-500 opacity-20"></div>
         <div class="flex items-center justify-between mb-3 relative z-10">
             <div class="flex items-center gap-2">
-                <span class="text-base">🤖</span>
-                <span class="font-black text-xs text-violet-800 tracking-wide uppercase" id="aiIndicatorHeader">BotBulls AI Analysis - ${data.ticker || selectedTicker || '---'}</span>
-                <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-bold bg-violet-100 text-violet-600 border border-violet-300/50">Groq</span>
+                <span class="text-base drop-shadow-sm">🤖</span>
+                <span class="font-black text-xs text-amber-900 tracking-wide uppercase" id="aiIndicatorHeader">BotBulls AI Analysis - ${data.ticker || selectedTicker || '---'}</span>
+                <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-amber-200 to-amber-300 text-amber-800 border border-amber-400/50 shadow-sm">GROQ AI</span>
                 ${cachedBadge}
             </div>
             <div class="flex items-center gap-2 relative z-30">
-                <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-violet-500 hover:text-violet-700 bg-violet-100/50 hover:bg-violet-100 transition-colors border border-violet-300/30">
+                <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm">
                     ℹ
                 </button>
-                <button id="aiRefreshBtn" onclick="refreshAIIndicator()" title="Force refresh AI analysis" class="w-5 h-5 rounded-full flex items-center justify-center text-xs text-violet-500 hover:text-violet-700 bg-violet-100/50 hover:bg-violet-100 transition-colors border border-violet-300/30">
+                <button id="aiRefreshBtn" onclick="refreshAIIndicator()" title="Force refresh AI analysis" class="w-5 h-5 rounded-full flex items-center justify-center text-xs text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm">
                     ↻
                 </button>
             </div>
@@ -1806,7 +1810,7 @@ function renderAIIndicatorCard(data, fromCache = false) {
     `;
 }
 
-window.refreshAIIndicator = async function() {
+window.refreshAIIndicator = async function () {
     const refreshBtn = document.getElementById('aiRefreshBtn');
     if (refreshBtn) {
         refreshBtn.classList.add('animate-spin');
@@ -1816,7 +1820,7 @@ window.refreshAIIndicator = async function() {
     const timeframe = (typeof selectedTimeframe !== 'undefined' ? selectedTimeframe : '') || '4Hour';
     try {
         await fetchAIIndicator(ticker, timeframe, true);
-    } catch(e) {
+    } catch (e) {
         console.error('[ai-indicator] Refresh failed:', e);
     } finally {
         if (refreshBtn) {
@@ -1826,12 +1830,12 @@ window.refreshAIIndicator = async function() {
     }
 };
 
-window.openAIInfoModal = function() {
+window.openAIInfoModal = function () {
     const modal = document.getElementById('aiInfoModal');
     if (modal) modal.classList.remove('hidden');
 };
 
-window.closeAIInfoModal = function() {
+window.closeAIInfoModal = function () {
     const modal = document.getElementById('aiInfoModal');
     if (modal) modal.classList.add('hidden');
 };
@@ -1844,6 +1848,7 @@ const PREMIUM_INFO = {
     'BotBulls1': 'WaveTrend momentum oscillator + Money Flow analysis. Detects reversals when momentum and institutional volume flow align at oversold/overbought extremes.',
     'BotBulls2': 'Adaptive ATR trailing stop with trend-smoothed EMA and reversal zone detection. Fires on trend flips confirmed by multi-condition confluence scoring (1-4 strength rating).',
     'BotBulls3': 'Heikin-Ashi noise filter + ATR-based trailing stop. Generates buy/sell alerts only on confirmed momentum flips — removing false signals from choppy markets.',
+    'Botbulls4 News AI': 'Groq-powered real-time AI news sentiment analysis. Parses current headlines and financial catalysts to determine market direction.',
 };
 
 function renderSignals(signals, action, reason, bullishCount, bearishCount) {
@@ -1875,6 +1880,36 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
 
         // Local prefs override backend 'enabled' flag
         const isEnabled = prefs[name] !== false;
+
+        // Sync Botbulls4 News AI with actual cached AI Indicator score before style evaluation
+        if (name === 'Botbulls4 News AI') {
+            const tickerStr = typeof selectedTicker !== 'undefined' ? selectedTicker : '';
+            const timeframeStr = typeof selectedTimeframe !== 'undefined' ? selectedTimeframe : '';
+            const aiCacheKey = `${tickerStr}|${timeframeStr}`;
+            const cachedAi = AI_INDICATOR_CACHE.get(aiCacheKey);
+            if (cachedAi && cachedAi.data && cachedAi.data.sentiment_score != null) {
+                const score = parseFloat(cachedAi.data.sentiment_score);
+                data.value = score;
+                data.reason = cachedAi.data.sentiment_key_factor || "Mixed Catalysts";
+
+                const sentPct = Math.round(((score + 1.0) / 2.0) * 100);
+                const currentParams = window.lastDashboardData?.indicator_parameters || {};
+                const bullishThresh = currentParams['SENTIMENT_BULLISH_PERCENTAGE'] !== undefined
+                    ? currentParams['SENTIMENT_BULLISH_PERCENTAGE']
+                    : (typeof INDICATOR_DEFAULTS !== 'undefined' ? INDICATOR_DEFAULTS['SENTIMENT_BULLISH_PERCENTAGE'] : 70);
+                const bearishThresh = currentParams['SENTIMENT_BEARISH_PERCENTAGE'] !== undefined
+                    ? currentParams['SENTIMENT_BEARISH_PERCENTAGE']
+                    : (typeof INDICATOR_DEFAULTS !== 'undefined' ? INDICATOR_DEFAULTS['SENTIMENT_BEARISH_PERCENTAGE'] : 30);
+
+                if (sentPct >= bullishThresh) {
+                    data.signal = 'BULLISH';
+                } else if (sentPct <= bearishThresh) {
+                    data.signal = 'BEARISH';
+                } else {
+                    data.signal = 'NEUTRAL';
+                }
+            }
+        }
 
         // Determine CSS class
         let signalClass;
@@ -1920,6 +1955,37 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
 
         const cacheKey = `${isEnabled}-${data.signal}-${data.reason}-${data.value || ''}`;
         if (card.dataset.cacheKey !== cacheKey) {
+            let reasonHtml = data.reason;
+            const isNewsSentiment = name === 'Botbulls4 News AI';
+
+            if (isNewsSentiment && data.value != null && isEnabled) {
+                const scoreVal = parseFloat(data.value);
+                const sentPct = Math.round(((scoreVal + 1.0) / 2.0) * 100);
+                let scoreColor = 'text-slate-500';
+
+                const currentParams = window.lastDashboardData?.indicator_parameters || {};
+                const bullishThresh = currentParams['SENTIMENT_BULLISH_PERCENTAGE'] !== undefined
+                    ? currentParams['SENTIMENT_BULLISH_PERCENTAGE']
+                    : (typeof INDICATOR_DEFAULTS !== 'undefined' ? INDICATOR_DEFAULTS['SENTIMENT_BULLISH_PERCENTAGE'] : 70);
+
+                const bearishThresh = currentParams['SENTIMENT_BEARISH_PERCENTAGE'] !== undefined
+                    ? currentParams['SENTIMENT_BEARISH_PERCENTAGE']
+                    : (typeof INDICATOR_DEFAULTS !== 'undefined' ? INDICATOR_DEFAULTS['SENTIMENT_BEARISH_PERCENTAGE'] : 30);
+
+                if (sentPct >= bullishThresh) {
+                    scoreColor = 'text-emerald-600';
+                } else if (sentPct <= bearishThresh) {
+                    scoreColor = 'text-rose-600';
+                }
+
+                let reasonText = (data.reason || '').toLowerCase().replace('catalysts', 'catalyst');
+                if (reasonText.includes('disabled')) {
+                    reasonText = "evaluating market sentiment";
+                }
+                reasonText = reasonText.charAt(0).toUpperCase() + reasonText.slice(1);
+                reasonHtml = `${reasonText}: <span class="${scoreColor} font-black">${sentPct}%</span>`;
+            }
+
             if (isPremium) {
                 // Premium card with ⓘ info tooltip
                 const tooltipText = PREMIUM_INFO[name] || '';
@@ -1947,28 +2013,10 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
                         </div>
                         <span class="${iconColor} text-sm font-bold ${!isEnabled ? 'opacity-50 grayscale' : ''} transition-all duration-300">${icon}</span>
                     </div>
-                    <p class="text-[0.65rem] text-amber-700 leading-tight ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${data.reason}</p>
+                    <p class="text-[0.65rem] text-amber-700 leading-tight ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${reasonHtml}</p>
                 `;
             } else {
                 // Standard signal card (existing template)
-                const isNewsSentiment = name === 'News Sentiment';
-                let reasonHtml = data.reason;
-                if (isNewsSentiment && data.value != null) {
-                    const scoreVal = parseFloat(data.value);
-                    const sentPct = Math.round(((scoreVal + 1.0) / 2.0) * 100);
-                    let scoreColor = 'text-slate-500 font-black';
-                    if (sentPct > 75) {
-                        scoreColor = 'text-emerald-600 font-black';
-                    } else if (sentPct > 55) {
-                        scoreColor = 'text-amber-500 font-black';
-                    } else if (sentPct < 25) {
-                        scoreColor = 'text-rose-600 font-black';
-                    } else if (sentPct < 45) {
-                        scoreColor = 'text-amber-500 font-black';
-                    }
-                    let reasonText = (data.reason || '').toLowerCase().replace('catalysts', 'catalyst');
-                    reasonHtml = `${reasonText}: <span class="${scoreColor}">${sentPct}%</span>`;
-                }
 
                 card.innerHTML = `
                     <div class="flex items-center justify-between mb-1">
@@ -2148,7 +2196,7 @@ function setWatchlistTab(tab) {
 function selectTicker(ticker) {
     const normalizedTicker = normalizeTicker(ticker);
     if (!normalizedTicker) return;
-    
+
     // Auto-collapse watchlist on mobile when selecting a ticker
     if (window.innerWidth < 1024 && typeof window.toggleWatchlistCollapse === 'function') {
         window.toggleWatchlistCollapse(true);
@@ -2486,16 +2534,16 @@ async function fetchDashboard(mode = 'heavy') {
             if (data.sentiment_summary) {
                 summaryEl.innerHTML = `
                     <div class="mb-3">
-                        <span class="text-[10px] uppercase tracking-wider text-fuchsia-500 font-black block mb-1">🔥 Key Market Factor</span>
-                        <p class="text-indigo-950 font-bold not-italic text-sm leading-snug">${data.sentiment_key_factor || 'Mixed Catalysts'}</p>
+                        <span class="text-[10px] uppercase tracking-wider text-amber-600 font-black block mb-1">🔥 Key Market Factor</span>
+                        <p class="text-amber-950 font-bold not-italic text-sm leading-snug">${data.sentiment_key_factor || 'Mixed Catalysts'}</p>
                     </div>
                     <div class="space-y-2">
-                        <span class="text-[10px] uppercase tracking-wider text-purple-500 font-black block mb-1">📰 AI News Briefing & Catalyst Summary</span>
-                        <p class="text-indigo-900 font-medium not-italic leading-relaxed text-xs">${data.sentiment_summary}</p>
+                        <span class="text-[10px] uppercase tracking-wider text-orange-600 font-black block mb-1">📰 AI News Briefing & Catalyst Summary</span>
+                        <p class="text-amber-900 font-medium not-italic leading-relaxed text-xs">${data.sentiment_summary}</p>
                     </div>
-                    <div class="mt-4 pt-3 border-t border-purple-100 flex justify-between items-center text-[10px] font-black uppercase text-purple-400">
+                    <div class="mt-4 pt-3 border-t border-amber-200/50 flex justify-between items-center text-[10px] font-black uppercase text-amber-700">
                          <span>Analysis Confidence Index</span>
-                         <span class="font-extrabold text-xs text-fuchsia-500 bg-fuchsia-50 px-2 py-0.5 rounded border border-fuchsia-100">${Math.round(data.sentiment_confidence * 100)}%</span>
+                         <span class="font-extrabold text-xs text-orange-600 bg-orange-100 px-2 py-0.5 rounded border border-orange-200 shadow-sm">${Math.round(data.sentiment_confidence * 100)}%</span>
                     </div>
                 `;
                 summaryEl.classList.remove('italic');
@@ -2512,7 +2560,7 @@ async function fetchDashboard(mode = 'heavy') {
 
         // Fetch dynamic Market Sentiment (Fear & Greed)
         fetchFearAndGreed();
-        
+
         // Update new Macro, Breadth, and Sector trading cards
         updateTradingCards(data);
         const posLabel = document.getElementById('positionsList');
@@ -3286,10 +3334,10 @@ function updateTradingCards(data) {
     // 1. Calculate Market Breadth dynamically from watchlist/botlist scans
     let totalTickers = 0;
     let bullishCount = 0;
-    
+
     // Combine watchlist and botScans to get a broad view
     const allScans = { ...data.watchlistScans, ...data.botScans };
-    
+
     for (const ticker in allScans) {
         const scan = allScans[ticker];
         if (scan && scan.sentiment_score !== undefined) {
@@ -3307,7 +3355,7 @@ function updateTradingCards(data) {
             const breadthPct = Math.round((bullishCount / totalTickers) * 100);
             breadthScoreEl.textContent = `${breadthPct}%`;
             breadthProgressEl.setAttribute('stroke-dasharray', `${breadthPct}, 100`);
-            
+
             // Color mapping based on breadth
             if (breadthPct >= 60) {
                 breadthProgressEl.className.baseVal = "text-emerald-500";
@@ -3490,7 +3538,7 @@ function switchSectorTab(sector) {
     sectors.forEach(s => {
         const tab = document.getElementById(`tab-${s}`);
         const view = document.getElementById(`view-${s}`);
-        
+
         if (s === sector) {
             if (tab) tab.className = 'pb-3 text-sm font-bold border-b-2 border-indigo-600 text-indigo-700 transition-colors';
             if (view) view.classList.remove('hidden');
@@ -3519,7 +3567,7 @@ async function fetchMarketData() {
         });
         if (!req.ok) return;
         const data = await req.json();
-        
+
         // Update Sector Heatmap Modal (Dynamic Webull-Style Grid)
         if (data.sectors) {
             // Calculate actual mathematical averages for the main dashboard card
@@ -3577,14 +3625,14 @@ async function fetchMarketData() {
 
             const TICKER_WEIGHTS = {
                 // Mega-Caps (Weight 3 - Large Mosaic Tiles: 2x2)
-                "AAPL": 3, "MSFT": 3, "GOOG": 3, "NVDA": 3, "AMZN": 3, 
-                "BTC-USD": 3, "ETH-USD": 3, 
+                "AAPL": 3, "MSFT": 3, "GOOG": 3, "NVDA": 3, "AMZN": 3,
+                "BTC-USD": 3, "ETH-USD": 3,
                 "JPM": 3, "LLY": 3, "XOM": 3,
 
                 // Large-Caps (Weight 2 - Wide Rectangle Tiles: 2x1)
                 "META": 2, "TSLA": 2, "AVGO": 2, "NFLX": 2, "ADBE": 2,
-                "BAC": 2, "V": 2, "MA": 2, 
-                "UNH": 2, "COST": 2, "PG": 2, 
+                "BAC": 2, "V": 2, "MA": 2,
+                "UNH": 2, "COST": 2, "PG": 2,
                 "CVX": 2, "SOL-USD": 2
             };
 
@@ -3605,7 +3653,7 @@ async function fetchMarketData() {
                     const cleanSymbol = ticker.replace('-USD', '');
                     const isUp = pct > 0;
                     const isDown = pct < 0;
-                    
+
                     // Light-mode glassmorphic return-based color scaling
                     let bgClass = 'bg-white/90 border-slate-200/80 text-slate-600 shadow-sm'; // Flat/Neutral
                     if (isUp) {
@@ -3623,7 +3671,7 @@ async function fetchMarketData() {
                     let spanClass = 'col-span-1 row-span-1 p-1.5 md:p-2 min-h-[50px] flex flex-col justify-center';
                     let fontClass = 'text-xs font-bold';
                     let changeFontClass = 'text-[9px]';
-                    
+
                     if (weight === 3) {
                         spanClass = 'col-span-2 row-span-2 p-3 md:p-4 flex flex-col justify-center min-h-[108px]';
                         fontClass = 'text-base md:text-lg font-black tracking-widest';
@@ -3635,7 +3683,7 @@ async function fetchMarketData() {
                     }
 
                     const tileClass = `flex flex-col items-center justify-center rounded-xl border backdrop-blur-sm transition-all duration-300 hover:scale-[1.03] hover:shadow-md cursor-pointer text-center relative ${spanClass} ${bgClass}`;
-                    
+
                     // Convert to alpaca/standard ticker representation for selectTicker (remove hyphens)
                     const selectSymbol = cleanSymbol.replace('-', '');
 
@@ -3649,25 +3697,25 @@ async function fetchMarketData() {
                 gridContainer.innerHTML = html;
             }
         }
-        
+
         // Update Market Breadth Modal
         if (data.breadth) {
             document.getElementById('bm-adv').innerText = data.breadth.advancing;
             document.getElementById('bm-dec').innerText = data.breadth.declining;
-            
+
             const total = data.breadth.advancing + data.breadth.declining;
             const adv_pct = total > 0 ? (data.breadth.advancing / total) * 100 : 50;
             const dec_pct = total > 0 ? (data.breadth.declining / total) * 100 : 50;
-            
+
             document.getElementById('bm-adv-bar').style.width = `${adv_pct}%`;
             document.getElementById('bm-dec-bar').style.width = `${dec_pct}%`;
-            
+
             if (data.breadth.declining > 0) {
                 document.getElementById('bm-ad-ratio').innerText = `Ratio: ${(data.breadth.advancing / data.breadth.declining).toFixed(2)}`;
             } else {
                 document.getElementById('bm-ad-ratio').innerText = `Ratio: ${data.breadth.advancing} Adv / 0 Dec`;
             }
-            
+
             const ad_label = document.getElementById('bm-ad-label');
             if (adv_pct > 60) {
                 ad_label.innerText = 'Bullish Bias';
@@ -3682,7 +3730,7 @@ async function fetchMarketData() {
 
             document.getElementById('bm-highs').innerText = data.breadth.new_highs;
             document.getElementById('bm-lows').innerText = data.breadth.new_lows;
-            
+
             const hl_label = document.getElementById('bm-hl-label');
             const hl_text = document.getElementById('bm-hl-text');
             if (data.breadth.new_highs > data.breadth.new_lows * 2) {
@@ -3704,7 +3752,7 @@ async function fetchMarketData() {
             gauge50.setAttribute('stroke-dasharray', `${data.breadth.above_50_pct}, 100`);
             if (data.breadth.above_50_pct > 50) gauge50.className.baseVal = "text-emerald-500";
             else gauge50.className.baseVal = "text-red-500";
-            
+
             document.getElementById('bm-200-val').innerText = `${data.breadth.above_200_pct}%`;
             const gauge200 = document.getElementById('bm-200-gauge');
             gauge200.setAttribute('stroke-dasharray', `${data.breadth.above_200_pct}, 100`);
@@ -3719,32 +3767,32 @@ async function fetchMarketData() {
                     const isUp = t.change_pct >= 0;
                     const changeColor = isUp ? 'text-emerald-500' : 'text-red-500';
                     const changeSign = isUp ? '+' : '';
-                    
-                    const ma50Pill = t.above_50 === null ? 
+
+                    const ma50Pill = t.above_50 === null ?
                         '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-400">N/A</span>' :
-                        (t.above_50 ? 
-                            '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700">ABOVE</span>' : 
+                        (t.above_50 ?
+                            '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700">ABOVE</span>' :
                             '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-700">BELOW</span>'
                         );
-                        
-                    const ma200Pill = t.above_200 === null ? 
+
+                    const ma200Pill = t.above_200 === null ?
                         '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-400">N/A</span>' :
-                        (t.above_200 ? 
-                            '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700 font-semibold">ABOVE</span>' : 
+                        (t.above_200 ?
+                            '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700 font-semibold">ABOVE</span>' :
                             '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-700 font-semibold">BELOW</span>'
                         );
-                        
+
                     let hlPill = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-400">NORMAL</span>';
                     if (t.is_high) {
                         hlPill = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500 text-white shadow-sm shadow-emerald-100">52W HIGH</span>';
                     } else if (t.is_low) {
                         hlPill = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-500 text-white shadow-sm shadow-red-100">52W LOW</span>';
                     }
-                    
+
                     rowsHtml += `
                     <tr class="border-b border-slate-100 hover:bg-slate-50/50 transition-colors">
                         <td class="px-4 py-3 font-bold text-slate-800 text-xs">${t.ticker}</td>
-                        <td class="px-4 py-3 font-semibold text-slate-700 text-xs text-right">$${t.price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                        <td class="px-4 py-3 font-semibold text-slate-700 text-xs text-right">$${t.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                         <td class="px-4 py-3 font-bold text-xs text-right ${changeColor}">${changeSign}${t.change_pct}%</td>
                         <td class="px-4 py-3 text-center">${ma50Pill}</td>
                         <td class="px-4 py-3 text-center">${ma200Pill}</td>
@@ -3755,7 +3803,7 @@ async function fetchMarketData() {
                 rowsContainer.innerHTML = rowsHtml;
             }
         }
-    } catch(e) {
+    } catch (e) {
         console.error("Failed to fetch market data:", e);
     }
 }
@@ -3766,26 +3814,26 @@ async function fetchMacroEvents() {
         const req = await fetch(`${API_BASE}/api/macro-events`, { headers });
         if (!req.ok) return;
         const data = await req.json();
-        
+
         const loader = document.getElementById('macro-events-loading');
         if (loader) loader.style.display = 'none';
-        
+
         // Render Indicators
         const indList = document.getElementById('macro-indicators-list');
         if (indList && data.indicators) {
             let html = '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">';
             const indicators = Object.values(data.indicators);
-            
+
             indicators.forEach(ind => {
-                if(ind.error) return;
-                
+                if (ind.error) return;
+
                 const isUp = ind.direction === 'up';
                 const colorClass = isUp ? 'text-emerald-500' : 'text-red-500';
                 const bgClass = isUp ? 'bg-emerald-100' : 'bg-red-100';
                 const arrow = isUp ? '↑' : '↓';
-                
+
                 let newsHtml = '';
-                if(ind.recent_news && ind.recent_news.length > 0) {
+                if (ind.recent_news && ind.recent_news.length > 0) {
                     const topNews = ind.recent_news[0];
                     newsHtml = `
                     <div class="mt-3 pt-3 border-t border-slate-100">
@@ -3815,7 +3863,7 @@ async function fetchMacroEvents() {
                     ${newsHtml}
                 </div>`;
             });
-            
+
             html += '</div>';
             indList.innerHTML = html;
         }
@@ -3831,7 +3879,7 @@ async function fetchMacroEvents() {
                     const dateObj = new Date(e.date);
                     const dayStr = dateObj.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
                     const timeStr = dateObj.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-                    
+
                     html += `
                     <div class="relative pl-12 mb-8">
                         <div class="absolute left-[-5px] top-1.5 w-3 h-3 bg-red-500 rounded-full border-4 border-white shadow-sm ring-2 ring-red-100"></div>
@@ -3909,7 +3957,7 @@ function switchMacroTab(tab) {
     tabs.forEach(t => {
         const btn = document.getElementById(`tab-macro-${t}`);
         const view = document.getElementById(`view-macro-${t}`);
-        if(t === tab) {
+        if (t === tab) {
             btn.classList.replace('border-transparent', 'border-indigo-600');
             btn.classList.replace('text-slate-500', 'text-indigo-700');
             view.classList.remove('hidden');
@@ -3924,14 +3972,14 @@ function switchMacroTab(tab) {
 // ──────────────────────────────────────────────
 // Watchlist Mobile UI Toggles
 // ──────────────────────────────────────────────
-window.toggleWatchlistCollapse = function(forceCollapse = false) {
+window.toggleWatchlistCollapse = function (forceCollapse = false) {
     const area = document.getElementById('watchlistCollapsibleArea');
     const chevron = document.getElementById('watchlistChevron');
     if (!area || !chevron) return;
-    
+
     // Check if it's currently expanded
     const isExpanded = area.style.maxHeight !== '0px';
-    
+
     if (isExpanded || forceCollapse === true) {
         // Collapse it
         area.style.maxHeight = '0px';

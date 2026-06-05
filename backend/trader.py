@@ -112,39 +112,48 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
     # 2. Factor in AI sentiment as a signal (only if enabled)
     ai_sentiment_enabled_for_bot = True
     if allowed_indicators is not None:
-        ai_sentiment_enabled_for_bot = 'Sentiment AI' in allowed_indicators
+        ai_sentiment_enabled_for_bot = 'Botbulls4 News AI' in allowed_indicators
 
     if ai_sentiment_enabled_for_bot and getattr(uc, 'ENABLE_AI_SENTIMENT', True):
         ai_enabled = True
-        if ai_sentiment_score >= uc.SENTIMENT_BULLISH_THRESHOLD and ai_sentiment_confidence >= 0.4:
+        
+        # Convert 0-100 percentage thresholds back to -1.0 to 1.0 scale
+        bullish_threshold = (float(getattr(uc, 'SENTIMENT_BULLISH_PERCENTAGE', 70)) / 100.0) * 2.0 - 1.0
+        bearish_threshold = (float(getattr(uc, 'SENTIMENT_BEARISH_PERCENTAGE', 30)) / 100.0) * 2.0 - 1.0
+
+        if ai_sentiment_score >= bullish_threshold and ai_sentiment_confidence >= 0.4:
             bullish_count += 1
-            filtered_signals['News Sentiment'] = {
+            filtered_signals['Botbulls4 News AI'] = {
                 'value': ai_sentiment_score,
                 'signal': 'BULLISH',
                 'reason': "Positive catalysts detected",
-                'enabled': True
+                'enabled': True,
+                'premium': True
             }
-        elif ai_sentiment_score <= uc.SENTIMENT_BEARISH_THRESHOLD and ai_sentiment_confidence >= 0.4:
+        elif ai_sentiment_score <= bearish_threshold and ai_sentiment_confidence >= 0.4:
             bearish_count += 1
-            filtered_signals['News Sentiment'] = {
+            filtered_signals['Botbulls4 News AI'] = {
                 'value': ai_sentiment_score,
                 'signal': 'BEARISH',
                 'reason': "Negative catalysts detected",
-                'enabled': True
+                'enabled': True,
+                'premium': True
             }
         else:
-            filtered_signals['News Sentiment'] = {
+            filtered_signals['Botbulls4 News AI'] = {
                 'value': ai_sentiment_score,
                 'signal': 'NEUTRAL',
                 'reason': "Mixed or weak news flow",
-                'enabled': True
+                'enabled': True,
+                'premium': True
             }
     else:
-        filtered_signals['News Sentiment'] = {
+        filtered_signals['Botbulls4 News AI'] = {
             'value': ai_sentiment_score,
             'signal': 'NEUTRAL',
             'reason': "News Sentiment Disabled",
-            'enabled': False
+            'enabled': False,
+            'premium': True
         }
 
     # 3. Determine final action using per-ticker thresholds if available

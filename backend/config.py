@@ -134,8 +134,8 @@ BOTBULLS3_ATR_MULT = 1.0
 # ──────────────────────────────────────────────
 MIN_BULLISH_SIGNALS = 4
 MIN_BEARISH_SIGNALS = 4
-SENTIMENT_BULLISH_THRESHOLD = 0.5
-SENTIMENT_BEARISH_THRESHOLD = -0.5
+SENTIMENT_BULLISH_PERCENTAGE = 70
+SENTIMENT_BEARISH_PERCENTAGE = 30
 
 # ──────────────────────────────────────────────
 # Risk Management

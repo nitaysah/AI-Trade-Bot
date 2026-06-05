@@ -581,29 +581,29 @@
                                 <div id="premiumSignalGrid" class="grid grid-cols-1 md:grid-cols-3 gap-3">
                                     <!-- Premium signals injected by JS -->
                                 </div>
-                            </div>
-                        </div>
-                    </div>
 
-                    <!-- BotBulls AI Analysis Section -->
-                    <div id="aiIndicatorSection" class="mb-4">
-                        <div id="aiIndicatorCard" class="ai-indicator-card p-4 rounded-xl border relative overflow-hidden transition-all duration-300">
-                            <div class="flex items-center justify-between mb-3 relative z-10">
-                                <div class="flex items-center gap-2">
-                                    <span class="text-base">🤖</span>
-                                    <span class="font-black text-xs text-violet-800 tracking-wide uppercase" id="aiIndicatorHeader">BotBulls AI Analysis</span>
-                                    <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-bold bg-violet-100 text-violet-600 border border-violet-300/50">Groq</span>
-                                </div>
-                                <div class="flex items-center gap-2 relative z-30">
-                                    <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-violet-500 hover:text-violet-700 bg-violet-100/50 hover:bg-violet-100 transition-colors border border-violet-300/30">
-                                        ℹ
-                                    </button>
-                                    <button onclick="refreshAIIndicator()" title="Force refresh AI analysis" class="w-5 h-5 rounded-full flex items-center justify-center text-xs text-violet-500 hover:text-violet-700 bg-violet-100/50 hover:bg-violet-100 transition-colors border border-violet-300/30">
-                                        ↻
-                                    </button>
+                                <!-- BotBulls AI Analysis Section -->
+                                <div id="aiIndicatorSection" class="mt-4">
+                                    <div id="aiIndicatorCard" class="ai-indicator-card p-4 rounded-xl border border-amber-200/60 bg-gradient-to-br from-amber-50/50 to-orange-50/30 relative overflow-hidden transition-all duration-300">
+                                        <div class="flex items-center justify-between mb-3 relative z-10">
+                                            <div class="flex items-center gap-2">
+                                                <span class="text-base drop-shadow-sm">🤖</span>
+                                                <span class="font-black text-xs text-amber-900 tracking-wide uppercase" id="aiIndicatorHeader">BotBulls AI Analysis</span>
+                                                <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-amber-200 to-amber-300 text-amber-800 border border-amber-400/50 shadow-sm">GROQ AI</span>
+                                            </div>
+                                            <div class="flex items-center gap-2 relative z-30">
+                                                <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm">
+                                                    ℹ
+                                                </button>
+                                                <button onclick="refreshAIIndicator()" title="Force refresh AI analysis" class="w-5 h-5 rounded-full flex items-center justify-center text-xs text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm">
+                                                    ↻
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div id="aiSummary" class="text-[0.65rem] font-medium text-amber-800/80 relative z-10">Select a ticker to load AI analysis…</div>
+                                    </div>
                                 </div>
                             </div>
-                            <p class="text-[0.65rem] font-medium text-violet-400/80 relative z-10">Select a ticker to load AI analysis…</p>
                         </div>
                     </div>
 
@@ -995,7 +995,14 @@
                     <ul class="list-disc pl-4 space-y-1 text-slate-700">
                         <li><strong>Technical Confluence:</strong> Evaluates RSI levels, MACD crossovers, Supertrends, and SMA-200.</li>
                         <li><strong>Volatility Regimes:</strong> Measures ATR, Bollinger width, and current VIX indices to calibrate risk.</li>
-                        <li><strong>News & News Catalysts:</strong> Ingests live financial news feeds and scores real-time sentiment.</li>
+                        <li>
+                            <strong>News & News Catalysts:</strong> Ingests live financial news feeds and scores real-time sentiment on a 0-100% percentage basis.
+                            <ul class="list-circle pl-4 mt-1 text-slate-500 text-[10px] space-y-0.5">
+                                <li><strong>Bullish Percentage:</strong> Score required to trigger a Buy signal (Default: 70%).</li>
+                                <li><strong>Bearish Percentage:</strong> Score below which triggers a Sell signal (Default: 30%).</li>
+                                <li>Scores falling between these percentages are considered <strong>Neutral</strong>.</li>
+                            </ul>
+                        </li>
                         <li><strong>Portfolio Protection:</strong> Dynamically adjusts position sizing and leverage guidance.</li>
                     </ul>
                 </div>

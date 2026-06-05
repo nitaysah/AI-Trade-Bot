@@ -525,7 +525,12 @@ async def trading_loop():
                                 result['reason'] = "Market Closed. Trade execution skipped."
                                 
                             # --- Cooldown Check ---
-                            cooldown_secs = getattr(config, 'TRADE_COOLDOWN_SECONDS', 300)
+                            custom_cooldown = ticker_settings.get("cooldown_minutes")
+                            if custom_cooldown is not None:
+                                cooldown_secs = custom_cooldown * 60
+                            else:
+                                cooldown_secs = getattr(config, 'TRADE_COOLDOWN_SECONDS', 300)
+                            
                             if cooldown_secs > 0 and ticker in last_trade_timestamps:
                                 elapsed = (get_now() - last_trade_timestamps[ticker]).total_seconds()
                                 if elapsed < cooldown_secs:
@@ -828,7 +833,7 @@ async def update_alpaca_config(cfg: AlpacaConfig, user: dict = Depends(verify_to
 
 
 @app.delete("/api/alpaca_config")
-def unlink_alpaca(, user: dict = Depends(verify_token)):
+def unlink_alpaca(user: dict = Depends(verify_token)):
     # Delete from cloud
     eng = user_manager.get_engine(user['uid'])
     if db:
@@ -1026,10 +1031,10 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
 
 @app.get("/api/scan/{ticker}")
 def scan_ticker(ticker: str, timeframe: str = "4Hour", user: dict = Depends(verify_token)):
-    if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker.upper()):
-    eng = user_manager.get_engine(user['uid'])
-        return {"error": "Invalid ticker format"}
     """On-demand scan of a specific ticker."""
+    eng = user_manager.get_engine(user['uid'])
+    if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker.upper()):
+        return {"error": "Invalid ticker format"}
     account = eng.broker.get_account_info()
     if account.get('simulation', True):
         return {"error": "Alpaca connection required for scanning."}
@@ -1184,7 +1189,7 @@ async def download_all_data(data: dict, user: dict = Depends(verify_token)):
 
 
 @app.get("/api/settings/indicators")
-def get_indicator_settings(, user: dict = Depends(verify_token)):
+def get_indicator_settings(user: dict = Depends(verify_token)):
     """Returns all indicator toggles grouped by category."""
     return {
         "Momentum": {
@@ -1250,7 +1255,7 @@ async def update_ticker_amount(data: dict, user: dict = Depends(verify_token)):
 @app.post("/api/settings/timeframe")
 async def update_timeframe(data: dict, user: dict = Depends(verify_token)):
     """Updates the default trading timeframe and triggers a re-scan."""
-    global eng.latest_scans, eng.bot_scans, eng.latest_scans_by_tf, bot_scans_by_tf
+    eng = user_manager.get_engine(user['uid'])
     new_tf = data.get("timeframe")
     if new_tf in ["30Sec", "1Min", "2Min", "3Min", "5Min", "10Min", "15Min", "30Min", "1Hour", "2Hour", "4Hour", "1Day"]:
         eng.config.DEFAULT_TIMEFRAME = new_tf
@@ -1268,8 +1273,8 @@ async def update_timeframe(data: dict, user: dict = Depends(verify_token)):
             tf: scans for tf, scans in eng.latest_scans_by_tf.items()
             if tf == new_tf
         }
-        bot_scans_by_tf = {
-            tf: scans for tf, scans in bot_scans_by_tf.items()
+        eng.bot_scans_by_tf = {
+            tf: scans for tf, scans in eng.bot_scans_by_tf.items()
             if tf == new_tf
         }
         asyncio.create_task(save_settings_to_cloud())
@@ -1287,7 +1292,7 @@ async def update_timeframe(data: dict, user: dict = Depends(verify_token)):
 
 
 @app.get("/api/watchlist")
-def get_watchlist(, user: dict = Depends(verify_token)):
+def get_watchlist(user: dict = Depends(verify_token)):
     """Returns the current watchlist."""
     return eng.config.WATCHLIST
 
@@ -1322,7 +1327,7 @@ async def remove_from_watchlist(ticker: str, user: dict = Depends(verify_token))
 
 
 @app.get("/api/tradelist")
-def get_tradelist(, user: dict = Depends(verify_token)):
+def get_tradelist(user: dict = Depends(verify_token)):
     """Returns the current active trade list."""
     return eng.config.TRADELIST
 
@@ -1352,9 +1357,9 @@ async def add_to_tradelist(data: dict, user: dict = Depends(verify_token)):
 
 
 @app.get("/api/debug/history")
-async def debug_history(, user: dict = Depends(verify_token)):
-    return {
+async def debug_history(user: dict = Depends(verify_token)):
     eng = user_manager.get_engine(user['uid'])
+    return {
         "executed_trades_count": 0,
         "trade_log_count": len(eng.trade_log),
         "executed_trades": [],
@@ -1498,12 +1503,19 @@ async def update_ticker_settings(data: dict, user: dict = Depends(verify_token))
 
     if ticker not in eng.config.TICKER_SETTINGS:
         eng.config.TICKER_SETTINGS[ticker] = {}
+    previously_paused = eng.config.TICKER_SETTINGS.get(ticker, {}).get('paused', False)
     # Filter out null values to keep global defaults if not specified
     for k, v in settings.items():
         if v is not None:
             eng.config.TICKER_SETTINGS[ticker][k] = v
         elif k in eng.config.TICKER_SETTINGS[ticker]:
             del eng.config.TICKER_SETTINGS[ticker][k]
+
+    if settings.get('paused') is False:
+        eng.config.TICKER_SETTINGS[ticker]['pause_reason'] = ""
+        eng.config.TICKER_SETTINGS[ticker]['realized_pl'] = 0.0
+        if previously_paused or not eng.config.TICKER_SETTINGS[ticker].get('started_at'):
+            eng.config.TICKER_SETTINGS[ticker]['started_at'] = get_now().isoformat()
     
     asyncio.create_task(save_settings_to_cloud())
     return {"status": "success"}
@@ -1517,7 +1529,7 @@ async def reset_ticker_settings(ticker: str, user: dict = Depends(verify_token))
         asyncio.create_task(save_settings_to_cloud())
     return {"status": "success"}
 
-def _load_saved_settings(, user: dict = Depends(verify_token)):
+def _load_saved_settings(user: dict = Depends(verify_token)):
     """Load indicator toggles from settings.json on startup."""
     import json, os
     settings_path = os.path.join(os.path.dirname(__file__), "settings.json")

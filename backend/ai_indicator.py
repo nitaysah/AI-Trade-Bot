@@ -753,6 +753,7 @@ Output ONLY valid JSON:
         if not result.get("sell_target_pct") and result.get("sell_target") and ctx.get("price"):
             result["sell_target_pct"] = round((result["sell_target"] - ctx["price"]) / ctx["price"] * 100, 2)
 
+        result = _sanitize_for_json(result)
         _AI_CACHE[cache_key] = {"data": result, "timestamp": now}
         print(f"[ai_indicator] {ticker}: {signal} (confidence={confidence:.0%})")
         return result
@@ -770,8 +771,24 @@ Output ONLY valid JSON:
         "sentiment_summary": sent.get("summary", ""),
         "sentiment_key_factor": sent.get("key_factor", "N/A"),
     })
+    result = _sanitize_for_json(result)
     _AI_CACHE[cache_key] = {"data": result, "timestamp": now}
     return result
+
+
+import math
+
+def _sanitize_for_json(obj):
+    """Recursively replaces NaN and Inf floats with None for JSON compliance."""
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_sanitize_for_json(v) for v in obj]
+    elif isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    return obj
 
 
 def _safe_float(val):
@@ -779,7 +796,10 @@ def _safe_float(val):
     if val is None:
         return None
     try:
-        return round(float(val), 4)
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return round(f, 4)
     except (TypeError, ValueError):
         return None
 
