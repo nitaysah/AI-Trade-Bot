@@ -4,7 +4,7 @@
 // ═══════════════════════════════════════════════════
 
 // Production API Configuration (Auto-switch between Local and Cloud)
-const CLOUD_URL = 'https://sighing-sift-dropout.ngrok-free.dev';
+const CLOUD_URL = 'https://botbulls-api.loca.lt';
 const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
     ? 'http://localhost:8000'
     : CLOUD_URL;
@@ -24,7 +24,7 @@ async function getAuthHeaders() {
     const auth = window.auth;
     const baseHeaders = { 
         'Content-Type': 'application/json',
-        'ngrok-skip-browser-warning': 'true'
+        'Bypass-Tunnel-Reminder': 'true'
     };
     
     if (!auth) return baseHeaders;

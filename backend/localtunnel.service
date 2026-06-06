@@ -1,0 +1,13 @@
+[Unit]
+Description=Localtunnel Service
+After=network.target botbulls.service
+
+[Service]
+ExecStart=/usr/local/bin/lt --port 8000 --subdomain botbulls-api
+Restart=always
+RestartSec=3
+User=ubuntu
+Environment=PATH=/usr/bin:/usr/local/bin:/bin
+
+[Install]
+WantedBy=multi-user.target
