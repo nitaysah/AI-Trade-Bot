@@ -4,7 +4,7 @@
 // ═══════════════════════════════════════════════════
 
 // Production API Configuration (Auto-switch between Local and Cloud)
-const CLOUD_URL = 'https://botbulls-api.loca.lt';
+const CLOUD_URL = 'https://207-211-184-22.sslip.io';
 const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
     ? 'http://localhost:8000'
     : CLOUD_URL;

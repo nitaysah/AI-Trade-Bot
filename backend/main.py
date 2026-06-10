@@ -293,7 +293,8 @@ app.add_middleware(
         "https://trading-bot-engine-df3de.web.app",
         "http://localhost:5000",
         "http://localhost:3000",
-        "http://127.0.0.1:5500"
+        "http://127.0.0.1:5500",
+        "https://botbulls-api.loca.lt"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -839,17 +840,43 @@ async def get_chart_data(
     }
 
 
+@app.get("/api/ollama/models")
+async def get_ollama_models(eng: UserEngine = Depends(get_user_engine)):
+    """
+    Queries the local Ollama instance for pulled models.
+    Returns a list of model names or an empty list if offline.
+    """
+    import requests
+    host = getattr(eng.config, "OLLAMA_HOST", "http://localhost:11434")
+    try:
+        response = await asyncio.to_thread(
+            requests.get,
+            f"{host.rstrip('/')}/api/tags",
+            timeout=1.5
+        )
+        if response.status_code == 200:
+            models_data = response.json().get("models", [])
+            return {
+                "status": "online",
+                "models": [m["name"] for m in models_data]
+            }
+    except Exception as e:
+        print(f"[api] Ollama not reachable at {host}: {e}")
+    return {"status": "offline", "models": []}
+
+
 @app.get("/api/ai-indicator")
 async def get_ai_indicator_endpoint(
     ticker: str,
     timeframe: str = "4Hour",
+    model: str = None,
     force: bool = False,
     eng: UserEngine = Depends(get_user_engine)
 ):
     """
-    Agentic AI Indicator — Groq-powered autonomous market research.
+    Agentic AI Indicator — Groq/Ollama-powered autonomous market research.
     Returns a BUY/SELL/HOLD signal with position sizing, leverage guidance,
-    sell targets, and a detailed institutional-grade reasoning summary.
+    sell targets, and a detailed reasoning summary.
     """
     ticker = _normalize_quote_symbol(ticker)
     if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
@@ -872,6 +899,7 @@ async def get_ai_indicator_endpoint(
             timeframe,
             available_cash,
             account_equity,
+            model,
         )
         return result
     except Exception as e:

@@ -4,7 +4,7 @@
 // ═══════════════════════════════════════════════════
 
 // 6. Production API Configuration (Auto-switch between Local and Cloud)
-const CLOUD_URL = 'https://botbulls-api.loca.lt';
+const CLOUD_URL = 'https://207-211-184-22.sslip.io';
 const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
     ? 'http://localhost:8000'
     : CLOUD_URL;
@@ -1516,17 +1516,36 @@ function recomputeConfluence() {
 
     window._indicatorToggleDebounce = wasDebouncing;
 }
-// ──────────────────────────────────────────────
-// AI Indicator — Groq Agentic Signal
+// AI Indicator — Groq/Ollama Agentic Signal
 // ──────────────────────────────────────────────
 
-const AI_INDICATOR_CACHE = new Map(); // key: "ticker|timeframe" → { data, timestamp }
+window.ollamaModels = [];
+async function loadOllamaModels() {
+    try {
+        const headers = await getAuthHeaders();
+        const res = await fetch(`${API_BASE}/api/ollama/models`, { headers });
+        if (res.ok) {
+            const data = await res.json();
+            if (data.status === 'online') {
+                window.ollamaModels = data.models || [];
+            } else {
+                window.ollamaModels = [];
+            }
+        }
+    } catch (e) {
+        console.warn('[init] Failed to fetch Ollama models:', e);
+        window.ollamaModels = [];
+    }
+}
+
+const AI_INDICATOR_CACHE = new Map(); // key: "ticker|timeframe|model" → { data, timestamp }
 const AI_INDICATOR_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 let _aiIndicatorFetchId = 0; // prevents stale response rendering
 
 async function fetchAIIndicator(ticker, timeframe, force = false) {
     if (!ticker) return;
-    const key = `${ticker}|${timeframe}`;
+    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const key = `${ticker}|${timeframe}|${selectedModel}`;
 
     // Check client-side cache first (unless forced)
     if (!force) {
@@ -1544,7 +1563,7 @@ async function fetchAIIndicator(ticker, timeframe, force = false) {
     const fetchId = ++_aiIndicatorFetchId;
     try {
         const headers = await getAuthHeaders();
-        const url = `${API_BASE}/api/ai-indicator?ticker=${encodeURIComponent(ticker)}&timeframe=${encodeURIComponent(timeframe)}${force ? '&force=true' : ''}`;
+        const url = `${API_BASE}/api/ai-indicator?ticker=${encodeURIComponent(ticker)}&timeframe=${encodeURIComponent(timeframe)}&model=${encodeURIComponent(selectedModel)}${force ? '&force=true' : ''}`;
         const res = await fetch(url, { headers });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
@@ -1569,9 +1588,72 @@ async function fetchAIIndicator(ticker, timeframe, force = false) {
     }
 }
 
+function _getAIModelSelectHtml(selectedModel, isError = false) {
+    let optionsHtml = '';
+    optionsHtml += '<optgroup label="Groq AI (Cloud)">';
+    const groqModels = [
+        { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B' },
+        { value: 'mixtral-8x7b-32768', label: 'Mixtral 8x7B' },
+        { value: 'gemma2-9b-it', label: 'Gemma 2 9B' }
+    ];
+    groqModels.forEach(m => {
+        const sel = selectedModel === m.value ? 'selected' : '';
+        optionsHtml += `<option value="${m.value}" ${sel}>${m.label}</option>`;
+    });
+    optionsHtml += '</optgroup>';
+
+    optionsHtml += '<optgroup label="Ollama (Local)">';
+    if (window.ollamaModels && window.ollamaModels.length > 0) {
+        window.ollamaModels.forEach(m => {
+            const val = `ollama/${m}`;
+            const sel = selectedModel === val ? 'selected' : '';
+            optionsHtml += `<option value="${val}" ${sel}>${m}</option>`;
+        });
+    } else {
+        optionsHtml += `<option disabled>No local models found</option>`;
+    }
+    optionsHtml += '</optgroup>';
+
+    const borderCls = isError ? 'border-red-200 text-red-900 focus:ring-red-400' : 'border-amber-200/50 text-amber-900 focus:ring-amber-400';
+    return `
+        <select onchange="changeAIIndicatorModel(this.value)" class="bg-white/80 backdrop-blur border ${borderCls} text-[10px] font-black px-2 py-0.5 rounded-lg shadow-sm focus:ring-1 outline-none cursor-pointer">
+            ${optionsHtml}
+        </select>
+    `;
+}
+
+window.changeAIIndicatorModel = async function (model) {
+    localStorage.setItem('selected_ai_model', model);
+    try {
+        const headers = await getAuthHeaders();
+        await fetch(`${API_BASE}/api/settings/indicators?context=dashboard`, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({ AI_INDICATOR_MODEL: model })
+        });
+    } catch (e) {
+        console.error('[ai-indicator] Failed to save model settings to backend:', e);
+    }
+    const ticker = (typeof selectedTicker !== 'undefined' ? selectedTicker : '') || 'TSLA';
+    const timeframe = (typeof selectedTimeframe !== 'undefined' ? selectedTimeframe : '') || '4Hour';
+    _showAIIndicatorLoading(ticker);
+    try {
+        await fetchAIIndicator(ticker, timeframe, false);
+    } catch (e) {
+        console.error('[ai-indicator] Failed to reload indicator:', e);
+    }
+};
+
 function _showAIIndicatorLoading(ticker) {
     const el = document.getElementById('aiIndicatorCard');
     if (!el) return;
+    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const isOllamaActive = selectedModel.startsWith('ollama/') || selectedModel.startsWith('ollama:');
+    const badgeHtml = isOllamaActive
+        ? `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-indigo-500 to-blue-600 text-white border border-indigo-600/50 shadow-sm">OLLAMA</span>`
+        : `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-amber-200 to-amber-300 text-amber-800 border border-amber-400/50 shadow-sm">GROQ AI</span>`;
+    const selectHtml = _getAIModelSelectHtml(selectedModel, false);
+
     el.className = 'ai-indicator-card ai-indicator-loading border-amber-200/60 bg-gradient-to-br from-amber-50/50 to-orange-50/30';
     el.innerHTML = `
         <div class="ai-orb bg-gradient-to-r from-amber-400 to-orange-500 opacity-20"></div>
@@ -1579,9 +1661,10 @@ function _showAIIndicatorLoading(ticker) {
             <div class="flex items-center gap-2">
                 <span class="text-base drop-shadow-sm">🤖</span>
                 <span class="font-black text-xs text-amber-900 tracking-wide uppercase">BotBulls AI Analysis - ${ticker || '---'}</span>
-                <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-amber-200 to-amber-300 text-amber-800 border border-amber-400/50 shadow-sm">GROQ AI</span>
+                ${badgeHtml}
             </div>
             <div class="flex items-center gap-2 relative z-30">
+                ${selectHtml}
                 <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm">
                     ℹ
                 </button>
@@ -1608,6 +1691,9 @@ function _showAIIndicatorLoading(ticker) {
 function _showAIIndicatorError(err, ticker) {
     const el = document.getElementById('aiIndicatorCard');
     if (!el) return;
+    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const selectHtml = _getAIModelSelectHtml(selectedModel, true);
+
     el.className = 'ai-indicator-card ai-indicator-error relative overflow-hidden p-4 rounded-xl border transition-all duration-300';
     el.innerHTML = `
         <div class="flex items-center justify-between mb-3 relative z-10">
@@ -1617,6 +1703,7 @@ function _showAIIndicatorError(err, ticker) {
                 <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-bold bg-red-100 text-red-600 border border-red-300/50">Error</span>
             </div>
             <div class="flex items-center gap-2 relative z-30">
+                ${selectHtml}
                 <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-red-500 hover:text-red-700 bg-red-100/50 hover:bg-red-100 transition-colors border border-red-300/30">
                     ℹ
                 </button>
@@ -1689,6 +1776,13 @@ function renderAIIndicatorCard(data, fromCache = false) {
         ? `<span class="text-[0.5rem] text-amber-600 opacity-60 ml-1">cached</span>`
         : '';
 
+    const selectedModel = data.model || localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const isOllamaActive = selectedModel.startsWith('ollama/') || selectedModel.startsWith('ollama:');
+    const badgeHtml = isOllamaActive
+        ? `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-indigo-500 to-blue-600 text-white border border-indigo-600/50 shadow-sm">OLLAMA</span>`
+        : `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-amber-200 to-amber-300 text-amber-800 border border-amber-400/50 shadow-sm">GROQ AI</span>`;
+    const selectHtml = _getAIModelSelectHtml(selectedModel, false);
+
     el.className = `ai-indicator-card ${colors.bg} relative overflow-hidden p-4 rounded-xl border border-amber-200/60 bg-gradient-to-br from-amber-50/50 to-orange-50/30 transition-all duration-300`;
     el.innerHTML = `
         <div class="ai-orb bg-gradient-to-r from-amber-400 to-orange-500 opacity-20"></div>
@@ -1696,10 +1790,11 @@ function renderAIIndicatorCard(data, fromCache = false) {
             <div class="flex items-center gap-2">
                 <span class="text-base drop-shadow-sm">🤖</span>
                 <span class="font-black text-xs text-amber-900 tracking-wide uppercase" id="aiIndicatorHeader">BotBulls AI Analysis - ${data.ticker || selectedTicker || '---'}</span>
-                <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-amber-200 to-amber-300 text-amber-800 border border-amber-400/50 shadow-sm">GROQ AI</span>
+                ${badgeHtml}
                 ${cachedBadge}
             </div>
             <div class="flex items-center gap-2 relative z-30">
+                ${selectHtml}
                 <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm">
                     ℹ
                 </button>
@@ -2873,7 +2968,7 @@ document.addEventListener('DOMContentLoaded', () => {
     console.log('[dashboard] Waiting for backend data to initialize chart...');
 
     // Initial data fetch once auth is ready
-    const checkAuth = setInterval(() => {
+    const checkAuth = setInterval(async () => {
         if (window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true')) {
             console.log('[dashboard] Auth ready. Starting data stream.');
             fetchDashboard('fast');
@@ -2881,6 +2976,7 @@ document.addEventListener('DOMContentLoaded', () => {
             fetchDashboard('heavy');
             fetchMarketData(); // Fetch market data for modals
             fetchMacroEvents(); // Fetch macro events for modal
+            await loadOllamaModels();
             if (selectedTicker) fetchAIIndicator(selectedTicker, currentBackendTf);
             setInterval(() => {
                 // Skip the "heartbeat" live refresh if the user is currently rapid-fire clicking indicators

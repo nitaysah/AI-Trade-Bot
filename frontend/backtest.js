@@ -2,7 +2,7 @@
 // BACKTEST CENTER LOGIC v2.0
 // ──────────────────────────────────────────────
 
-const CLOUD_URL = 'https://botbulls-api.loca.lt';
+const CLOUD_URL = 'https://207-211-184-22.sslip.io';
 const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
     ? 'http://localhost:8000' 
     : CLOUD_URL;
@@ -46,6 +46,36 @@ async function getAuthHeaders() {
         ...baseHeaders,
         'Authorization': `Bearer ${token}`
     };
+}
+
+async function loadBacktestOllamaModels() {
+    const select = document.getElementById('btAiModel');
+    if (!select) return;
+    try {
+        const headers = await getAuthHeaders();
+        const res = await fetch(`${API_BASE}/api/ollama/models`, { headers });
+        if (res.ok) {
+            const data = await res.json();
+            if (data.status === 'online' && data.models && data.models.length > 0) {
+                // Create an optgroup for Ollama models
+                const optGroup = document.createElement('optgroup');
+                optGroup.label = "Ollama (Local)";
+                
+                data.models.forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = `ollama/${m}`;
+                    opt.textContent = m;
+                    optGroup.appendChild(opt);
+                });
+                select.appendChild(optGroup);
+                console.log(`[backtest] Loaded ${data.models.length} local Ollama models.`);
+            } else {
+                console.log('[backtest] Ollama offline or has no local models pulled.');
+            }
+        }
+    } catch (e) {
+        console.warn('[backtest] Failed to fetch Ollama models for backtester:', e);
+    }
 }
 
 // 1. Initialization
@@ -182,6 +212,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true')) {
             clearInterval(checkAuth);
             pollAlpacaStatus();
+            loadBacktestOllamaModels();
             setInterval(pollAlpacaStatus, 30000); // Check every 30s
         }
     }, 500);

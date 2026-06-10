@@ -85,6 +85,7 @@ ENABLE_BOTBULLS3 = True
 ENABLE_AI_INDICATOR = True
 AI_INDICATOR_MODEL = "llama-3.3-70b-versatile"
 AI_INDICATOR_CACHE_MINUTES = 10
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
 # AI Autopilot (uses AI Indicator for autonomous trade decisions in bots & backtest)
 AI_AUTOPILOT_ENABLED = False                # Master toggle (per-ticker override via TICKER_SETTINGS)

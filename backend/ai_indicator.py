@@ -443,6 +443,85 @@ def _fallback_signal(ctx: dict, available_cash: float, account_equity: float) ->
     }
 
 
+def _call_llm(
+    prompt: str,
+    system_msg: str,
+    model: str,
+    cfg,
+    temperature: float = 0.2,
+    max_tokens: int = 1500,
+) -> tuple[str, str]:
+    """
+    Calls either Groq or local Ollama depending on the model name prefix.
+    Returns: (raw_response_text, model_name_used)
+    """
+    is_ollama = model and (model.startswith("ollama/") or model.startswith("ollama:"))
+    if is_ollama:
+        ollama_model = model.split("/", 1)[-1] if "/" in model else model.split(":", 1)[-1]
+        host = getattr(cfg, "OLLAMA_HOST", "http://localhost:11434")
+        print(f"[ai_indicator] Routing to Ollama ({ollama_model}) at {host}…")
+        
+        import requests
+        url = f"{host.rstrip('/')}/api/chat"
+        payload = {
+            "model": ollama_model,
+            "messages": [
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": prompt}
+            ],
+            "format": "json",
+            "stream": False,
+            "options": {
+                "temperature": temperature
+            }
+        }
+        
+        try:
+            response = requests.post(url, json=payload, timeout=90)
+            if response.status_code == 404:
+                try:
+                    err_data = response.json()
+                    err_msg = err_data.get("error", "")
+                except:
+                    err_msg = ""
+                if "not found" in err_msg.lower():
+                    raise ValueError(f"Ollama model '{ollama_model}' not found. Run 'ollama pull {ollama_model}' locally to install it.")
+            response.raise_for_status()
+            res_json = response.json()
+            raw_content = res_json["message"]["content"].strip()
+            
+            # Strip Chain-of-Thought <think> blocks (often produced by DeepSeek-R1)
+            import re
+            raw_content = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
+            
+            return raw_content, model
+        except requests.exceptions.ConnectionError as ce:
+            raise ConnectionError(f"Could not connect to Ollama at {host}. Make sure the Ollama app is running locally or check OLLAMA_HOST settings.") from ce
+        except Exception as exc:
+            raise exc
+    else:
+        # Default Groq flow
+        groq_key = getattr(cfg, "GROQ_API_KEY", "")
+        if not _GROQ_AVAILABLE or not groq_key or groq_key in ("", "your_groq_api_key_here"):
+            raise ValueError("Groq API key not configured or library missing.")
+            
+        from groq import Groq
+        client = Groq(api_key=groq_key)
+        
+        response = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": prompt},
+            ],
+            model=model,
+            response_format={"type": "json_object"},
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        raw_content = response.choices[0].message.content.strip()
+        return raw_content, model
+
+
 # ---------------------------------------------------------------------------
 # Main agentic function
 # ---------------------------------------------------------------------------
@@ -451,6 +530,7 @@ def get_ai_indicator(
     timeframe: str = "4Hour",
     available_cash: float = 10000.0,
     account_equity: float = 10000.0,
+    model: str = None,
 ) -> dict:
     """
     Gathers full market context and calls Groq to produce a structured
@@ -458,8 +538,9 @@ def get_ai_indicator(
     Includes in-memory caching with configurable TTL.
     """
     cfg = get_user_config()
+    model_to_use = model or getattr(cfg, "AI_INDICATOR_MODEL", "llama-3.3-70b-versatile")
     cache_minutes = getattr(cfg, "AI_INDICATOR_CACHE_MINUTES", 10)
-    cache_key = (ticker.upper(), timeframe)
+    cache_key = (ticker.upper(), timeframe, model_to_use)
 
     # ── Cache check ──────────────────────────────────────────────────────
     now = time.time()
@@ -651,42 +732,40 @@ Output ONLY valid JSON:
   "headline_count": {ctx['headline_count']}
 }}"""
 
-    # ── Groq call ────────────────────────────────────────────────────────
+    # ── LLM call ────────────────────────────────────────────────────────
     try:
-        model = getattr(cfg, "AI_INDICATOR_MODEL", "llama-3.3-70b-versatile")
-        client = Groq(api_key=groq_key)
-
-        print(f"[ai_indicator] Calling Groq ({model}) for {ticker}…")
+        model_to_use = model or getattr(cfg, "AI_INDICATOR_MODEL", "llama-3.3-70b-versatile")
+        
         try:
-            response = client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": prompt},
-                ],
-                model=model,
-                response_format={"type": "json_object"},
-                temperature=0.2,   # Very low temp for disciplined, consistent trading decisions
-                max_tokens=1500,   # More room for detailed thesis in summary field
+            raw, actual_model = _call_llm(
+                prompt=prompt,
+                system_msg=system_msg,
+                model=model_to_use,
+                cfg=cfg,
+                temperature=0.2,
+                max_tokens=1500
             )
+            model_to_use = actual_model
         except Exception as e:
+            is_ollama = model_to_use.startswith("ollama/") or model_to_use.startswith("ollama:")
+            if is_ollama:
+                raise e
+                
             fallback_model = "llama-3.1-8b-instant"
-            if model != fallback_model:
-                print(f"[ai_indicator] Primary Groq model ({model}) failed: {e}. Trying automatic fallback to {fallback_model}...")
-                response = client.chat.completions.create(
-                    messages=[
-                        {"role": "system", "content": system_msg},
-                        {"role": "user", "content": prompt},
-                    ],
+            if model_to_use != fallback_model:
+                print(f"[ai_indicator] Primary Groq model ({model_to_use}) failed: {e}. Trying automatic fallback to {fallback_model}...")
+                raw, actual_model = _call_llm(
+                    prompt=prompt,
+                    system_msg=system_msg,
                     model=fallback_model,
-                    response_format={"type": "json_object"},
+                    cfg=cfg,
                     temperature=0.2,
-                    max_tokens=1500,
+                    max_tokens=1500
                 )
-                model = fallback_model
+                model_to_use = actual_model
             else:
                 raise e
 
-        raw = response.choices[0].message.content.strip()
         data = json.loads(raw)
 
         # ── Validate & clamp ─────────────────────────────────────────────
@@ -716,7 +795,7 @@ Output ONLY valid JSON:
             "risk_factors": str(data.get("risk_factors", "N/A")),
             "headline_count": int(data.get("headline_count", ctx["headline_count"])),
             "cached": False,
-            "model": model,
+            "model": model_to_use,
             # Merged news sentiment context
             "sentiment_score": sent.get("score", 0.0),
             "sentiment_confidence": sent.get("confidence", 0.5),
@@ -1047,41 +1126,40 @@ Output ONLY valid JSON:
   "headline_count": {ctx['headline_count']}
 }}"""
 
-    # 5. Make Groq Call
+    # 5. Call LLM
     try:
         model_to_use = model or getattr(cfg, "AI_INDICATOR_MODEL", "llama-3.3-70b-versatile")
-        client = Groq(api_key=groq_key)
         
         try:
-            response = client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": prompt},
-                ],
+            raw, actual_model = _call_llm(
+                prompt=prompt,
+                system_msg=system_msg,
                 model=model_to_use,
-                response_format={"type": "json_object"},
-                temperature=0.1,  # extremely consistent
-                max_tokens=800,
+                cfg=cfg,
+                temperature=0.1,
+                max_tokens=800
             )
+            model_to_use = actual_model
         except Exception as e:
+            is_ollama = model_to_use.startswith("ollama/") or model_to_use.startswith("ollama:")
+            if is_ollama:
+                raise e
+                
             fallback_model = "llama-3.1-8b-instant"
             if model_to_use != fallback_model:
                 print(f"[ai_indicator] Autopilot check primary model ({model_to_use}) failed: {e}. Trying automatic fallback to {fallback_model}...")
-                response = client.chat.completions.create(
-                    messages=[
-                        {"role": "system", "content": system_msg},
-                        {"role": "user", "content": prompt},
-                    ],
+                raw, actual_model = _call_llm(
+                    prompt=prompt,
+                    system_msg=system_msg,
                     model=fallback_model,
-                    response_format={"type": "json_object"},
+                    cfg=cfg,
                     temperature=0.1,
-                    max_tokens=800,
+                    max_tokens=800
                 )
-                model_to_use = fallback_model
+                model_to_use = actual_model
             else:
                 raise e
         
-        raw = response.choices[0].message.content.strip()
         data = json.loads(raw)
         
         signal = str(data.get("signal", "HOLD")).upper()
