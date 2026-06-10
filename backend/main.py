@@ -43,6 +43,19 @@ from ai_indicator import get_ai_indicator, clear_ai_cache
 class Vault:
     """Handles bank-grade encryption for sensitive API keys."""
     def __init__(self):
+        secret_key = os.getenv("VAULT_SECRET_KEY")
+        if secret_key:
+            try:
+                self.fernet = Fernet(secret_key.encode())
+                print("[vault] Running in HIGH-SECURITY mode (VAULT_SECRET_KEY loaded)")
+            except Exception as e:
+                print(f"[vault] ERROR: Invalid VAULT_SECRET_KEY format ({e}). Falling back to project ID.")
+                self._load_fallback()
+        else:
+            print("[vault] WARNING: Running in fallback mode. Set VAULT_SECRET_KEY for production.")
+            self._load_fallback()
+
+    def _load_fallback(self):
         project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "trading-bot-engine-df3de")
         seed = project_id.encode()
         key_hash = hashlib.sha256(seed).digest()
@@ -241,7 +254,10 @@ async def verify_token(authorization: str = Header(None)):
         raise HTTPException(status_code=401, detail="Invalid Authorization format")
     token = authorization.split("Bearer ")[1]
     if token == "dev-token":
-        return {"uid": "dev-user", "email": "dev@example.com"}
+        if os.getenv("ENV") == "development":
+            return {"uid": "dev-user", "email": "dev@example.com"}
+        else:
+            raise HTTPException(status_code=401, detail="Development backdoor is disabled in production")
     try:
         return auth.verify_id_token(token)
     except Exception as e:
@@ -284,17 +300,23 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "https://bot-bulls.web.app",
-        "https://bot-bulls.firebaseapp.com",
-        "https://trading-bot-engine-df3de.firebaseapp.com",
-        "https://trading-bot-engine-df3de.web.app",
+allowed_origins = [
+    "https://bot-bulls.web.app",
+    "https://bot-bulls.firebaseapp.com",
+    "https://trading-bot-engine-df3de.firebaseapp.com",
+    "https://trading-bot-engine-df3de.web.app",
+]
+
+if os.getenv("ENV") != "production":
+    allowed_origins.extend([
         "http://localhost:5000",
         "http://localhost:3000",
         "http://127.0.0.1:5500"
-    ],
+    ])
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
