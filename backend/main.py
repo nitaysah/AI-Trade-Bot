@@ -293,8 +293,7 @@ app.add_middleware(
         "https://trading-bot-engine-df3de.web.app",
         "http://localhost:5000",
         "http://localhost:3000",
-        "http://127.0.0.1:5500",
-        "https://botbulls-api.loca.lt"
+        "http://127.0.0.1:5500"
     ],
     allow_credentials=True,
     allow_methods=["*"],
