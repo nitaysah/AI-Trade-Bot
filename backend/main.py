@@ -774,15 +774,6 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
             if "price_history" in v:
                 del v["price_history"]
 
-    # --- INJECT DUMP FOR LIVE SIGNALS ---
-    try:
-        import json
-        with open("/Users/nitaysah/.gemini/antigravity-ide/brain/14ababac-c92f-49e8-8fd2-fc1bdd26f4f4/scratch/live_payload.json", "w") as f:
-            json.dump(payload, f)
-    except Exception as e:
-        print(f"Failed to dump payload: {e}")
-    # ------------------------------------
-    
     return payload
 
 
