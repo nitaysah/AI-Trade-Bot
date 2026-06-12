@@ -17,7 +17,8 @@ def black_scholes(
     T: float,
     r: float,
     sigma: float,
-    option_type: str = "CALL"
+    option_type: str = "CALL",
+    q: float = 0.0  # Dividend yield
 ) -> float:
     """
     Calculates the theoretical Black-Scholes price of an option.
@@ -40,20 +41,22 @@ def black_scholes(
             return max(0.0, K - S)
     if sigma <= 0.00001:
         # Volatility is zero: intrinsic value discounted
-        discount = math.exp(-r * T)
+        discount_r = math.exp(-r * T)
+        discount_q = math.exp(-q * T)
         if option_type == "CALL":
-            return max(0.0, S - K * discount)
+            return max(0.0, S * discount_q - K * discount_r)
         else:
-            return max(0.0, K * discount - S)
+            return max(0.0, K * discount_r - S * discount_q)
 
-    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     d2 = d1 - sigma * math.sqrt(T)
 
-    discount = math.exp(-r * T)
+    discount_r = math.exp(-r * T)
+    discount_q = math.exp(-q * T)
     if option_type == "CALL":
-        return S * norm_cdf(d1) - K * discount * norm_cdf(d2)
+        return S * discount_q * norm_cdf(d1) - K * discount_r * norm_cdf(d2)
     else:
-        return K * discount * norm_cdf(-d2) - S * norm_cdf(-d1)
+        return K * discount_r * norm_cdf(-d2) - S * discount_q * norm_cdf(-d1)
 
 def calculate_delta(
     S: float,

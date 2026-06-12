@@ -46,6 +46,11 @@ class OptionsBacktester:
         self.ext_hours = ext_hours
         self.r = r
         self.cancel_event = cancel_event
+        
+        # Real-market pricing proxy parameters
+        self.q = 0.013 # SPY/broad market approx dividend yield
+        self.iv_markup = 0.04 # 4% markup for Implied Volatility over Historical
+        self.spread_width = 0.03 # Typical $0.03 spread on liquid ETF options
 
         self.equity = initial_capital
         self.position = None  # None or Dict representing option position
@@ -220,10 +225,11 @@ class OptionsBacktester:
                 strike = self.position['strike_price']
                 entry_date = self.position['entry_time']
 
-                # Compute current option premium
+                # Compute current option premium with IV markup and dividend yield
                 hours_elapsed = (timestamp - entry_date).total_seconds() / 3600.0
                 t_remaining = max(0.00001, (self.expiry_days * 24.0 - hours_elapsed) / (365.0 * 24.0))
-                opt_price = black_scholes(current_price, strike, t_remaining, self.r, current_vol, opt_type)
+                opt_price_bs = black_scholes(current_price, strike, t_remaining, self.r, current_vol + self.iv_markup, opt_type, q=self.q)
+                opt_price = max(0.01, opt_price_bs - (self.spread_width / 2.0)) # Sell at the bid
                 
                 # Check exit triggers
                 exit_triggered = False
@@ -356,7 +362,8 @@ class OptionsBacktester:
             last_ts = self.df.index[-1]
             hours_elapsed = (last_ts - self.position['entry_time']).total_seconds() / 3600.0
             t_remaining = max(0.00001, (self.expiry_days * 24.0 - hours_elapsed) / (365.0 * 24.0))
-            opt_price = black_scholes(last_bar['Close'], self.position['strike_price'], t_remaining, self.r, last_bar['Historical_Vol'], self.position['option_type'])
+            opt_price_bs = black_scholes(last_bar['Close'], self.position['strike_price'], t_remaining, self.r, last_bar['Historical_Vol'] + self.iv_markup, self.position['option_type'], q=self.q)
+            opt_price = max(0.01, opt_price_bs - (self.spread_width / 2.0))
             self._exit_option_trade(opt_price, last_bar['Close'], last_ts, "End of Backtest")
 
         return self._calculate_metrics()
@@ -372,9 +379,10 @@ class OptionsBacktester:
         # Round strike price to nearest integer or 0.50
         strike = round(strike * 2) / 2
         
-        # Calculate theoretical option price (premium) at entry
+        # Calculate theoretical option price (premium) at entry with IV markup and dividends
         t_years = (self.expiry_days * 24.0) / (365.0 * 24.0)
-        entry_premium = black_scholes(underlying_price, strike, t_years, self.r, vol, option_type)
+        entry_premium_bs = black_scholes(underlying_price, strike, t_years, self.r, vol + self.iv_markup, option_type, q=self.q)
+        entry_premium = max(0.01, entry_premium_bs + (self.spread_width / 2.0)) # Pay the ask
 
         if entry_premium <= 0:
             return
@@ -445,7 +453,8 @@ class OptionsBacktester:
 
         hours_elapsed = (timestamp - entry_date).total_seconds() / 3600.0
         t_remaining = max(0.00001, (self.expiry_days * 24.0 - hours_elapsed) / (365.0 * 24.0))
-        opt_price = black_scholes(current_price, strike, t_remaining, self.r, vol, opt_type)
+        opt_price_bs = black_scholes(current_price, strike, t_remaining, self.r, vol + self.iv_markup, opt_type, q=self.q)
+        opt_price = max(0.01, opt_price_bs - (self.spread_width / 2.0))
         
         contract_multiplier = 100.0
         current_value = self.position['qty'] * opt_price * contract_multiplier
