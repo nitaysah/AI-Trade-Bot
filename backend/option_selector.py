@@ -80,7 +80,7 @@ def get_option_chain(
                 "expiration": contract.expiration_date,  # datetime.date
                 "type": "CALL" if contract.type == ContractType.CALL else "PUT",
                 "strike": float(contract.strike_price),
-                "multiplier": float(contract.multiplier)
+                "multiplier": float(getattr(contract, "size", 100))
             })
         return contracts
     except Exception as e:
