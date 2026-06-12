@@ -608,8 +608,11 @@ async def reorder_bots(data: dict, user: dict = Depends(verify_token)):
     if not new_order or not isinstance(new_order, list):
         return {"status": "error", "message": "Invalid tradelist format"}
     
-    # Verify that all provided tickers are currently active bots
-    valid_tickers = [t for t in new_order if t in eng.config.TRADELIST]
+    # Verify that all provided tickers are currently active bots, preserving order and removing duplicates
+    valid_tickers = []
+    for t in new_order:
+        if t in eng.config.TRADELIST and t not in valid_tickers:
+            valid_tickers.append(t)
     
     # Ensure any tickers currently active that weren't in the new order are appended to the end
     for t in eng.config.TRADELIST:
@@ -668,7 +671,11 @@ async def create_bot(data: dict, user: dict = Depends(verify_token)):
             eng.config.TICKER_SETTINGS[symbol][rk] = float(data[rk])
             
     if "cooldown_minutes" in data:
-        eng.config.TICKER_SETTINGS[symbol]["cooldown_minutes"] = int(data["cooldown_minutes"])
+        if data["cooldown_minutes"] is None or data["cooldown_minutes"] == "default":
+            if "cooldown_minutes" in eng.config.TICKER_SETTINGS[symbol]:
+                del eng.config.TICKER_SETTINGS[symbol]["cooldown_minutes"]
+        else:
+            eng.config.TICKER_SETTINGS[symbol]["cooldown_minutes"] = int(data["cooldown_minutes"])
 
     # Options Trading parameters
     if "options_trading" in data:
@@ -785,7 +792,7 @@ async def update_ticker_settings(data: dict, user: dict = Depends(verify_token))
     previously_paused = eng.config.TICKER_SETTINGS.get(ticker, {}).get('paused', False)
     # Filter out null values to keep global defaults if not specified
     for k, v in settings.items():
-        if v is not None:
+        if v is not None and v != "default":
             eng.config.TICKER_SETTINGS[ticker][k] = v
         elif k in eng.config.TICKER_SETTINGS[ticker]:
             del eng.config.TICKER_SETTINGS[ticker][k]

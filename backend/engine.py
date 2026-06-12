@@ -741,6 +741,8 @@ class UserEngine:
                                         elif has_open_order:
                                             result['action'] = 'PENDING'
                                             result['reason'] = "Options buy order pending."
+                                        elif t_settings.get("options_type", "both") == "puts_only":
+                                            result['reason'] = "Strategy is configured for Puts Only."
                                         else:
                                             # Option contract selection
                                             from option_selector import get_option_chain, select_contract
@@ -777,8 +779,15 @@ class UserEngine:
                                                         quotes = data_client.get_option_latest_quote(req)
                                                         est_premium = float(quotes[contract['symbol']].ask_price)
                                                     except Exception as quote_err:
-                                                        print(f"[options] Quote fetch failed: {quote_err}")
-                                                        est_premium = 0.0
+                                                        print(f"[options] Quote fetch failed (no OPRA?): {quote_err}. Falling back to theoretical pricing.")
+                                                        # Fallback to our realistic theoretical pricing
+                                                        from options_pricing import black_scholes
+                                                        import datetime
+                                                        days = (contract['expiration'] - datetime.date.today()).days
+                                                        t_years = max(0.0001, days / 365.0)
+                                                        # Use realistic parameters: 0.05 rate, 0.20 base vol + 0.04 markup, 0.013 div yield, plus $0.015 half-spread
+                                                        est_premium_bs = black_scholes(result['price_raw'], contract['strike'], t_years, r=0.05, sigma=0.24, option_type="CALL", q=0.013)
+                                                        est_premium = max(0.01, est_premium_bs + 0.015)
                                                 
                                                 if est_premium > 0:
                                                     allocated = opt_trade_amount
@@ -888,6 +897,8 @@ class UserEngine:
                                             elif has_open_order:
                                                 result['action'] = 'PENDING'
                                                 result['reason'] = "Options buy order pending."
+                                            elif t_settings.get("options_type", "both") == "calls_only":
+                                                result['reason'] = "Strategy is configured for Calls Only."
                                             else:
                                                 # Option contract selection (PUT)
                                                 from option_selector import get_option_chain, select_contract
@@ -924,8 +935,14 @@ class UserEngine:
                                                             quotes = data_client.get_option_latest_quote(req)
                                                             est_premium = float(quotes[contract['symbol']].ask_price)
                                                         except Exception as quote_err:
-                                                            print(f"[options] Quote fetch failed: {quote_err}")
-                                                            est_premium = 0.0
+                                                            print(f"[options] Quote fetch failed (no OPRA?): {quote_err}. Falling back to theoretical pricing.")
+                                                            # Fallback to our realistic theoretical pricing
+                                                            from options_pricing import black_scholes
+                                                            import datetime
+                                                            days = (contract['expiration'] - datetime.date.today()).days
+                                                            t_years = max(0.0001, days / 365.0)
+                                                            est_premium_bs = black_scholes(result['price_raw'], contract['strike'], t_years, r=0.05, sigma=0.24, option_type="PUT", q=0.013)
+                                                            est_premium = max(0.01, est_premium_bs + 0.015)
                                                     
                                                     if est_premium > 0:
                                                         allocated = opt_trade_amount

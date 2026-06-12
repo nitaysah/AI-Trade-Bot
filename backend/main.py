@@ -1180,6 +1180,7 @@ async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_en
     trade_amount = float(data.get("trade_amount", 100.0))
     expiry_days = int(data.get("expiry_days", 7))
     strike_type = data.get("strike_type", "ATM")
+    options_type = data.get("options_type", "both")
     stop_loss_pct = float(data.get("stop_loss_pct", 0.50))
     take_profit_pct = float(data.get("take_profit_pct", 1.00))
     exit_strategy = data.get("exit_strategy", "hybrid")
@@ -1203,6 +1204,7 @@ async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_en
         trade_amount=trade_amount,
         expiry_days=expiry_days,
         strike_type=strike_type,
+        options_type=options_type,
         stop_loss_pct=stop_loss_pct,
         take_profit_pct=take_profit_pct,
         exit_strategy=exit_strategy,
@@ -1223,6 +1225,85 @@ async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_en
     except Exception as e:
         print(f"[api] Options Backtest crash: {e}")
         return {"status": "error", "message": "An internal error occurred during options backtest simulation."}
+
+
+@app.post("/api/backtest/deploy")
+async def deploy_backtest_as_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
+    """
+    One-click deploy: Converts a completed backtest's settings into a live bot.
+    deploy_mode: "override" (keep existing position) or "liquidate" (close & redeploy)
+    """
+    symbol = data.get("ticker", "").upper().strip()
+    if not symbol:
+        return {"status": "error", "message": "Symbol is required"}
+    deploy_mode = data.get("deploy_mode", "override")  # "override" | "liquidate"
+    is_options = data.get("is_options", False)
+
+    # Handle liquidation if requested and position exists
+    if deploy_mode == "liquidate" and symbol in eng.config.TRADELIST:
+        try:
+            eng.broker.cancel_orders_for_ticker(symbol)
+            eng.broker.close_position(symbol)
+        except Exception as e:
+            print(f"[api] Error during liquidation for {symbol}: {e}")
+        if symbol in eng.config.TRADELIST:
+            eng.config.TRADELIST.remove(symbol)
+        await eng.save_settings()
+
+    # Build create_bot payload
+    deploy_payload = {
+        "symbol": symbol,
+        "timeframe": data.get("timeframe"),
+        "capital": data.get("capital"),
+        "threshold": data.get("threshold"),
+        "sell_threshold": data.get("sell_threshold"),
+        "indicators": data.get("indicators", []),
+        "add_to_watchlist": True,
+    }
+
+    if is_options:
+        deploy_payload.update({
+            "options_trading": True,
+            "options_type": data.get("options_type", "both"),
+            "options_trade_amount": data.get("trade_amount"),
+            "options_expiry_days": data.get("expiry_days"),
+            "options_strike_type": data.get("strike_type"),
+            "options_exit_strategy": data.get("exit_strategy"),
+            "options_stop_loss_pct": data.get("stop_loss_pct"),
+            "options_take_profit_pct": data.get("take_profit_pct"),
+        })
+    else:
+        deploy_payload.update({
+            "sell_mode": data.get("sell_mode"),
+            "risk_per_trade": data.get("risk_per_trade"),
+            "max_position_pct": data.get("max_position_pct"),
+            "atr_stop_multiplier": data.get("atr_stop_multiplier"),
+            "atr_trail_multiplier": data.get("atr_trail_multiplier"),
+            "take_profit_multiplier": data.get("atr_take_profit_multiplier"),
+        })
+        if "ai_autopilot" in data:
+            deploy_payload["ai_autopilot"] = data.get("ai_autopilot")
+        if "ai_model" in data:
+            deploy_payload["ai_model"] = data.get("ai_model")
+
+    # Call create_bot to initialize/update ticker
+    res = await create_bot(deploy_payload, eng)
+    if res.get("status") == "success":
+        # Store indicator overrides and source badge (per-bot snapshot)
+        if symbol not in eng.config.TICKER_SETTINGS:
+            eng.config.TICKER_SETTINGS[symbol] = {}
+        
+        # Tag as backtest source
+        eng.config.TICKER_SETTINGS[symbol]["source"] = "backtest"
+        
+        indicator_overrides = data.get("indicator_overrides", {})
+        if indicator_overrides:
+            eng.config.TICKER_SETTINGS[symbol]["indicator_overrides"] = indicator_overrides
+            
+        await eng.save_settings()
+        res["settings"] = eng.config.TICKER_SETTINGS[symbol]
+        
+    return res
 
 
 @app.get("/api/options/chain")
@@ -1515,8 +1596,11 @@ async def reorder_bots(data: dict, eng: UserEngine = Depends(get_user_engine)):
     if not new_order or not isinstance(new_order, list):
         return {"status": "error", "message": "Invalid tradelist format"}
     
-    # Verify that all provided tickers are currently active bots
-    valid_tickers = [t for t in new_order if t in eng.config.TRADELIST]
+    # Verify that all provided tickers are currently active bots, preserving order and removing duplicates
+    valid_tickers = []
+    for t in new_order:
+        if t in eng.config.TRADELIST and t not in valid_tickers:
+            valid_tickers.append(t)
     
     # Ensure any tickers currently active that weren't in the new order are appended to the end
     for t in eng.config.TRADELIST:
@@ -1570,9 +1654,18 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         if rk in data:
             eng.config.TICKER_SETTINGS[symbol][rk] = float(data[rk])
 
+    if "cooldown_minutes" in data:
+        if data["cooldown_minutes"] is None or data["cooldown_minutes"] == "default":
+            if "cooldown_minutes" in eng.config.TICKER_SETTINGS[symbol]:
+                del eng.config.TICKER_SETTINGS[symbol]["cooldown_minutes"]
+        else:
+            eng.config.TICKER_SETTINGS[symbol]["cooldown_minutes"] = int(data["cooldown_minutes"])
+
     # Options Trading parameters
     if "options_trading" in data:
         eng.config.TICKER_SETTINGS[symbol]["options_trading"] = bool(data["options_trading"])
+    if "options_type" in data:
+        eng.config.TICKER_SETTINGS[symbol]["options_type"] = data["options_type"]
     if "options_trade_amount" in data:
         eng.config.TICKER_SETTINGS[symbol]["options_trade_amount"] = float(data["options_trade_amount"])
     if "options_expiry_days" in data:
@@ -1726,7 +1819,7 @@ async def update_ticker_settings(data: dict, eng: UserEngine = Depends(get_user_
         eng.config.TICKER_SETTINGS[ticker] = {}
     previously_paused = eng.config.TICKER_SETTINGS.get(ticker, {}).get('paused', False)
     for k, v in settings.items():
-        if v is not None:
+        if v is not None and v != "default":
             eng.config.TICKER_SETTINGS[ticker][k] = v
         elif k in eng.config.TICKER_SETTINGS[ticker]:
             del eng.config.TICKER_SETTINGS[ticker][k]

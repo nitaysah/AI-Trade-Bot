@@ -13,10 +13,12 @@ class OptionsBacktester:
         timeframe: str,
         start_date: datetime.datetime,
         end_date: datetime.datetime,
+        df=None,
         initial_capital: float = 1000.0,
         trade_amount: float = 100.0,
         expiry_days: int = 7,
         strike_type: str = "ATM",
+        options_type: str = "both",
         stop_loss_pct: float = 0.50,
         take_profit_pct: float = 1.00,
         exit_strategy: str = "hybrid",
@@ -36,6 +38,7 @@ class OptionsBacktester:
         self.trade_amount = trade_amount
         self.expiry_days = expiry_days
         self.strike_type = strike_type
+        self.options_type = options_type
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
         self.exit_strategy = exit_strategy  # "premium_pct", "pivot_points", "high_low", "hybrid"
@@ -56,6 +59,7 @@ class OptionsBacktester:
         self.position = None  # None or Dict representing option position
         self.trades = []
         self.equity_history = []
+        self.raw_df = df
         self.df = None
 
     def _localize_dt(self, ts):
@@ -97,9 +101,12 @@ class OptionsBacktester:
         if hasattr(self.end_date, "tzinfo") and self.end_date.tzinfo is not None:
             self.end_date = self.end_date.replace(tzinfo=None)
 
-        # Fetch with 100 days padding
-        padded_start = self.start_date - datetime.timedelta(days=100)
-        raw_df = get_historical_data(self.ticker, self.timeframe, padded_start, self.end_date, force_yahoo=True)
+        if self.raw_df is not None:
+            raw_df = self.raw_df
+        else:
+            # Fetch with 100 days padding
+            padded_start = self.start_date - datetime.timedelta(days=100)
+            raw_df = get_historical_data(self.ticker, self.timeframe, padded_start, self.end_date, force_yahoo=True)
 
         if raw_df is None or raw_df.empty:
             return {"error": "No underlying historical data found."}
@@ -122,12 +129,16 @@ class OptionsBacktester:
             except Exception as e:
                 print(f"[options-backtest] RTH filtering failed: {e}")
 
-        # 2. Pre-calculate indicators
-        res = calculate_indicators_for_df(raw_df, self.timeframe, self.ticker)
-        if not res:
+        # 2. Add technical indicators (skip if already present like BotBulls3)
+        if "BotBulls3" not in self.enabled_indicators and "UT_Above" not in raw_df.columns:
+            self.df = _add_indicators(raw_df, self.ticker)
+        else:
+            self.df = raw_df
+            
+        if self.df is None or self.df.empty:
             return {"error": "Failed to calculate technical indicators."}
 
-        full_df = res['df']
+        full_df = self.df
         
         # 3. Pre-calculate historical volatility rolling vector
         closes = full_df['Close'].values
@@ -331,7 +342,7 @@ class OptionsBacktester:
                 bullish_count = sum(s.get('weight', 1) for s in filtered_signals.values() if s['signal'] == 'BULLISH')
                 bearish_count = sum(s.get('weight', 1) for s in filtered_signals.values() if s['signal'] == 'BEARISH')
 
-                if bullish_count >= self.threshold:
+                if bullish_count >= self.threshold and self.options_type in ["both", "calls_only"]:
                     # Enter CALL
                     self._enter_option_trade(
                         option_type="CALL",
@@ -340,7 +351,7 @@ class OptionsBacktester:
                         timestamp=timestamp,
                         reason=f"Bullish signals crossover ({bullish_count} Bullish)"
                     )
-                elif bearish_count >= self.sell_threshold:
+                elif bearish_count >= self.sell_threshold and self.options_type in ["both", "puts_only"]:
                     # Enter PUT
                     self._enter_option_trade(
                         option_type="PUT",

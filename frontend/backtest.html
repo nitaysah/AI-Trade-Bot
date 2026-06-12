@@ -1085,7 +1085,16 @@
                     </div>
                 </div>
 
-                <div class="p-5 border-t border-indigo-50 bg-white/50 backdrop-blur-md flex justify-center">
+                <div class="p-5 border-t border-indigo-50 bg-white/50 backdrop-blur-md flex flex-col gap-3 items-center">
+                    <div id="backtest-deploy-section" class="hidden w-full max-w-md">
+                      <div id="backtest-pnl-warning" class="hidden mb-3 text-xs font-bold text-rose-700 bg-rose-50 border border-rose-200 rounded-xl px-4 py-3 text-center">
+                        ⚠️ This strategy had a negative return in the backtest. Deploy with caution.
+                      </div>
+                      <button id="btn-deploy-to-bot" onclick="openDeployModal()"
+                        class="w-full py-3.5 rounded-xl font-black text-sm tracking-wider uppercase transition-all duration-300 shadow-lg text-center bg-indigo-600 text-white hover:bg-indigo-500">
+                        🚀 Deploy as Live Bot
+                      </button>
+                    </div>
                     <button onclick="resetBacktestUI()"
                         class="px-6 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-black text-[0.75rem] rounded-xl hover:shadow-2xl hover:shadow-indigo-500/40 transition-all active:scale-95 uppercase tracking-[0.2em] shadow-xl">
                         ↻ Configure New Simulation
@@ -1107,6 +1116,110 @@
                 simulator is for educational use only and does not guarantee future results.</p>
         </div>
     </footer>
+
+    <!-- Bot Already Exists Conflict Modal -->
+    <div id="deployConflictModal" class="fixed inset-0 z-[9999] hidden flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+      <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
+        <div class="flex items-center gap-3">
+          <span class="text-2xl">⚠️</span>
+          <div>
+            <h2 class="text-base font-black text-indigo-900">Bot Already Exists</h2>
+            <p id="conflictModalSubtitle" class="text-xs text-slate-500 mt-0.5">
+              A bot for SPY is already active. How would you like to proceed?
+            </p>
+          </div>
+        </div>
+
+        <!-- Option A: Override (Recommended) -->
+        <button id="btnConflictOverride" onclick="resolveConflict('override')"
+          class="w-full text-left p-4 rounded-xl border-2 border-indigo-200 bg-indigo-50 hover:border-indigo-400 hover:bg-indigo-100 transition-all group">
+          <div class="flex items-start gap-3">
+            <span class="text-xl mt-0.5">♻️</span>
+            <div>
+              <div class="font-black text-indigo-900 text-sm flex items-center gap-2">
+                Override Strategy Settings
+                <span class="text-[0.55rem] bg-indigo-600 text-white px-2 py-0.5 rounded-full font-black uppercase tracking-widest">Recommended</span>
+              </div>
+              <p class="text-xs text-slate-500 mt-1 leading-relaxed">
+                Updates the bot's strategy with the backtest settings. Any open position stays open — the bot will close it when the new strategy signals SELL. Broker credentials and paper/live mode are untouched.
+              </p>
+            </div>
+          </div>
+        </button>
+
+        <!-- Option B: Liquidate & Redeploy -->
+        <button id="btnConflictLiquidate" onclick="resolveConflict('liquidate')"
+          class="w-full text-left p-4 rounded-xl border-2 border-rose-200 bg-rose-50 hover:border-rose-400 hover:bg-rose-100 transition-all">
+          <div class="flex items-start gap-3">
+            <span class="text-xl mt-0.5">🔄</span>
+            <div>
+              <div class="font-black text-rose-800 text-sm">
+                Liquidate & Redeploy
+              </div>
+              <p class="text-xs text-rose-600 mt-1 leading-relaxed font-bold">
+                ⚠️ Immediately closes any open position at market price and cancels all pending orders. Then deploys the bot fresh with the new settings. Use this for a clean slate.
+              </p>
+            </div>
+          </div>
+        </button>
+
+        <button onclick="document.getElementById('deployConflictModal').classList.add('hidden')"
+          class="w-full py-2.5 rounded-xl border-2 border-slate-200 text-slate-500 font-black text-sm hover:bg-slate-50 transition-all">
+          Cancel
+        </button>
+      </div>
+    </div>
+
+    <!-- Strategy Deploy Confirm Modal -->
+    <div id="deployConfirmModal" class="fixed inset-0 z-[9999] hidden flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+        <div class="bg-white rounded-3xl shadow-2xl w-full max-w-md border border-slate-100 overflow-hidden transform transition-all flex flex-col">
+            <!-- Modal Header -->
+            <div class="bg-gradient-to-r from-indigo-600 to-purple-600 px-6 py-4 flex items-center justify-between">
+                <h3 class="text-white font-bold tracking-tight text-sm uppercase">🚀 Deploy Strategy Configuration</h3>
+                <button onclick="document.getElementById('deployConfirmModal').classList.add('hidden')" class="text-white/60 hover:text-white transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+                    </svg>
+                </button>
+            </div>
+            
+            <div class="p-6 space-y-5">
+                <!-- Warning for negative return -->
+                <div id="deployModalWarning" class="hidden bg-rose-50 border border-rose-200 rounded-xl px-4 py-3 text-rose-700 text-xs font-bold flex items-center gap-2">
+                    <span>⚠️</span>
+                    <span>This strategy had a negative return in the backtest. Are you sure you want to deploy?</span>
+                </div>
+
+                <!-- Parameters Section -->
+                <div class="space-y-2.5">
+                    <h4 class="text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest border-b border-slate-100 pb-1">Strategy Parameters</h4>
+                    <div id="deployModalParams" class="text-xs text-indigo-950 font-bold space-y-1.5">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <!-- Backtest Performance Section -->
+                <div class="space-y-2.5">
+                    <h4 class="text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest border-b border-slate-100 pb-1">Backtest Results (30D)</h4>
+                    <div id="deployModalPerf" class="text-xs text-indigo-950 font-bold space-y-1.5">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Footer Buttons -->
+            <div class="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-3">
+                <button onclick="document.getElementById('deployConfirmModal').classList.add('hidden')"
+                    class="px-4 py-2 text-sm font-bold text-slate-500 hover:text-indigo-600 transition-colors rounded-lg">
+                    Cancel
+                </button>
+                <button id="btn-confirm-deploy" onclick="deployStrategyAsBot()"
+                    class="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-bold shadow-lg shadow-emerald-100 transition-all text-center">
+                    ✅ Confirm & Deploy
+                </button>
+            </div>
+        </div>
+    </div>
 
     <!-- Indicator Settings Modal -->
     <div id="indicatorSettingsModal"

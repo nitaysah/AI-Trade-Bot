@@ -893,3 +893,66 @@
     box-shadow: 0 4px 16px rgba(239, 68, 68, 0.06);
 }
 
+
+/* ── Premium Options Trading Glassmorphic Card (Golden) ── */
+.watchlist-item.options-premium-card {
+    background: linear-gradient(
+        135deg,
+        rgba(255, 252, 240, 0.72) 0%,
+        rgba(253, 244, 215, 0.65) 50%,
+        rgba(251, 235, 180, 0.55) 100%
+    );
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    box-shadow: 
+        0 8px 32px rgba(245, 158, 11, 0.05),
+        0 2px 8px rgba(245, 158, 11, 0.03),
+        inset 0 1px 0 rgba(255, 255, 255, 0.75);
+    position: relative;
+    overflow: hidden;
+}
+
+.watchlist-item.options-premium-card:hover {
+    background: linear-gradient(
+        135deg,
+        rgba(255, 253, 245, 0.82) 0%,
+        rgba(254, 247, 225, 0.75) 50%,
+        rgba(252, 239, 195, 0.65) 100%
+    );
+    border-color: rgba(245, 158, 11, 0.55);
+    box-shadow: 
+        0 12px 40px rgba(245, 158, 11, 0.12),
+        0 4px 12px rgba(245, 158, 11, 0.06),
+        inset 0 1px 0 rgba(255, 255, 255, 0.85);
+    transform: translateY(-2px) translateX(2px);
+}
+
+.watchlist-item.options-premium-card.active {
+    background: linear-gradient(
+        135deg,
+        rgba(254, 243, 199, 0.8) 0%,
+        rgba(253, 230, 138, 0.7) 100%
+    );
+    border-color: rgba(245, 158, 11, 0.8);
+    box-shadow: 
+        0 0 15px rgba(245, 158, 11, 0.25),
+        inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+/* Glowing golden accent bar for options */
+.watchlist-item.options-premium-card::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    border-radius: 0.625rem 0.625rem 0 0;
+    background: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(251, 191, 36, 0.4) 20%,
+        rgba(245, 158, 11, 0.85) 50%,
+        rgba(251, 191, 36, 0.4) 80%,
+        transparent 100%
+    );
+    z-index: 2;
+}
+

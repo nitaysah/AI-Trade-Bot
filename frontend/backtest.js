@@ -10,6 +10,8 @@ let allBtTrades = [];
 let btPage = 1;
 const btPageSize = 10;
 window.lastBacktestData = null;
+window.lastBacktestRun = null;
+let _pendingDeployMode = 'override';
 
 // ── Backtest Chart State ─────────────────────────────────────────────────
 let btChart = null;            // LightweightCharts chart instance
@@ -441,6 +443,16 @@ async function runBacktest() {
             const r = parseFloat(document.getElementById('btOptionsRiskFreeRate').value || '5.0') / 100.0;
             const closeBeforeExpiry = parseFloat(document.getElementById('btOptionsCloseBeforeExpiry').value || '2.0');
 
+            window.lastBacktestRun = {
+                is_options: true,
+                ticker, timeframe, days: parseInt(days), capital: parseFloat(capital),
+                trade_amount: tradeAmount, expiry_days: expiryDays, strike_type: strikeType,
+                stop_loss_pct: stopLossPct, take_profit_pct: takeProfitPct,
+                exit_strategy: exitStrategy, close_before_expiry_hours: closeBeforeExpiry,
+                threshold: parseInt(threshold), sell_threshold: parseInt(sellThreshold),
+                indicators, ext_hours: extHoursVal, r, results: null
+            };
+
             console.log(`[backtest] Starting Options request to: ${API_BASE}/api/options/backtest`);
             response = await fetch(`${API_BASE}/api/options/backtest`, {
                 method: 'POST',
@@ -472,6 +484,18 @@ async function runBacktest() {
             const atrStopMult = parseFloat(document.getElementById('btAtrStopMult').value);
             const atrTrailMult = parseFloat(document.getElementById('btAtrTrailMult').value);
             const atrTpMult = parseFloat(document.getElementById('btAtrTpMult').value);
+
+            window.lastBacktestRun = {
+                is_options: false,
+                ticker, timeframe, days: parseInt(days), capital: parseFloat(capital),
+                threshold: parseInt(threshold), sell_threshold: parseInt(sellThreshold),
+                indicators: aiAutopilot ? [] : indicators, ext_hours: extHoursVal,
+                sell_mode: sellMode, risk_per_trade: riskPerTrade,
+                max_position_pct: maxPositionPct, atr_stop_multiplier: atrStopMult,
+                atr_trail_multiplier: atrTrailMult, atr_take_profit_multiplier: atrTpMult,
+                ai_autopilot: aiAutopilot, ai_interval: aiInterval, ai_model: aiModel,
+                results: null
+            };
 
             console.log(`[backtest] Starting Stock request to: ${API_BASE}/api/backtest`);
             response = await fetch(`${API_BASE}/api/backtest`, {
@@ -507,7 +531,13 @@ async function runBacktest() {
         console.log('[backtest] Response received:', data.status);
 
         if (data.status === 'success') {
+            if (window.lastBacktestRun) {
+                window.lastBacktestRun.results = data.results;
+            }
             displayResults(data.results);
+            if (window.lastBacktestRun && data.results && data.results.summary) {
+                showDeployButton(data.results.summary);
+            }
         } else {
             const errMsg = data.message || data.error || "Unknown error";
             alert("Backtest Failed: " + errMsg);
@@ -699,6 +729,15 @@ function resetBacktestUI() {
     document.getElementById('btSettingsContainer').classList.remove('hidden');
     document.getElementById('runBtBtn').disabled = false;
     document.getElementById('btLoading').classList.add('hidden');
+
+    document.getElementById('backtest-deploy-section')?.classList.add('hidden');
+    const deployBtn = document.getElementById('btn-deploy-to-bot');
+    if (deployBtn) {
+        deployBtn.textContent = '🚀 Deploy as Live Bot';
+        deployBtn.disabled = false;
+        deployBtn.className = "w-full py-3.5 rounded-xl font-black text-sm tracking-wider uppercase transition-all duration-300 shadow-lg text-center bg-indigo-600 text-white hover:bg-indigo-500";
+    }
+    window.lastBacktestRun = null;
 }
 
 // ── Backtest Chart Functions ─────────────────────────────────────────────
@@ -1422,4 +1461,239 @@ function checkCryptoOptionStatus(ticker) {
     }
 }
 window.checkCryptoOptionStatus = checkCryptoOptionStatus;
+
+
+// ── Strategy Deployment Logic ─────────────────────────────────────────────
+
+function showDeployButton(summary) {
+    const section = document.getElementById('backtest-deploy-section');
+    const btn = document.getElementById('btn-deploy-to-bot');
+    const warning = document.getElementById('backtest-pnl-warning');
+    if (!section || !btn) return;
+
+    section.classList.remove('hidden');
+    const pnl = summary.total_pl || 0;
+    const winRate = summary.win_rate_pct || 0;
+
+    // Reset classes and state
+    btn.disabled = false;
+    btn.textContent = '🚀 Deploy as Live Bot';
+    btn.classList.remove('bg-emerald-500', 'bg-amber-500', 'bg-rose-500',
+                          'text-white', 'hover:bg-emerald-400',
+                          'hover:bg-amber-400', 'hover:bg-rose-400', 'animate-pulse');
+
+    if (pnl > 0 && winRate >= 55) {
+        btn.classList.add('bg-emerald-500', 'text-white', 'hover:bg-emerald-400', 'animate-pulse');
+        warning.classList.add('hidden');
+    } else if (pnl > 0) {
+        btn.classList.add('bg-amber-500', 'text-white', 'hover:bg-amber-400');
+        warning.classList.add('hidden');
+    } else {
+        btn.classList.add('bg-rose-500', 'text-white', 'hover:bg-rose-400');
+        warning.classList.remove('hidden');
+    }
+}
+
+async function openDeployModal() {
+    const run = window.lastBacktestRun;
+    if (!run || !run.results) return;
+
+    // Check if bot already exists for this ticker
+    const tradelist = window.lastBacktestData?.tradelist || [];
+    const botExists = tradelist.includes(run.ticker);
+
+    if (botExists) {
+        // Show conflict modal first
+        document.getElementById('conflictModalSubtitle').textContent =
+            `A bot for ${run.ticker} is already active. How would you like to proceed?`;
+        document.getElementById('deployConflictModal').classList.remove('hidden');
+        return;
+    }
+
+    // No conflict — go straight to confirm modal
+    _pendingDeployMode = 'override';
+    _showDeployConfirmModal();
+}
+
+function resolveConflict(mode) {
+    _pendingDeployMode = mode; // 'override' or 'liquidate'
+    document.getElementById('deployConflictModal').classList.add('hidden');
+    _showDeployConfirmModal();
+}
+
+function _showDeployConfirmModal() {
+    const run = window.lastBacktestRun;
+    const s = run.results.summary;
+    const isOptions = run.is_options;
+
+    // Detect asset type for display
+    const isCrypto = run.ticker.includes('USD') ||
+        ['BTC','ETH','SOL','LTC','DOGE'].some(c => run.ticker.startsWith(c));
+    const modeLabel = isOptions ? 'Options Trading' : (isCrypto ? 'Crypto' : 'Stock Trading');
+
+    const params = document.getElementById('deployModalParams');
+    params.innerHTML = `
+        <div class="flex justify-between py-1 border-b border-slate-50">
+          <span class="opacity-50">Ticker</span>
+          <strong>${run.ticker}</strong>
+        </div>
+        <div class="flex justify-between py-1 border-b border-slate-50">
+          <span class="opacity-50">Mode</span>
+          <strong>${modeLabel}</strong>
+        </div>
+        <div class="flex justify-between py-1 border-b border-slate-50">
+          <span class="opacity-50">Timeframe</span>
+          <strong>${run.timeframe}</strong>
+        </div>
+        <div class="flex justify-between py-1 border-b border-slate-50">
+          <span class="opacity-50">Indicators</span>
+          <strong class="max-w-[200px] text-right truncate" title="${run.indicators.join(', ') || 'None'}">${run.indicators.join(', ') || 'None'}</strong>
+        </div>
+        ${isOptions ? `
+        <div class="flex justify-between py-1 border-b border-slate-50">
+          <span class="opacity-50">Strike</span>
+          <strong>${run.strike_type}</strong>
+        </div>
+        <div class="flex justify-between py-1 border-b border-slate-50">
+          <span class="opacity-50">Expiry</span>
+          <strong>${run.expiry_days} days</strong>
+        </div>
+        <div class="flex justify-between py-1 border-b border-slate-50">
+          <span class="opacity-50">Exit Strategy</span>
+          <strong>${run.exit_strategy}</strong>
+        </div>
+        <div class="flex justify-between py-1 border-b border-slate-50">
+          <span class="opacity-50">Stop Loss</span>
+          <strong>${(run.stop_loss_pct * 100).toFixed(0)}% of premium</strong>
+        </div>
+        <div class="flex justify-between py-1 border-b border-slate-50">
+          <span class="opacity-50">Take Profit</span>
+          <strong>${(run.take_profit_pct * 100).toFixed(0)}% of premium</strong>
+        </div>
+        ` : `
+        <div class="flex justify-between py-1 border-b border-slate-50">
+          <span class="opacity-50">Capital</span>
+          <strong>$${run.capital}</strong>
+        </div>
+        <div class="flex justify-between py-1 border-b border-slate-50">
+          <span class="opacity-50">Exit Mode</span>
+          <strong>${run.sell_mode || 'indicator'}</strong>
+        </div>
+        `}
+        ${_pendingDeployMode === 'liquidate' ? `
+        <div class="mt-2 p-2 bg-rose-50 rounded-lg text-rose-700 text-[0.6rem] font-bold">
+          ⚠️ Will liquidate existing position before deploying
+        </div>
+        ` : ''}
+    `;
+
+    // Performance
+    const perf = document.getElementById('deployModalPerf');
+    const pnlSign = s.total_pl >= 0 ? '+' : '';
+    perf.innerHTML = `
+        <div class="flex justify-between py-1 border-b border-slate-50">
+          <span>${s.total_pl >= 0 ? '✅' : '❌'} Total PnL</span>
+          <strong class="${s.total_pl >= 0 ? 'text-emerald-600' : 'text-rose-600'}">
+            ${pnlSign}$${s.total_pl.toFixed(2)}
+          </strong>
+        </div>
+        <div class="flex justify-between py-1 border-b border-slate-50">
+          <span>${s.win_rate_pct >= 50 ? '✅' : '⚠️'} Win Rate</span>
+          <strong>${s.win_rate_pct.toFixed(1)}%</strong>
+        </div>
+        <div class="flex justify-between py-1 border-b border-slate-50">
+          <span>📊 Total Trades</span>
+          <strong>${s.total_trades}</strong>
+        </div>
+    `;
+
+    const warning = document.getElementById('deployModalWarning');
+    if (s.total_pl < 0) {
+        warning.classList.remove('hidden');
+    } else {
+        warning.classList.add('hidden');
+    }
+
+    document.getElementById('deployConfirmModal').classList.remove('hidden');
+}
+
+async function deployStrategyAsBot() {
+    const run = window.lastBacktestRun;
+    if (!run) return;
+
+    const btn = document.getElementById('btn-confirm-deploy');
+    btn.disabled = true;
+    btn.textContent = 'Deploying...';
+
+    try {
+        const headers = await getAuthHeaders();
+        const payload = {
+            ...run,
+            deploy_mode: _pendingDeployMode,   // 'override' | 'liquidate'
+            indicator_overrides: window.lastBacktestData?.indicator_overrides || {},
+            backtest_roi_pct: run.results?.summary?.roi_pct,
+            backtest_win_rate: run.results?.summary?.win_rate_pct,
+        };
+        delete payload.results;
+
+        const response = await fetch(`${API_BASE}/api/backtest/deploy`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+
+        if (data.status === 'success') {
+            document.getElementById('deployConfirmModal').classList.add('hidden');
+            const deployBtn = document.getElementById('btn-deploy-to-bot');
+            if (deployBtn) {
+                deployBtn.textContent = '✅ Deployed';
+                deployBtn.disabled = true;
+                deployBtn.classList.remove('animate-pulse');
+                deployBtn.className = "w-full py-3.5 rounded-xl font-black text-sm tracking-wider uppercase transition-all duration-300 shadow-lg text-center bg-slate-200 text-slate-500 cursor-not-allowed";
+            }
+            showDeployToast(run.ticker);
+        } else {
+            alert(`Deploy failed: ${data.message || 'Unknown error'}`);
+        }
+    } catch (err) {
+        alert(`Deploy error: ${err.message}`);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '✅ Confirm & Deploy';
+    }
+}
+
+function showDeployToast(ticker) {
+    document.getElementById('deployToast')?.remove();
+
+    const toast = document.createElement('div');
+    toast.id = 'deployToast';
+    toast.className = `fixed bottom-6 right-6 z-[99999] flex items-center gap-3 
+        bg-emerald-600 text-white px-5 py-4 rounded-2xl shadow-2xl 
+        text-sm font-black transition-all duration-500 max-w-xs`;
+    toast.innerHTML = `
+        <span class="text-xl">✅</span>
+        <div>
+            <div>Bot deployed for ${ticker}!</div>
+            <a href="bots.html?highlight=${ticker}"
+               class="text-emerald-200 underline text-xs font-bold mt-0.5 block">
+                View Bot Card →
+            </a>
+        </div>
+    `;
+    document.body.appendChild(toast);
+    setTimeout(() => {
+        if (toast.parentNode) {
+            toast.remove();
+        }
+    }, 6000);
+}
+
+window.showDeployButton = showDeployButton;
+window.openDeployModal = openDeployModal;
+window.resolveConflict = resolveConflict;
+window.deployStrategyAsBot = deployStrategyAsBot;
+window.showDeployToast = showDeployToast;
+
 

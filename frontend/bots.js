@@ -277,8 +277,12 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
 
     filteredTradelist.forEach(ticker => {
         const scan = (scans || {})[ticker];
+        const tickerSettings = (window.lastBotsData?.ticker_settings || {})[ticker] || {};
+        const isOptions = tickerSettings.options_trading || false;
+        const premiumCardClass = isOptions ? 'options-premium-card' : '';
+
         const item = document.createElement('div');
-        item.className = `watchlist-item group active-bot ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2 flex flex-col gap-2 transition-transform duration-200`;
+        item.className = `watchlist-item group active-bot ${premiumCardClass} ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2 flex flex-col gap-2 transition-transform duration-200`;
         item.draggable = true;
         item.dataset.ticker = ticker;
         
@@ -308,9 +312,15 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             ? 'h-2 w-2 bg-slate-300 rounded-full'
             : 'h-2 w-2 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]';
 
-        // Check for active position
+        // Check for active position (handling option symbols starting with the underlying ticker)
         const positions = window.lastBotsData?.positions || [];
-        const activePosition = positions.find(p => p.symbol === ticker);
+        const activePosition = positions.find(p => {
+            if (p.symbol === ticker) return true;
+            if (tickerSettings.options_trading && p.symbol.startsWith(ticker) && (p.is_option || p.symbol.length >= 15)) {
+                return true;
+            }
+            return false;
+        });
 
         const pauseReason = (window.lastBotsData?.ticker_settings || {})[ticker]?.pause_reason || '';
         let pauseReasonHtml = '';
@@ -398,7 +408,6 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             `;
         }
 
-        const tickerSettings = (window.lastBotsData?.ticker_settings || {})[ticker] || {};
         const startedAt = tickerSettings.started_at;
         const lastTradeAt = tickerSettings.last_trade_at;
         const totalTrades = tickerSettings.total_trades || 0;
@@ -423,6 +432,13 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             tradeBadgeHtml = `<span class="px-1.5 py-0.5 rounded-md bg-slate-50 text-slate-500 font-black text-[0.55rem] border border-slate-200 uppercase tracking-tight">${totalTrades} trades total</span>`;
         }
 
+        const fromBacktest = (window.lastBotsData?.ticker_settings || {})[ticker]?.source === 'backtest';
+        const backtestBadge = fromBacktest
+            ? `<span class="px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-600 font-black text-[0.5rem] border border-violet-200 uppercase tracking-widest ml-1">
+                 🧪 From Backtest
+               </span>`
+            : '';
+
         item.innerHTML = `
                 <!-- 1st Line: Ticker Name, Price, Watchlist Star, Settings Gear, and Remove Bot Cross -->
                 <div class="flex items-center justify-between cursor-pointer" onclick="selectTicker('${ticker}')">
@@ -430,6 +446,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         <div class="${dotClass}"></div>
                         <span class="font-black text-sm ${isPaused ? 'text-slate-400' : 'text-indigo-950'} tracking-tight">${ticker}</span>
                         <span class="text-[0.75rem] font-black text-slate-600 font-mono tracking-tight ml-1">${price}</span>
+                        ${backtestBadge}
                     </div>
                     
                     <div class="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity ml-1">
@@ -460,8 +477,15 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
 
                 <!-- 2nd Line: Active/Passive Status, Timeframe (TF), and Signal Indicators -->
                 <div class="flex items-center justify-between cursor-pointer" onclick="selectTicker('${ticker}')">
-                    <div class="flex items-center gap-1.5">
+                    <div class="flex items-center gap-1.5 flex-wrap">
                         ${isPaused ? '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-500 border border-amber-200">PAUSED</span>' : '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-100">ACTIVE</span>'}
+                        ${
+                            isOptions 
+                                ? `<span class="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-700 font-black text-[0.5rem] border border-amber-500/20 uppercase tracking-widest">Options</span>`
+                                : (isCrypto 
+                                    ? `<span class="px-1.5 py-0.5 rounded bg-fuchsia-500/10 text-fuchsia-700 font-black text-[0.5rem] border border-fuchsia-500/20 uppercase tracking-widest">Crypto</span>`
+                                    : `<span class="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-700 font-black text-[0.5rem] border border-indigo-500/20 uppercase tracking-widest">Stocks</span>`)
+                        }
                         <span class="px-1.5 py-0.5 rounded bg-indigo-50/50 text-indigo-500 font-mono font-black text-[0.55rem] border border-indigo-100/50 uppercase">${tfLabel}</span>
                         <button class="px-1.5 py-0.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-600 font-black text-[0.5rem] border border-blue-200 transition-colors uppercase tracking-widest flex items-center gap-0.5" onclick="event.stopPropagation(); window.goToDashboardChart('${ticker}')">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-2.5 w-2.5" viewBox="0 0 20 20" fill="currentColor">
@@ -502,23 +526,81 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         `;
         container.appendChild(item);
     });
+
+    // Deep link highlighting logic
+    const urlParams = new URLSearchParams(window.location.search);
+    const highlightTicker = urlParams.get('highlight');
+    if (highlightTicker) {
+        const allCards = document.querySelectorAll('#tradelistContainer .watchlist-item');
+        for (const card of allCards) {
+            if (card.dataset.ticker === highlightTicker.toUpperCase()) {
+                card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                card.classList.add('ring-2', 'ring-emerald-400', 'ring-offset-2');
+                // Pulse highlight for 3 seconds then remove
+                setTimeout(() => card.classList.remove('ring-2', 'ring-emerald-400', 'ring-offset-2'), 3000);
+                // Also select the ticker to open its panel
+                if (typeof selectTicker === 'function') {
+                    selectTicker(highlightTicker.toUpperCase());
+                }
+                break;
+            }
+        }
+        // Clean the URL to avoid re-highlighting on refresh
+        window.history.replaceState({}, '', 'bots.html');
+    }
 }
 
 let draggedItem = null;
+let dragPlaceholder = null;
+let originalSibling = null;
 
 function handleDragStart(e) {
     draggedItem = this;
+    originalSibling = this.nextSibling;
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', this.dataset.ticker);
-    setTimeout(() => this.classList.add('opacity-50', 'scale-95'), 0); // Visual feedback
+    
+    // Create a smooth visual placeholder
+    dragPlaceholder = document.createElement('div');
+    dragPlaceholder.className = 'drag-placeholder rounded-2xl border-2 border-dashed border-indigo-400 bg-indigo-500/5 transition-all duration-200';
+    dragPlaceholder.style.height = `${this.offsetHeight}px`;
+    dragPlaceholder.style.width = `${this.offsetWidth}px`;
+    dragPlaceholder.style.marginBottom = window.getComputedStyle(this).marginBottom;
+    
+    // Allow drop directly on placeholder
+    dragPlaceholder.addEventListener('dragover', (ev) => {
+        ev.preventDefault();
+        ev.dataTransfer.dropEffect = 'move';
+    });
+    dragPlaceholder.addEventListener('drop', handleDrop);
+    
+    // Hide the actual element from view but keep the ghost image
+    setTimeout(() => {
+        this.classList.add('hidden');
+        if (this.parentNode) {
+            this.parentNode.insertBefore(dragPlaceholder, this);
+        }
+    }, 0);
 }
 
 function handleDragEnd(e) {
-    this.classList.remove('opacity-50', 'scale-95');
-    document.querySelectorAll('.watchlist-item').forEach(el => {
-        el.classList.remove('border-t-2', 'border-b-2', 'border-indigo-500');
-    });
+    // If draggedItem is not null, it means handleDrop did not run (drag was cancelled or dropped invalidly)
+    if (draggedItem) {
+        draggedItem.classList.remove('hidden');
+        // Restore to original position
+        if (originalSibling && originalSibling.parentNode) {
+            originalSibling.parentNode.insertBefore(draggedItem, originalSibling);
+        } else {
+            const container = document.getElementById('tradelistContainer');
+            if (container) container.appendChild(draggedItem);
+        }
+        if (dragPlaceholder && dragPlaceholder.parentNode) {
+            dragPlaceholder.remove();
+        }
+    }
     draggedItem = null;
+    dragPlaceholder = null;
+    originalSibling = null;
 }
 
 function handleDragOver(e) {
@@ -527,61 +609,64 @@ function handleDragOver(e) {
     }
     e.dataTransfer.dropEffect = 'move';
     
-    // Visual feedback
+    // Skip if we are dragging over the dragged item or the placeholder itself
+    if (this === draggedItem || this === dragPlaceholder) return false;
+    
     const bounding = this.getBoundingClientRect();
     const offset = bounding.y + (bounding.height / 2);
+    
+    // Smoothly insert placeholder in the target position
     if (e.clientY - offset > 0) {
-        this.classList.add('border-b-2', 'border-indigo-500');
-        this.classList.remove('border-t-2');
+        this.parentNode.insertBefore(dragPlaceholder, this.nextSibling);
     } else {
-        this.classList.add('border-t-2', 'border-indigo-500');
-        this.classList.remove('border-b-2');
+        this.parentNode.insertBefore(dragPlaceholder, this);
     }
     return false;
 }
 
-function handleDragEnter(e) {}
-
-function handleDragLeave(e) {
-    this.classList.remove('border-t-2', 'border-b-2', 'border-indigo-500');
+function handleDragEnter(e) {
+    if (e.preventDefault) e.preventDefault();
 }
+
+function handleDragLeave(e) {}
 
 async function handleDrop(e) {
     if (e.stopPropagation) e.stopPropagation();
-    this.classList.remove('border-t-2', 'border-b-2', 'border-indigo-500');
     
-    if (draggedItem !== this) {
+    if (draggedItem && dragPlaceholder) {
         const container = document.getElementById('tradelistContainer');
-        const bounding = this.getBoundingClientRect();
-        const offset = bounding.y + (bounding.height / 2);
         
-        if (e.clientY - offset > 0) {
-            this.parentNode.insertBefore(draggedItem, this.nextSibling);
-        } else {
-            this.parentNode.insertBefore(draggedItem, this);
-        }
+        // Put the dragged item in its final position
+        dragPlaceholder.parentNode.insertBefore(draggedItem, dragPlaceholder);
+        dragPlaceholder.remove();
+        draggedItem.classList.remove('hidden');
         
+        // Build the new list of visible tickers directly from the DOM, ensuring no duplicates
         const newVisibleTickers = [];
         container.querySelectorAll('.watchlist-item').forEach(el => {
-            if (el.dataset.ticker) newVisibleTickers.push(el.dataset.ticker);
+            const ticker = el.dataset.ticker;
+            if (ticker && el !== dragPlaceholder && !newVisibleTickers.includes(ticker)) {
+                newVisibleTickers.push(ticker);
+            }
         });
         
         const currentFullList = window.lastBotsData?.tradelist || [];
         const originalVisibleSet = new Set(newVisibleTickers);
         
+        // Reconstruct the full list preserving non-visible (hidden tab) items
         let visibleIdx = 0;
-        const newFullList = currentFullList.map(t => {
+        const newFullList = [];
+        for (const t of currentFullList) {
             if (originalVisibleSet.has(t)) {
-                return newVisibleTickers[visibleIdx++];
+                newFullList.push(newVisibleTickers[visibleIdx++]);
+            } else {
+                newFullList.push(t);
             }
-            return t;
-        });
-
-        // Add any tickers that might have been lost just in case
-        newVisibleTickers.forEach(t => {
-            if (!newFullList.includes(t)) newFullList.push(t);
-        });
-
+        }
+        
+        // Sanity deduplication
+        const finalFullList = [...new Set(newFullList)];
+        
         container.classList.add('opacity-75', 'pointer-events-none');
         
         try {
@@ -589,15 +674,19 @@ async function handleDrop(e) {
             const response = await fetch(`${API_BASE}/api/bots/reorder`, {
                 method: 'POST',
                 headers: headers,
-                body: JSON.stringify({ tradelist: newFullList })
+                body: JSON.stringify({ tradelist: finalFullList })
             });
             if (response.ok) {
+                // Fetch the updated list from the backend
                 await fetchBotsData();
             }
         } catch (err) {
             console.error("Error reordering:", err);
         } finally {
             container.classList.remove('opacity-75', 'pointer-events-none');
+            draggedItem = null;
+            dragPlaceholder = null;
+            originalSibling = null;
         }
     }
     return false;
@@ -987,6 +1076,45 @@ function changeLogPage(delta) {
 let currentStrategySymbol = null;
 let strategyModalMode = 'deploy'; // 'deploy' or 'edit'
 
+function getTimeframeMinutes(tf) {
+    switch (tf) {
+        case '1Min': return 1;
+        case '5Min': return 5;
+        case '15Min': return 15;
+        case '30Min': return 30;
+        case '1Hour': return 60;
+        case '4Hour': return 240;
+        case '1Day': return 1440;
+        default: return 60;
+    }
+}
+
+function formatMinutes(min) {
+    if (min < 60) return min + " min";
+    const hrs = min / 60;
+    if (hrs < 24) {
+        return hrs + (hrs === 1 ? " hour" : " hours");
+    }
+    const days = hrs / 24;
+    return days + (days === 1 ? " day" : " days");
+}
+
+function updateDefaultCooldownLabel() {
+    const tf = document.getElementById('strategyTimeframe').value || '1Hour';
+    const minutes = getTimeframeMinutes(tf) * 4;
+    const defaultOption = document.querySelector('#strategyCooldownMinutes option[value="default"]');
+    if (defaultOption) {
+        defaultOption.textContent = `Default (${formatMinutes(minutes)})`;
+    }
+}
+
+function getCooldownMinutesValue() {
+    const val = document.getElementById('strategyCooldownMinutes').value;
+    if (val === 'default') return "default";
+    if (val === 'custom') return parseInt(document.getElementById('strategyCooldownCustomMinutes').value) || 60;
+    return parseInt(val) || 60;
+}
+
 window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
     currentStrategySymbol = symbol.toUpperCase();
     strategyModalMode = mode;
@@ -1021,6 +1149,7 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         const optionsToggle = document.getElementById('strategyOptionsToggle');
         if (optionsToggle) optionsToggle.checked = false;
         window.handleStrategyOptionsToggle(false);
+        document.getElementById('strategyOptionsType').value = "both";
         document.getElementById('strategyOptionsTradeAmount').value = 100;
         document.getElementById('strategyOptionsExpiryDays').value = 7;
         document.getElementById('strategyOptionsStrikeType').value = "ATM";
@@ -1035,7 +1164,7 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyAtrStopMult').value = INDICATOR_DEFAULTS['ATR_STOP_MULTIPLIER'] || 2.0;
         document.getElementById('strategyAtrTrailMult').value = INDICATOR_DEFAULTS['ATR_TRAIL_MULTIPLIER'] || 3.0;
         document.getElementById('strategyAtrTpMult').value = INDICATOR_DEFAULTS['ATR_TAKE_PROFIT_MULTIPLIER'] || 4.0;
-        document.getElementById('strategyCooldownMinutes').value = "60";
+        document.getElementById('strategyCooldownMinutes').value = "default";
         document.getElementById('strategyCooldownCustomContainer').classList.add('hidden');
         document.getElementById('strategyCooldownCustomMinutes').value = "";
 
@@ -1077,6 +1206,7 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         const optToggle = document.getElementById('strategyOptionsToggle');
         if (optToggle) optToggle.checked = optEnabled;
         window.handleStrategyOptionsToggle(optEnabled);
+        document.getElementById('strategyOptionsType').value = settings.options_type || 'both';
         document.getElementById('strategyOptionsTradeAmount').value = settings.options_trade_amount !== undefined ? settings.options_trade_amount : 100;
         document.getElementById('strategyOptionsExpiryDays').value = settings.options_expiry_days !== undefined ? settings.options_expiry_days : 7;
         document.getElementById('strategyOptionsStrikeType').value = settings.options_strike_type || 'ATM';
@@ -1092,9 +1222,13 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyAtrTrailMult').value = settings.atr_trail_multiplier !== undefined ? settings.atr_trail_multiplier : (INDICATOR_DEFAULTS['ATR_TRAIL_MULTIPLIER'] || 3.0);
         document.getElementById('strategyAtrTpMult').value = settings.take_profit_multiplier !== undefined ? settings.take_profit_multiplier : (INDICATOR_DEFAULTS['ATR_TAKE_PROFIT_MULTIPLIER'] || 4.0);
         
-        const cooldownVal = settings.cooldown_minutes !== undefined ? settings.cooldown_minutes : 60;
+        let cooldownVal = settings.cooldown_minutes;
         const standardCooldowns = [5, 15, 30, 60, 240];
-        if (standardCooldowns.includes(cooldownVal)) {
+        if (cooldownVal === undefined || cooldownVal === null || cooldownVal === "default") {
+            document.getElementById('strategyCooldownMinutes').value = "default";
+            document.getElementById('strategyCooldownCustomContainer').classList.add('hidden');
+            document.getElementById('strategyCooldownCustomMinutes').value = "";
+        } else if (standardCooldowns.includes(cooldownVal)) {
             document.getElementById('strategyCooldownMinutes').value = cooldownVal.toString();
             document.getElementById('strategyCooldownCustomContainer').classList.add('hidden');
             document.getElementById('strategyCooldownCustomMinutes').value = "";
@@ -1120,6 +1254,11 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
 
     // Run crypto option status check to disable if it is a crypto coin
     window.checkStrategyCryptoOptionStatus(currentStrategySymbol);
+
+    const tfEl = document.getElementById('strategyTimeframe');
+    tfEl.removeEventListener('change', updateDefaultCooldownLabel);
+    tfEl.addEventListener('change', updateDefaultCooldownLabel);
+    updateDefaultCooldownLabel();
 
     updateStrategySignalLabels();
     updateStrategyPauseButton();
@@ -1395,10 +1534,9 @@ async function saveTickerSettings() {
             atr_stop_multiplier: parseFloat(document.getElementById('strategyAtrStopMult').value),
             atr_trail_multiplier: parseFloat(document.getElementById('strategyAtrTrailMult').value),
             take_profit_multiplier: parseFloat(document.getElementById('strategyAtrTpMult').value),
-            cooldown_minutes: document.getElementById('strategyCooldownMinutes').value === 'custom' 
-                ? (parseInt(document.getElementById('strategyCooldownCustomMinutes').value) || 60) 
-                : (parseInt(document.getElementById('strategyCooldownMinutes').value) || 60),
+            cooldown_minutes: getCooldownMinutesValue(),
             options_trading: document.getElementById('strategyOptionsToggle').checked || false,
+            options_type: document.getElementById('strategyOptionsType').value || 'both',
             options_trade_amount: parseFloat(document.getElementById('strategyOptionsTradeAmount').value) || 100,
             options_expiry_days: parseInt(document.getElementById('strategyOptionsExpiryDays').value) || 7,
             options_strike_type: document.getElementById('strategyOptionsStrikeType').value || 'ATM',
@@ -1496,6 +1634,10 @@ async function fetchBotsData() {
 }
 
 function applyBotsData(data) {
+    if (draggedItem) {
+        console.log('[bots] Drag in progress, skipping UI apply to avoid layout disruption.');
+        return;
+    }
     // Connection status
     isAlpacaLinked = !data.simulation && data.has_keys;
     updateAlpacaStatus(isAlpacaLinked, data);
@@ -1844,10 +1986,9 @@ window.confirmAndDeployBot = async function () {
                 atr_stop_multiplier: parseFloat(document.getElementById('strategyAtrStopMult').value),
                 atr_trail_multiplier: parseFloat(document.getElementById('strategyAtrTrailMult').value),
                 take_profit_multiplier: parseFloat(document.getElementById('strategyAtrTpMult').value),
-                cooldown_minutes: document.getElementById('strategyCooldownMinutes').value === 'custom' 
-                    ? (parseInt(document.getElementById('strategyCooldownCustomMinutes').value) || 60) 
-                    : (parseInt(document.getElementById('strategyCooldownMinutes').value) || 60),
+                cooldown_minutes: getCooldownMinutesValue(),
                 options_trading: document.getElementById('strategyOptionsToggle').checked || false,
+                options_type: document.getElementById('strategyOptionsType').value || 'both',
                 options_trade_amount: parseFloat(document.getElementById('strategyOptionsTradeAmount').value) || 100,
                 options_expiry_days: parseInt(document.getElementById('strategyOptionsExpiryDays').value) || 7,
                 options_strike_type: document.getElementById('strategyOptionsStrikeType').value || 'ATM',
@@ -1907,6 +2048,18 @@ async function unlinkAlpaca() {
             // Prioritize loading the dashboard layout and chart first!
             const dashContent = document.getElementById('dashboardContent');
             if (dashContent) dashContent.classList.remove('hidden');
+
+            const container = document.getElementById('tradelistContainer');
+            if (container) {
+                container.addEventListener('dragover', (e) => {
+                    if (e.preventDefault) e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    if (dragPlaceholder && (e.target === container || e.target.id === 'tradelistContainer')) {
+                        container.appendChild(dragPlaceholder);
+                    }
+                });
+                container.addEventListener('drop', handleDrop);
+            }
 
             // INSTANT RENDER: Check for prefetched data from dashboard page
             let usedCache = false;
