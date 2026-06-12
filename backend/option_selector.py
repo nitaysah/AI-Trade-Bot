@@ -60,6 +60,7 @@ def get_option_chain(
             "status": AssetStatus.ACTIVE,
             "expiration_date_gte": today.strftime("%Y-%m-%d"),
             "expiration_date_lte": max_expiry.strftime("%Y-%m-%d"),
+            "limit": 10000,
         }
 
         # Apply strike filters to reduce payload if current price is known
