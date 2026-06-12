@@ -373,6 +373,7 @@ allowed_origins = [
     "https://bot-bulls.firebaseapp.com",
     "https://trading-bot-engine-df3de.firebaseapp.com",
     "https://trading-bot-engine-df3de.web.app",
+    "https://207-211-184-22.sslip.io",
 ]
 
 if os.getenv("ENV") != "production":

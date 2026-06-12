@@ -23,10 +23,11 @@ fi
 
 # 3. Launch: Starts the server via uvicorn
 echo "🚀 Launching FastAPI server (Unbuffered)..."
-if [ -f "/Users/nitaysah/Documents/Antigravity/AI-Trade-Bot/backend/serviceAccount.json" ]; then
-    export GOOGLE_APPLICATION_CREDENTIALS="/Users/nitaysah/Documents/Antigravity/AI-Trade-Bot/backend/serviceAccount.json"
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$DIR/serviceAccount.json" ]; then
+    export GOOGLE_APPLICATION_CREDENTIALS="$DIR/serviceAccount.json"
 fi
-PYTHONUNBUFFERED=1 uvicorn main:app --reload --port 8000 > stdout.log 2>&1 &
+PYTHONUNBUFFERED=1 uvicorn main:app --host 0.0.0.0 --port 8000 --reload > stdout.log 2>&1 &
 
 # 4. Logging
 echo "✅ Bot Bulls Backend started (PID: $!)."
