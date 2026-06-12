@@ -15,10 +15,19 @@ window.lastBacktestData = null;
 let btChart = null;            // LightweightCharts chart instance
 let btCandleSeries = null;     // Candlestick series
 let btEqSeries = null;         // Equity curve line series
+let btVolumeSeries = null;     // Volume histogram series
+let btChartMarkersRef = [];    // Saved markers array for toggling
 let btChartTradeIdx = 0;       // Currently highlighted trade (0-based, newest-first order)
 let btChartTradesRef = [];     // Reference to trades array (newest-first, same as allBtTrades)
 let btChartCandlesRef = [];    // Reference to candles array
 let btChartResizeObserver = null; // ResizeObserver for responsive chart
+// ────────────────────────────────────────────────────────────────────────
+
+// ── Backtest Cancellation on Unload ──────────────────────────────────────
+window.addEventListener('beforeunload', () => {
+    // Attempt to cancel any running backtest on the backend when navigating away or refreshing
+    navigator.sendBeacon(`${API_BASE}/api/backtest/cancel`);
+});
 // ────────────────────────────────────────────────────────────────────────
 
 /**
@@ -107,6 +116,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const section = document.getElementById('btAiAutopilotSection');
         const exitCard = document.getElementById('btExitStrategyCard');
         const thresholds = document.getElementById('btThresholdsCard');
+        const optionsCard = document.getElementById('btOptionsCard');
         
         if (enabled) {
             section?.classList.remove('hidden');
@@ -122,11 +132,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 thresholds.style.opacity = '0.5';
                 thresholds.style.pointerEvents = 'none';
             }
+            if (optionsCard) {
+                optionsCard.style.opacity = '0.5';
+                optionsCard.style.pointerEvents = 'none';
+            }
         } else {
             section?.classList.add('hidden');
-            if (exitCard) {
-                exitCard.style.opacity = '1';
-                exitCard.style.pointerEvents = 'auto';
+            const isOptionsOn = document.getElementById('btOptionsToggle')?.checked || false;
+            if (!isOptionsOn) {
+                if (exitCard) {
+                    exitCard.style.opacity = '1';
+                    exitCard.style.pointerEvents = 'auto';
+                }
             }
             document.querySelectorAll('.indicator-card').forEach(card => {
                 card.style.opacity = '1';
@@ -136,13 +153,70 @@ document.addEventListener('DOMContentLoaded', () => {
                 thresholds.style.opacity = '1';
                 thresholds.style.pointerEvents = 'auto';
             }
+            if (optionsCard) {
+                optionsCard.style.opacity = '1';
+                optionsCard.style.pointerEvents = 'auto';
+            }
+        }
+    };
+
+    // Setup Options Trading Toggle handlers
+    window.handleBacktestOptionsToggle = function (enabled) {
+        const section = document.getElementById('btOptionsSection');
+        const exitCard = document.getElementById('btExitStrategyCard');
+        const riskCard = document.getElementById('btRiskCard');
+        const autopilotCard = document.getElementById('btAiAutopilotCard');
+        const extHoursSelect = document.getElementById('btExtHours');
+        
+        if (enabled) {
+            section?.classList.remove('hidden');
+            if (exitCard) {
+                exitCard.style.opacity = '0.5';
+                exitCard.style.pointerEvents = 'none';
+            }
+            if (riskCard) {
+                riskCard.style.opacity = '0.5';
+                riskCard.style.pointerEvents = 'none';
+            }
+            if (autopilotCard) {
+                autopilotCard.style.opacity = '0.5';
+                autopilotCard.style.pointerEvents = 'none';
+            }
+            if (extHoursSelect) {
+                extHoursSelect.value = 'false';
+                extHoursSelect.disabled = true;
+                extHoursSelect.style.opacity = '0.5';
+            }
+        } else {
+            section?.classList.add('hidden');
+            const isAiOn = document.getElementById('btAiAutopilotToggle')?.checked || false;
+            if (!isAiOn) {
+                if (exitCard) {
+                    exitCard.style.opacity = '1';
+                    exitCard.style.pointerEvents = 'auto';
+                }
+                if (riskCard) {
+                    riskCard.style.opacity = '1';
+                    riskCard.style.pointerEvents = 'auto';
+                }
+            }
+            if (autopilotCard) {
+                autopilotCard.style.opacity = '1';
+                autopilotCard.style.pointerEvents = 'auto';
+            }
+            if (extHoursSelect) {
+                extHoursSelect.disabled = false;
+                extHoursSelect.style.opacity = '1';
+            }
         }
     };
 
     // Initialize/Sync strategy settings display on load
     setTimeout(() => {
         const isAiOnLoad = document.getElementById('btAiAutopilotToggle')?.checked || false;
+        const isOptionsOnLoad = document.getElementById('btOptionsToggle')?.checked || false;
         window.handleBacktestAutopilotToggle(isAiOnLoad);
+        window.handleBacktestOptionsToggle(isOptionsOnLoad);
     }, 50);
 
     // Setup Ticker Search Dropdown
@@ -181,6 +255,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             div.onclick = () => {
                                 btTickerInput.value = item.symbol;
                                 btResultsContainer.classList.add('hidden');
+                                window.checkCryptoOptionStatus(item.symbol);
                             };
                             btResultsContainer.appendChild(div);
                         });
@@ -195,12 +270,25 @@ document.addEventListener('DOMContentLoaded', () => {
             }, 300);
         });
 
+        // Check on direct keyboard changes and input blur/change
+        btTickerInput.addEventListener('change', (e) => {
+            window.checkCryptoOptionStatus(e.target.value.trim());
+        });
+        btTickerInput.addEventListener('blur', (e) => {
+            window.checkCryptoOptionStatus(e.target.value.trim());
+        });
+
         // Hide dropdown when clicking outside
         document.addEventListener('click', (e) => {
             if (!btTickerInput.contains(e.target) && !btResultsContainer.contains(e.target)) {
                 btResultsContainer.classList.add('hidden');
             }
         });
+
+        // Trigger on load
+        setTimeout(() => {
+            window.checkCryptoOptionStatus(btTickerInput.value.trim());
+        }, 100);
     }
 
     // Initial slider sync
@@ -314,24 +402,23 @@ async function runBacktest() {
 
     const extHoursVal = document.getElementById('btExtHours') ? (document.getElementById('btExtHours').value === 'true') : true;
 
-    // Gather exit strategy and risk controls
-    const sellMode = document.getElementById('btSellMode').value;
-    const riskPerTrade = parseFloat(document.getElementById('btRiskPerTrade').value) / 100.0;
-    const maxPositionPct = parseFloat(document.getElementById('btMaxPositionPct').value) / 100.0;
-    const atrStopMult = parseFloat(document.getElementById('btAtrStopMult').value);
-    const atrTrailMult = parseFloat(document.getElementById('btAtrTrailMult').value);
-    const atrTpMult = parseFloat(document.getElementById('btAtrTpMult').value);
-
     const aiAutopilot = document.getElementById('btAiAutopilotToggle')?.checked || false;
     const aiInterval = parseInt(document.getElementById('btAiInterval')?.value || '10');
     const aiModel = document.getElementById('btAiModel')?.value || 'llama-3.3-70b-versatile';
+
+    // Options properties
+    const optionsEnabled = document.getElementById('btOptionsToggle')?.checked || false;
 
     // Collect checked indicators
     const indicators = Array.from(document.querySelectorAll('.bt-indicator-check:checked'))
         .map(cb => cb.value);
 
-    if (!aiAutopilot && indicators.length === 0) {
+    if (!optionsEnabled && !aiAutopilot && indicators.length === 0) {
         alert("Please select at least one indicator for the strategy matrix.");
+        return;
+    }
+    if (optionsEnabled && indicators.length === 0) {
+        alert("Please select at least one indicator for options entry/exit triggers.");
         return;
     }
 
@@ -341,31 +428,76 @@ async function runBacktest() {
     document.getElementById('btLoading').classList.remove('hidden');
 
     try {
-        console.log(`[backtest] Starting request to: ${API_BASE}/api/backtest`);
         const headers = await getAuthHeaders();
-        const response = await fetch(`${API_BASE}/api/backtest`, {
-            method: 'POST',
-            headers: headers,
-            body: JSON.stringify({
-                ticker,
-                timeframe,
-                days: parseInt(days),
-                capital: parseFloat(capital),
-                threshold: parseInt(threshold),
-                sell_threshold: parseInt(sellThreshold),
-                indicators: aiAutopilot ? [] : indicators,
-                ext_hours: extHoursVal,
-                sell_mode: sellMode,
-                risk_per_trade: riskPerTrade,
-                max_position_pct: maxPositionPct,
-                atr_stop_multiplier: atrStopMult,
-                atr_trail_multiplier: atrTrailMult,
-                take_profit_multiplier: atrTpMult,
-                ai_autopilot: aiAutopilot,
-                ai_interval: aiInterval,
-                ai_model: aiModel
-            })
-        });
+        let response;
+
+        if (optionsEnabled) {
+            const tradeAmount = parseFloat(document.getElementById('btOptionsTradeAmount').value || '100');
+            const expiryDays = parseInt(document.getElementById('btOptionsExpiryDays').value || '7');
+            const strikeType = document.getElementById('btOptionsStrikeType').value;
+            const exitStrategy = document.getElementById('btOptionsExitStrategy').value;
+            const stopLossPct = parseFloat(document.getElementById('btOptionsStopLossPct').value || '50') / 100.0;
+            const takeProfitPct = parseFloat(document.getElementById('btOptionsTakeProfitPct').value || '100') / 100.0;
+            const r = parseFloat(document.getElementById('btOptionsRiskFreeRate').value || '5.0') / 100.0;
+            const closeBeforeExpiry = parseFloat(document.getElementById('btOptionsCloseBeforeExpiry').value || '2.0');
+
+            console.log(`[backtest] Starting Options request to: ${API_BASE}/api/options/backtest`);
+            response = await fetch(`${API_BASE}/api/options/backtest`, {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify({
+                    ticker,
+                    timeframe,
+                    days: parseInt(days),
+                    capital: parseFloat(capital),
+                    trade_amount: tradeAmount,
+                    expiry_days: expiryDays,
+                    strike_type: strikeType,
+                    stop_loss_pct: stopLossPct,
+                    take_profit_pct: takeProfitPct,
+                    exit_strategy: exitStrategy,
+                    close_before_expiry_hours: closeBeforeExpiry,
+                    threshold: parseInt(threshold),
+                    sell_threshold: parseInt(sellThreshold),
+                    indicators: indicators,
+                    ext_hours: extHoursVal,
+                    r
+                })
+            });
+        } else {
+            // Gather exit strategy and risk controls for stock
+            const sellMode = document.getElementById('btSellMode').value;
+            const riskPerTrade = parseFloat(document.getElementById('btRiskPerTrade').value) / 100.0;
+            const maxPositionPct = parseFloat(document.getElementById('btMaxPositionPct').value) / 100.0;
+            const atrStopMult = parseFloat(document.getElementById('btAtrStopMult').value);
+            const atrTrailMult = parseFloat(document.getElementById('btAtrTrailMult').value);
+            const atrTpMult = parseFloat(document.getElementById('btAtrTpMult').value);
+
+            console.log(`[backtest] Starting Stock request to: ${API_BASE}/api/backtest`);
+            response = await fetch(`${API_BASE}/api/backtest`, {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify({
+                    ticker,
+                    timeframe,
+                    days: parseInt(days),
+                    capital: parseFloat(capital),
+                    threshold: parseInt(threshold),
+                    sell_threshold: parseInt(sellThreshold),
+                    indicators: aiAutopilot ? [] : indicators,
+                    ext_hours: extHoursVal,
+                    sell_mode: sellMode,
+                    risk_per_trade: riskPerTrade,
+                    max_position_pct: maxPositionPct,
+                    atr_stop_multiplier: atrStopMult,
+                    atr_trail_multiplier: atrTrailMult,
+                    take_profit_multiplier: atrTpMult,
+                    ai_autopilot: aiAutopilot,
+                    ai_interval: aiInterval,
+                    ai_model: aiModel
+                })
+            });
+        }
 
         if (!response.ok) {
             throw new Error(`HTTP Error: ${response.status}`);
@@ -399,6 +531,22 @@ function displayResults(res) {
 
     const s = res.summary;
 
+    // ── Header Metadata (Ticker · Timeframe · Days · Date Range CST) ─────
+    const metaEl = document.getElementById('resRunMeta');
+    if (metaEl && s.ticker) {
+        const cstOpts = { timeZone: 'America/Chicago', month: 'short', day: 'numeric', year: 'numeric' };
+        let startCST = '';
+        let endCST = '';
+        try {
+            startCST = new Date(s.start_date_utc).toLocaleString('en-US', cstOpts);
+            endCST = new Date(s.end_date_utc).toLocaleString('en-US', cstOpts);
+        } catch (e) {
+            startCST = s.start_date_utc || '';
+            endCST = s.end_date_utc || '';
+        }
+        metaEl.textContent = `${s.ticker}  ·  ${s.timeframe}  ·  ${s.period_days} Days  ·  ${startCST} – ${endCST} CST`;
+    }
+
     // Stats
     document.getElementById('resRoi').textContent = s.roi_pct.toFixed(2) + '%';
     document.getElementById('resWinRate').textContent = s.win_rate_pct.toFixed(1) + '%';
@@ -407,21 +555,25 @@ function displayResults(res) {
     document.getElementById('resHoldEquity').textContent = '$' + s.buy_hold_equity.toLocaleString(undefined, { minimumFractionDigits: 2 });
     document.getElementById('resHoldRoi').textContent = s.buy_hold_roi_pct.toFixed(2) + '% Return';
 
+    // Max Drawdown
+    const ddEl = document.getElementById('resMaxDrawdown');
+    if (ddEl) ddEl.textContent = (s.max_drawdown_pct || 0).toFixed(2) + '%';
+
     // Color logic for ROI
     const roiEl = document.getElementById('resRoi');
-    roiEl.className = `text-2xl font-black tracking-tight ${s.roi_pct >= 0 ? 'text-emerald-500' : 'text-rose-500'}`;
+    roiEl.className = `text-xl font-black tracking-tight ${s.roi_pct >= 0 ? 'text-emerald-500' : 'text-rose-500'}`;
 
     const holdRoiEl = document.getElementById('resHoldRoi');
     const holdColor = s.buy_hold_roi_pct >= 0 ? 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20' : 'text-rose-400 bg-rose-400/10 border-rose-400/20';
     holdRoiEl.className = `text-[0.65rem] font-black uppercase tracking-widest px-3 py-1 rounded-full inline-block mt-2 border transition-all ${holdColor}`;
 
-    // Trade Log
-    allBtTrades = res.trades || [];
+    // Trade Log (existing table below)
+    allBtTrades = [...(res.trades || [])].reverse(); // oldest-first chronological order
     btPage = 1;
     renderBtTradesPage();
 
-    // ── NEW: Build backtest chart ────────────────────────────────────────
-    btChartTradesRef = res.trades || [];         // newest-first
+    // ── Build backtest chart + trade card slider ─────────────────────────
+    btChartTradesRef = [...(res.trades || [])].reverse(); // oldest-first chronological order
     btChartCandlesRef = res.candles || [];
     btChartTradeIdx = 0;
 
@@ -444,7 +596,8 @@ function renderBtTradesPage() {
     if (allBtTrades.length > 0) {
         document.getElementById('btPagination').classList.remove('hidden');
         const totalPages = Math.ceil(allBtTrades.length / btPageSize);
-        document.getElementById('btPageInfo').textContent = `Page ${btPage} of ${totalPages}`;
+        document.getElementById('btPageInput').value = btPage;
+        document.getElementById('btPageTotal').textContent = `of ${totalPages}`;
         document.getElementById('btPageInfoTop').textContent = `Showing ${start + 1}-${Math.min(end, allBtTrades.length)} of ${allBtTrades.length} trades`;
     } else {
         document.getElementById('btPagination').classList.add('hidden');
@@ -454,17 +607,37 @@ function renderBtTradesPage() {
 
     paginated.forEach(t => {
         const plClass = t.pl_pct >= 0 ? 'text-emerald-600 font-bold' : 'text-red-500 font-bold';
+        const isOption = t.option_type !== undefined;
+        let entryHtml = `
+            <div class="text-xs font-semibold text-indigo-950">${formatDate(t.entry_time)}</div>
+            <div class="text-[0.6rem] text-purple-400 font-medium mt-0.5">Entry @ $${t.entry_price.toFixed(2)}</div>
+        `;
+        let exitHtml = `
+            <div class="text-xs font-semibold text-indigo-950">${formatDate(t.exit_time)}</div>
+            <div class="text-[0.6rem] text-purple-400 font-medium mt-0.5">Exit @ $${t.exit_price.toFixed(2)}</div>
+        `;
+        let qtyHtml = `${t.qty.toFixed(4)}`;
+
+        if (isOption) {
+            entryHtml = `
+                <div class="text-xs font-semibold text-indigo-950">${formatDate(t.entry_time)}</div>
+                <div class="text-[0.65rem] text-indigo-600 font-black mt-0.5">${t.option_type} $${t.strike} @ $${t.entry_price.toFixed(2)}</div>
+                <div class="text-[0.55rem] text-slate-400">Stock: $${t.entry_underlying.toFixed(2)}</div>
+            `;
+            exitHtml = `
+                <div class="text-xs font-semibold text-indigo-950">${formatDate(t.exit_time)}</div>
+                <div class="text-[0.65rem] text-indigo-600 font-black mt-0.5">Exit @ $${t.exit_price.toFixed(2)}</div>
+                <div class="text-[0.55rem] text-slate-400">Stock: $${t.exit_underlying.toFixed(2)}</div>
+                <div class="text-[0.55rem] text-rose-500 font-bold max-w-[120px] truncate" title="${t.reason || ''}">${t.reason || ''}</div>
+            `;
+            qtyHtml = `${t.qty} Contract${t.qty !== 1 ? 's' : ''}`;
+        }
+
         const row = `
             <tr class="border-b border-purple-100 hover:bg-purple-50/30 transition-colors">
-                <td class="py-2 px-3">
-                    <div class="text-xs font-semibold text-indigo-950">${formatDate(t.entry_time)}</div>
-                    <div class="text-[0.6rem] text-purple-400 font-medium mt-0.5">Entry @ $${t.entry_price.toFixed(2)}</div>
-                </td>
-                <td class="py-2 px-3">
-                    <div class="text-xs font-semibold text-indigo-950">${formatDate(t.exit_time)}</div>
-                    <div class="text-[0.6rem] text-purple-400 font-medium mt-0.5">Exit @ $${t.exit_price.toFixed(2)}</div>
-                </td>
-                <td class="py-2 px-3 text-center text-xs font-bold text-indigo-900">${t.qty.toFixed(4)}</td>
+                <td class="py-2 px-3">${entryHtml}</td>
+                <td class="py-2 px-3">${exitHtml}</td>
+                <td class="py-2 px-3 text-center text-xs font-bold text-indigo-900">${qtyHtml}</td>
                 <td class="py-2 px-3 text-center text-xs font-medium text-indigo-700">$${t.entry_cost.toFixed(2)}</td>
                 <td class="py-2 px-3 text-center text-xs font-bold text-indigo-950">$${t.exit_value.toFixed(2)}</td>
                 <td class="py-2 px-3 text-center text-[0.65rem] text-purple-400 font-mono">$${(t.fees || 0).toFixed(2)}</td>
@@ -487,6 +660,15 @@ function changeBtPage(dir) {
     }
 }
 
+function jumpBtPage(pageStr) {
+    const totalPages = Math.ceil(allBtTrades.length / btPageSize);
+    let newPage = parseInt(pageStr, 10);
+    if (isNaN(newPage)) newPage = 1;
+    newPage = Math.max(1, Math.min(totalPages, newPage));
+    btPage = newPage;
+    renderBtTradesPage();
+}
+
 // 4. Helper Functions
 function resetBacktestUI() {
     // ── NEW: Destroy chart to prevent stale renders on next run ──────────
@@ -494,6 +676,9 @@ function resetBacktestUI() {
         try { btChart.remove(); } catch (e) {}
         btChart = null;
         btCandleSeries = null;
+        btEqSeries = null;
+        btVolumeSeries = null;
+        btChartMarkersRef = [];
         btEqSeries = null;
     }
     if (btChartResizeObserver) {
@@ -533,7 +718,7 @@ function _btInitChart(candles, trades, equityCurve) {
     const wrap = document.getElementById('btChartWrap');
     if (!wrap) return;
 
-    // ── Create chart (same options pattern as app.js line 373) ────────────
+    // ── Create chart ─────────────────────────────────────────────────────
     btChart = LightweightCharts.createChart(wrap, {
         layout: {
             background: { color: '#ffffff' },
@@ -554,7 +739,7 @@ function _btInitChart(candles, trades, equityCurve) {
         height: wrap.clientHeight,
     });
 
-    // ── Candlestick series (same as app.js line 410) ──────────────────────
+    // ── Candlestick series ───────────────────────────────────────────────
     btCandleSeries = btChart.addCandlestickSeries({
         upColor: '#10b981',
         downColor: '#ef4444',
@@ -564,12 +749,57 @@ function _btInitChart(candles, trades, equityCurve) {
     });
     btCandleSeries.setData(candles);
 
-    // ── Equity curve (removed per user request) ─────────────────────────
+    // ── Volume series ────────────────────────────────────────────────────
+    btVolumeSeries = btChart.addHistogramSeries({
+        color: '#26a69a',
+        priceFormat: { type: 'volume' },
+        priceScaleId: '', // set as an overlay by default
+    });
+    btChart.priceScale('').applyOptions({
+        scaleMargins: { top: 0.8, bottom: 0 },
+    });
+    
+    const volumeData = candles.map(c => ({
+        time: c.time,
+        value: c.volume,
+        color: c.close >= c.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'
+    }));
+    btVolumeSeries.setData(volumeData);
 
-    // ── Build buy/sell markers (same shape/position API as app.js 719–737) ─
-    // NOTE: trades array is newest-first; markers need chronological order
+    // ── Equity Curve overlay (purple line, bottom 20% of chart) ──────────
+    if (equityCurve && equityCurve.length > 0) {
+        const equityData = equityCurve.map(e => {
+            const dt = _btParseDate(e.time);
+            return dt ? { time: Math.floor(dt.getTime() / 1000), value: e.equity } : null;
+        }).filter(Boolean).sort((a, b) => a.time - b.time);
+
+        // Deduplicate (same timestamp can appear multiple times)
+        const seen = new Set();
+        const uniqueEquity = equityData.filter(e => {
+            if (seen.has(e.time)) return false;
+            seen.add(e.time);
+            return true;
+        });
+
+        if (uniqueEquity.length > 1) {
+            btEqSeries = btChart.addLineSeries({
+                priceScaleId: 'equity',
+                color: 'rgba(139, 92, 246, 0.7)',
+                lineWidth: 2,
+                priceLineVisible: false,
+                lastValueVisible: false,
+                crosshairMarkerVisible: false,
+            });
+            btChart.priceScale('equity').applyOptions({
+                scaleMargins: { top: 0.8, bottom: 0 },
+            });
+            btEqSeries.setData(uniqueEquity);
+        }
+    }
+
+    // ── Build buy/sell markers (clean P/L % style) ───────────────────────
     const markers = [];
-    const sortedTrades = [...trades].reverse(); // oldest-first for markers
+    const sortedTrades = trades; // already oldest-first
 
     sortedTrades.forEach((trade, idx) => {
         const entryDt = _btParseDate(trade.entry_time);
@@ -579,38 +809,30 @@ function _btInitChart(candles, trades, equityCurve) {
         const isWin = trade.pl >= 0;
         const plLabel = `${isWin ? '+' : ''}${trade.pl_pct.toFixed(1)}%`;
 
-        const isBB1 = document.querySelector('.bt-indicator-check[value="BotBulls1"]')?.checked;
-        const isBB2 = document.querySelector('.bt-indicator-check[value="BotBulls2"]')?.checked;
-        const isBB3 = document.querySelector('.bt-indicator-check[value="BotBulls3"]')?.checked;
+        const isOption = trade.option_type !== undefined;
 
-        let stratPrefix = '';
-        if (isBB2) stratPrefix = 'BB2 ';
-        else if (isBB3) stratPrefix = 'BB3 ';
-        else if (isBB1) stratPrefix = 'BB1 ';
-
-        // Buy should be green (arrowUp)
+        // Buy marker — clean "B" label
         markers.push({
             time: entryTs,
             position: 'belowBar',
             color: '#10b981',
             shape: 'arrowUp',
-            text: `${stratPrefix}BUY $${trade.entry_price.toFixed(2)}`,
-            size: 1,
+            text: isOption ? `${trade.option_type} ${trade.strike}` : 'B',
+            size: 2,
         });
 
-        // Sell should be red (arrowDown) by default, only mark green check if profit and red x for loss
+        // Sell marker — shows P/L %
         markers.push({
             time: exitTs,
             position: 'aboveBar',
             color: isWin ? '#10b981' : '#ef4444',
             shape: 'arrowDown',
-            text: `${isWin ? '✓' : 'x'} ${stratPrefix}SELL $${trade.exit_price.toFixed(2)} (${plLabel})`,
-            size: 1,
+            text: plLabel,
+            size: 2,
         });
     });
 
     // Deduplicate by time (LightweightCharts requires unique times per marker array)
-    // If two trades share entry/exit timestamps, merge their labels
     const markerMap = {};
     markers.forEach(m => {
         const key = `${m.time}_${m.position}`;
@@ -620,8 +842,11 @@ function _btInitChart(candles, trades, equityCurve) {
             markerMap[key].text += ` | ${m.text}`;
         }
     });
-    const dedupedMarkers = Object.values(markerMap).sort((a, b) => a.time - b.time);
-    btCandleSeries.setMarkers(dedupedMarkers);
+    btChartMarkersRef = Object.values(markerMap).sort((a, b) => a.time - b.time);
+    btCandleSeries.setMarkers(btChartMarkersRef);
+    
+    // Set initial toggle states
+    btToggleChartLayers();
 
     // ── Crosshair tooltip (shows OHLCV + position status on hover) ────────
     const tooltip = document.getElementById('btChartTooltip');
@@ -643,15 +868,33 @@ function _btInitChart(candles, trades, equityCurve) {
             return barTime >= eTs && barTime <= xTs;
         });
 
+        const isOption = activePos && activePos.option_type !== undefined;
         const posLine = activePos
-            ? `<div class="mt-1 pt-1 border-t border-indigo-50 text-[0.55rem]">
-                 <span class="text-emerald-600 font-black">IN POSITION</span>
-                 <span class="text-slate-400 ml-1">@ $${activePos.entry_price}</span>
-                 <span class="ml-1 ${((bar.close - activePos.entry_price) / activePos.entry_price * 100) >= 0 ? 'text-emerald-500' : 'text-rose-500'}">
-                   (${((bar.close - activePos.entry_price) / activePos.entry_price * 100).toFixed(2)}%)
-                 </span>
-               </div>`
+            ? (isOption
+                ? `<div class="mt-1 pt-1 border-t border-indigo-50 text-[0.55rem]">
+                     <span class="text-emerald-600 font-black">IN ${activePos.option_type} ${activePos.strike}</span>
+                     <span class="text-slate-400 ml-1">Premium: $${activePos.entry_price.toFixed(2)}</span>
+                     <span class="text-slate-400 ml-1">Stock Entry: $${activePos.entry_underlying.toFixed(2)}</span>
+                   </div>`
+                : `<div class="mt-1 pt-1 border-t border-indigo-50 text-[0.55rem]">
+                     <span class="text-emerald-600 font-black">IN POSITION</span>
+                     <span class="text-slate-400 ml-1">@ $${activePos.entry_price}</span>
+                     <span class="ml-1 ${((bar.close - activePos.entry_price) / activePos.entry_price * 100) >= 0 ? 'text-emerald-500' : 'text-rose-500'}">
+                       (${((bar.close - activePos.entry_price) / activePos.entry_price * 100).toFixed(2)}%)
+                     </span>
+                   </div>`)
             : '';
+
+        let eqLine = '';
+        if (btEqSeries) {
+            const eqData = param.seriesData.get(btEqSeries);
+            if (eqData && eqData.value !== undefined) {
+                eqLine = `<div class="mt-1 pt-1 border-t border-indigo-50 text-[0.55rem] flex justify-between">
+                            <span class="text-violet-500 font-black">EQUITY</span>
+                            <span class="font-bold text-violet-600">$${eqData.value.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+                          </div>`;
+            }
+        }
 
         tooltip.innerHTML = `
             <div class="text-[0.55rem] text-slate-400 mb-1">${new Date(param.time * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}</div>
@@ -662,6 +905,7 @@ function _btInitChart(candles, trades, equityCurve) {
                 <span class="text-slate-400">C</span><span class="font-bold">$${bar.close.toFixed(2)}</span>
             </div>
             ${posLine}
+            ${eqLine}
         `;
         tooltip.classList.remove('hidden');
     });
@@ -676,8 +920,8 @@ function _btInitChart(candles, trades, equityCurve) {
     }
     btChartResizeObserver = new ResizeObserver(entries => {
         if (!btChart || !entries.length) return;
-        const { width } = entries[0].contentRect;
-        btChart.applyOptions({ width });
+        const { width, height } = entries[0].contentRect;
+        btChart.applyOptions({ width, height });
     });
     btChartResizeObserver.observe(wrap);
 
@@ -689,7 +933,7 @@ function _btInitChart(candles, trades, equityCurve) {
     };
     document.addEventListener('keydown', window._btKeyHandler);
 
-    // ── Initial view: show latest trade so candles fit correctly ───────────
+    // ── Initial view: fit all candles ─────────────────────────────────────
     if (btChartTradesRef.length > 0) {
         btChartTradeIdx = 0;
         _btScrollToTrade(0);
@@ -701,6 +945,29 @@ function _btInitChart(candles, trades, equityCurve) {
     // ── Update navigator label ────────────────────────────────────────────
     _btUpdateNavLabel();
 }
+
+// ─── Chart Layer Toggles ─────────────────────────────────────────────────
+window.btToggleChartLayers = function() {
+    if (!btChart) return;
+    
+    const volBox = document.getElementById('btToggleVolume');
+    const eqBox = document.getElementById('btToggleEquity');
+    const markBox = document.getElementById('btToggleMarkers');
+
+    const showVol = volBox ? volBox.checked : true;
+    const showEq = eqBox ? eqBox.checked : true;
+    const showMarkers = markBox ? markBox.checked : true;
+
+    if (btVolumeSeries) {
+        btVolumeSeries.applyOptions({ visible: showVol });
+    }
+    if (btEqSeries) {
+        btEqSeries.applyOptions({ visible: showEq });
+    }
+    if (btCandleSeries) {
+        btCandleSeries.setMarkers(showMarkers ? btChartMarkersRef : []);
+    }
+};
 
 // ─── Trade Navigator ─────────────────────────────────────────────────────
 
@@ -715,11 +982,10 @@ function btNavigateTrade(dir) {
 
 function btFitAll() {
     if (!btChart) return;
-    // Industry standard "All Trades" view: restore standard candle sizing and scroll to the end
     btChart.timeScale().applyOptions({ rightOffset: 5, barSpacing: 10 });
     btChart.timeScale().scrollToPosition(0, false);
     
-    btChartTradeIdx = -1;   // No single trade selected
+    btChartTradeIdx = -1;
     const lbl = document.getElementById('btChartTradeLabel');
     if (lbl) lbl.textContent = 'All trades';
 }
@@ -731,16 +997,13 @@ function _btScrollToTrade(idx) {
     const entryDt = _btParseDate(trade.entry_time);
     const entryTs = entryDt ? Math.floor(entryDt.getTime() / 1000) : 0;
 
-    // Find the candle index for the entry time
     let entryIdx = btChartCandlesRef.findIndex(c => c.time >= entryTs);
     if (entryIdx === -1) entryIdx = btChartCandlesRef.length - 1;
 
-    // Calculate how many candles fit on screen given a standard 12px TradingView candle width
     const wrap = document.getElementById('btChartWrap');
     const containerWidth = wrap ? wrap.clientWidth : 800;
     const visibleCandles = Math.floor(containerWidth / 12);
 
-    // Show 30% past context and 70% forward context from entry
     const paddingBefore = Math.floor(visibleCandles * 0.3);
     const paddingAfter = visibleCandles - paddingBefore;
 
@@ -756,18 +1019,15 @@ function _btUpdateNavLabel() {
     const total = btChartTradesRef.length;
     if (total === 0) { lbl.textContent = '—'; return; }
     if (btChartTradeIdx === -1) { lbl.textContent = 'All trades'; return; }
-    lbl.textContent = `Trade ${total - btChartTradeIdx} / ${total}`;
+    lbl.textContent = `Trade ${btChartTradeIdx + 1} / ${total}`;
 }
 
 function _btSyncTradeRow(idx) {
-    // idx is in newest-first order (same as allBtTrades / btChartTradesRef)
-    // Calculate which page this trade is on
     const targetPage = Math.floor(idx / btPageSize) + 1;
     if (targetPage !== btPage) {
         btPage = targetPage;
         renderBtTradesPage();
     }
-    // Highlight the target row in the currently visible page
     const rowInPage = idx % btPageSize;
     const rows = document.querySelectorAll('#btTradeLog tr');
     rows.forEach(r => r.classList.remove('ring-2', 'ring-indigo-400', 'ring-inset'));
@@ -777,8 +1037,9 @@ function _btSyncTradeRow(idx) {
     }
 }
 
+// ─── Trade Card Slider (Removed) ──────────────────────────────────────────
+
 // ─── Chart → Table Sync: clicking trade row scrolls chart to that trade ──
-// Called from renderBtTradesPage() after building the trade log HTML
 function _btWireTradeRowClicks() {
     const rows = document.querySelectorAll('#btTradeLog tr');
     rows.forEach((row, rowInPage) => {
@@ -1133,3 +1394,32 @@ window.toggleRiskSection = function() {
         arrow.classList.remove('rotate-180');
     }
 };
+
+function checkCryptoOptionStatus(ticker) {
+    const isCrypto = ticker && (
+        ticker.toUpperCase().includes('USD') || 
+        ticker.toUpperCase().includes('USDT') || 
+        ticker.toUpperCase().includes('USDC') ||
+        ['BTC', 'ETH', 'LTC', 'SOL', 'DOGE', 'ADA', 'DOT', 'SHIB', 'AVAX'].some(c => ticker.toUpperCase().startsWith(c))
+    );
+    const optionsToggle = document.getElementById('btOptionsToggle');
+    const optionsCard = document.getElementById('btOptionsCard');
+    
+    if (isCrypto) {
+        if (optionsToggle && optionsToggle.checked) {
+            optionsToggle.checked = false;
+            window.handleBacktestOptionsToggle(false);
+        }
+        if (optionsCard) {
+            optionsCard.style.opacity = '0.4';
+            optionsCard.style.pointerEvents = 'none';
+        }
+    } else {
+        if (optionsCard) {
+            optionsCard.style.opacity = '1';
+            optionsCard.style.pointerEvents = 'auto';
+        }
+    }
+}
+window.checkCryptoOptionStatus = checkCryptoOptionStatus;
+

@@ -166,8 +166,10 @@ class AlpacaBroker:
         if self.simulation_mode:
             positions = []
             for symbol, pos in self.sim_positions.items():
-                current_val = pos['qty'] * pos.get('current_price', pos['avg_price'])
-                cost_basis = pos['qty'] * pos['avg_price']
+                is_opt = len(symbol) >= 15
+                multiplier = 100.0 if is_opt else 1.0
+                current_val = pos['qty'] * pos.get('current_price', pos['avg_price']) * multiplier
+                cost_basis = pos['qty'] * pos['avg_price'] * multiplier
                 pl = current_val - cost_basis
                 daily_pl = pl * 0.4
                 daily_pl_pct = ((daily_pl / cost_basis) * 100) if cost_basis > 0 else 0
@@ -186,6 +188,7 @@ class AlpacaBroker:
                     'unrealized_intraday_plpc': round(daily_pl_pct, 2),
                     'stop_loss': pos.get('stop_loss', 0),
                     'take_profit': pos.get('take_profit', 0),
+                    'is_option': is_opt,
                 })
             return positions
 
@@ -196,6 +199,8 @@ class AlpacaBroker:
                 sym = p.symbol.replace("/", "").upper()
                 avg_p = self._round_price(sym, p.avg_entry_price)
                 curr_p = self._round_price(sym, p.current_price)
+                asset_class = getattr(p, 'asset_class', '')
+                is_opt = asset_class == 'us_option' or len(sym) >= 15
                 positions.append({
                     'symbol': sym,
                     'qty': float(p.qty),
@@ -205,10 +210,11 @@ class AlpacaBroker:
                     'cost_basis': round(float(getattr(p, 'cost_basis', float(p.qty) * float(p.avg_entry_price))), 2),
                     'unrealized_pl': round(float(p.unrealized_pl), 2),
                     'unrealized_pl_pct': round(float(p.unrealized_plpc) * 100, 2),
-                    'unrealized_intraday_pl': round(float(p.unrealized_intraday_pl), 2),
-                    'unrealized_intraday_plpc': round(float(p.unrealized_intraday_plpc) * 100, 2),
+                    'unrealized_intraday_pl': round(float(p.unrealized_intraday_pl or 0), 2),
+                    'unrealized_intraday_plpc': round(float(p.unrealized_intraday_plpc or 0) * 100, 2),
                     'stop_loss': 0,
                     'take_profit': 0,
+                    'is_option': is_opt,
                 })
             print(f"[broker] Fetched {len(positions)} active positions from Alpaca")
             return positions
@@ -518,15 +524,17 @@ class AlpacaBroker:
         if self.simulation_mode:
             if symbol in self.sim_positions:
                 pos = self.sim_positions.pop(symbol)
-                proceeds = pos['qty'] * pos.get('current_price', pos['avg_price'])
+                is_opt = len(symbol) >= 15
+                multiplier = 100.0 if is_opt else 1.0
+                proceeds = pos['qty'] * pos.get('current_price', pos['avg_price']) * multiplier
                 self.sim_cash += proceeds
                 self.sim_equity = self.sim_cash + sum(
-                    p['qty'] * p.get('current_price', p['avg_price'])
-                    for p in self.sim_positions.values()
+                    p['qty'] * p.get('current_price', p['avg_price']) * (100.0 if len(k) >= 15 else 1.0)
+                    for k, p in self.sim_positions.items()
                 )
                 
                 # Calculate simulated profit
-                cost_basis = pos['qty'] * pos['avg_price']
+                cost_basis = pos['qty'] * pos['avg_price'] * multiplier
                 pl_val = proceeds - cost_basis
                 pl_pct_val = (pl_val / cost_basis * 100) if cost_basis > 0 else 0.0
 
@@ -593,6 +601,187 @@ class AlpacaBroker:
             return {'success': False, 'error': last_err}
         except Exception as e:
             return {'success': False, 'error': str(e)}
+
+    def place_option_order(self, option_symbol: str, qty: int, side: str = 'buy') -> dict:
+        """
+        Places a market order for an options contract.
+        option_symbol: OCC format (e.g. SPY260612C00450000)
+        qty: number of contracts (integer)
+        side: 'buy' or 'sell'
+        """
+        if self.simulation_mode:
+            return self._sim_option_order(option_symbol, qty, side)
+
+        try:
+            from alpaca.trading.requests import MarketOrderRequest
+            from alpaca.trading.enums import OrderSide, TimeInForce, OrderType
+            
+            order_side = OrderSide.BUY if side.lower() == 'buy' else OrderSide.SELL
+            
+            order_data = MarketOrderRequest(
+                symbol=option_symbol.upper(),
+                qty=int(qty),
+                side=order_side,
+                type=OrderType.MARKET,
+                time_in_force=TimeInForce.DAY
+            )
+            order = self.client.submit_order(order_data=order_data)
+            
+            return {
+                'success': True,
+                'order_id': str(order.id),
+                'symbol': option_symbol.upper(),
+                'side': side.upper(),
+                'qty': int(qty),
+                'status': str(order.status),
+            }
+        except Exception as e:
+            print(f"[broker] Option order error: {e}")
+            return {'success': False, 'error': str(e)}
+
+    def _sim_option_order(self, option_symbol: str, qty: int, side: str) -> dict:
+        from option_selector import parse_occ_symbol
+        from options_pricing import black_scholes
+        import datetime
+        import yfinance as yf
+        
+        parsed = parse_occ_symbol(option_symbol)
+        if not parsed:
+            return {'success': False, 'error': f'Invalid OCC option symbol: {option_symbol}'}
+        
+        underlying = parsed['underlying']
+        strike = parsed['strike']
+        option_type = parsed['type']
+        expiration = parsed['expiration']
+        
+        # Get underlying price
+        try:
+            ticker_data = yf.Ticker(underlying)
+            S = ticker_data.fast_info.get('last_price') or 100.0
+        except Exception:
+            S = 100.0
+            
+        today = datetime.date.today()
+        days = (expiration - today).days
+        t_years = max(0.0001, days / 365.0)
+        
+        premium = black_scholes(S, strike, t_years, r=0.05, sigma=0.20, option_type=option_type)
+        premium = max(0.05, round(premium, 2))
+        
+        cost_per_contract = premium * 100.0
+        total_cost = qty * cost_per_contract
+        
+        if side.lower() == 'buy':
+            if total_cost > self.sim_cash:
+                return {'success': False, 'error': f'Insufficient buying power (Required: ${total_cost:.2f}, Available: ${self.sim_cash:.2f})'}
+                
+            if option_symbol in self.sim_positions:
+                existing = self.sim_positions[option_symbol]
+                total_pos_cost = (existing['qty'] * existing['avg_price'] * 100.0) + total_cost
+                existing['qty'] += qty
+                existing['avg_price'] = (total_pos_cost / existing['qty']) / 100.0
+            else:
+                self.sim_positions[option_symbol] = {
+                    'qty': qty,
+                    'avg_price': premium,
+                    'current_price': premium
+                }
+                
+            self.sim_cash -= total_cost
+            self.sim_equity = self.sim_cash + sum(
+                p['qty'] * p.get('current_price', p['avg_price']) * (100.0 if len(k) >= 15 else 1.0)
+                for k, p in self.sim_positions.items()
+            )
+            
+            # Record order
+            now_str = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+            sim_order = {
+                'id': f'SIM-OPT-BUY-{len(self.sim_orders) + 1}',
+                'symbol': option_symbol.upper(),
+                'side': 'buy',
+                'status': 'filled',
+                'qty': qty,
+                'filled_qty': qty,
+                'filled_avg_price': premium,
+                'notional': round(total_cost, 2),
+                'created_at': now_str,
+                'filled_at': now_str,
+                'type': 'market',
+                'time_in_force': 'day',
+                'limit_price': 0.0,
+                'stop_price': 0.0,
+                'client_order_id': f'sim-bot-opt-buy-{len(self.sim_orders) + 1}',
+                'total_cost': round(total_cost, 2),
+                'pl': None,
+                'pl_pct': None,
+                'reason': f'Simulated option buy order at premium ${premium:.2f} per contract.'
+            }
+            self.sim_orders.append(sim_order)
+            return {
+                'success': True,
+                'order_id': sim_order['id'],
+                'symbol': option_symbol,
+                'side': 'BUY',
+                'qty': qty,
+                'price': premium,
+                'status': 'filled'
+            }
+        else: # sell
+            if option_symbol not in self.sim_positions:
+                return {'success': False, 'error': f'No option position in {option_symbol}'}
+                
+            pos = self.sim_positions.pop(option_symbol)
+            qty_to_sell = min(qty, pos['qty'])
+            
+            proceeds = qty_to_sell * cost_per_contract
+            self.sim_cash += proceeds
+            
+            # If we sold partial position
+            if pos['qty'] > qty_to_sell:
+                pos['qty'] -= qty_to_sell
+                self.sim_positions[option_symbol] = pos
+                
+            self.sim_equity = self.sim_cash + sum(
+                p['qty'] * p.get('current_price', p['avg_price']) * (100.0 if len(k) >= 15 else 1.0)
+                for k, p in self.sim_positions.items()
+            )
+            
+            cost_basis = qty_to_sell * pos['avg_price'] * 100.0
+            pl_val = proceeds - cost_basis
+            pl_pct_val = (pl_val / cost_basis * 100) if cost_basis > 0 else 0.0
+            
+            now_str = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+            sim_order = {
+                'id': f'SIM-OPT-SELL-{len(self.sim_orders) + 1}',
+                'symbol': option_symbol.upper(),
+                'side': 'sell',
+                'status': 'filled',
+                'qty': qty_to_sell,
+                'filled_qty': qty_to_sell,
+                'filled_avg_price': premium,
+                'notional': round(proceeds, 2),
+                'created_at': now_str,
+                'filled_at': now_str,
+                'type': 'market',
+                'time_in_force': 'day',
+                'limit_price': 0.0,
+                'stop_price': 0.0,
+                'client_order_id': f'sim-bot-opt-sell-{len(self.sim_orders) + 1}',
+                'total_cost': round(proceeds, 2),
+                'pl': round(pl_val, 2),
+                'pl_pct': round(pl_pct_val, 2),
+                'reason': f'Simulated option sell order at premium ${premium:.2f} per contract. P/L: ${pl_val:+.2f} ({pl_pct_val:+.2f}%)'
+            }
+            self.sim_orders.append(sim_order)
+            return {
+                'success': True,
+                'order_id': sim_order['id'],
+                'symbol': option_symbol,
+                'side': 'SELL',
+                'qty': qty_to_sell,
+                'price': premium,
+                'status': 'filled'
+            }
 
     def close_all_positions(self) -> dict:
         """Liquidates all positions immediately."""

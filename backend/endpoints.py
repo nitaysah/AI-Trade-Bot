@@ -230,7 +230,7 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
 
 
 @app.get("/api/scan/{ticker}")
-def scan_ticker(ticker: str, timeframe: str = "4Hour", user: dict = Depends(verify_token)):
+def scan_ticker(ticker: str, timeframe: str = "1Hour", user: dict = Depends(verify_token)):
     eng = user_manager.get_engine(user['uid'])
     if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker.upper()):
         return {"error": "Invalid ticker format"}
@@ -669,6 +669,22 @@ async def create_bot(data: dict, user: dict = Depends(verify_token)):
             
     if "cooldown_minutes" in data:
         eng.config.TICKER_SETTINGS[symbol]["cooldown_minutes"] = int(data["cooldown_minutes"])
+
+    # Options Trading parameters
+    if "options_trading" in data:
+        eng.config.TICKER_SETTINGS[symbol]["options_trading"] = bool(data["options_trading"])
+    if "options_trade_amount" in data:
+        eng.config.TICKER_SETTINGS[symbol]["options_trade_amount"] = float(data["options_trade_amount"])
+    if "options_expiry_days" in data:
+        eng.config.TICKER_SETTINGS[symbol]["options_expiry_days"] = int(data["options_expiry_days"])
+    if "options_strike_type" in data:
+        eng.config.TICKER_SETTINGS[symbol]["options_strike_type"] = data["options_strike_type"]
+    if "options_exit_strategy" in data:
+        eng.config.TICKER_SETTINGS[symbol]["options_exit_strategy"] = data["options_exit_strategy"]
+    if "options_stop_loss_pct" in data:
+        eng.config.TICKER_SETTINGS[symbol]["options_stop_loss_pct"] = float(data["options_stop_loss_pct"])
+    if "options_take_profit_pct" in data:
+        eng.config.TICKER_SETTINGS[symbol]["options_take_profit_pct"] = float(data["options_take_profit_pct"])
 
     if "paused" in data:
         eng.config.TICKER_SETTINGS[symbol]["paused"] = bool(data["paused"])

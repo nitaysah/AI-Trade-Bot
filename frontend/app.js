@@ -188,18 +188,23 @@ function formatPrice(n, forceTicker = null) {
     return n > 10 ? n.toFixed(2) : n.toFixed(4);
 }
 
-let selectedTicker = readLastViewedTicker();
+const DEFAULT_TICKER = 'SPY';
+let favoriteTickers = JSON.parse(localStorage.getItem('favoriteTickers') || '[]');
+let selectedTicker = readLastViewedTicker()
+    || normalizeTicker(localStorage.getItem('watchlistFirstTicker'))
+    || DEFAULT_TICKER;
 let currentBackendTf = localStorage.getItem('lastChartTf') || "1Hour";
 let currentChartRange = localStorage.getItem('lastChartRange') || "1M";
 let currentChartSession = localStorage.getItem('lastChartSession') || "regular";
 let isAlpacaLinked = false; // Track live connection status
-let favoriteTickers = JSON.parse(localStorage.getItem('favoriteTickers') || '["BTCUSD", "ETHUSD", "TSLA", "AAPL", "MSFT"]');
 let tvWidget = null;
 let currentLogTab = "all"; // 'all' or 'trades'
 let currentWatchlistTab = "all"; // 'all', 'stocks', or 'crypto'
 let latestTradesData = []; // Cached log data
 const chartDataCache = new Map();
 let chartRequestSerial = 0;
+const CHART_CACHE_VERSION = 'v3';
+const CHART_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const CHART_INTERVALS = {
     "1Min": { label: "1m", seconds: 60, backend: "1Min" },
@@ -330,20 +335,41 @@ const _overlaySeries = {};
 const _oscSeries = {};
 
 // Which indicators are currently visible (toggled by toolbar)
-const _visibleIndicators = {
-    ema: true,
-    vwap: true,
-    supertrend: true,
+const _defaultVisibleIndicators = {
+    ema: false,
+    vwap: false,
+    supertrend: false,
     bollinger: false,
     rsi: false,
     macd: false,
     mystic: false,
     sma: false,
     adx: false,
-    botbulls1: true,
-    botbulls2: true,
-    botbulls3: true,
+    botbulls1: false,
+    botbulls2: false,
+    botbulls3: false,
 };
+
+const INDICATOR_STORE_VERSION = 'v2';
+
+function loadIndicatorPrefs() {
+    try {
+        const storedVersion = localStorage.getItem('visibleIndicatorsVersion');
+        if (storedVersion !== INDICATOR_STORE_VERSION) {
+            // Fresh session or version mismatch — reset to all-off
+            localStorage.removeItem('visibleIndicators');
+            localStorage.removeItem('globalIndicatorPrefs');
+            localStorage.setItem('visibleIndicatorsVersion', INDICATOR_STORE_VERSION);
+            console.log('[indicators] Fresh session detected — all indicators reset to OFF.');
+            return { ..._defaultVisibleIndicators };
+        }
+        return JSON.parse(localStorage.getItem('visibleIndicators')) || { ..._defaultVisibleIndicators };
+    } catch (e) {
+        return { ..._defaultVisibleIndicators };
+    }
+}
+
+let _visibleIndicators = loadIndicatorPrefs();
 
 const IND_COLORS = {
     ema_fast: '#3b82f6',
@@ -392,6 +418,7 @@ function initChart() {
             borderColor: 'rgba(197, 203, 206, 0.8)',
             timeVisible: true,
             secondsVisible: false,
+            rightOffset: 12,
             tickMarkFormatter: (time, tickMarkType, locale) => {
                 const d = new Date(time * 1000);
                 // tickMarkType 2 is DayOfMonth, 1 is Month, 0 is Year. 
@@ -418,10 +445,21 @@ function initChart() {
         wickUpColor: '#10b981', wickDownColor: '#ef4444',
     });
 
+    let lastChartWidth = 0;
     const resizeObserver = new ResizeObserver(entries => {
         if (entries.length === 0 || !entries[0].contentRect) return;
         const { width, height } = entries[0].contentRect;
         lwChart.applyOptions({ width, height });
+        
+        // Auto-fit content on significant width changes (e.g. going full screen)
+        if (lastChartWidth > 0 && Math.abs(width - lastChartWidth) > 100) {
+            if (window._displayPriceHistory && window._displayPriceHistory.length > 0) {
+                setTimeout(() => {
+                    try { lwChart.timeScale().fitContent(); } catch(e){}
+                }, 150);
+            }
+        }
+        lastChartWidth = width;
     });
     resizeObserver.observe(container);
 
@@ -447,7 +485,10 @@ function _initOscPane() {
         });
         const resizeRsi = new ResizeObserver(entries => {
             if (!entries[0] || !oscChartRsi) return;
-            oscChartRsi.applyOptions({ width: entries[0].contentRect.width });
+            oscChartRsi.applyOptions({ 
+                width: entries[0].contentRect.width,
+                height: entries[0].contentRect.height
+            });
         });
         resizeRsi.observe(rsiContainer);
     }
@@ -469,7 +510,10 @@ function _initOscPane() {
         });
         const resizeMacd = new ResizeObserver(entries => {
             if (!entries[0] || !oscChartMacd) return;
-            oscChartMacd.applyOptions({ width: entries[0].contentRect.width });
+            oscChartMacd.applyOptions({ 
+                width: entries[0].contentRect.width,
+                height: entries[0].contentRect.height
+            });
         });
         resizeMacd.observe(macdContainer);
     }
@@ -491,7 +535,10 @@ function _initOscPane() {
         });
         const resizeMystic = new ResizeObserver(entries => {
             if (!entries[0] || !oscChartMystic) return;
-            oscChartMystic.applyOptions({ width: entries[0].contentRect.width });
+            oscChartMystic.applyOptions({ 
+                width: entries[0].contentRect.width,
+                height: entries[0].contentRect.height
+            });
         });
         resizeMystic.observe(mysticContainer);
     }
@@ -513,7 +560,10 @@ function _initOscPane() {
         });
         const resizeAdx = new ResizeObserver(entries => {
             if (!entries[0] || !oscChartAdx) return;
-            oscChartAdx.applyOptions({ width: entries[0].contentRect.width });
+            oscChartAdx.applyOptions({ 
+                width: entries[0].contentRect.width,
+                height: entries[0].contentRect.height
+            });
         });
         resizeAdx.observe(adxContainer);
     }
@@ -535,19 +585,22 @@ function _initOscPane() {
         });
         const resizeBotbulls1 = new ResizeObserver(entries => {
             if (!entries[0] || !oscChartBotbulls1) return;
-            oscChartBotbulls1.applyOptions({ width: entries[0].contentRect.width });
+            oscChartBotbulls1.applyOptions({ 
+                width: entries[0].contentRect.width,
+                height: entries[0].contentRect.height
+            });
         });
         resizeBotbulls1.observe(botbulls1Container);
     }
 
-    // Sync all time scales to main chart
+    // Sync all time scales to main chart (guarded by visibility and wrapped in try/catch to prevent uncaught "Value is null" library errors)
     lwChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
         if (range) {
-            if (oscChartRsi) oscChartRsi.timeScale().setVisibleLogicalRange(range);
-            if (oscChartMacd) oscChartMacd.timeScale().setVisibleLogicalRange(range);
-            if (oscChartMystic) oscChartMystic.timeScale().setVisibleLogicalRange(range);
-            if (oscChartAdx) oscChartAdx.timeScale().setVisibleLogicalRange(range);
-            if (oscChartBotbulls1) oscChartBotbulls1.timeScale().setVisibleLogicalRange(range);
+            try { if (oscChartRsi && _visibleIndicators.rsi) oscChartRsi.timeScale().setVisibleLogicalRange(range); } catch (e) { }
+            try { if (oscChartMacd && _visibleIndicators.macd) oscChartMacd.timeScale().setVisibleLogicalRange(range); } catch (e) { }
+            try { if (oscChartMystic && _visibleIndicators.mystic) oscChartMystic.timeScale().setVisibleLogicalRange(range); } catch (e) { }
+            try { if (oscChartAdx && _visibleIndicators.adx) oscChartAdx.timeScale().setVisibleLogicalRange(range); } catch (e) { }
+            try { if (oscChartBotbulls1 && _visibleIndicators.botbulls1) oscChartBotbulls1.timeScale().setVisibleLogicalRange(range); } catch (e) { }
         }
     });
 }
@@ -620,29 +673,22 @@ function updateChart(priceHistory, ticker) {
     const isNewRange = window._lastFittedRange !== currentChartRange;
 
     if (isNewTicker || isNewRange) {
-        // Instead of squeezing all data into the view, we set a comfortable bar spacing
-        // This allows the user to see candles clearly and slide horizontally
-        const totalBars = sorted.length;
-        if (totalBars > 150) {
-            lwChart.timeScale().setVisibleLogicalRange({
-                from: totalBars - 150,
-                to: totalBars + 5 // add a little empty space on the right
-            });
-        } else {
+        setTimeout(() => {
             lwChart.timeScale().fitContent();
-        }
+        }, 150);
         window._lastFittedTicker = ticker;
         window._lastFittedRange = currentChartRange;
     }
 
     updateVisibleHighLow();
-    try {
-        if (oscChartRsi) oscChartRsi.timeScale().setVisibleLogicalRange(lwChart.timeScale().getVisibleLogicalRange());
-        if (oscChartMacd) oscChartMacd.timeScale().setVisibleLogicalRange(lwChart.timeScale().getVisibleLogicalRange());
-        if (oscChartMystic) oscChartMystic.timeScale().setVisibleLogicalRange(lwChart.timeScale().getVisibleLogicalRange());
-        if (oscChartAdx) oscChartAdx.timeScale().setVisibleLogicalRange(lwChart.timeScale().getVisibleLogicalRange());
-        if (oscChartBotbulls1) oscChartBotbulls1.timeScale().setVisibleLogicalRange(lwChart.timeScale().getVisibleLogicalRange());
-    } catch (e) { }
+    const visibleRange = lwChart.timeScale().getVisibleLogicalRange();
+    if (visibleRange) {
+        try { if (oscChartRsi && _visibleIndicators.rsi) oscChartRsi.timeScale().setVisibleLogicalRange(visibleRange); } catch (e) { }
+        try { if (oscChartMacd && _visibleIndicators.macd) oscChartMacd.timeScale().setVisibleLogicalRange(visibleRange); } catch (e) { }
+        try { if (oscChartMystic && _visibleIndicators.mystic) oscChartMystic.timeScale().setVisibleLogicalRange(visibleRange); } catch (e) { }
+        try { if (oscChartAdx && _visibleIndicators.adx) oscChartAdx.timeScale().setVisibleLogicalRange(visibleRange); } catch (e) { }
+        try { if (oscChartBotbulls1 && _visibleIndicators.botbulls1) oscChartBotbulls1.timeScale().setVisibleLogicalRange(visibleRange); } catch (e) { }
+    }
 }
 
 function _getOrCreate(map, key, chartInst, options) {
@@ -653,15 +699,26 @@ function _removeSeries(map, key, chartInst) {
     if (map[key]) { try { chartInst.removeSeries(map[key]); } catch (e) { } delete map[key]; }
 }
 
+function clean(arr) {
+    const seen = new Set();
+    return arr.filter(p => {
+        if (p.value == null || isNaN(p.value)) return false;
+        if (p.time == null || isNaN(p.time)) return false;
+        if (seen.has(p.time)) return false;
+        seen.add(p.time);
+        return true;
+    }).sort((a, b) => a.time - b.time);
+}
+
 function _refreshOverlays(bars) {
     const activeMarkers = [];
 
     // EMA
     if (_visibleIndicators.ema) {
         _getOrCreate(_overlaySeries, 'ema_fast', lwChart, { color: IND_COLORS.ema_fast, lineWidth: 1 })
-            .setData(bars.filter(b => b.ema_fast != null).map(b => ({ time: b.time, value: b.ema_fast })));
+            .setData(clean(bars.filter(b => b.ema_fast != null).map(b => ({ time: b.time, value: b.ema_fast }))));
         _getOrCreate(_overlaySeries, 'ema_slow', lwChart, { color: IND_COLORS.ema_slow, lineWidth: 1 })
-            .setData(bars.filter(b => b.ema_slow != null).map(b => ({ time: b.time, value: b.ema_slow })));
+            .setData(clean(bars.filter(b => b.ema_slow != null).map(b => ({ time: b.time, value: b.ema_slow }))));
     } else {
         _removeSeries(_overlaySeries, 'ema_fast', lwChart);
         _removeSeries(_overlaySeries, 'ema_slow', lwChart);
@@ -669,14 +726,14 @@ function _refreshOverlays(bars) {
     // VWAP
     if (_visibleIndicators.vwap) {
         _getOrCreate(_overlaySeries, 'vwap', lwChart, { color: IND_COLORS.vwap, lineWidth: 3, lineStyle: 0 })
-            .setData(bars.filter(b => b.vwap != null).map(b => ({ time: b.time, value: b.vwap })));
+            .setData(clean(bars.filter(b => b.vwap != null).map(b => ({ time: b.time, value: b.vwap }))));
     } else {
         _removeSeries(_overlaySeries, 'vwap', lwChart);
     }
     // SMA
     if (_visibleIndicators.sma) {
         _getOrCreate(_overlaySeries, 'sma', lwChart, { color: IND_COLORS.sma, lineWidth: 3, lineStyle: 0 })
-            .setData(bars.filter(b => b.sma != null).map(b => ({ time: b.time, value: b.sma })));
+            .setData(clean(bars.filter(b => b.sma != null).map(b => ({ time: b.time, value: b.sma }))));
     } else {
         _removeSeries(_overlaySeries, 'sma', lwChart);
     }
@@ -695,14 +752,6 @@ function _refreshOverlays(bars) {
             });
         }
 
-        const clean = (arr) => {
-            const seen = new Set();
-            return arr.filter(p => {
-                if (seen.has(p.time)) return false;
-                seen.add(p.time);
-                return true;
-            }).sort((a, b) => a.time - b.time);
-        };
 
         _getOrCreate(_overlaySeries, 'st_line', lwChart, {
             lineWidth: 2,
@@ -748,9 +797,9 @@ function _refreshOverlays(bars) {
     }
     // Bollinger Bands
     if (_visibleIndicators.bollinger) {
-        _getOrCreate(_overlaySeries, 'boll_upper', lwChart, { color: IND_COLORS.boll_upper, lineWidth: 2 }).setData(bars.filter(b => b.boll_upper != null).map(b => ({ time: b.time, value: b.boll_upper })));
-        _getOrCreate(_overlaySeries, 'boll_middle', lwChart, { color: IND_COLORS.boll_middle, lineWidth: 2, lineStyle: 2 }).setData(bars.filter(b => b.boll_middle != null).map(b => ({ time: b.time, value: b.boll_middle })));
-        _getOrCreate(_overlaySeries, 'boll_lower', lwChart, { color: IND_COLORS.boll_lower, lineWidth: 2 }).setData(bars.filter(b => b.boll_lower != null).map(b => ({ time: b.time, value: b.boll_lower })));
+        _getOrCreate(_overlaySeries, 'boll_upper', lwChart, { color: IND_COLORS.boll_upper, lineWidth: 2 }).setData(clean(bars.filter(b => b.boll_upper != null).map(b => ({ time: b.time, value: b.boll_upper }))));
+        _getOrCreate(_overlaySeries, 'boll_middle', lwChart, { color: IND_COLORS.boll_middle, lineWidth: 2, lineStyle: 2 }).setData(clean(bars.filter(b => b.boll_middle != null).map(b => ({ time: b.time, value: b.boll_middle }))));
+        _getOrCreate(_overlaySeries, 'boll_lower', lwChart, { color: IND_COLORS.boll_lower, lineWidth: 2 }).setData(clean(bars.filter(b => b.boll_lower != null).map(b => ({ time: b.time, value: b.boll_lower }))));
     } else {
         _removeSeries(_overlaySeries, 'boll_upper', lwChart);
         _removeSeries(_overlaySeries, 'boll_middle', lwChart);
@@ -767,25 +816,25 @@ function _refreshOverlays(bars) {
         _getOrCreate(_overlaySeries, 'lx_smart_trail', lwChart, {
             lineWidth: 4,
             lineType: 2 // Curved
-        }).setData(lxTrailData);
+        }).setData(clean(lxTrailData));
 
         _getOrCreate(_overlaySeries, 'lx_trend_tracer', lwChart, {
             color: IND_COLORS.lx_trend_tracer,
             lineWidth: 1.5,
             lineStyle: 0
-        }).setData(bars.filter(b => b.lx_trend_tracer != null).map(b => ({ time: b.time, value: b.lx_trend_tracer })));
+        }).setData(clean(bars.filter(b => b.lx_trend_tracer != null).map(b => ({ time: b.time, value: b.lx_trend_tracer }))));
 
         _getOrCreate(_overlaySeries, 'lx_rz_upper', lwChart, {
             color: IND_COLORS.lx_rz_upper,
             lineWidth: 1,
             lineStyle: 1 // Dashed
-        }).setData(bars.filter(b => b.lx_rz_upper != null).map(b => ({ time: b.time, value: b.lx_rz_upper })));
+        }).setData(clean(bars.filter(b => b.lx_rz_upper != null).map(b => ({ time: b.time, value: b.lx_rz_upper }))));
 
         _getOrCreate(_overlaySeries, 'lx_rz_lower', lwChart, {
             color: IND_COLORS.lx_rz_lower,
             lineWidth: 1,
             lineStyle: 1 // Dashed
-        }).setData(bars.filter(b => b.lx_rz_lower != null).map(b => ({ time: b.time, value: b.lx_rz_lower })));
+        }).setData(clean(bars.filter(b => b.lx_rz_lower != null).map(b => ({ time: b.time, value: b.lx_rz_lower }))));
 
         // Trend flip alerts for Smart Trail
         for (let i = 1; i < bars.length; i++) {
@@ -830,7 +879,7 @@ function _refreshOverlays(bars) {
         _getOrCreate(_overlaySeries, 'ut_trail', lwChart, {
             lineWidth: 4,
             lineType: 2 // Curved
-        }).setData(utTrailData);
+        }).setData(clean(utTrailData));
 
         // UT Bot buy/sell flip alerts
         for (let i = 1; i < bars.length; i++) {
@@ -898,7 +947,7 @@ function _refreshOscillators(bars) {
     const rsiContainer = document.getElementById('oscChart_rsi');
     const rsiLabel = document.getElementById('rsiLabel');
     if (rsiContainer) {
-        const wasHidden = rsiContainer.style.display === 'none';
+        const wasHidden = rsiContainer.style.display === 'none' || getComputedStyle(rsiContainer).display === 'none';
         rsiContainer.style.display = _visibleIndicators.rsi ? 'block' : 'none';
         if (rsiLabel) rsiLabel.style.display = _visibleIndicators.rsi ? 'block' : 'none';
         if (wasHidden && _visibleIndicators.rsi && oscChartRsi) {
@@ -907,12 +956,12 @@ function _refreshOscillators(bars) {
     }
     if (_visibleIndicators.rsi && oscChartRsi) {
         _getOrCreate(_oscSeries, 'rsi', oscChartRsi, { color: IND_COLORS.rsi, lineWidth: 1 })
-            .setData(bars.filter(b => b.rsi != null).map(b => ({ time: b.time, value: b.rsi })));
+            .setData(clean(bars.filter(b => b.rsi != null).map(b => ({ time: b.time, value: b.rsi }))));
         const ob = _getOrCreate(_oscSeries, 'rsi_ob', oscChartRsi, { color: 'rgba(239,68,68,0.4)', lineWidth: 1, lineStyle: 2 });
         const os = _getOrCreate(_oscSeries, 'rsi_os', oscChartRsi, { color: 'rgba(16,185,129,0.4)', lineWidth: 1, lineStyle: 2 });
         if (bars.length) {
-            ob.setData([{ time: bars[0].time, value: 70 }, { time: bars[bars.length - 1].time, value: 70 }]);
-            os.setData([{ time: bars[0].time, value: 30 }, { time: bars[bars.length - 1].time, value: 30 }]);
+            ob.setData(clean([{ time: bars[0].time, value: 70 }, { time: bars[bars.length - 1].time, value: 70 }]));
+            os.setData(clean([{ time: bars[0].time, value: 30 }, { time: bars[bars.length - 1].time, value: 30 }]));
         }
         try { oscChartRsi.timeScale().fitContent(); } catch (e) { }
     } else if (oscChartRsi) {
@@ -925,7 +974,7 @@ function _refreshOscillators(bars) {
     const macdContainer = document.getElementById('oscChart_macd');
     const macdLabel = document.getElementById('macdLabel');
     if (macdContainer) {
-        const wasHidden = macdContainer.style.display === 'none';
+        const wasHidden = macdContainer.style.display === 'none' || getComputedStyle(macdContainer).display === 'none';
         macdContainer.style.display = _visibleIndicators.macd ? 'block' : 'none';
         if (macdLabel) macdLabel.style.display = _visibleIndicators.macd ? 'flex' : 'none';
         if (wasHidden && _visibleIndicators.macd && oscChartMacd) {
@@ -937,7 +986,7 @@ function _refreshOscillators(bars) {
         if (!_oscSeries['macd_hist']) {
             _oscSeries['macd_hist'] = oscChartMacd.addHistogramSeries({
                 base: 0,
-                priceScaleId: '', // Attach to same scale as lines
+                priceFormat: { type: 'price', precision: 6, minMove: 0.000001 }
             });
         }
         const histData = bars.filter(b => b.macd_hist != null).map(b => ({
@@ -945,12 +994,20 @@ function _refreshOscillators(bars) {
             value: b.macd_hist,
             color: b.macd_hist >= 0 ? 'rgba(16, 185, 129, 0.5)' : 'rgba(239, 68, 68, 0.5)'
         }));
-        _oscSeries['macd_hist'].setData(histData);
+        _oscSeries['macd_hist'].setData(clean(histData));
 
-        _getOrCreate(_oscSeries, 'macd_line', oscChartMacd, { color: IND_COLORS.macd_line, lineWidth: 1 })
-            .setData(bars.filter(b => b.macd_line != null).map(b => ({ time: b.time, value: b.macd_line })));
-        _getOrCreate(_oscSeries, 'macd_signal', oscChartMacd, { color: IND_COLORS.macd_signal, lineWidth: 1 })
-            .setData(bars.filter(b => b.macd_signal != null).map(b => ({ time: b.time, value: b.macd_signal })));
+        _getOrCreate(_oscSeries, 'macd_line', oscChartMacd, { 
+            color: IND_COLORS.macd_line, 
+            lineWidth: 1,
+            priceFormat: { type: 'price', precision: 6, minMove: 0.000001 }
+        }).setData(clean(bars.filter(b => b.macd_line != null).map(b => ({ time: b.time, value: b.macd_line }))));
+        
+        _getOrCreate(_oscSeries, 'macd_signal', oscChartMacd, { 
+            color: IND_COLORS.macd_signal, 
+            lineWidth: 1,
+            priceFormat: { type: 'price', precision: 6, minMove: 0.000001 }
+        }).setData(clean(bars.filter(b => b.macd_signal != null).map(b => ({ time: b.time, value: b.macd_signal }))));
+        
         try { oscChartMacd.timeScale().fitContent(); } catch (e) { }
     } else if (oscChartMacd) {
         _removeSeries(_oscSeries, 'macd_hist', oscChartMacd);
@@ -962,7 +1019,7 @@ function _refreshOscillators(bars) {
     const mysticContainer = document.getElementById('oscChart_mystic');
     const mysticLabel = document.getElementById('mysticPulseLabel');
     if (mysticContainer) {
-        const wasHidden = mysticContainer.style.display === 'none';
+        const wasHidden = mysticContainer.style.display === 'none' || getComputedStyle(mysticContainer).display === 'none';
         mysticContainer.style.display = _visibleIndicators.mystic ? 'block' : 'none';
         if (mysticLabel) mysticLabel.style.display = _visibleIndicators.mystic ? 'flex' : 'none';
         if (wasHidden && _visibleIndicators.mystic && oscChartMystic) {
@@ -988,7 +1045,7 @@ function _refreshOscillators(bars) {
             }
             return { time: b.time, value: val, color: col };
         });
-        _oscSeries['mystic_hist'].setData(histData);
+        _oscSeries['mystic_hist'].setData(clean(histData));
         try { oscChartMystic.timeScale().fitContent(); } catch (e) { }
     } else if (oscChartMystic) {
         _removeSeries(_oscSeries, 'mystic_hist', oscChartMystic);
@@ -998,7 +1055,7 @@ function _refreshOscillators(bars) {
     const adxContainer = document.getElementById('oscChart_adx');
     const adxLabel = document.getElementById('adxLabel');
     if (adxContainer) {
-        const wasHidden = adxContainer.style.display === 'none';
+        const wasHidden = adxContainer.style.display === 'none' || getComputedStyle(adxContainer).display === 'none';
         adxContainer.style.display = _visibleIndicators.adx ? 'block' : 'none';
         if (adxLabel) adxLabel.style.display = _visibleIndicators.adx ? 'flex' : 'none';
         if (wasHidden && _visibleIndicators.adx && oscChartAdx) {
@@ -1007,15 +1064,15 @@ function _refreshOscillators(bars) {
     }
     if (_visibleIndicators.adx && oscChartAdx) {
         _getOrCreate(_oscSeries, 'adx', oscChartAdx, { color: IND_COLORS.adx, lineWidth: 2 })
-            .setData(bars.filter(b => b.adx != null).map(b => ({ time: b.time, value: b.adx })));
+            .setData(clean(bars.filter(b => b.adx != null).map(b => ({ time: b.time, value: b.adx }))));
         _getOrCreate(_oscSeries, 'di_plus', oscChartAdx, { color: IND_COLORS.di_plus, lineWidth: 1 })
-            .setData(bars.filter(b => b.di_plus != null).map(b => ({ time: b.time, value: b.di_plus })));
+            .setData(clean(bars.filter(b => b.di_plus != null).map(b => ({ time: b.time, value: b.di_plus }))));
         _getOrCreate(_oscSeries, 'di_minus', oscChartAdx, { color: IND_COLORS.di_minus, lineWidth: 1 })
-            .setData(bars.filter(b => b.di_minus != null).map(b => ({ time: b.time, value: b.di_minus })));
+            .setData(clean(bars.filter(b => b.di_minus != null).map(b => ({ time: b.time, value: b.di_minus }))));
 
         // Threshold line at 25 (trending vs choppy)
         const adxThreshold = _getOrCreate(_oscSeries, 'adx_threshold', oscChartAdx, { color: 'rgba(99,102,241,0.25)', lineWidth: 1, lineStyle: 2 });
-        adxThreshold.setData(bars.map(b => ({ time: b.time, value: 25 })));
+        adxThreshold.setData(clean(bars.map(b => ({ time: b.time, value: 25 }))));
 
         try { oscChartAdx.timeScale().fitContent(); } catch (e) { }
     } else if (oscChartAdx) {
@@ -1029,7 +1086,7 @@ function _refreshOscillators(bars) {
     const botbulls1Container = document.getElementById('oscChart_botbulls1');
     const botbulls1Label = document.getElementById('botbulls1Label');
     if (botbulls1Container) {
-        const wasHidden = botbulls1Container.style.display === 'none';
+        const wasHidden = botbulls1Container.style.display === 'none' || getComputedStyle(botbulls1Container).display === 'none';
         botbulls1Container.style.display = _visibleIndicators.botbulls1 ? 'block' : 'none';
         if (botbulls1Label) botbulls1Label.style.display = _visibleIndicators.botbulls1 ? 'flex' : 'none';
         if (wasHidden && _visibleIndicators.botbulls1 && oscChartBotbulls1) {
@@ -1039,11 +1096,11 @@ function _refreshOscillators(bars) {
     if (_visibleIndicators.botbulls1 && oscChartBotbulls1) {
         // wt1 line
         _getOrCreate(_oscSeries, 'wt1', oscChartBotbulls1, { color: IND_COLORS.wt1, lineWidth: 1.5 })
-            .setData(bars.filter(b => b.wt1 != null).map(b => ({ time: b.time, value: b.wt1 })));
+            .setData(clean(bars.filter(b => b.wt1 != null).map(b => ({ time: b.time, value: b.wt1 }))));
 
         // wt2 line
         _getOrCreate(_oscSeries, 'wt2', oscChartBotbulls1, { color: IND_COLORS.wt2, lineWidth: 1, lineStyle: 2 })
-            .setData(bars.filter(b => b.wt2 != null).map(b => ({ time: b.time, value: b.wt2 })));
+            .setData(clean(bars.filter(b => b.wt2 != null).map(b => ({ time: b.time, value: b.wt2 }))));
 
         // MFI filled zone (centered at 50)
         if (!_oscSeries['mfi_hist']) {
@@ -1057,16 +1114,16 @@ function _refreshOscillators(bars) {
             value: b.mfi,
             color: b.mfi >= 50 ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)'
         }));
-        _oscSeries['mfi_hist'].setData(mfiHistData);
+        _oscSeries['mfi_hist'].setData(clean(mfiHistData));
 
         // Reference lines: Overbought (+53), Oversold (-53), Zero Line (0)
         const obLine = _getOrCreate(_oscSeries, 'wt_ob', oscChartBotbulls1, { color: 'rgba(239,68,68,0.35)', lineWidth: 1, lineStyle: 2 });
         const osLine = _getOrCreate(_oscSeries, 'wt_os', oscChartBotbulls1, { color: 'rgba(16,185,129,0.35)', lineWidth: 1, lineStyle: 2 });
         const zeroLine = _getOrCreate(_oscSeries, 'wt_zero', oscChartBotbulls1, { color: 'rgba(148,163,184,0.15)', lineWidth: 1, lineStyle: 0 });
         if (bars.length) {
-            obLine.setData([{ time: bars[0].time, value: 53 }, { time: bars[bars.length - 1].time, value: 53 }]);
-            osLine.setData([{ time: bars[0].time, value: -53 }, { time: bars[bars.length - 1].time, value: -53 }]);
-            zeroLine.setData([{ time: bars[0].time, value: 0 }, { time: bars[bars.length - 1].time, value: 0 }]);
+            obLine.setData(clean([{ time: bars[0].time, value: 53 }, { time: bars[bars.length - 1].time, value: 53 }]));
+            osLine.setData(clean([{ time: bars[0].time, value: -53 }, { time: bars[bars.length - 1].time, value: -53 }]));
+            zeroLine.setData(clean([{ time: bars[0].time, value: 0 }, { time: bars[bars.length - 1].time, value: 0 }]));
         }
 
         // Wave crossover dots directly on wt1 line
@@ -1110,6 +1167,7 @@ function _refreshOscillators(bars) {
 // Called by toolbar buttons
 function toggleChartIndicator(key) {
     _visibleIndicators[key] = !_visibleIndicators[key];
+    localStorage.setItem('visibleIndicators', JSON.stringify(_visibleIndicators));
     const btn = document.getElementById(`ind_btn_${key}`);
     if (btn) {
         btn.classList.toggle('ind-btn-active', _visibleIndicators[key]);
@@ -1130,28 +1188,29 @@ function syncChart() {
 }
 
 function chartCacheKey(ticker, timeframe = currentBackendTf) {
-    return `${normalizeTicker(ticker)}|${timeframe}`;
+    return `${normalizeTicker(ticker)}|${timeframe}|${CHART_CACHE_VERSION}`;
 }
 
 function renderFastChartPayload(data, requestedTicker) {
     const ticker = normalizeTicker(requestedTicker || data?.ticker || data?.primaryTicker);
     if (!ticker || normalizeTicker(selectedTicker) !== ticker) return;
 
-    const history = data?.priceHistory || data?.price_history || data?.primaryScan?.price_history || [];
+    const payload = data?.data || data;
+    const history = payload?.priceHistory || payload?.price_history || payload?.primaryScan?.price_history || [];
     if (history.length > 0) {
         updateChart(history, ticker);
     }
 
-    const scan = data?.primaryScan || data;
-    const signals = scan?.signals || data?.signals || {};
+    const scan = payload?.primaryScan || payload;
+    const signals = scan?.signals || payload?.signals || {};
     if (signals && Object.keys(signals).length > 0) {
         window._lastSignals = signals;
         renderSignals(
             signals,
-            scan.action || data.action || 'HOLD',
-            scan.reason || data.reason || '',
-            scan.bullish_count ?? data.bullish_count ?? 0,
-            scan.bearish_count ?? data.bearish_count ?? 0
+            scan.action || payload.action || 'HOLD',
+            scan.reason || payload.reason || '',
+            scan.bullish_count ?? payload.bullish_count ?? 0,
+            scan.bearish_count ?? payload.bearish_count ?? 0
         );
         updateSizingPanel(scan);
         recomputeConfluence();
@@ -1173,9 +1232,27 @@ async function loadTickerChartFast(ticker, options = {}) {
     const requestedTicker = normalizeTicker(ticker);
     if (!requestedTicker) return;
 
-    const { force = false, renderCached = true } = options;
+    const { force = false, renderCached = true, fetchFresh = true } = options;
     const key = chartCacheKey(requestedTicker);
-    const cached = chartDataCache.get(key);
+    let cached = chartDataCache.get(key);
+
+    // Fallback to localStorage if not found in memory
+    if (!cached && renderCached) {
+        try {
+            const localData = localStorage.getItem(`chart_cache_${key}`);
+            if (localData) {
+                cached = JSON.parse(localData);
+                if (cached?.fetchedAt && (Date.now() - cached.fetchedAt) > CHART_CACHE_TTL_MS) {
+                    cached = null;
+                } else {
+                    chartDataCache.set(key, cached);
+                }
+            }
+        } catch (e) {
+            console.warn('[chart] Failed to read chart cache from localStorage:', e);
+        }
+    }
+
     if (renderCached && cached) {
         renderFastChartPayload(cached, requestedTicker);
     } else {
@@ -1183,6 +1260,15 @@ async function loadTickerChartFast(ticker, options = {}) {
         const loading = document.getElementById('gridLoading');
         if (grid) grid.innerHTML = '';
         if (loading) loading.classList.remove('hidden');
+    }
+
+    if (!fetchFresh) return;
+
+    // Check if auth is ready before fetching fresh data
+    const isAuthReady = window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true');
+    if (!isAuthReady) {
+        console.log('[chart] Auth not ready yet. Skipping network fetch until auth resolves.');
+        return;
     }
 
     const requestId = ++chartRequestSerial;
@@ -1196,7 +1282,38 @@ async function loadTickerChartFast(ticker, options = {}) {
         }
         const data = await response.json();
         if (requestId !== chartRequestSerial || normalizeTicker(selectedTicker) !== requestedTicker) return;
-        chartDataCache.set(key, data);
+        const wrapped = {
+            data,
+            fetchedAt: Date.now(),
+            version: CHART_CACHE_VERSION,
+            timeframe: currentBackendTf,
+            ticker: requestedTicker
+        };
+        chartDataCache.set(key, wrapped);
+        
+        const cacheKeyName = `chart_cache_${key}`;
+        try {
+            localStorage.setItem(cacheKeyName, JSON.stringify(wrapped));
+        } catch (e) {
+            // Storage might be full. Clear out old chart caches to make room.
+            try {
+                const keysToRemove = [];
+                for (let i = 0; i < localStorage.length; i++) {
+                    const k = localStorage.key(i);
+                    if (k && k.startsWith('chart_cache_') && k !== cacheKeyName) {
+                        keysToRemove.push(k);
+                    }
+                }
+                keysToRemove.forEach(k => localStorage.removeItem(k));
+                
+                // Retry saving after cleanup
+                localStorage.setItem(cacheKeyName, JSON.stringify(wrapped));
+            } catch (retryErr) {
+                // The single chart payload itself is too large for the remaining localStorage quota (often true for 1Min charts).
+                // Silently skip caching for this specific ticker/timeframe to avoid console spam.
+                console.log(`[chart] Payload too large to cache in localStorage: ${cacheKeyName}`);
+            }
+        }
         renderFastChartPayload(data, requestedTicker);
     } catch (e) {
         console.error('[chart] Fast chart load failed:', e);
@@ -1223,6 +1340,24 @@ function _updateChartHeader(bars) {
         const sign = change >= 0 ? '+' : '';
         changeEl.textContent = `${sign}${change.toFixed(price > 10 ? 2 : 4)} (${sign}${changePct.toFixed(2)}%)`;
         changeEl.className = `text-xs font-bold ${change >= 0 ? 'text-emerald-500' : 'text-red-400'}`;
+    }
+}
+
+function clearChartVisuals() {
+    if (candleSeries) candleSeries.setData([]);
+    if (extHoursSeries) extHoursSeries.setData([]);
+    if (_overlaySeries) Object.values(_overlaySeries).forEach(s => s && typeof s.setData === 'function' && s.setData([]));
+    if (_oscSeries) Object.values(_oscSeries).forEach(s => s && typeof s.setData === 'function' && s.setData([]));
+    
+    const priceEl = document.getElementById('chartPrice');
+    const changeEl = document.getElementById('chartPriceChange');
+    if (priceEl) {
+        priceEl.innerText = 'Loading...';
+        priceEl.className = 'text-xl font-black text-gray-400';
+    }
+    if (changeEl) {
+        changeEl.innerText = '';
+        changeEl.className = 'text-xs font-bold text-gray-500';
     }
 }
 
@@ -1491,7 +1626,7 @@ function recomputeConfluence() {
     let bullish = 0, bearish = 0;
 
     for (const [name, data] of Object.entries(signals)) {
-        const isEnabled = prefs[name] !== false;
+        const isEnabled = prefs[name] === true;
         if (!isEnabled) continue;
         if (data.signal === 'BULLISH') bullish++;
         if (data.signal === 'BEARISH') bearish++;
@@ -1571,6 +1706,12 @@ async function fetchAIIndicator(ticker, timeframe, force = false) {
         // Guard against stale responses
         if (fetchId !== _aiIndicatorFetchId) return;
         if (data.error) {
+            if (selectedModel !== 'llama-3.3-70b-versatile') {
+                console.warn(`[ai-indicator] Model ${selectedModel} failed. Falling back to default Groq model.`);
+                localStorage.setItem('selected_ai_model', 'llama-3.3-70b-versatile');
+                fetchAIIndicator(ticker, timeframe, force);
+                return;
+            }
             _showAIIndicatorError(data.error, ticker);
             return;
         }
@@ -1583,6 +1724,12 @@ async function fetchAIIndicator(ticker, timeframe, force = false) {
     } catch (e) {
         if (fetchId === _aiIndicatorFetchId) {
             console.error('[ai-indicator] Fetch error:', e);
+            if (selectedModel !== 'llama-3.3-70b-versatile') {
+                console.warn(`[ai-indicator] Fetch failed for ${selectedModel}. Falling back to default Groq model.`);
+                localStorage.setItem('selected_ai_model', 'llama-3.3-70b-versatile');
+                fetchAIIndicator(ticker, timeframe, force);
+                return;
+            }
             _showAIIndicatorError('Could not load AI analysis', ticker);
         }
     }
@@ -1594,7 +1741,7 @@ function _getAIModelSelectHtml(selectedModel, isError = false) {
     const groqModels = [
         { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B' },
         { value: 'mixtral-8x7b-32768', label: 'Mixtral 8x7B' },
-        { value: 'gemma2-9b-it', label: 'Gemma 2 9B' }
+        { value: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B (Fast)' }
     ];
     groqModels.forEach(m => {
         const sel = selectedModel === m.value ? 'selected' : '';
@@ -1635,7 +1782,7 @@ window.changeAIIndicatorModel = async function (model) {
         console.error('[ai-indicator] Failed to save model settings to backend:', e);
     }
     const ticker = (typeof selectedTicker !== 'undefined' ? selectedTicker : '') || 'TSLA';
-    const timeframe = (typeof selectedTimeframe !== 'undefined' ? selectedTimeframe : '') || '4Hour';
+    const timeframe = currentBackendTf || (typeof selectedTimeframe !== 'undefined' ? selectedTimeframe : '') || '1Hour';
     _showAIIndicatorLoading(ticker);
     try {
         await fetchAIIndicator(ticker, timeframe, false);
@@ -1776,7 +1923,7 @@ function renderAIIndicatorCard(data, fromCache = false) {
         ? `<span class="text-[0.5rem] text-amber-600 opacity-60 ml-1">cached</span>`
         : '';
 
-    const selectedModel = data.model || localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
     const isOllamaActive = selectedModel.startsWith('ollama/') || selectedModel.startsWith('ollama:');
     const badgeHtml = isOllamaActive
         ? `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-indigo-500 to-blue-600 text-white border border-indigo-600/50 shadow-sm">OLLAMA</span>`
@@ -1858,12 +2005,30 @@ function renderAIIndicatorCard(data, fromCache = false) {
 
         <div class="flex items-center gap-2 mb-3 relative z-10 p-1.5 rounded-lg bg-white/40 border border-violet-200/60">
             <div class="flex-1 text-center">
-                <div class="text-[0.5rem] text-violet-500 uppercase tracking-wider mb-0.5">Position Size</div>
-                <div class="text-[0.6rem] font-black text-violet-900">${(posUsd == null || parseFloat(posUsd) === 0) ? '—' : `${fmtUsd(posUsd)} <span class="text-violet-500 font-normal">(${Math.round(posPct * 100)}%)</span>`}</div>
+                <div class="text-[0.5rem] text-violet-500 uppercase tracking-wider mb-0.5 flex items-center justify-center gap-1 group/tooltip relative">
+                    Position Size
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-violet-400 hover:text-violet-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-violet-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal normal-case tracking-normal">
+                        Position Size is scaled (10% - 35%) based on the AI's Conviction Score.
+                        <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-violet-900"></div>
+                    </div>
+                </div>
+                <div class="text-[0.6rem] font-black text-violet-900">${(posPct == null || parseFloat(posPct) === 0) ? '—' : `${Math.round(posPct * 100)}%`}</div>
             </div>
             <div class="w-px h-6 bg-violet-200/60"></div>
             <div class="flex-1 text-center">
-                <div class="text-[0.5rem] text-violet-500 uppercase tracking-wider mb-0.5">Leverage</div>
+                <div class="text-[0.5rem] text-violet-500 uppercase tracking-wider mb-0.5 flex items-center justify-center gap-1 group/tooltip relative">
+                    Leverage
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-violet-400 hover:text-violet-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-violet-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal normal-case tracking-normal">
+                        Leverage is dictated strictly by the broader market VIX (Volatility).<br><span class="text-violet-300">Low fear = 1.5x<br>High fear = 0.5x</span>
+                        <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-violet-900"></div>
+                    </div>
+                </div>
                 <div class="text-[0.6rem] font-black text-violet-900">${leverage}</div>
             </div>
         </div>
@@ -1912,7 +2077,7 @@ window.refreshAIIndicator = async function () {
         refreshBtn.disabled = true;
     }
     const ticker = (typeof selectedTicker !== 'undefined' ? selectedTicker : '') || 'TSLA';
-    const timeframe = (typeof selectedTimeframe !== 'undefined' ? selectedTimeframe : '') || '4Hour';
+    const timeframe = (typeof selectedTimeframe !== 'undefined' ? selectedTimeframe : '') || '1Hour';
     try {
         await fetchAIIndicator(ticker, timeframe, true);
     } catch (e) {
@@ -1974,7 +2139,7 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
         if (!targetGrid) continue;
 
         // Local prefs override backend 'enabled' flag
-        const isEnabled = prefs[name] !== false;
+        const isEnabled = prefs[name] === true;
 
         // Sync Botbulls4 News AI with actual cached AI Indicator score before style evaluation
         if (name === 'Botbulls4 News AI') {
@@ -2184,10 +2349,18 @@ function _syncIndicatorsFromSignals(signals) {
     let changed = false;
     const prefs = getGlobalIndicatorPrefs();
     for (const [name, key] of Object.entries(SIGNAL_TO_CHART_KEY)) {
-        // If it's disabled globally, it shouldn't show on chart
-        const shouldShow = prefs[name] !== false;
+        // If there's no explicitly saved preference, default to OFF.
+        const shouldShow = prefs[name] === true;
         if (_visibleIndicators[key] !== shouldShow) {
             _visibleIndicators[key] = shouldShow;
+            
+            // Also sync the toolbar button visually
+            const btn = document.getElementById(`ind_btn_${key}`);
+            if (btn) {
+                btn.classList.toggle('ind-btn-active', shouldShow);
+                btn.classList.toggle('ind-btn-inactive', !shouldShow);
+            }
+            
             changed = true;
         }
     }
@@ -2314,6 +2487,7 @@ function selectTicker(ticker) {
     if (cachedChart) {
         renderFastChartPayload(cachedChart, normalizedTicker);
     } else {
+        clearChartVisuals();
         const grid = document.getElementById('signalGrid');
         const loading = document.getElementById('gridLoading');
         if (grid) grid.innerHTML = '';
@@ -2533,6 +2707,10 @@ function updateSizingPanel(scan) {
 // 8. Main Fetch Loop
 // ──────────────────────────────────────────────
 async function fetchDashboard(mode = 'heavy') {
+    if (window._dashboardRefreshInFlight) {
+        return;
+    }
+    window._dashboardRefreshInFlight = true;
     try {
         const requestedTicker = normalizeTicker(selectedTicker);
         const url = requestedTicker
@@ -2614,6 +2792,13 @@ async function fetchDashboard(mode = 'heavy') {
             fetchAIIndicator(selectedTicker, currentBackendTf);
         }
 
+        // Cache the first watchlist ticker for instant use on next load
+        if (data.watchlist?.length > 0) {
+            try {
+                localStorage.setItem('watchlistFirstTicker', normalizeTicker(data.watchlist[0]) || DEFAULT_TICKER);
+            } catch (e) { /* ignore storage errors */ }
+        }
+
         // Alpaca Status Pill & Action Toggle removed (migrated to active bots)
         const dashContent = document.getElementById('dashboardContent');
 
@@ -2690,9 +2875,11 @@ async function fetchDashboard(mode = 'heavy') {
         // Store watchlist for star state
         window._currentWatchlist = data.watchlist || [];
 
-        // If no ticker selected yet, pick the primary one from backend, falling back to MSFT
+        // If no ticker selected yet, pick the primary one from backend, falling back to SPY
         if (!selectedTicker) {
-            selectedTicker = normalizeTicker(data.primaryTicker) || "MSFT";
+            selectedTicker = normalizeTicker(data.primaryTicker)
+                || normalizeTicker(data.watchlist?.[0])
+                || DEFAULT_TICKER;
         }
 
         // Update chart label + star state
@@ -2757,10 +2944,16 @@ async function fetchDashboard(mode = 'heavy') {
             const evalMs = document.getElementById('perfEvalMs');
             const cacheStatus = document.getElementById('perfCache');
             const perfUpdated = document.getElementById('perfUpdated');
+            const quoteMs = document.getElementById('perfQuoteMs');
+            const accountMs = document.getElementById('perfAccountMs');
+            const orderMs = document.getElementById('perfOrderMs');
 
             if (dashboardMs) dashboardMs.textContent = `${Math.round(data.performance.total_ms || 0)}ms`;
             if (evalMs) evalMs.textContent = `${Math.round(data.performance.eval_ms || 0)}ms`;
             if (cacheStatus) cacheStatus.textContent = data.performance.cached ? 'HIT' : 'MISS';
+            if (quoteMs) quoteMs.textContent = `${Math.round(data.performance.quote_ms || 0)}ms`;
+            if (accountMs) accountMs.textContent = `${Math.round(data.performance.account_ms || 0)}ms`;
+            if (orderMs) orderMs.textContent = `${Math.round(data.performance.order_history_ms || 0)}ms`;
             if (perfUpdated) perfUpdated.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         }
 
@@ -2775,6 +2968,8 @@ async function fetchDashboard(mode = 'heavy') {
         }
 
         showGlobalError('Cannot connect to the trading backend.');
+    } finally {
+        window._dashboardRefreshInFlight = false;
     }
 }
 
@@ -2899,6 +3094,7 @@ function updateFavoriteIcon() {
 // ──────────────────────────────────────────────
 // 10. Settings & Toggles
 window._indicatorToggleDebounce = null;
+window._dashboardRefreshInFlight = false;
 async function toggleIndicator(key, value) {
     try {
         const headers = await getAuthHeaders();
@@ -2955,6 +3151,35 @@ async function updateStrategyTf(newTf) {
 }
 
 // ──────────────────────────────────────────────
+// 10b. Background Bots Data Prefetch
+// Fires after fetchDashboard('fast') to populate sessionStorage
+// so bots.js can render instantly on navigation.
+// ──────────────────────────────────────────────
+async function prefetchBotsData() {
+    try {
+        const headers = await getAuthHeaders();
+        const url = `${API_BASE}/api/dashboard?mode=fast&source=bots`;
+        const response = await fetch(url, { headers });
+        if (!response.ok) return;
+        const data = await response.json();
+        // Make available cross-page via sessionStorage (persists until browser close)
+        try {
+            sessionStorage.setItem('botsDataCache', JSON.stringify({
+                data,
+                fetchedAt: Date.now()
+            }));
+        } catch (e) {
+            console.warn('[prefetch] Could not cache bots data in sessionStorage:', e);
+        }
+        // Also make available if user navigates within same session without a full reload
+        window.lastBotsData = data;
+        console.log('[prefetch] Bots data cached successfully for instant bots page load.');
+    } catch (e) {
+        console.warn('[prefetch] Bots prefetch failed silently:', e);
+    }
+}
+
+// ──────────────────────────────────────────────
 // 11. Init
 // ──────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -2964,29 +3189,63 @@ document.addEventListener('DOMContentLoaded', () => {
     attachEventListeners();
     syncChart();
 
-    // Chart will be initialized dynamically by fetchDashboard() once primary bot is known
-    console.log('[dashboard] Waiting for backend data to initialize chart...');
+    // PHASE 0: Instant cached render (no network, no auth needed)
+    if (selectedTicker) {
+        console.log(`[dashboard] Phase 0 — Instant chart render from cache for: ${selectedTicker}`);
+        loadSelectedTickerChart({ renderCached: true, fetchFresh: false });
+    }
 
-    // Initial data fetch once auth is ready
+    // Wait for auth — use 50ms interval for near-instant startup
     const checkAuth = setInterval(async () => {
         if (window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true')) {
-            console.log('[dashboard] Auth ready. Starting data stream.');
-            fetchDashboard('fast');
-            if (selectedTicker) loadSelectedTickerChart({ renderCached: true });
-            fetchDashboard('heavy');
-            fetchMarketData(); // Fetch market data for modals
-            fetchMacroEvents(); // Fetch macro events for modal
-            await loadOllamaModels();
-            if (selectedTicker) fetchAIIndicator(selectedTicker, currentBackendTf);
+            clearInterval(checkAuth);
+            console.log('[dashboard] Auth ready. Starting phased data stream.');
+
+            // PHASE 1: Chart candles first — highest priority
+            let chartWarmup = null;
+            if (selectedTicker) {
+                console.log(`[dashboard] Phase 1 — Fetching live chart for: ${selectedTicker}`);
+                chartWarmup = loadSelectedTickerChart({ renderCached: true, fetchFresh: true });
+            }
+
+            // PHASE 2: Dashboard scan (signals, watchlist) — medium priority
+            console.log('[dashboard] Phase 2 — Loading fast dashboard scan...');
+            const dashboardWarmup = fetchDashboard('fast');
+
+            if (chartWarmup) {
+                await chartWarmup;
+            }
+            await dashboardWarmup;
+
+            // PHASE 3: Bots data prefetch — fires immediately after fast dashboard loads
+            console.log('[dashboard] Phase 3 — Prefetching bots data for instant bots page...');
+            prefetchBotsData();
+
+            // PHASE 4: All remaining background data — lowest priority (delayed 500ms)
+            setTimeout(async () => {
+                console.log('[dashboard] Phase 4 — Loading heavy background data...');
+                if (!window._dashboardRefreshInFlight) fetchDashboard('heavy');
+                const runBackground = async () => {
+                    fetchMarketData();
+                    fetchMacroEvents();
+                    await loadOllamaModels();
+                };
+                if (window.requestIdleCallback) {
+                    window.requestIdleCallback(runBackground, { timeout: 1500 });
+                } else {
+                    setTimeout(runBackground, 0);
+                }
+                if (selectedTicker) fetchAIIndicator(selectedTicker, currentBackendTf);
+            }, 500);
+
+            // Heartbeat refresh
             setInterval(() => {
-                // Skip the "heartbeat" live refresh if the user is currently rapid-fire clicking indicators
-                if (window._indicatorToggleDebounce) return;
+                if (window._indicatorToggleDebounce || window._dashboardRefreshInFlight) return;
                 fetchDashboard('heavy');
             }, REFRESH_INTERVAL);
-            setInterval(fetchMarketData, 60000); // Refresh market data every minute
-            clearInterval(checkAuth);
+            setInterval(fetchMarketData, 60000);
         }
-    }, 500);
+    }, 50);
 
     // Backtest Timeframe Listener
     const btTfSelect = document.getElementById('btTimeframe');
@@ -3024,6 +3283,23 @@ function showGlobalError(msg) {
 function openBacktestModal() {
     document.getElementById('backtestModal').classList.remove('hidden');
     document.getElementById('btTicker').value = selectedTicker || "MSFT";
+    
+    const savedBuyThreshold = localStorage.getItem('lastBotBuyThreshold');
+    if (savedBuyThreshold) {
+        const inp = document.getElementById('btThreshold');
+        const valSpan = document.getElementById('btThresholdVal');
+        if (inp) inp.value = savedBuyThreshold;
+        if (valSpan) valSpan.textContent = savedBuyThreshold;
+    }
+    
+    const savedSellThreshold = localStorage.getItem('lastBotSellThreshold');
+    if (savedSellThreshold) {
+        const inp = document.getElementById('btSellThreshold');
+        const valSpan = document.getElementById('btSellThresholdVal');
+        if (inp) inp.value = savedSellThreshold;
+        if (valSpan) valSpan.textContent = savedSellThreshold;
+    }
+    
     resetBacktestUI(); // Ensure settings are visible
     syncBacktestSliderRange(); // Initial sync of slider range
 }

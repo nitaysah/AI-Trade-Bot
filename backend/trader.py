@@ -29,7 +29,9 @@ import time
 # --- Evaluation Cache ---
 # Stores full trade evaluation results to prevent redundant heavy API calls
 # within short windows (e.g. while user is navigating or UI is refreshing)
-EVALUATION_CACHE = {} 
+from cache_manager import TTLCacheStore
+
+_evaluation_cache = TTLCacheStore(maxsize=128)
 EVAL_CACHE_TTL = 45 # seconds
 IN_FLIGHT_EVALS = {}
 IN_FLIGHT_LOCK = threading.Lock()
@@ -37,18 +39,15 @@ IN_FLIGHT_LOCK = threading.Lock()
 def clear_evaluation_cache(ticker: str = None, timeframe: str = None):
     """Clear cached trade evaluations, optionally scoped by ticker/timeframe."""
     if ticker is None and timeframe is None:
-        EVALUATION_CACHE.clear()
+        _evaluation_cache.clear()
         return
 
     ticker_key = ticker.upper() if ticker else None
     timeframe_key = timeframe.upper() if timeframe else None
-    for cache_key in list(EVALUATION_CACHE.keys()):
-        cached_ticker, cached_timeframe = cache_key[0], cache_key[1]
-        if ticker_key and cached_ticker != ticker_key:
-            continue
-        if timeframe_key and cached_timeframe != timeframe_key:
-            continue
-        EVALUATION_CACHE.pop(cache_key, None)
+    
+    _evaluation_cache.delete_matching(
+        lambda k: (not ticker_key or k[0] == ticker_key) and (not timeframe_key or k[1] == timeframe_key)
+    )
 
 def get_now():
     """Returns current time in the configured timezone."""
@@ -211,11 +210,10 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
     ticker_key = ticker.upper()
     timeframe_key = timeframe.upper()
     cache_key = (ticker_key, timeframe_key, data_source, use_bot_settings)
-    now_ts = time.time()
-    if cache_key in EVALUATION_CACHE:
-        entry = EVALUATION_CACHE[cache_key]
-        if now_ts - entry['timestamp'] < EVAL_CACHE_TTL:
-            return entry['data']
+    
+    cached_entry = _evaluation_cache.get(cache_key, EVAL_CACHE_TTL)
+    if cached_entry is not None:
+        return cached_entry['data']
 
     start_ts = time.perf_counter()
     analysis = None
@@ -332,10 +330,7 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
     }
 
     # Save to cache
-    EVALUATION_CACHE[cache_key] = {
-        "data": result,
-        "timestamp": time.time()
-    }
+    _evaluation_cache.set(cache_key, {"data": result})
     print(f"[perf] evaluate_trade {ticker_key} {timeframe_key}: {(time.perf_counter() - start_ts) * 1000:.1f}ms")
     return result
 

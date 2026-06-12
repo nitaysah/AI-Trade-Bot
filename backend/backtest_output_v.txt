@@ -1,0 +1,9 @@
+Note: Unnecessary use of -X or --request, POST is already inferred.
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0*   Trying 127.0.0.1:5001...
+* Immediate connect fail for 127.0.0.1: Operation not permitted
+* Failed to connect to 127.0.0.1 port 5001 after 4 ms: Couldn't connect to server
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+* Closing connection
+curl: (7) Failed to connect to 127.0.0.1 port 5001 after 4 ms: Couldn't connect to server

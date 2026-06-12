@@ -407,7 +407,8 @@ class UserEngine:
                                     account_equity=equity,
                                     available_cash=avail_cash,
                                     position=ai_pos,
-                                    timeframe=tf_to_use
+                                    timeframe=tf_to_use,
+                                    model=t_settings.get('ai_model')
                                 )
                                 
                                 price_raw = ai_decision.get('price') or ai_decision.get('entry_price') or 0.0
@@ -508,148 +509,499 @@ class UserEngine:
                                             else:
                                                 result['reason'] = f"Trade Cooldown Active ({rem}s remaining)"
 
-                                has_this_pos = any(p['symbol'].replace("/", "").upper() == ticker_norm and float(p.get('qty', 0)) > 0 for p in all_positions)
-                                has_open_order = any(o['symbol'] == ticker_norm and o['side'].lower() == 'buy' for o in all_orders)
-
+                                # Check options trading toggle
+                                is_options_enabled = t_settings.get('options_trading', getattr(self.config, 'ENABLE_OPTIONS_TRADING', False))
+                                
+                                # Resolve options configurations from ticker settings with config fallback
+                                opt_stop_loss = t_settings.get('options_stop_loss_pct', getattr(self.config, 'OPTIONS_STOP_LOSS_PCT', 0.50))
+                                opt_take_profit = t_settings.get('options_take_profit_pct', getattr(self.config, 'OPTIONS_TAKE_PROFIT_PCT', 1.00))
+                                opt_exit_strategy = t_settings.get('options_exit_strategy', getattr(self.config, 'OPTIONS_EXIT_STRATEGY', 'hybrid'))
+                                opt_expiry_days = t_settings.get('options_expiry_days', getattr(self.config, 'OPTIONS_EXPIRY_DAYS', 7))
+                                opt_strike_type = t_settings.get('options_strike_type', getattr(self.config, 'OPTIONS_STRIKE_TYPE', 'ATM'))
+                                opt_trade_amount = t_settings.get('options_trade_amount', getattr(self.config, 'OPTIONS_TRADE_AMOUNT', 100.0))
+                                
+                                pos_info = None
+                                has_this_pos = False
+                                has_open_order = False
+                                
+                                if is_options_enabled:
+                                    from option_selector import parse_occ_symbol
+                                    for p in all_positions:
+                                        p_sym = p['symbol'].upper()
+                                        parsed = parse_occ_symbol(p_sym)
+                                        if parsed and parsed['underlying'] == ticker_norm:
+                                            pos_info = p
+                                            has_this_pos = True
+                                            break
+                                    # For option orders, symbol matches OCC structure starting with ticker_norm
+                                    has_open_order = any(
+                                        parse_occ_symbol(o['symbol']) and 
+                                        parse_occ_symbol(o['symbol'])['underlying'] == ticker_norm and 
+                                        o['side'].lower() == 'buy' 
+                                        for o in all_orders
+                                    )
+                                else:
+                                    has_this_pos = any(p['symbol'].replace("/", "").upper() == ticker_norm and float(p.get('qty', 0)) > 0 for p in all_positions)
+                                    has_open_order = any(o['symbol'] == ticker_norm and o['side'].lower() == 'buy' for o in all_orders)
+                                    pos_info = next((p for p in all_positions if p['symbol'].replace("/", "").upper() == ticker_norm), None)
+ 
                                 if not has_this_pos:
                                     self.last_trailing_stops.pop(ticker, None)
-
-                                pos_info = next((p for p in all_positions if p['symbol'].replace("/", "").upper() == ticker_norm), None)
                                 
                                 # Sell Mode Logic
                                 if has_this_pos and pos_info:
-                                    entry_price = float(pos_info.get('avg_price', result['price_raw']))
-                                    current_price = result['price_raw']
-                                    
-                                    if t_settings.get('ai_autopilot', False):
-                                        # AI Autopilot hybrid / SLTP / indicator exit checks
-                                        stop_loss = result['position_sizing'].get('stop_loss') or self.last_trailing_stops.get(ticker)
-                                        take_profit = result['position_sizing'].get('take_profit')
+                                    if is_options_enabled:
+                                        # Options Exits
+                                        from option_selector import parse_occ_symbol
+                                        parsed_occ = parse_occ_symbol(pos_info['symbol'])
+                                        opt_type = parsed_occ['type'] if parsed_occ else 'CALL'
                                         
-                                        if sell_mode == 'sltp' and result['action'] == 'SELL':
+                                        exit_triggered = False
+                                        exit_reason = ""
+                                        
+                                        # 1. Premium-based check
+                                        opt_curr = float(pos_info['current_price'])
+                                        opt_avg = float(pos_info['avg_price'])
+                                        stop_loss_pct = opt_stop_loss
+                                        take_profit_pct = opt_take_profit
+                                        
+                                        # Strategy A: Premium percent triggers
+                                        if opt_exit_strategy in ['premium_pct', 'hybrid']:
+                                            if opt_curr <= opt_avg * (1 - stop_loss_pct):
+                                                exit_triggered = True
+                                                exit_reason = f"Option Premium SL Hit (${opt_curr:.2f} <= ${opt_avg*(1-stop_loss_pct):.2f})"
+                                            elif opt_curr >= opt_avg * (1 + take_profit_pct):
+                                                exit_triggered = True
+                                                exit_reason = f"Option Premium TP Hit (${opt_curr:.2f} >= ${opt_avg*(1+take_profit_pct):.2f})"
+                                                
+                                        # Fetch daily data for pivot & range exits
+                                        if not exit_triggered and opt_exit_strategy in ['pivot_points', 'high_low', 'hybrid']:
+                                            import yfinance as yf
+                                            try:
+                                                hist = yf.download(ticker, period="2d", interval="1d", progress=False)
+                                                if len(hist) >= 2:
+                                                    prev_h = float(hist.iloc[-2]['High'])
+                                                    prev_l = float(hist.iloc[-2]['Low'])
+                                                    prev_c = float(hist.iloc[-2]['Close'])
+                                                else:
+                                                    prev_h = prev_l = prev_c = result['price_raw']
+                                            except Exception:
+                                                prev_h = prev_l = prev_c = result['price_raw']
+                                                
+                                            current_price = result['price_raw']
+                                            
+                                            # Strategy B: Pivot points
+                                            if opt_exit_strategy in ['pivot_points', 'hybrid']:
+                                                P = (prev_h + prev_l + prev_c) / 3.0
+                                                R1 = 2 * P - prev_l
+                                                S1 = 2 * P - prev_h
+                                                R2 = P + (prev_h - prev_l)
+                                                S2 = P - (prev_h - prev_l)
+                                                
+                                                if opt_type == 'CALL':
+                                                    if current_price >= R1:
+                                                        exit_triggered = True
+                                                        exit_reason = f"Pivot TP Hit (Underlying {current_price:.2f} >= R1 {R1:.2f})"
+                                                    elif current_price >= R2:
+                                                        exit_triggered = True
+                                                        exit_reason = f"Pivot TP Hit (Underlying {current_price:.2f} >= R2 {R2:.2f})"
+                                                    elif current_price <= S1:
+                                                        exit_triggered = True
+                                                        exit_reason = f"Pivot SL Hit (Underlying {current_price:.2f} <= S1 {S1:.2f})"
+                                                else:  # PUT
+                                                    if current_price <= S1:
+                                                        exit_triggered = True
+                                                        exit_reason = f"Pivot TP Hit (Underlying {current_price:.2f} <= S1 {S1:.2f})"
+                                                    elif current_price <= S2:
+                                                        exit_triggered = True
+                                                        exit_reason = f"Pivot TP Hit (Underlying {current_price:.2f} <= S2 {S2:.2f})"
+                                                    elif current_price >= R1:
+                                                        exit_triggered = True
+                                                        exit_reason = f"Pivot SL Hit (Underlying {current_price:.2f} >= R1 {R1:.2f})"
+                                                        
+                                            # Strategy C: Daily High/Low ranges
+                                            if not exit_triggered and opt_exit_strategy in ['high_low', 'hybrid']:
+                                                try:
+                                                    today_hist = yf.download(ticker, period="1d", interval="5m", progress=False)
+                                                    today_high = float(today_hist['High'].max())
+                                                    today_low = float(today_hist['Low'].min())
+                                                except Exception:
+                                                    today_high = today_low = current_price
+                                                    
+                                                if opt_type == 'CALL':
+                                                    if current_price < today_low:
+                                                        exit_triggered = True
+                                                        exit_reason = f"Intraday Low Breach (Underlying {current_price:.2f} < Today Low {today_low:.2f})"
+                                                    elif current_price >= prev_h:
+                                                        exit_triggered = True
+                                                        exit_reason = f"Prev Day High Breakout (Underlying {current_price:.2f} >= Prev High {prev_h:.2f})"
+                                                    elif current_price <= prev_l:
+                                                        exit_triggered = True
+                                                        exit_reason = f"Prev Day Low Breakdown (Underlying {current_price:.2f} <= Prev Low {prev_l:.2f})"
+                                                else:  # PUT
+                                                    if current_price > today_high:
+                                                        exit_triggered = True
+                                                        exit_reason = f"Intraday High Breach (Underlying {current_price:.2f} > Today High {today_high:.2f})"
+                                                    elif current_price <= prev_l:
+                                                        exit_triggered = True
+                                                        exit_reason = f"Prev Day Low Breakout (Underlying {current_price:.2f} <= Prev Low {prev_l:.2f})"
+                                                    elif current_price >= prev_h:
+                                                        exit_triggered = True
+                                                        exit_reason = f"Prev Day High Breakdown (Underlying {current_price:.2f} >= Prev High {prev_h:.2f})"
+                                                        
+                                        # Strategy D: Expiration Safeguard
+                                        if not exit_triggered and parsed_occ:
+                                            import datetime
+                                            if parsed_occ['expiration'] <= datetime.date.today():
+                                                # If it is expiration day, force exit 2 hours before market close
+                                                now_dt = datetime.datetime.now()
+                                                if now_dt.hour >= 13: # 13:00 Central (2 hours before 15:00 close)
+                                                    exit_triggered = True
+                                                    exit_reason = f"Expiration Safeguard (2 hours before close on expiration day)"
+                                                    
+                                        # Technical Indicator exit
+                                        if not exit_triggered and opt_exit_strategy in ['indicator', 'hybrid']:
+                                            if opt_type == 'CALL' and result['action'] == 'SELL':
+                                                exit_triggered = True
+                                                exit_reason = f"Technical Signal reversal to BEARISH"
+                                            elif opt_type == 'PUT' and result['action'] == 'BUY':
+                                                exit_triggered = True
+                                                exit_reason = f"Technical Signal reversal to BULLISH"
+                                                
+                                        if exit_triggered:
+                                            result['action'] = 'SELL'
+                                            result['reason'] = exit_reason
+                                        else:
                                             result['action'] = 'HOLD'
-                                            result['reason'] = 'AI Dynamic Sell Signal Ignored (Fixed SL/TP Mode)'
+                                            result['reason'] = "Option position open. Checking exit criteria..."
+                                            
+                                    else:
+                                        # Standard Stock/Crypto Sell Mode Logic
+                                        entry_price = float(pos_info.get('avg_price', result['price_raw']))
+                                        current_price = result['price_raw']
                                         
-                                        if sell_mode in ['sltp', 'hybrid', 'ai_autopilot']:
-                                            if stop_loss:
-                                                self.last_trailing_stops[ticker] = stop_loss
+                                        if t_settings.get('ai_autopilot', False):
+                                            stop_loss = result['position_sizing'].get('stop_loss') or self.last_trailing_stops.get(ticker)
+                                            take_profit = result['position_sizing'].get('take_profit')
+                                            
+                                            if sell_mode == 'sltp' and result['action'] == 'SELL':
+                                                result['action'] = 'HOLD'
+                                                result['reason'] = 'AI Dynamic Sell Signal Ignored (Fixed SL/TP Mode)'
+                                            
+                                            if sell_mode in ['sltp', 'hybrid', 'ai_autopilot']:
+                                                if stop_loss:
+                                                    self.last_trailing_stops[ticker] = stop_loss
+                                                    if current_price <= stop_loss:
+                                                        result['action'] = 'SELL'
+                                                        result['reason'] = f'AI Stop Loss Hit (${current_price:.2f} <= ${stop_loss:.2f})'
+                                                if take_profit:
+                                                    if current_price >= take_profit:
+                                                        result['action'] = 'SELL'
+                                                        result['reason'] = f'AI Take Profit Hit (${current_price:.2f} >= ${take_profit:.2f})'
+                                        else:
+                                            stop_mult = t_settings.get('atr_stop_multiplier', self.config.get('ATR_STOP_MULTIPLIER', 2.0))
+                                            trail_mult = t_settings.get('atr_trail_multiplier', self.config.get('ATR_TRAIL_MULTIPLIER', 3.0))
+                                            tp_mult = t_settings.get('take_profit_multiplier', self.config.get('ATR_TAKE_PROFIT_MULTIPLIER', 4.0))
+                                            
+                                            base_stop_loss = entry_price - (result['atr'] * stop_mult)
+                                            take_profit = entry_price + (result['atr'] * tp_mult)
+                                            
+                                            if ticker not in self.last_trailing_stops:
+                                                self.last_trailing_stops[ticker] = base_stop_loss
+                                            
+                                            trail_distance = result['atr'] * trail_mult
+                                            candidate_stop = current_price - trail_distance
+                                            if candidate_stop > self.last_trailing_stops[ticker]:
+                                                self.last_trailing_stops[ticker] = round(candidate_stop, 2)
+                                            
+                                            stop_loss = max(base_stop_loss, self.last_trailing_stops[ticker])
+                                            
+                                            if sell_mode == 'sltp' and result['action'] == 'SELL':
+                                                result['action'] = 'HOLD'
+                                                result['reason'] = 'Sell Signal Ignored (Fixed SL/TP Mode)'
+                                                
+                                            if sell_mode in ['sltp', 'hybrid']:
                                                 if current_price <= stop_loss:
                                                     result['action'] = 'SELL'
-                                                    result['reason'] = f'AI Stop Loss Hit (${current_price:.2f} <= ${stop_loss:.2f})'
-                                            if take_profit:
-                                                if current_price >= take_profit:
+                                                    result['reason'] = f'Stop Loss Hit (${current_price:.2f} <= ${stop_loss:.2f})'
+                                                elif current_price >= take_profit:
                                                     result['action'] = 'SELL'
-                                                    result['reason'] = f'AI Take Profit Hit (${current_price:.2f} >= ${take_profit:.2f})'
-                                    else:
-                                        stop_mult = t_settings.get('atr_stop_multiplier', self.config.get('ATR_STOP_MULTIPLIER', 2.0))
-                                        trail_mult = t_settings.get('atr_trail_multiplier', self.config.get('ATR_TRAIL_MULTIPLIER', 3.0))
-                                        tp_mult = t_settings.get('take_profit_multiplier', self.config.get('ATR_TAKE_PROFIT_MULTIPLIER', 4.0))
-                                        
-                                        base_stop_loss = entry_price - (result['atr'] * stop_mult)
-                                        take_profit = entry_price + (result['atr'] * tp_mult)
-                                        
-                                        if ticker not in self.last_trailing_stops:
-                                            self.last_trailing_stops[ticker] = base_stop_loss
-                                        
-                                        trail_distance = result['atr'] * trail_mult
-                                        candidate_stop = current_price - trail_distance
-                                        if candidate_stop > self.last_trailing_stops[ticker]:
-                                            self.last_trailing_stops[ticker] = round(candidate_stop, 2)
-                                        
-                                        stop_loss = max(base_stop_loss, self.last_trailing_stops[ticker])
-                                        
-                                        if sell_mode == 'sltp' and result['action'] == 'SELL':
-                                            result['action'] = 'HOLD'
-                                            result['reason'] = 'Sell Signal Ignored (Fixed SL/TP Mode)'
-                                            
-                                        if sell_mode in ['sltp', 'hybrid']:
-                                            if current_price <= stop_loss:
-                                                result['action'] = 'SELL'
-                                                result['reason'] = f'Stop Loss Hit (${current_price:.2f} <= ${stop_loss:.2f})'
-                                            elif current_price >= take_profit:
-                                                result['action'] = 'SELL'
-                                                result['reason'] = f'Take Profit Hit (${current_price:.2f} >= ${take_profit:.2f})'
+                                                    result['reason'] = f'Take Profit Hit (${current_price:.2f} >= ${take_profit:.2f})'
 
                                 # Buy Execution
                                 if result['action'] == 'BUY' and not is_market_closed_skip:
-                                    sizing = result['position_sizing']
-                                    max_pos = self.config.get('MAX_OPEN_POSITIONS', 5)
-                                    if portfolio_count >= max_pos and not has_this_pos:
-                                        result['action'] = 'HOLD'
-                                        result['reason'] = f"Max positions reached ({portfolio_count}/{max_pos})."
-                                    elif has_this_pos:
-                                        result['action'] = 'HOLD'
-                                        result['reason'] = "Position already open. (Buy signal ignored)"
-                                    elif has_open_order:
-                                        result['action'] = 'PENDING'
-                                        result['reason'] = "Buy order pending."
-                                    elif sizing['notional'] > 0:
-                                        order_result = self.broker.place_order(
-                                            symbol=ticker, notional=sizing['notional'], side='buy',
-                                            stop_loss=sizing['stop_loss'], take_profit=sizing['take_profit']
-                                        )
-                                        if order_result.get('success'):
-                                            result['order'] = order_result
-                                            result['order_id'] = order_result.get('order_id')
-                                            trade_executed = True
-                                            portfolio_count += 1
+                                    if is_options_enabled:
+                                        max_pos = self.config.get('MAX_OPEN_POSITIONS', 5)
+                                        if portfolio_count >= max_pos and not has_this_pos:
+                                            result['action'] = 'HOLD'
+                                            result['reason'] = f"Max positions reached ({portfolio_count}/{max_pos})."
+                                        elif has_this_pos:
+                                            result['action'] = 'HOLD'
+                                            result['reason'] = "Options position already open."
+                                        elif has_open_order:
+                                            result['action'] = 'PENDING'
+                                            result['reason'] = "Options buy order pending."
+                                        else:
+                                            # Option contract selection
+                                            from option_selector import get_option_chain, select_contract
+                                            chain = get_option_chain(
+                                                underlying=ticker,
+                                                expiration_limit_days=opt_expiry_days,
+                                                current_price=result['price_raw'],
+                                                client=self.broker.client
+                                            )
+                                            contract = select_contract(
+                                                contracts=chain,
+                                                current_underlying_price=result['price_raw'],
+                                                option_type="CALL",
+                                                strike_type=opt_strike_type,
+                                                target_expiry_days=opt_expiry_days
+                                            )
                                             
-                                            order_qty = order_result.get('qty')
-                                            if (order_qty is None or float(order_qty) == 0) and result['price_raw'] > 0:
-                                                order_qty = sizing['notional'] / result['price_raw']
+                                            if contract:
+                                                # Fetch estimate premium for sizing
+                                                import math
+                                                if self.broker.simulation_mode:
+                                                    from options_pricing import black_scholes
+                                                    import datetime
+                                                    days = (contract['expiration'] - datetime.date.today()).days
+                                                    t_years = max(0.0001, days / 365.0)
+                                                    est_premium = black_scholes(result['price_raw'], contract['strike'], t_years, r=0.05, sigma=0.20, option_type="CALL")
+                                                    est_premium = max(0.05, est_premium)
+                                                else:
+                                                    try:
+                                                        from alpaca.data.historical.option import OptionHistoricalDataClient
+                                                        from alpaca.data.requests import OptionLatestQuoteRequest
+                                                        data_client = OptionHistoricalDataClient(self.config.ALPACA_API_KEY, self.config.ALPACA_SECRET_KEY)
+                                                        req = OptionLatestQuoteRequest(symbol_or_symbols=[contract['symbol']])
+                                                        quotes = data_client.get_option_latest_quote(req)
+                                                        est_premium = float(quotes[contract['symbol']].ask_price)
+                                                    except Exception as quote_err:
+                                                        print(f"[options] Quote fetch failed: {quote_err}")
+                                                        est_premium = 0.0
                                                 
-                                            result['qty'] = float(order_qty) if order_qty else 0
-                                            result['total_cost'] = float(order_result.get('total_cost', sizing['notional']))
-                                            result['fees'] = float(order_result.get('fees', 0))
-                                            result['reason'] = f"✅ BOUGHT {result['qty']:.6f} shares at {result['price']}: {result['reason']}"
-                                            self.last_trade_timestamps[ticker] = self.get_now()
-                                            await self._increment_trade_count(ticker)
-                                            
-                                # Sell Execution
-                                elif result['action'] == 'SELL' and not is_market_closed_skip:
-                                    if has_this_pos:
-                                        pos_info = next((p for p in all_positions if p['symbol'].replace("/", "").upper() == ticker_norm), None)
-                                        order_result = self.broker.close_position(ticker)
-                                        if order_result.get('success'):
-                                            result['order'] = order_result
-                                            result['order_id'] = order_result.get('order_id')
-                                            trade_executed = True
-                                            portfolio_count -= 1
-                                            
-                                            order_qty = order_result.get('qty')
-                                            if order_qty and float(order_qty) > 0:
-                                                result['qty'] = float(order_qty)
-                                            elif pos_info:
-                                                result['qty'] = float(pos_info['qty'])
+                                                if est_premium > 0:
+                                                    allocated = opt_trade_amount
+                                                    qty = math.floor(allocated / (est_premium * 100.0))
+                                                    
+                                                    if qty > 0:
+                                                        order_result = self.broker.place_option_order(
+                                                            option_symbol=contract['symbol'],
+                                                            qty=qty,
+                                                            side='buy'
+                                                        )
+                                                        if order_result.get('success'):
+                                                            result['order'] = order_result
+                                                            result['order_id'] = order_result.get('order_id')
+                                                            trade_executed = True
+                                                            portfolio_count += 1
+                                                            
+                                                            result['qty'] = qty
+                                                            result['total_cost'] = qty * est_premium * 100.0
+                                                            result['fees'] = 0.0
+                                                            result['reason'] = f"✅ BOUGHT {qty} CALL contracts ({contract['symbol']}) at premium ${est_premium:.2f}: {result['reason']}"
+                                                            self.last_trade_timestamps[ticker] = self.get_now()
+                                                            await self._increment_trade_count(ticker)
+                                                        else:
+                                                            result['reason'] = f"Option buy failed: {order_result.get('error')}"
+                                                    else:
+                                                        result['reason'] = f"Skipped: single contract cost (${est_premium * 100:.2f}) exceeds allocation (${allocated:.2f})"
+                                                else:
+                                                    result['reason'] = "Skipped: option premium estimate could not be retrieved."
                                             else:
-                                                result['qty'] = 0
-
-                                            result['total_cost'] = float(pos_info['market_value']) if pos_info else order_result.get('proceeds', 0)
-                                            result['fees'] = float(order_result.get('fees', 0))
-
-                                            if pos_info:
-                                                entry_price = float(pos_info['avg_price'])
-                                                exit_price = result['price_raw']
-                                                qty = float(order_result.get('qty')) if order_result.get('qty') else float(pos_info['qty'])
-                                                pl = (exit_price - entry_price) * qty
-                                                pl_pct = ((exit_price / entry_price) - 1) * 100
+                                                result['reason'] = "Skipped: no suitable CALL contract found."
+                                    else:
+                                        # Standard Stock/Crypto Buy execution
+                                        sizing = result['position_sizing']
+                                        max_pos = self.config.get('MAX_OPEN_POSITIONS', 5)
+                                        if portfolio_count >= max_pos and not has_this_pos:
+                                            result['action'] = 'HOLD'
+                                            result['reason'] = f"Max positions reached ({portfolio_count}/{max_pos})."
+                                        elif has_this_pos:
+                                            result['action'] = 'HOLD'
+                                            result['reason'] = "Position already open. (Buy signal ignored)"
+                                        elif has_open_order:
+                                            result['action'] = 'PENDING'
+                                            result['reason'] = "Buy order pending."
+                                        elif sizing['notional'] > 0:
+                                            order_result = self.broker.place_order(
+                                                symbol=ticker, notional=sizing['notional'], side='buy',
+                                                stop_loss=sizing['stop_loss'], take_profit=sizing['take_profit']
+                                            )
+                                            if order_result.get('success'):
+                                                result['order'] = order_result
+                                                result['order_id'] = order_result.get('order_id')
+                                                trade_executed = True
+                                                portfolio_count += 1
+                                                
+                                                order_qty = order_result.get('qty')
+                                                if (order_qty is None or float(order_qty) == 0) and result['price_raw'] > 0:
+                                                    order_qty = sizing['notional'] / result['price_raw']
+                                                    
+                                                result['qty'] = float(order_qty) if order_qty else 0
+                                                result['total_cost'] = float(order_result.get('total_cost', sizing['notional']))
+                                                result['fees'] = float(order_result.get('fees', 0))
+                                                result['reason'] = f"✅ BOUGHT {result['qty']:.6f} shares at {result['price']}: {result['reason']}"
+                                                self.last_trade_timestamps[ticker] = self.get_now()
+                                                await self._increment_trade_count(ticker)
+                                                
+                                # Sell Execution (or PUT option entry)
+                                elif result['action'] == 'SELL' and not is_market_closed_skip:
+                                    if is_options_enabled:
+                                        if has_this_pos:
+                                            # Close active option position
+                                            order_result = self.broker.close_position(pos_info['symbol'])
+                                            if order_result.get('success'):
+                                                result['order'] = order_result
+                                                result['order_id'] = order_result.get('order_id')
+                                                trade_executed = True
+                                                portfolio_count -= 1
+                                                
+                                                qty = float(pos_info['qty'])
+                                                val = qty * float(pos_info['current_price']) * 100.0
+                                                cost = qty * float(pos_info['avg_price']) * 100.0
+                                                pl = val - cost
+                                                pl_pct = (pl / cost * 100.0) if cost > 0 else 0.0
+                                                
+                                                result['qty'] = qty
+                                                result['total_cost'] = val
+                                                result['fees'] = 0.0
                                                 result['pl'] = round(pl, 2)
                                                 result['pl_pct'] = round(pl_pct, 2)
-                                                result['reason'] = f"✅ SOLD at {result['price']} (Entry: ${entry_price:.4f}): {result['reason']}"
                                                 
-                                                # Accumulate realized P/L for the bot
+                                                result['reason'] = f"✅ CLOSED option position ({pos_info['symbol']}) at premium ${pos_info['current_price']:.2f} (P/L: ${pl:+.2f}): {result['reason']}"
+                                                self.last_trade_timestamps[ticker] = self.get_now()
+                                                await self._increment_trade_count(ticker)
+                                                
+                                                # Accumulate realized P/L
                                                 current_realized = t_settings.get('realized_pl', 0.0)
                                                 t_settings['realized_pl'] = round(current_realized + pl, 2)
                                                 await self.save_settings()
                                             else:
-                                                result['reason'] = f"✅ SOLD at {result['price']}: {result['reason']}"
-                                            self.last_trade_timestamps[ticker] = self.get_now()
-                                            await self._increment_trade_count(ticker)
+                                                result['reason'] = f"Option sell failed: {order_result.get('error')}"
                                         else:
-                                            result['reason'] = f"Sell order failed: {order_result.get('error', 'Broker Error')}"
+                                            # No option position, bearish signal -> BUY PUT option!
+                                            max_pos = self.config.get('MAX_OPEN_POSITIONS', 5)
+                                            if portfolio_count >= max_pos:
+                                                result['action'] = 'HOLD'
+                                                result['reason'] = f"Max positions reached ({portfolio_count}/{max_pos})."
+                                            elif has_open_order:
+                                                result['action'] = 'PENDING'
+                                                result['reason'] = "Options buy order pending."
+                                            else:
+                                                # Option contract selection (PUT)
+                                                from option_selector import get_option_chain, select_contract
+                                                chain = get_option_chain(
+                                                    underlying=ticker,
+                                                    expiration_limit_days=opt_expiry_days,
+                                                    current_price=result['price_raw'],
+                                                    client=self.broker.client
+                                                )
+                                                contract = select_contract(
+                                                    contracts=chain,
+                                                    current_underlying_price=result['price_raw'],
+                                                    option_type="PUT",
+                                                    strike_type=opt_strike_type,
+                                                    target_expiry_days=opt_expiry_days
+                                                )
+                                                
+                                                if contract:
+                                                    # Fetch estimate premium for sizing
+                                                    import math
+                                                    if self.broker.simulation_mode:
+                                                        from options_pricing import black_scholes
+                                                        import datetime
+                                                        days = (contract['expiration'] - datetime.date.today()).days
+                                                        t_years = max(0.0001, days / 365.0)
+                                                        est_premium = black_scholes(result['price_raw'], contract['strike'], t_years, r=0.05, sigma=0.20, option_type="PUT")
+                                                        est_premium = max(0.05, est_premium)
+                                                    else:
+                                                        try:
+                                                            from alpaca.data.historical.option import OptionHistoricalDataClient
+                                                            from alpaca.data.requests import OptionLatestQuoteRequest
+                                                            data_client = OptionHistoricalDataClient(self.config.ALPACA_API_KEY, self.config.ALPACA_SECRET_KEY)
+                                                            req = OptionLatestQuoteRequest(symbol_or_symbols=[contract['symbol']])
+                                                            quotes = data_client.get_option_latest_quote(req)
+                                                            est_premium = float(quotes[contract['symbol']].ask_price)
+                                                        except Exception as quote_err:
+                                                            print(f"[options] Quote fetch failed: {quote_err}")
+                                                            est_premium = 0.0
+                                                    
+                                                    if est_premium > 0:
+                                                        allocated = opt_trade_amount
+                                                        qty = math.floor(allocated / (est_premium * 100.0))
+                                                        
+                                                        if qty > 0:
+                                                            order_result = self.broker.place_option_order(
+                                                                option_symbol=contract['symbol'],
+                                                                qty=qty,
+                                                                side='buy'
+                                                            )
+                                                            if order_result.get('success'):
+                                                                result['order'] = order_result
+                                                                result['order_id'] = order_result.get('order_id')
+                                                                trade_executed = True
+                                                                portfolio_count += 1
+                                                                
+                                                                result['qty'] = qty
+                                                                result['total_cost'] = qty * est_premium * 100.0
+                                                                result['fees'] = 0.0
+                                                                result['reason'] = f"✅ BOUGHT {qty} PUT contracts ({contract['symbol']}) at premium ${est_premium:.2f}: {result['reason']}"
+                                                                self.last_trade_timestamps[ticker] = self.get_now()
+                                                                await self._increment_trade_count(ticker)
+                                                            else:
+                                                                result['reason'] = f"Option buy failed: {order_result.get('error')}"
+                                                        else:
+                                                            result['reason'] = f"Skipped: single contract cost (${est_premium * 100:.2f}) exceeds allocation (${allocated:.2f})"
+                                                    else:
+                                                        result['reason'] = "Skipped: option premium estimate could not be retrieved."
+                                                else:
+                                                    result['reason'] = "Skipped: no suitable PUT contract found."
                                     else:
-                                        result['reason'] = "Signal SELL ignored: No open position detected."
-                                        result['action'] = "HOLD"
+                                        # Standard Stock/Crypto Sell execution
+                                        if has_this_pos:
+                                            pos_info = next((p for p in all_positions if p['symbol'].replace("/", "").upper() == ticker_norm), None)
+                                            order_result = self.broker.close_position(ticker)
+                                            if order_result.get('success'):
+                                                result['order'] = order_result
+                                                result['order_id'] = order_result.get('order_id')
+                                                trade_executed = True
+                                                portfolio_count -= 1
+                                                
+                                                order_qty = order_result.get('qty')
+                                                if order_qty and float(order_qty) > 0:
+                                                    result['qty'] = float(order_qty)
+                                                elif pos_info:
+                                                    result['qty'] = float(pos_info['qty'])
+                                                else:
+                                                    result['qty'] = 0
+
+                                                result['total_cost'] = float(pos_info['market_value']) if pos_info else order_result.get('proceeds', 0)
+                                                result['fees'] = float(order_result.get('fees', 0))
+
+                                                if pos_info:
+                                                    entry_price = float(pos_info['avg_price'])
+                                                    exit_price = result['price_raw']
+                                                    qty = float(order_result.get('qty')) if order_result.get('qty') else float(pos_info['qty'])
+                                                    pl = (exit_price - entry_price) * qty
+                                                    pl_pct = ((exit_price / entry_price) - 1) * 100
+                                                    result['pl'] = round(pl, 2)
+                                                    result['pl_pct'] = round(pl_pct, 2)
+                                                    result['reason'] = f"✅ SOLD at {result['price']} (Entry: ${entry_price:.4f}): {result['reason']}"
+                                                    
+                                                    # Accumulate realized P/L for the bot
+                                                    current_realized = t_settings.get('realized_pl', 0.0)
+                                                    t_settings['realized_pl'] = round(current_realized + pl, 2)
+                                                    await self.save_settings()
+                                                else:
+                                                    result['reason'] = f"✅ SOLD at {result['price']}: {result['reason']}"
+                                                self.last_trade_timestamps[ticker] = self.get_now()
+                                                await self._increment_trade_count(ticker)
+                                            else:
+                                                result['reason'] = f"Sell order failed: {order_result.get('error', 'Broker Error')}"
+                                        else:
+                                            result['reason'] = "Signal SELL ignored: No open position detected."
+                                            result['action'] = "HOLD"
                             
                             result['log_type'] = "Active Bot" if is_active else "Watchlist"
                             log_time_min = self.get_now().strftime("%Y-%m-%dT%H:%M")

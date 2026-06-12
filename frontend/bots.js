@@ -14,7 +14,7 @@ let selectedTicker = null;
 let currentBackendTf = "5Min";
 let isAlpacaLinked = false;
 let currentLogTab = "all";
-let currentChartPeriod = "1M";
+let currentChartPeriod = "ALL";
 let portfolioChartInstance = null;
 
 // ──────────────────────────────────────────────
@@ -159,6 +159,17 @@ window.goToDashboardChart = async function(ticker) {
                 // Update timeframe
                 if (settings.timeframe) {
                     localStorage.setItem('lastChartTf', settings.timeframe);
+                    
+                    // Enforce chart ranges based on timeframes when coming from active bots
+                    const midTimeframes = ['15Min', '30Min', '1Hour', '2Hour', '4Hour'];
+                    const shortTimeframes = ['1Min', '2Min', '3Min', '5Min', '10Min'];
+                    
+                    if (midTimeframes.includes(settings.timeframe)) {
+                        localStorage.setItem('lastChartRange', '1M');
+                    } else if (shortTimeframes.includes(settings.timeframe)) {
+                        localStorage.setItem('lastChartRange', '5D');
+                    }
+
                     await fetch(`${API_BASE}/api/settings/timeframe`, {
                         method: 'POST',
                         headers: headers,
@@ -188,6 +199,22 @@ window.goToDashboardChart = async function(ticker) {
                             newPrefs[ind] = true; // Enable in frontend
                         }
                     });
+                    
+                    // Inject bot's custom settings (overrides) into the payload
+                    // so the global chart accurately reflects the bot's custom parameters
+                    if (settings.indicator_overrides) {
+                        for (const [key, val] of Object.entries(settings.indicator_overrides)) {
+                            payload[key] = val;
+                        }
+                    }
+                    
+                    // Save the bot's threshold settings so the Dashboard Backtest modal can auto-load them
+                    if (settings.min_buy_signals !== undefined) {
+                        localStorage.setItem('lastBotBuyThreshold', settings.min_buy_signals);
+                    }
+                    if (settings.min_sell_signals !== undefined) {
+                        localStorage.setItem('lastBotSellThreshold', settings.min_sell_signals);
+                    }
                     
                     // Save to local storage so the UI updates immediately
                     localStorage.setItem('globalIndicatorPrefs', JSON.stringify(newPrefs));
@@ -990,6 +1017,17 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         if (autopilotEl) autopilotEl.checked = false;
         window.handleStrategyAutopilotToggle(false);
 
+        // Reset Options Defaults
+        const optionsToggle = document.getElementById('strategyOptionsToggle');
+        if (optionsToggle) optionsToggle.checked = false;
+        window.handleStrategyOptionsToggle(false);
+        document.getElementById('strategyOptionsTradeAmount').value = 100;
+        document.getElementById('strategyOptionsExpiryDays').value = 7;
+        document.getElementById('strategyOptionsStrikeType').value = "ATM";
+        document.getElementById('strategyOptionsExitStrategy').value = "hybrid";
+        document.getElementById('strategyOptionsStopLoss').value = 50;
+        document.getElementById('strategyOptionsTakeProfit').value = 100;
+
         // Reset Risk Overrides to defaults
         document.getElementById('strategyRiskPerTrade').value = 2.0;
         document.getElementById('strategyMaxDailyDrawdown').value = 5.0;
@@ -1029,6 +1067,22 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         const autopilotEl = document.getElementById('strategyAiAutopilot');
         if (autopilotEl) autopilotEl.checked = aiAutopilot;
         window.handleStrategyAutopilotToggle(aiAutopilot);
+        const aiModelSelect = document.getElementById('strategyAiModel');
+        if (aiModelSelect) {
+            aiModelSelect.value = settings.ai_model || 'llama-3.3-70b-versatile';
+        }
+
+        // Load Options settings
+        const optEnabled = settings.options_trading || false;
+        const optToggle = document.getElementById('strategyOptionsToggle');
+        if (optToggle) optToggle.checked = optEnabled;
+        window.handleStrategyOptionsToggle(optEnabled);
+        document.getElementById('strategyOptionsTradeAmount').value = settings.options_trade_amount !== undefined ? settings.options_trade_amount : 100;
+        document.getElementById('strategyOptionsExpiryDays').value = settings.options_expiry_days !== undefined ? settings.options_expiry_days : 7;
+        document.getElementById('strategyOptionsStrikeType').value = settings.options_strike_type || 'ATM';
+        document.getElementById('strategyOptionsExitStrategy').value = settings.options_exit_strategy || 'hybrid';
+        document.getElementById('strategyOptionsStopLoss').value = settings.options_stop_loss_pct !== undefined ? Math.round(settings.options_stop_loss_pct * 100) : 50;
+        document.getElementById('strategyOptionsTakeProfit').value = settings.options_take_profit_pct !== undefined ? Math.round(settings.options_take_profit_pct * 100) : 100;
 
         // Load Risk Overrides
         document.getElementById('strategyRiskPerTrade').value = settings.risk_per_trade !== undefined ? (settings.risk_per_trade * 100).toFixed(1) : 2.0;
@@ -1063,6 +1117,9 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         const addWatchlistEl = document.getElementById('strategyAddWatchlist');
         if (addWatchlistEl) addWatchlistEl.checked = inWatchlist;
     }
+
+    // Run crypto option status check to disable if it is a crypto coin
+    window.checkStrategyCryptoOptionStatus(currentStrategySymbol);
 
     updateStrategySignalLabels();
     updateStrategyPauseButton();
@@ -1166,12 +1223,41 @@ function updateStrategyPauseButton() {
     }
 }
 
+function populateStrategyAiModelSelect() {
+    const select = document.getElementById('strategyAiModel');
+    if (!select) return;
+    const currentValue = select.value;
+    
+    let html = '';
+    html += '<optgroup label="Groq AI (Cloud)">';
+    html += '  <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile (Default)</option>';
+    html += '  <option value="mixtral-8x7b-32768">mixtral-8x7b-32768</option>';
+    html += '  <option value="llama-3.1-8b-instant">llama-3.1-8b-instant (Fast / Lightweight)</option>';
+    html += '</optgroup>';
+    html += '<optgroup label="Ollama (Local)">';
+    if (window.ollamaModels && window.ollamaModels.length > 0) {
+        window.ollamaModels.forEach(m => {
+            html += `  <option value="ollama/${m}">${m}</option>`;
+        });
+    } else {
+        html += '  <option disabled>No local models found</option>';
+    }
+    html += '</optgroup>';
+    select.innerHTML = html;
+    
+    if (currentValue) {
+        select.value = currentValue;
+    }
+}
+
 window.handleStrategyAutopilotToggle = function (enabled) {
-    const warning = document.getElementById('strategyAiAutopilotWarning');
+    const section = document.getElementById('strategyAiAutopilotSection');
     const sellModeSelect = document.getElementById('strategySellMode');
+    const optionsCard = document.getElementById('strategyOptionsCard');
     
     if (enabled) {
-        warning?.classList.remove('hidden');
+        populateStrategyAiModelSelect();
+        section?.classList.remove('hidden');
         if (sellModeSelect) {
             sellModeSelect.disabled = true;
             sellModeSelect.style.opacity = '0.5';
@@ -1182,8 +1268,12 @@ window.handleStrategyAutopilotToggle = function (enabled) {
             chk.parentElement.style.opacity = '0.5';
             chk.parentElement.style.pointerEvents = 'none';
         });
+        if (optionsCard) {
+            optionsCard.style.opacity = '0.5';
+            optionsCard.style.pointerEvents = 'none';
+        }
     } else {
-        warning?.classList.add('hidden');
+        section?.classList.add('hidden');
         if (sellModeSelect) {
             sellModeSelect.disabled = false;
             sellModeSelect.style.opacity = '1';
@@ -1194,6 +1284,77 @@ window.handleStrategyAutopilotToggle = function (enabled) {
             chk.parentElement.style.opacity = '1';
             chk.parentElement.style.pointerEvents = 'auto';
         });
+        if (optionsCard) {
+            const symbol = currentStrategySymbol || '';
+            const isCrypto = symbol && (
+                symbol.toUpperCase().includes('USD') || 
+                symbol.toUpperCase().includes('USDT') || 
+                symbol.toUpperCase().includes('USDC') ||
+                ['BTC', 'ETH', 'LTC', 'SOL', 'DOGE', 'ADA', 'DOT', 'SHIB', 'AVAX'].some(c => symbol.toUpperCase().startsWith(c))
+            );
+            if (!isCrypto) {
+                optionsCard.style.opacity = '1';
+                optionsCard.style.pointerEvents = 'auto';
+            }
+        }
+    }
+};
+
+window.handleStrategyOptionsToggle = function (enabled) {
+    const section = document.getElementById('strategyOptionsSection');
+    const riskCard = document.getElementById('riskControlsContent')?.parentElement;
+    const autopilotCard = document.getElementById('strategyAiAutopilot')?.closest('.border');
+    
+    if (enabled) {
+        section?.classList.remove('hidden');
+        if (riskCard) {
+            riskCard.style.opacity = '0.5';
+            riskCard.style.pointerEvents = 'none';
+        }
+        if (autopilotCard) {
+            autopilotCard.style.opacity = '0.5';
+            autopilotCard.style.pointerEvents = 'none';
+        }
+    } else {
+        section?.classList.add('hidden');
+        const isAiOn = document.getElementById('strategyAiAutopilot')?.checked || false;
+        if (!isAiOn) {
+            if (riskCard) {
+                riskCard.style.opacity = '1';
+                riskCard.style.pointerEvents = 'auto';
+            }
+        }
+        if (autopilotCard) {
+            autopilotCard.style.opacity = '1';
+            autopilotCard.style.pointerEvents = 'auto';
+        }
+    }
+};
+
+window.checkStrategyCryptoOptionStatus = function (symbol) {
+    const isCrypto = symbol && (
+        symbol.toUpperCase().includes('USD') || 
+        symbol.toUpperCase().includes('USDT') || 
+        symbol.toUpperCase().includes('USDC') ||
+        ['BTC', 'ETH', 'LTC', 'SOL', 'DOGE', 'ADA', 'DOT', 'SHIB', 'AVAX'].some(c => symbol.toUpperCase().startsWith(c))
+    );
+    const optionsToggle = document.getElementById('strategyOptionsToggle');
+    const optionsCard = document.getElementById('strategyOptionsCard');
+    
+    if (isCrypto) {
+        if (optionsToggle && optionsToggle.checked) {
+            optionsToggle.checked = false;
+            window.handleStrategyOptionsToggle(false);
+        }
+        if (optionsCard) {
+            optionsCard.style.opacity = '0.4';
+            optionsCard.style.pointerEvents = 'none';
+        }
+    } else {
+        if (optionsCard) {
+            optionsCard.style.opacity = '1';
+            optionsCard.style.pointerEvents = 'auto';
+        }
     }
 };
 
@@ -1227,6 +1388,7 @@ async function saveTickerSettings() {
             indicators: indicators,
             paused: window._strategyPaused || false,
             ai_autopilot: document.getElementById('strategyAiAutopilot').checked || false,
+            ai_model: document.getElementById('strategyAiModel')?.value || 'llama-3.3-70b-versatile',
             risk_per_trade: parseFloat(document.getElementById('strategyRiskPerTrade').value) / 100.0,
             max_daily_drawdown: parseFloat(document.getElementById('strategyMaxDailyDrawdown').value) / 100.0,
             max_position_pct: parseFloat(document.getElementById('strategyMaxPositionPct').value) / 100.0,
@@ -1235,7 +1397,14 @@ async function saveTickerSettings() {
             take_profit_multiplier: parseFloat(document.getElementById('strategyAtrTpMult').value),
             cooldown_minutes: document.getElementById('strategyCooldownMinutes').value === 'custom' 
                 ? (parseInt(document.getElementById('strategyCooldownCustomMinutes').value) || 60) 
-                : (parseInt(document.getElementById('strategyCooldownMinutes').value) || 60)
+                : (parseInt(document.getElementById('strategyCooldownMinutes').value) || 60),
+            options_trading: document.getElementById('strategyOptionsToggle').checked || false,
+            options_trade_amount: parseFloat(document.getElementById('strategyOptionsTradeAmount').value) || 100,
+            options_expiry_days: parseInt(document.getElementById('strategyOptionsExpiryDays').value) || 7,
+            options_strike_type: document.getElementById('strategyOptionsStrikeType').value || 'ATM',
+            options_exit_strategy: document.getElementById('strategyOptionsExitStrategy').value || 'hybrid',
+            options_stop_loss_pct: parseFloat(document.getElementById('strategyOptionsStopLoss').value) / 100.0,
+            options_take_profit_pct: parseFloat(document.getElementById('strategyOptionsTakeProfit').value) / 100.0
         }
     };
 
@@ -1247,8 +1416,15 @@ async function saveTickerSettings() {
             body: JSON.stringify(data)
         });
         if (response.ok) {
+            // Optimistically update the cache so instant navigation works flawlessly
+            if (window.lastBotsData && window.lastBotsData.ticker_settings) {
+                window.lastBotsData.ticker_settings[currentStrategySymbol] = {
+                    ...window.lastBotsData.ticker_settings[currentStrategySymbol],
+                    ...data.settings
+                };
+            }
             closeStrategyModal();
-            fetchBotsData();
+            fetchBotsData(); // let it refresh in background
         }
     } catch (e) {
         console.error('Error saving ticker settings:', e);
@@ -1313,83 +1489,85 @@ async function fetchBotsData() {
         window.lastBotsData = data;
         window.lastDashboardData = data;
 
-        // Connection status
-        isAlpacaLinked = !data.simulation && data.has_keys;
-        updateAlpacaStatus(isAlpacaLinked, data);
-
-        const connPrompt = document.getElementById('connectionPrompt');
-        const dashContent = document.getElementById('dashboardContent');
-
-        if (!isAlpacaLinked && !data.has_keys) {
-            if (connPrompt) connPrompt.classList.remove('hidden');
-            if (dashContent) dashContent.classList.add('hidden');
-            return; // Don't try to render portfolio cards or bots if we are showing the prompt
-        } else {
-            if (connPrompt) connPrompt.classList.add('hidden');
-            if (dashContent) dashContent.classList.remove('hidden');
-            fetchPortfolioHistory();
-        }
-
-        // Portfolio cards
-        if (document.getElementById('totalCapital')) {
-            document.getElementById('totalCapital').textContent = data.capital || '---';
-            document.getElementById('totalCapital').classList.remove('animate-pulse');
-        }
-        if (document.getElementById('cashDisplay')) {
-            document.getElementById('cashDisplay').textContent = `Cash: ${data.cash || '---'}`;
-        }
-        if (document.getElementById('openPositions')) {
-            document.getElementById('openPositions').textContent = data.openPositions || '0';
-            document.getElementById('openPositions').classList.remove('animate-pulse');
-            if (document.getElementById('positionsList')) {
-                document.getElementById('positionsList').textContent = data.positionsList || 'No positions';
-            }
-        }
-        if (document.getElementById('dailyPL')) {
-            const plEl = document.getElementById('dailyPL');
-            plEl.textContent = data.dailyPL || '$0.00 (0.0%)';
-            plEl.classList.remove('animate-pulse');
-            const plVal = parseFloat((data.dailyPL || '').replace(/[^-\d.]/g, ''));
-            plEl.className = `card-value ${plVal >= 0 ? 'text-emerald-600' : 'text-red-500'}`;
-        }
-        if (document.getElementById('totalProfit')) {
-            const tpEl = document.getElementById('totalProfit');
-            tpEl.textContent = data.totalProfit || '$0.00 (0.0%)';
-            tpEl.classList.remove('animate-pulse');
-            const tpVal = parseFloat((data.totalProfit || '').replace(/[^-\d.]/g, ''));
-            tpEl.className = `card-value ${tpVal >= 0 ? 'text-emerald-600' : 'text-red-500'}`;
-        }
-
-        // Last scan time
-
-        // Strategy timeframe sync
-        if (data.strategyTimeframe) {
-            currentBackendTf = data.strategyTimeframe;
-        }
-
-        // Active bots list
-        renderTradelist(data.botScans || data.watchlistScans, data.tradelist, data.tickerAmounts);
-
-        // Auto-select first active bot if none selected
-        if (!selectedTicker && data.tradelist && data.tradelist.length > 0) {
-            selectedTicker = data.tradelist[0];
-        }
-
-        // Fetch AI Indicator for selected bot (reuses caching mechanism)
-        if (selectedTicker) {
-            fetchAIIndicator(selectedTicker, currentBackendTf);
-        }
-
-        // Execution log
-        latestScanHistory = data.recentTrades || [];
-        latestOrderHistory = data.orderHistory || [];
-        latestPendingOrders = data.pendingOrders || [];
-        latestPositions = data.positions || [];
-        renderTradeLog(latestScanHistory, latestOrderHistory, latestPendingOrders, latestPositions);
-
+        applyBotsData(data);
     } catch (error) {
         console.error('[bots] Fetch error:', error);
     }
+}
+
+function applyBotsData(data) {
+    // Connection status
+    isAlpacaLinked = !data.simulation && data.has_keys;
+    updateAlpacaStatus(isAlpacaLinked, data);
+
+    const connPrompt = document.getElementById('connectionPrompt');
+    const dashContent = document.getElementById('dashboardContent');
+
+    if (!isAlpacaLinked && !data.has_keys) {
+        if (connPrompt) connPrompt.classList.remove('hidden');
+        if (dashContent) dashContent.classList.add('hidden');
+        return; // Don't try to render portfolio cards or bots if we are showing the prompt
+    } else {
+        if (connPrompt) connPrompt.classList.add('hidden');
+        if (dashContent) dashContent.classList.remove('hidden');
+    }
+
+    // Portfolio cards
+    if (document.getElementById('totalCapital')) {
+        document.getElementById('totalCapital').textContent = data.capital || '---';
+        document.getElementById('totalCapital').classList.remove('animate-pulse');
+    }
+    if (document.getElementById('cashDisplay')) {
+        document.getElementById('cashDisplay').textContent = `Cash: ${data.cash || '---'}`;
+    }
+    if (document.getElementById('openPositions')) {
+        document.getElementById('openPositions').textContent = data.openPositions || '0';
+        document.getElementById('openPositions').classList.remove('animate-pulse');
+        if (document.getElementById('positionsList')) {
+            document.getElementById('positionsList').textContent = data.positionsList || 'No positions';
+        }
+    }
+    if (document.getElementById('dailyPL')) {
+        const plEl = document.getElementById('dailyPL');
+        plEl.textContent = data.dailyPL || '$0.00 (0.0%)';
+        plEl.classList.remove('animate-pulse');
+        const plVal = parseFloat((data.dailyPL || '').replace(/[^-\d.]/g, ''));
+        plEl.className = `card-value ${plVal >= 0 ? 'text-emerald-600' : 'text-red-500'}`;
+    }
+    if (document.getElementById('totalProfit')) {
+        const tpEl = document.getElementById('totalProfit');
+        tpEl.textContent = data.totalProfit || '$0.00 (0.0%)';
+        tpEl.classList.remove('animate-pulse');
+        const tpVal = parseFloat((data.totalProfit || '').replace(/[^-\d.]/g, ''));
+        tpEl.className = `card-value ${tpVal >= 0 ? 'text-emerald-600' : 'text-red-500'}`;
+    }
+
+    // Last scan time
+
+    // Strategy timeframe sync
+    if (data.strategyTimeframe) {
+        currentBackendTf = data.strategyTimeframe;
+    }
+
+    // Active bots list
+    renderTradelist(data.botScans || data.watchlistScans, data.tradelist, data.tickerAmounts);
+
+    // Auto-select first active bot if none selected
+    if (!selectedTicker && data.tradelist && data.tradelist.length > 0) {
+        selectedTicker = data.tradelist[0];
+    }
+
+    // Fetch AI Indicator for selected bot (reuses caching mechanism)
+    if (selectedTicker) {
+        fetchAIIndicator(selectedTicker, currentBackendTf);
+    }
+
+    // Execution log
+    latestScanHistory = data.recentTrades || [];
+    latestOrderHistory = data.orderHistory || [];
+    latestPendingOrders = data.pendingOrders || [];
+    latestPositions = data.positions || [];
+    renderTradeLog(latestScanHistory, latestOrderHistory, latestPendingOrders, latestPositions);
 }
 
 function updateAlpacaStatus(isLinked, data = null) {
@@ -1659,6 +1837,7 @@ window.confirmAndDeployBot = async function () {
                 timeframe: timeframe,
                 paused: window._strategyPaused || false,
                 ai_autopilot: document.getElementById('strategyAiAutopilot').checked || false,
+                ai_model: document.getElementById('strategyAiModel')?.value || 'llama-3.3-70b-versatile',
                 risk_per_trade: parseFloat(document.getElementById('strategyRiskPerTrade').value) / 100.0,
                 max_daily_drawdown: parseFloat(document.getElementById('strategyMaxDailyDrawdown').value) / 100.0,
                 max_position_pct: parseFloat(document.getElementById('strategyMaxPositionPct').value) / 100.0,
@@ -1667,7 +1846,14 @@ window.confirmAndDeployBot = async function () {
                 take_profit_multiplier: parseFloat(document.getElementById('strategyAtrTpMult').value),
                 cooldown_minutes: document.getElementById('strategyCooldownMinutes').value === 'custom' 
                     ? (parseInt(document.getElementById('strategyCooldownCustomMinutes').value) || 60) 
-                    : (parseInt(document.getElementById('strategyCooldownMinutes').value) || 60)
+                    : (parseInt(document.getElementById('strategyCooldownMinutes').value) || 60),
+                options_trading: document.getElementById('strategyOptionsToggle').checked || false,
+                options_trade_amount: parseFloat(document.getElementById('strategyOptionsTradeAmount').value) || 100,
+                options_expiry_days: parseInt(document.getElementById('strategyOptionsExpiryDays').value) || 7,
+                options_strike_type: document.getElementById('strategyOptionsStrikeType').value || 'ATM',
+                options_exit_strategy: document.getElementById('strategyOptionsExitStrategy').value || 'hybrid',
+                options_stop_loss_pct: parseFloat(document.getElementById('strategyOptionsStopLoss').value) / 100.0,
+                options_take_profit_pct: parseFloat(document.getElementById('strategyOptionsTakeProfit').value) / 100.0
             })
         });
 
@@ -1717,8 +1903,44 @@ async function unlinkAlpaca() {
     const waitForAuth = setInterval(() => {
         if (window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true')) {
             clearInterval(waitForAuth);
-            fetchBotsData();
-            setInterval(fetchBotsData, REFRESH_INTERVAL);
+            
+            // Prioritize loading the dashboard layout and chart first!
+            const dashContent = document.getElementById('dashboardContent');
+            if (dashContent) dashContent.classList.remove('hidden');
+
+            // INSTANT RENDER: Check for prefetched data from dashboard page
+            let usedCache = false;
+            try {
+                const cachedRaw = sessionStorage.getItem('botsDataCache');
+                if (cachedRaw) {
+                    const { data, fetchedAt } = JSON.parse(cachedRaw);
+                    const ageMs = Date.now() - fetchedAt;
+                    if (ageMs < 60000) { // Cache valid for 60 seconds
+                        console.log(`[bots] Using prefetched cache (${Math.round(ageMs/1000)}s old) for instant render.`);
+                        window.lastBotsData = data;
+                        window.lastDashboardData = data;
+                        applyBotsData(data); // Render immediately from cache
+                        usedCache = true;
+                    }
+                }
+            } catch (e) {
+                console.warn('[bots] Could not read bots cache:', e);
+            }
+
+            // Always fetch fresh data — immediately if no cache, delayed if cache was used
+            fetchPortfolioHistory();
+            if (!usedCache) {
+                fetchBotsData(); // Full load if no cache
+            } else {
+                // Soft refresh after a short delay when cache was used
+                setTimeout(() => fetchBotsData(), 2000);
+            }
+            loadOllamaModels();
+            
+            setInterval(() => {
+                fetchBotsData();
+                fetchPortfolioHistory();
+            }, REFRESH_INTERVAL);
         }
     }, 200);
 })();
@@ -2260,18 +2482,60 @@ async function fetchPortfolioHistory() {
 // ──────────────────────────────────────────────
 // premium AI indicator & news sentiment briefing engine (decoupled & cached)
 // ──────────────────────────────────────────────
-const AI_INDICATOR_CACHE = new Map();
+window.ollamaModels = [];
+async function loadOllamaModels() {
+    try {
+        const headers = await getAuthHeaders();
+        const res = await fetch(`${API_BASE}/api/ollama/models`, { headers });
+        if (res.ok) {
+            const data = await res.json();
+            if (data.status === 'online') {
+                window.ollamaModels = data.models || [];
+            } else {
+                window.ollamaModels = [];
+            }
+        }
+    } catch (e) {
+        console.warn('[init] Failed to fetch Ollama models:', e);
+        window.ollamaModels = [];
+    }
+}
+
 const AI_INDICATOR_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 let _aiIndicatorFetchId = 0; // prevents stale response rendering
 
+function getAICache(key) {
+    try {
+        const cachedStr = sessionStorage.getItem(`ai_cache_${key}`);
+        if (cachedStr) {
+            const cached = JSON.parse(cachedStr);
+            if ((Date.now() - cached.timestamp) < AI_INDICATOR_CACHE_TTL) {
+                return cached;
+            }
+            sessionStorage.removeItem(`ai_cache_${key}`);
+        }
+    } catch (e) { console.error('Cache read error', e); }
+    return null;
+}
+
+function setAICache(key, data) {
+    try {
+        sessionStorage.setItem(`ai_cache_${key}`, JSON.stringify({
+            data: data,
+            timestamp: Date.now()
+        }));
+    } catch (e) { console.error('Cache write error', e); }
+}
+
 async function fetchAIIndicator(ticker, timeframe, force = false) {
     if (!ticker) return;
-    const key = `${ticker}|${timeframe}`;
+    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const key = `${ticker}|${timeframe}|${selectedModel}`;
 
-    // Check client-side cache first (unless forced)
+    // Check client-side session cache first (unless forced)
     if (!force) {
-        const cached = AI_INDICATOR_CACHE.get(key);
-        if (cached && (Date.now() - cached.timestamp) < AI_INDICATOR_CACHE_TTL) {
+        const cached = getAICache(key);
+        if (cached) {
             renderAIIndicatorCard(cached.data, true);
             return;
         }
@@ -2283,45 +2547,117 @@ async function fetchAIIndicator(ticker, timeframe, force = false) {
     const fetchId = ++_aiIndicatorFetchId;
     try {
         const headers = await getAuthHeaders();
-        const url = `${API_BASE}/api/ai-indicator?ticker=${encodeURIComponent(ticker)}&timeframe=${encodeURIComponent(timeframe)}${force ? '&force=true' : ''}`;
+        const url = `${API_BASE}/api/ai-indicator?ticker=${encodeURIComponent(ticker)}&timeframe=${encodeURIComponent(timeframe)}&model=${encodeURIComponent(selectedModel)}${force ? '&force=true' : ''}`;
         const res = await fetch(url, { headers });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
 
+        // Guard against stale responses
         if (fetchId !== _aiIndicatorFetchId) return;
-
         if (data.error) {
+            if (selectedModel !== 'llama-3.3-70b-versatile') {
+                console.warn(`[ai-indicator] Model ${selectedModel} failed. Falling back to default Groq model.`);
+                localStorage.setItem('selected_ai_model', 'llama-3.3-70b-versatile');
+                fetchAIIndicator(ticker, timeframe, force);
+                return;
+            }
             _showAIIndicatorError(data.error, ticker);
             return;
         }
 
-        // Cache the response locally
-        AI_INDICATOR_CACHE.set(key, {
-            data: data,
-            timestamp: Date.now()
-        });
-
+        setAICache(key, data);
         renderAIIndicatorCard(data, false);
-
-    } catch (err) {
+    } catch (e) {
         if (fetchId === _aiIndicatorFetchId) {
+            console.error('[ai-indicator] Fetch error:', e);
+            if (selectedModel !== 'llama-3.3-70b-versatile') {
+                console.warn(`[ai-indicator] Fetch failed for ${selectedModel}. Falling back to default Groq model.`);
+                localStorage.setItem('selected_ai_model', 'llama-3.3-70b-versatile');
+                fetchAIIndicator(ticker, timeframe, force);
+                return;
+            }
             _showAIIndicatorError('Could not load AI analysis', ticker);
         }
-        console.error('AI analysis load error:', err);
     }
 }
+
+function _getAIModelSelectHtml(selectedModel, isError = false) {
+    let optionsHtml = '';
+    optionsHtml += '<optgroup label="Groq AI (Cloud)">';
+    const groqModels = [
+        { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B' },
+        { value: 'mixtral-8x7b-32768', label: 'Mixtral 8x7B' },
+        { value: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B (Fast)' }
+    ];
+    groqModels.forEach(m => {
+        const sel = selectedModel === m.value ? 'selected' : '';
+        optionsHtml += `<option value="${m.value}" ${sel}>${m.label}</option>`;
+    });
+    optionsHtml += '</optgroup>';
+
+    optionsHtml += '<optgroup label="Ollama (Local)">';
+    if (window.ollamaModels && window.ollamaModels.length > 0) {
+        window.ollamaModels.forEach(m => {
+            const val = `ollama/${m}`;
+            const sel = selectedModel === val ? 'selected' : '';
+            optionsHtml += `<option value="${val}" ${sel}>${m}</option>`;
+        });
+    } else {
+        optionsHtml += `<option disabled>No local models found</option>`;
+    }
+    optionsHtml += '</optgroup>';
+
+    const borderCls = isError ? 'border-red-200 text-red-900 focus:ring-red-400' : 'border-amber-200/50 text-amber-900 focus:ring-amber-400';
+    return `
+        <select onchange="changeAIIndicatorModel(this.value)" class="bg-white/80 backdrop-blur border ${borderCls} text-[10px] font-black px-2 py-0.5 rounded-lg shadow-sm focus:ring-1 outline-none cursor-pointer">
+            ${optionsHtml}
+        </select>
+    `;
+}
+
+window.changeAIIndicatorModel = async function (model) {
+    localStorage.setItem('selected_ai_model', model);
+    try {
+        const headers = await getAuthHeaders();
+        await fetch(`${API_BASE}/api/settings/indicators?context=dashboard`, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({ AI_INDICATOR_MODEL: model })
+        });
+    } catch (e) {
+        console.error('[ai-indicator] Failed to save model settings to backend:', e);
+    }
+    const ticker = selectedTicker || 'TSLA';
+    const timeframe = currentBackendTf || '1Hour';
+    _showAIIndicatorLoading(ticker);
+    try {
+        await fetchAIIndicator(ticker, timeframe, false);
+    } catch (err) {
+        console.error(err);
+    }
+};
 
 function _showAIIndicatorLoading(ticker) {
     const el = document.getElementById('aiIndicatorCard');
     if (!el) return;
+
+    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const isOllamaActive = selectedModel.startsWith('ollama/') || selectedModel.startsWith('ollama:');
+    const badgeHtml = isOllamaActive
+        ? `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-indigo-500 to-blue-600 text-white border border-indigo-600/50 shadow-sm animate-pulse">OLLAMA</span>`
+        : `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-amber-200 to-amber-300 text-amber-800 border border-amber-400/50 shadow-sm animate-pulse">GROQ AI</span>`;
+    const selectHtml = _getAIModelSelectHtml(selectedModel, false);
 
     el.className = 'ai-indicator-card p-4 rounded-xl border relative overflow-hidden transition-all duration-300 border-indigo-100 bg-white/40 backdrop-blur-md animate-pulse shadow-sm';
     el.innerHTML = `
         <div class="flex items-center justify-between mb-3 relative z-10">
             <div class="flex items-center gap-2">
                 <span class="text-base">🤖</span>
-                <span class="font-black text-xs text-indigo-400 tracking-wide uppercase">BotBulls AI Analysis - ${ticker || '---'}</span>
-                <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-bold bg-indigo-50 text-indigo-400 border border-indigo-200/50">Groq</span>
+                <span class="font-black text-xs text-amber-900 tracking-wide uppercase">BotBulls AI Analysis - ${ticker || '---'}</span>
+                ${badgeHtml}
+            </div>
+            <div class="flex items-center gap-2 relative z-30">
+                ${selectHtml}
             </div>
         </div>
         <div class="space-y-2 mt-4 relative z-10 text-left">
@@ -2337,15 +2673,19 @@ function _showAIIndicatorError(err, ticker) {
     const el = document.getElementById('aiIndicatorCard');
     if (!el) return;
 
+    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const selectHtml = _getAIModelSelectHtml(selectedModel, true);
+
     el.className = 'ai-indicator-card p-4 rounded-xl border relative overflow-hidden transition-all duration-300 border-red-200/60 bg-red-50/20 shadow-sm';
     el.innerHTML = `
         <div class="flex items-center justify-between mb-3 relative z-10">
             <div class="flex items-center gap-2">
                 <span class="text-base">🤖</span>
                 <span class="font-black text-xs text-red-800 tracking-wide uppercase">BotBulls AI Analysis - ${ticker || '---'}</span>
-                <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-bold bg-red-100 text-red-600 border border-red-200/50">Groq</span>
+                <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-red-100 text-red-700 border border-red-300/50 shadow-sm">ERROR</span>
             </div>
             <div class="flex items-center gap-2 relative z-30">
+                ${selectHtml}
                 <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-red-500 hover:text-red-700 bg-red-100/50 hover:bg-red-100 transition-colors border border-red-300/30">
                     ℹ
                 </button>
@@ -2381,7 +2721,7 @@ function renderAIIndicatorCard(data, fromCache = false) {
     const sentConfPct = Math.round(sentConfidence * 100);
 
     const fmtPrice = (v) => (v == null || parseFloat(v) === 0) ? '—' : (parseFloat(v) < 10 ? `$${parseFloat(v).toFixed(4)}` : `$${parseFloat(v).toFixed(2)}`);
-    const fmtUsd   = (v) => (v == null || parseFloat(v) === 0) ? '—' : `$${parseFloat(v).toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0})}`;
+    const fmtUsd = (v) => (v == null || parseFloat(v) === 0) ? '—' : `$${parseFloat(v).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 
     const confBarWidth = `${confPct}%`;
     const confBarColor = confPct >= 70 ? 'bg-emerald-500' : confPct >= 45 ? 'bg-amber-500' : 'bg-rose-500';
@@ -2408,31 +2748,39 @@ function renderAIIndicatorCard(data, fromCache = false) {
     }
 
     const sigColors = {
-        BUY:  { bg: 'ai-indicator-buy',  badge: 'bg-emerald-100 text-emerald-700 border-emerald-300/50', icon: '▲', iconCls: 'text-emerald-600', regimeCls: 'text-emerald-600' },
-        SELL: { bg: 'ai-indicator-sell', badge: 'bg-rose-100 text-rose-700 border-rose-300/50',       icon: '▼', iconCls: 'text-rose-600',    regimeCls: 'text-rose-600' },
-        HOLD: { bg: 'ai-indicator-hold', badge: 'bg-slate-100 text-slate-700 border-slate-300/50',    icon: '●', iconCls: 'text-slate-500',   regimeCls: 'text-slate-500' }
+        BUY: { bg: 'ai-indicator-buy', badge: 'bg-emerald-100 text-emerald-700 border-emerald-300/50', icon: '▲', iconCls: 'text-emerald-600', regimeCls: 'text-emerald-600' },
+        SELL: { bg: 'ai-indicator-sell', badge: 'bg-rose-100 text-rose-700 border-rose-300/50', icon: '▼', iconCls: 'text-rose-600', regimeCls: 'text-rose-600' },
+        HOLD: { bg: 'ai-indicator-hold', badge: 'bg-slate-100 text-slate-700 border-slate-300/50', icon: '●', iconCls: 'text-slate-500', regimeCls: 'text-slate-500' }
     };
     const colors = sigColors[signal] || sigColors['HOLD'];
 
     const cachedBadge = cached
-        ? `<span class="text-[0.5rem] text-violet-500 opacity-60 ml-1">cached</span>`
+        ? `<span class="text-[0.5rem] text-amber-600 opacity-60 ml-1">cached</span>`
         : '';
 
-    el.className = `ai-indicator-card ${colors.bg} relative overflow-hidden p-4 rounded-xl border transition-all duration-300`;
+    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const isOllamaActive = selectedModel.startsWith('ollama/') || selectedModel.startsWith('ollama:');
+    const badgeHtml = isOllamaActive
+        ? `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-indigo-500 to-blue-600 text-white border border-indigo-600/50 shadow-sm">OLLAMA</span>`
+        : `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-amber-200 to-amber-300 text-amber-800 border border-amber-400/50 shadow-sm">GROQ AI</span>`;
+    const selectHtml = _getAIModelSelectHtml(selectedModel, false);
+
+    el.className = `ai-indicator-card ${colors.bg} relative overflow-hidden p-4 rounded-xl border border-amber-200/60 bg-gradient-to-br from-amber-50/50 to-orange-50/30 transition-all duration-300`;
     el.innerHTML = `
-        <div class="ai-orb"></div>
+        <div class="ai-orb bg-gradient-to-r from-amber-400 to-orange-500 opacity-20"></div>
         <div class="flex items-center justify-between mb-3 relative z-10">
             <div class="flex items-center gap-2">
-                <span class="text-base">🤖</span>
-                <span class="font-black text-xs text-violet-800 tracking-wide uppercase" id="aiIndicatorHeader">BotBulls AI Analysis - ${data.ticker || selectedTicker || '---'}</span>
-                <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-bold bg-violet-100 text-violet-600 border border-violet-300/50">Groq</span>
+                <span class="text-base drop-shadow-sm">🤖</span>
+                <span class="font-black text-xs text-amber-900 tracking-wide uppercase" id="aiIndicatorHeader">BotBulls AI Analysis - ${data.ticker || selectedTicker || '---'}</span>
+                ${badgeHtml}
                 ${cachedBadge}
             </div>
             <div class="flex items-center gap-2 relative z-30">
-                <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-violet-500 hover:text-violet-700 bg-violet-100/50 hover:bg-violet-100 transition-colors border border-violet-300/30">
+                ${selectHtml}
+                <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm">
                     ℹ
                 </button>
-                <button id="aiRefreshBtn" onclick="refreshAIIndicator()" title="Force refresh AI analysis" class="w-5 h-5 rounded-full flex items-center justify-center text-xs text-violet-500 hover:text-violet-700 bg-violet-100/50 hover:bg-violet-100 transition-colors border border-violet-300/30">
+                <button id="aiRefreshBtn" onclick="refreshAIIndicator()" title="Force refresh AI analysis" class="w-5 h-5 rounded-full flex items-center justify-center text-xs text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm">
                     ↻
                 </button>
             </div>
@@ -2539,7 +2887,7 @@ function renderAIIndicatorCard(data, fromCache = false) {
     `;
 }
 
-window.refreshAIIndicator = async function() {
+window.refreshAIIndicator = async function () {
     const refreshBtn = document.getElementById('aiRefreshBtn');
     if (refreshBtn) {
         refreshBtn.disabled = true;
@@ -2559,12 +2907,12 @@ window.refreshAIIndicator = async function() {
     }
 };
 
-window.openAIInfoModal = function() {
+window.openAIInfoModal = function () {
     const modal = document.getElementById('aiInfoModal');
     if (modal) modal.classList.remove('hidden');
 };
 
-window.closeAIInfoModal = function() {
+window.closeAIInfoModal = function () {
     const modal = document.getElementById('aiInfoModal');
     if (modal) modal.classList.add('hidden');
 };

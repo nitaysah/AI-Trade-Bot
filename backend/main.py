@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 import asyncio
+import threading
 from datetime import datetime, timedelta
 import pytz
 import firebase_admin
@@ -36,6 +37,10 @@ from engine import UserManager, UserEngine
 import config as global_config
 from user_config import set_user_config, get_user_config
 from ai_indicator import get_ai_indicator, clear_ai_cache
+from cache_manager import TTLCacheStore, stable_cache_key
+
+# Global threading event for cancelling backtests on page reload
+global_backtest_cancel = threading.Event()
 
 # ──────────────────────────────────────────────
 # Secret Encryption Vault
@@ -102,7 +107,22 @@ if not firebase_admin._apps:
 db = firestore.client()
 user_manager = UserManager(db)
 _webull_market_data_broker = None
-_chart_analysis_cache = {}
+_chart_analysis_cache = TTLCacheStore(maxsize=256)
+_quote_cache = TTLCacheStore(maxsize=512)
+
+
+def _cache_settings_hash(eng: UserEngine, ticker: str | None = None, context: str = "dashboard") -> str:
+    ticker_key = (ticker or "").upper()
+    ctx_data = eng.config.contexts.get(context, {}) if getattr(eng.config, "contexts", None) else {}
+    payload = {
+        "ctx": context,
+        "active_toggles": eng.config.active_toggles,
+        "active_parameters": eng.config.active_parameters,
+        "ticker_settings": eng.config.TICKER_SETTINGS.get(ticker_key, {}) if ticker_key else {},
+        "ctx_toggles": ctx_data.get("toggles", {}),
+        "ctx_params": ctx_data.get("parameters", {}),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
 def _chart_cache_ttl(timeframe: str) -> int:
@@ -128,22 +148,30 @@ def _format_scan_price(price) -> str:
     return f"${p:.4f}" if p < 10 else f"${p:.2f}"
 
 
-def _get_cached_chart_analysis(ticker: str, timeframe: str, force: bool = False):
+def _clear_chart_analysis_cache(ticker: str = None, timeframe: str = None):
+    ticker_key = _normalize_quote_symbol(ticker) if ticker else None
+    timeframe_key = timeframe.upper() if timeframe else None
+    _chart_analysis_cache.delete_matching(
+        lambda k: (
+            (not ticker_key or k[2] == ticker_key)
+            and (not timeframe_key or k[3] == timeframe_key)
+        )
+    )
+
+
+def _get_cached_chart_analysis(ticker: str, timeframe: str, eng: UserEngine, force: bool = False, source: str = "dashboard"):
     ticker_key = _normalize_quote_symbol(ticker)
     timeframe_key = timeframe or get_user_config().DEFAULT_TIMEFRAME
-    cache_key = (ticker_key, timeframe_key)
-    now_ts = time.time()
-    cached = _chart_analysis_cache.get(cache_key)
-    if cached and not force and now_ts - cached["timestamp"] < _chart_cache_ttl(timeframe_key):
-        return cached["analysis"], True
+    settings_hash = _cache_settings_hash(eng, ticker_key, source)
+    cache_key = stable_cache_key(eng.uid, source, ticker_key, timeframe_key, "webull", settings_hash, 1)
+    cached, age = _chart_analysis_cache.get_with_age(cache_key, _chart_cache_ttl(timeframe_key))
+    if cached and not force:
+        return cached["analysis"], True, age
 
     analysis = get_full_analysis(ticker_key, timeframe=timeframe_key, data_source="webull")
     if analysis:
-        _chart_analysis_cache[cache_key] = {
-            "analysis": analysis,
-            "timestamp": now_ts
-        }
-    return analysis, False
+        _chart_analysis_cache.set(cache_key, {"analysis": analysis})
+    return analysis, False, 0.0
 
 
 def _technical_scan_from_analysis(ticker: str, timeframe: str, analysis: dict, use_bot_settings: bool = False):
@@ -196,6 +224,46 @@ def _format_quote_price(symbol: str, price) -> str:
     is_crypto = any(clean.endswith(base) for base in ["USD", "USDT", "USDC"])
     decimals = 4 if is_crypto or price_float < 10 else 2
     return f"${price_float:.{decimals}f}"
+
+
+def _get_cached_latest_prices(eng: UserEngine, tickers: list) -> dict:
+    clean_tickers = list(dict.fromkeys(_normalize_quote_symbol(t) for t in tickers if _normalize_quote_symbol(t)))
+    if not clean_tickers:
+        return {}
+
+    result = {}
+    now_ts = time.time()
+    misses = []
+
+    for ticker in clean_tickers:
+        cache_key = stable_cache_key(eng.uid, ticker, "quote", 1)
+        cached, age = _quote_cache.get_with_age(cache_key, 3)
+        if cached is not None:
+            result[ticker] = cached
+        else:
+            misses.append(ticker)
+
+    if misses:
+        provider = (
+            eng.broker
+            if hasattr(eng.broker, "get_latest_prices") and getattr(eng.broker, "market_client", None)
+            else None
+        )
+
+        if provider is None:
+            provider = _get_webull_market_data_broker()
+
+        if provider is not None:
+            try:
+                fresh = provider.get_latest_prices(misses) or {}
+                for ticker, price in fresh.items():
+                    cache_key = stable_cache_key(eng.uid, _normalize_quote_symbol(ticker), "quote", 1)
+                    _quote_cache.set(cache_key, price)
+                    result[_normalize_quote_symbol(ticker)] = price
+            except Exception as e:
+                print(f"[dashboard] Live quote fetch failed: {e}")
+
+    return result
 
 
 def _lookup_quote_price(latest_prices: dict, symbol: str):
@@ -519,16 +587,25 @@ async def get_market_data(eng: UserEngine = Depends(get_user_engine)):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+_macro_calendar_cache = {"data": [], "timestamp": 0}
+
 @app.get("/api/macro-events")
 async def get_macro_events():
     try:
         from macro_service import get_macro_data
         
         def fetch_calendar():
+            global _macro_calendar_cache
+            import time
+            now = time.time()
+            # Cache for 1 hour
+            if now - _macro_calendar_cache["timestamp"] < 3600 and _macro_calendar_cache["data"]:
+                return _macro_calendar_cache["data"]
+
             import requests
             try:
                 url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-                headers = {'User-Agent': 'Mozilla/5.0'}
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
                 r = requests.get(url, headers=headers, timeout=5)
                 r.raise_for_status()
                 data = r.json()
@@ -539,10 +616,13 @@ async def get_macro_events():
                     if e.get('country') in ['EUR', 'GBP', 'CNY', 'JPY'] and e.get('impact') == 'High': return True
                     return False
                     
-                return [e for e in data if is_relevant(e)]
+                result = [e for e in data if is_relevant(e)]
+                _macro_calendar_cache["data"] = result
+                _macro_calendar_cache["timestamp"] = now
+                return result
             except Exception as e:
                 print(f"Error fetching forex calendar: {e}")
-                return []
+                return _macro_calendar_cache["data"]
                 
         # Run both operations concurrently
         indicators_task = asyncio.to_thread(get_macro_data, False)
@@ -564,6 +644,7 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
     ctx = source if source in ["dashboard", "bots", "backtest"] else "dashboard"
     active_evaluation_context.set(ctx)
     overall_start = time.perf_counter()
+    account_start = time.perf_counter()
 
     # Track dashboard primary ticker
     if ticker:
@@ -586,6 +667,7 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
     account = eng.broker.get_account_info()
     positions = eng.broker.get_positions()
     orders = eng.broker.get_open_orders()
+    account_ms = (time.perf_counter() - account_start) * 1000
     
     # Active bot status check
     is_active_bot = primary_ticker in eng.config.TRADELIST
@@ -646,9 +728,6 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
     # Format the primary scan cleanly
     formatted_primary = _format_scan_for_ui(primary_scan, use_global_settings=(not prefer_bot_for_primary))
     
-    # Retrieve order history
-    orders_history = eng.broker.get_order_history()
-    
     # Format daily P/L (Today Only)
     daily_pl = account.get('daily_pl', 0.0)
     daily_pl_pct = account.get('daily_pl_pct', 0.0)
@@ -660,6 +739,9 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
 
     # Format trade log (scans/decisions)
     ui_trade_log = [_format_trade_for_ui(trade) for trade in eng.trade_log]
+    order_history_start = time.perf_counter()
+    orders_history = eng.broker.get_order_history()
+    order_history_ms = (time.perf_counter() - order_history_start) * 1000
 
     # Warmup or background scan triggers
     last_scan_time = eng.last_scan_time
@@ -679,7 +761,9 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
 
     # Fetch live Webull prices for every visible ticker, even when trading uses Alpaca.
     all_tickers = list(dict.fromkeys(eng.config.WATCHLIST + eng.config.TRADELIST + [primary_ticker]))
-    latest_prices = await asyncio.to_thread(_fetch_latest_watchlist_prices, eng, all_tickers)
+    quote_start = time.perf_counter()
+    latest_prices = await asyncio.to_thread(_get_cached_latest_prices, eng, all_tickers)
+    quote_ms = (time.perf_counter() - quote_start) * 1000
 
     def _inject_price(scan_ui, t):
         live_price = _lookup_quote_price(latest_prices, t)
@@ -767,6 +851,9 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
         # Performance Timings
         "performance": {
             "total_ms": (time.perf_counter() - overall_start) * 1000,
+            "account_ms": account_ms,
+            "quote_ms": quote_ms,
+            "order_history_ms": order_history_ms,
             "eval_ms": primary_scan.get('perf_ms', 0),
             "cached": primary_scan.get('cached', False)
         },
@@ -815,7 +902,7 @@ async def get_chart_data(
     prefer_bot = ticker in eng.config.TRADELIST and source == "bots"
     started = time.perf_counter()
 
-    analysis, cached = await asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, force)
+    analysis, cached, cache_age = await asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, eng, force, source)
     if not analysis:
         raise HTTPException(status_code=404, detail=f"Could not load chart data for {ticker}")
 
@@ -823,19 +910,12 @@ async def get_chart_data(
     formatted_scan = _format_scan_for_ui(scan, use_global_settings=(not prefer_bot))
     
     # --- TEMPORARY LOGGING FOR DEBUGGING ---
-    print(f"=== LIVE DASHBOARD SIGNALS FOR {ticker} {timeframe} ===")
-    from pprint import pprint
-    signals = formatted_scan.get("signals", {})
-    bb3_signal = signals.get("BotBulls3")
-    print(f"BotBulls3 Signal: {bb3_signal}")
-    print(f"BotBulls3 Indicator Parameters: {eng.config.BOTBULLS3_ATR_MULT}, {eng.config.BOTBULLS3_ATR_PERIOD}")
-    # ---------------------------------------
-    
     print(f"[perf] /api/chart {ticker} {timeframe}: {(time.perf_counter() - started) * 1000:.1f}ms cached={cached}")
     return {
         "ticker": ticker,
         "timeframe": timeframe,
         "cached": cached,
+        "cache_age_seconds": round(cache_age or 0.0, 1),
         "primaryScan": formatted_scan,
         "signals": formatted_scan.get("signals", {}),
         "priceHistory": scan.get("price_history", []),
@@ -847,6 +927,7 @@ async def get_chart_data(
         "total_signals": formatted_scan.get("total_signals", 0),
         "performance": {
             "total_ms": (time.perf_counter() - started) * 1000,
+            "cache_age_seconds": round(cache_age or 0.0, 1),
             "cached": cached
         }
     }
@@ -880,7 +961,7 @@ async def get_ollama_models(eng: UserEngine = Depends(get_user_engine)):
 @app.get("/api/ai-indicator")
 async def get_ai_indicator_endpoint(
     ticker: str,
-    timeframe: str = "4Hour",
+    timeframe: str = "1Hour",
     model: str = None,
     force: bool = False,
     eng: UserEngine = Depends(get_user_engine)
@@ -896,6 +977,8 @@ async def get_ai_indicator_endpoint(
 
     if not getattr(eng.config, "ENABLE_AI_INDICATOR", True):
         return {"error": "AI Indicator is disabled in settings", "signal": "HOLD", "confidence": 0}
+
+    started = time.perf_counter()
 
     if force:
         clear_ai_cache(ticker, timeframe)
@@ -913,6 +996,10 @@ async def get_ai_indicator_endpoint(
             account_equity,
             model,
         )
+        result.setdefault("performance", {})
+        result["performance"].update({
+            "total_ms": (time.perf_counter() - started) * 1000,
+        })
         return result
     except Exception as e:
         print(f"[api] AI indicator error for {ticker}: {e}")
@@ -922,6 +1009,9 @@ async def get_ai_indicator_endpoint(
             "confidence": 0,
             "summary": "AI Indicator temporarily unavailable.",
             "cached": False,
+            "performance": {
+                "total_ms": (time.perf_counter() - started) * 1000,
+            },
         }
 
 
@@ -939,7 +1029,7 @@ async def get_fast_signals(
 
     timeframe = timeframe or eng.config.TICKER_SETTINGS.get(ticker, {}).get('timeframe') or eng.config.DEFAULT_TIMEFRAME
     prefer_bot = ticker in eng.config.TRADELIST and source == "bots"
-    analysis, cached = await asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, False)
+    analysis, cached, cache_age = await asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, eng, False, source)
     if not analysis:
         raise HTTPException(status_code=404, detail=f"Could not load signals for {ticker}")
 
@@ -951,6 +1041,7 @@ async def get_fast_signals(
         "ticker": ticker,
         "timeframe": timeframe,
         "cached": cached,
+        "cache_age_seconds": round(cache_age or 0.0, 1),
         "primaryScan": formatted_scan,
         "signals": formatted_scan.get("signals", {}),
         "action": formatted_scan.get("action", "HOLD"),
@@ -962,7 +1053,7 @@ async def get_fast_signals(
 
 
 @app.get("/api/scan/{ticker}")
-def scan_ticker(ticker: str, timeframe: str = "4Hour", eng: UserEngine = Depends(get_user_engine)):
+def scan_ticker(ticker: str, timeframe: str = "1Hour", eng: UserEngine = Depends(get_user_engine)):
     """On-demand scan of a specific ticker."""
     if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker.upper()):
         return {"error": "Invalid ticker format"}
@@ -998,9 +1089,16 @@ def scan_ticker(ticker: str, timeframe: str = "4Hour", eng: UserEngine = Depends
     return {"error": f"Could not analyze {ticker}"}
 
 
+@app.post("/api/backtest/cancel")
+async def cancel_backtest():
+    """Signals the global cancellation event to abort running backtests."""
+    global_backtest_cancel.set()
+    return {"status": "cancelled", "message": "Backtest cancelled successfully"}
+
 @app.post("/api/backtest")
 async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
     """Runs a historical backtest for a ticker."""
+    global_backtest_cancel.clear()
     from user_config import active_evaluation_context, active_ticker_context
     active_evaluation_context.set("backtest")
     ticker = data.get("ticker", "AAPL").upper()
@@ -1049,17 +1147,97 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
         atr_take_profit_multiplier=atr_take_profit_multiplier,
         ai_autopilot=ai_autopilot,
         ai_interval=ai_interval,
-        ai_model=ai_model
+        ai_model=ai_model,
+        cancel_event=global_backtest_cancel
     )
     
     try:
-        results = bt.run()
+        results = await asyncio.to_thread(bt.run)
         if "error" in results:
             return {"status": "error", "message": results["error"]}
         return {"status": "success", "results": results}
     except Exception as e:
         print(f"[api] Backtest crash: {e}")
         return {"status": "error", "message": "An internal error occurred during backtest simulation."}
+
+
+@app.post("/api/options/backtest")
+async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
+    """Runs a historical options backtest."""
+    global_backtest_cancel.clear()
+    from user_config import active_evaluation_context, active_ticker_context
+    active_evaluation_context.set("backtest")
+    ticker = data.get("ticker", "AAPL").upper()
+    active_ticker_context.set(ticker)
+    
+    if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
+        return {"status": "error", "message": "Invalid ticker format"}
+        
+    timeframe = data.get("timeframe", "1Day")
+    days = int(data.get("days", 30))
+    capital = float(data.get("capital", 1000.0))
+    trade_amount = float(data.get("trade_amount", 100.0))
+    expiry_days = int(data.get("expiry_days", 7))
+    strike_type = data.get("strike_type", "ATM")
+    stop_loss_pct = float(data.get("stop_loss_pct", 0.50))
+    take_profit_pct = float(data.get("take_profit_pct", 1.00))
+    exit_strategy = data.get("exit_strategy", "hybrid")
+    close_before_expiry_hours = float(data.get("close_before_expiry_hours", 2.0))
+    threshold = int(data.get("threshold", 5))
+    sell_threshold = int(data.get("sell_threshold", 3))
+    indicators = data.get("indicators", [])
+    ext_hours = data.get("ext_hours", True)
+    r = float(data.get("r", 0.05))
+    
+    end_date = get_now()
+    start_date = end_date - timedelta(days=days)
+    
+    from options_backtester import OptionsBacktester
+    opt_bt = OptionsBacktester(
+        ticker=ticker,
+        timeframe=timeframe,
+        start_date=start_date,
+        end_date=end_date,
+        initial_capital=capital,
+        trade_amount=trade_amount,
+        expiry_days=expiry_days,
+        strike_type=strike_type,
+        stop_loss_pct=stop_loss_pct,
+        take_profit_pct=take_profit_pct,
+        exit_strategy=exit_strategy,
+        close_before_expiry_hours=close_before_expiry_hours,
+        threshold=threshold,
+        sell_threshold=sell_threshold,
+        enabled_indicators=indicators,
+        ext_hours=ext_hours,
+        r=r,
+        cancel_event=global_backtest_cancel
+    )
+    
+    try:
+        results = await asyncio.to_thread(opt_bt.run)
+        if "error" in results:
+            return {"status": "error", "message": results["error"]}
+        return {"status": "success", "results": results}
+    except Exception as e:
+        print(f"[api] Options Backtest crash: {e}")
+        return {"status": "error", "message": "An internal error occurred during options backtest simulation."}
+
+
+@app.get("/api/options/chain")
+async def get_options_chain_api(ticker: str, expiry_days: int = 7, current_price: float = None, eng: UserEngine = Depends(get_user_engine)):
+    """Fetches the options contract chain for a ticker from Alpaca."""
+    if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker.upper()):
+        return {"error": "Invalid ticker format"}
+        
+    from option_selector import get_option_chain
+    chain = get_option_chain(
+        underlying=ticker,
+        expiration_limit_days=expiry_days,
+        current_price=current_price,
+        client=eng.broker.client
+    )
+    return {"status": "success", "chain": chain}
 
 
 @app.post("/api/download_all")
@@ -1218,6 +1396,9 @@ async def update_timeframe(data: dict, eng: UserEngine = Depends(get_user_engine
         }
         await eng.save_settings()
         print(f"[settings] Global Timeframe synced to {new_tf} for {eng.uid}. Chart data will refresh on next dashboard request.")
+        clear_evaluation_cache()
+        clear_ai_cache()
+        _clear_chart_analysis_cache()
         
         if eng.force_scan_trigger:
             eng.force_scan_trigger.set()
@@ -1240,6 +1421,8 @@ async def add_to_watchlist(data: dict, eng: UserEngine = Depends(get_user_engine
         eng.config.WATCHLIST.append(ticker)
         await eng.save_settings()
         print(f"[settings] Added {ticker} to watchlist for {eng.uid}")
+        clear_evaluation_cache(ticker, None)
+        _clear_chart_analysis_cache(ticker, None)
     return {"status": "success", "watchlist": eng.config.WATCHLIST}
 
 
@@ -1251,6 +1434,8 @@ async def remove_from_watchlist(ticker: str, eng: UserEngine = Depends(get_user_
         eng.config.WATCHLIST.remove(ticker)
         print(f"[settings] Removed {ticker} from watchlist")
         await eng.save_settings()
+        clear_evaluation_cache(ticker, None)
+        _clear_chart_analysis_cache(ticker, None)
         if eng.force_scan_trigger:
             eng.force_scan_trigger.set()
     return {"status": "success", "watchlist": eng.config.WATCHLIST}
@@ -1277,6 +1462,8 @@ async def add_to_tradelist(data: dict, eng: UserEngine = Depends(get_user_engine
         print(f"[settings] Activated {ticker} on locked {timeframe} timeframe")
 
         await eng.save_settings()
+        clear_evaluation_cache(ticker, None)
+        _clear_chart_analysis_cache(ticker, None)
         if eng.force_scan_trigger:
             eng.force_scan_trigger.set()
     return {"status": "success", "tradelist": eng.config.TRADELIST, "watchlist": eng.config.WATCHLIST}
@@ -1299,6 +1486,8 @@ async def remove_from_tradelist(ticker: str, liquidate: bool = False, eng: UserE
         eng.config.TRADELIST.remove(ticker)
         await eng.save_settings()
         print(f"[settings] Removed {ticker} from active tradelist (Bot Deactivated) for {eng.uid}")
+        clear_evaluation_cache(ticker, None)
+        _clear_chart_analysis_cache(ticker, None)
         
     res_cancel = eng.broker.cancel_orders_for_ticker(ticker)
     print(f"[tradelist] Cancelled pending orders for {ticker}: {res_cancel}")
@@ -1380,6 +1569,27 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         if rk in data:
             eng.config.TICKER_SETTINGS[symbol][rk] = float(data[rk])
 
+    # Options Trading parameters
+    if "options_trading" in data:
+        eng.config.TICKER_SETTINGS[symbol]["options_trading"] = bool(data["options_trading"])
+    if "options_trade_amount" in data:
+        eng.config.TICKER_SETTINGS[symbol]["options_trade_amount"] = float(data["options_trade_amount"])
+    if "options_expiry_days" in data:
+        eng.config.TICKER_SETTINGS[symbol]["options_expiry_days"] = int(data["options_expiry_days"])
+    if "options_strike_type" in data:
+        eng.config.TICKER_SETTINGS[symbol]["options_strike_type"] = data["options_strike_type"]
+    if "options_exit_strategy" in data:
+        eng.config.TICKER_SETTINGS[symbol]["options_exit_strategy"] = data["options_exit_strategy"]
+    if "options_stop_loss_pct" in data:
+        eng.config.TICKER_SETTINGS[symbol]["options_stop_loss_pct"] = float(data["options_stop_loss_pct"])
+    if "options_take_profit_pct" in data:
+        eng.config.TICKER_SETTINGS[symbol]["options_take_profit_pct"] = float(data["options_take_profit_pct"])
+
+    if "ai_autopilot" in data:
+        eng.config.TICKER_SETTINGS[symbol]["ai_autopilot"] = bool(data["ai_autopilot"])
+    if "ai_model" in data:
+        eng.config.TICKER_SETTINGS[symbol]["ai_model"] = data["ai_model"]
+
     if "paused" in data:
         eng.config.TICKER_SETTINGS[symbol]["paused"] = bool(data["paused"])
         if not data["paused"]:
@@ -1402,6 +1612,9 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         print(f"[settings] Launched new bot for {symbol} with custom settings for {eng.uid}")
         
     await eng.save_settings()
+    clear_evaluation_cache(symbol, None)
+    clear_ai_cache(symbol, None)
+    _clear_chart_analysis_cache(symbol, None)
     
     # Warm up cache synchronously before returning so immediate dashboard refresh gets the price/data
     try:
@@ -1492,6 +1705,8 @@ async def update_indicators(updates: dict, context: str = "dashboard", ticker: s
 
     await eng.save_settings()
     clear_evaluation_cache()
+    clear_ai_cache(ticker, None) if ticker else clear_ai_cache()
+    _clear_chart_analysis_cache(ticker, None)
     if eng.force_scan_trigger:
         eng.force_scan_trigger.set()
         
@@ -1528,6 +1743,9 @@ async def update_ticker_settings(data: dict, eng: UserEngine = Depends(get_user_
         eng.config.WATCHLIST.remove(ticker)
     
     await eng.save_settings()
+    clear_evaluation_cache(ticker, None)
+    clear_ai_cache(ticker, None)
+    _clear_chart_analysis_cache(ticker, None)
     return {"status": "success"}
 
 @app.delete("/api/settings/ticker/{ticker}")
@@ -1537,6 +1755,9 @@ async def reset_ticker_settings(ticker: str, eng: UserEngine = Depends(get_user_
     if ticker in eng.config.TICKER_SETTINGS:
         del eng.config.TICKER_SETTINGS[ticker]
         await eng.save_settings()
+    clear_evaluation_cache(ticker, None)
+    clear_ai_cache(ticker, None)
+    _clear_chart_analysis_cache(ticker, None)
     return {"status": "success"}
 
 

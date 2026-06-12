@@ -21,7 +21,9 @@ from user_config import get_user_config
 # ---------------------------------------------------------------------------
 # In-memory cache: { (ticker, timeframe): {"data": {...}, "timestamp": float} }
 # ---------------------------------------------------------------------------
-_AI_CACHE: dict = {}
+from cache_manager import TTLCacheStore
+
+_AI_CACHE = TTLCacheStore(maxsize=128)
 
 try:
     from groq import Groq
@@ -81,7 +83,7 @@ def _fetch_news_headlines(ticker: str, max_headlines: int = 12) -> list[str]:
 # ---------------------------------------------------------------------------
 # Market context gatherer
 # ---------------------------------------------------------------------------
-def gather_market_context(ticker: str, timeframe: str = "4Hour") -> dict:
+def gather_market_context(ticker: str, timeframe: str = "1Hour") -> dict:
     """
     Collects comprehensive market context for the agentic prompt:
     - Price, ATR, RSI, MACD, Bollinger, EMA trend, 52-week range from yfinance
@@ -394,11 +396,11 @@ def _fallback_signal(ctx: dict, available_cash: float, account_equity: float) ->
     elif spy_trend == "BEARISH":
         bear_score += 1
 
-    if bull_score > bear_score + 1:
+    if bull_score > bear_score:
         signal = "BUY"
         confidence = min(0.55 + bull_score * 0.05, 0.75)
         regime = "BULLISH"
-    elif bear_score > bull_score + 1:
+    elif bear_score > bull_score:
         signal = "SELL"
         confidence = min(0.55 + bear_score * 0.05, 0.75)
         regime = "BEARISH"
@@ -471,6 +473,7 @@ def _call_llm(
             ],
             "format": "json",
             "stream": False,
+            "keep_alive": "10m",
             "options": {
                 "temperature": temperature
             }
@@ -527,7 +530,7 @@ def _call_llm(
 # ---------------------------------------------------------------------------
 def get_ai_indicator(
     ticker: str,
-    timeframe: str = "4Hour",
+    timeframe: str = "1Hour",
     available_cash: float = 10000.0,
     account_equity: float = 10000.0,
     model: str = None,
@@ -540,18 +543,24 @@ def get_ai_indicator(
     cfg = get_user_config()
     model_to_use = model or getattr(cfg, "AI_INDICATOR_MODEL", "llama-3.3-70b-versatile")
     cache_minutes = getattr(cfg, "AI_INDICATOR_CACHE_MINUTES", 10)
-    cache_key = (ticker.upper(), timeframe, model_to_use)
+    cache_key = (
+        ticker.upper(),
+        timeframe,
+        model_to_use,
+    )
 
     # ── Cache check ──────────────────────────────────────────────────────
-    now = time.time()
-    if cache_key in _AI_CACHE:
-        entry = _AI_CACHE[cache_key]
-        age_seconds = now - entry["timestamp"]
-        if age_seconds < cache_minutes * 60:
-            result = dict(entry["data"])
-            result["cached"] = True
-            result["cache_age_seconds"] = int(age_seconds)
-            return result
+    
+    cached_entry, age_seconds = _AI_CACHE.get_with_age(cache_key, cache_minutes * 60)
+    if cached_entry is not None:
+        result = dict(cached_entry["data"])
+        result["cached"] = True
+        result["cache_age_seconds"] = int(age_seconds)
+        # Update dynamic sizing based on current cash
+        pos_pct = result.get("position_size_pct", 0.0)
+        pos_usd = float(available_cash) * pos_pct
+        result["position_size_usd"] = round(min(pos_usd, float(available_cash)), 2)
+        return result
 
     # ── Gather context ───────────────────────────────────────────────────
     print(f"[ai_indicator] Gathering context for {ticker} ({timeframe})…")
@@ -580,7 +589,7 @@ def get_ai_indicator(
             "sentiment_summary": sent.get("summary", ""),
             "sentiment_key_factor": sent.get("key_factor", "N/A"),
         })
-        _AI_CACHE[cache_key] = {"data": result, "timestamp": now}
+        _AI_CACHE.set(cache_key, {"data": result})
         return result
 
     # ── Build agentic prompt ─────────────────────────────────────────────
@@ -614,19 +623,18 @@ def get_ai_indicator(
     macd_cross_str = ctx.get("macd_crossover", "NONE")
 
     # ── System message (role-priming for more disciplined output) ────────
-    system_msg = """You are an institutional-grade quantitative trading analyst AI. Your primary objective is CAPITAL PRESERVATION first, PROFITABLE TRADES second. You are extremely disciplined and NEVER chase momentum or force a trade when conditions are ambiguous.
+    system_msg = """You are an aggressive, institutional-grade quantitative trading analyst AI. Your primary objective is to IDENTIFY PROFITABLE TRADING OPPORTUNITIES and act on them decisively. You are disciplined but willing to take calculated risks to capture momentum.
 
 CORE PRINCIPLES:
-1. ONLY generate BUY when you have HIGH CONVICTION with multiple confirming signals. Default to HOLD.
-2. Every BUY MUST have a minimum 2:1 reward-to-risk ratio (sell_target upside ≥ 2x the stop_loss downside).
-3. NEVER buy into extreme overextension (RSI > 75, price > upper Bollinger, 5+ consecutive green candles).
-4. NEVER buy when macro and sector are BOTH bearish — wait for the turn.
-5. Scale position size proportionally to conviction: low conviction = 5%, high conviction = 15-20%, maximum 25%.
-6. Always set stop_loss using ATR-based levels (1.5-2.5x ATR below entry). Never use arbitrary round numbers.
-7. Set sell_target at the next resistance level, or use 3-5x ATR above entry — whichever is more conservative.
-8. If earnings are within 5 days, ALWAYS output HOLD unless there's a very strong technical setup (confidence ≥ 0.8).
-9. If VIX is HIGH (>25), cut all position sizes by 50% and tighten stops.
-10. If the ticker has low correlation with SPY (<0.3) during a broad sell-off, this is a relative-strength signal — treat more bullishly.
+1. Generate a BUY signal when you see a positive setup or bullish momentum. DO NOT default to HOLD if there is a viable trade.
+2. Generate a SELL signal if the trend is breaking down or conditions are bearish.
+3. Every BUY should aim for a favorable reward-to-risk ratio (e.g., 1.5:1 or better).
+4. Avoid buying into extreme overextension (RSI > 80), but be willing to ride strong momentum.
+5. Scale position size proportionally to conviction: low conviction = 10%, high conviction = 25%, maximum 35%.
+6. Always set stop_loss using ATR-based levels. Never use arbitrary round numbers.
+7. Set sell_target at the next resistance level, or use ATR-based targets.
+8. If VIX is HIGH (>30), cut position sizes slightly but do not stop trading.
+9. If the ticker has relative strength against SPY, treat it aggressively as a BUY.
 
 You MUST output valid JSON only. No markdown, no comments, no explanation outside the JSON object."""
 
@@ -692,9 +700,9 @@ DECISION FRAMEWORK (follow step by step):
 4. KEY LEVEL CHECK: Is price near support (buy zone) or resistance (sell zone)? How far from 52-week extremes?
 5. MACRO CHECK: SPY trend, sector trend, correlation — is the tide with us or against us?
 6. NEWS/EVENT CHECK: Any catalyst? Earnings imminent? Avoid if within 5 days.
-7. RISK/REWARD: Calculate stop from ATR (1.5-2.5x ATR), target from resistance or 3-5x ATR. MUST be ≥ 2:1 R:R.
-8. POSITION SIZE: Scale by conviction + volatility regime. Cut 50% in high VIX.
-9. FINAL DECISION: Synthesize all above. Default to HOLD unless there is clear edge.
+7. RISK/REWARD: Calculate stop from ATR, target from resistance. Aim for ≥ 1.5:1 R:R.
+8. POSITION SIZE: Scale by conviction + volatility regime.
+9. FINAL DECISION: Synthesize all above. DO NOT default to HOLD unless the market is entirely flat or highly erratic. Actively look for BUY or SELL setups.
 
 ═══════════════════════════════════════════════
 LEVERAGE RULES:
@@ -709,9 +717,9 @@ POSITION SIZING RULES:
   HOLD: position_size_pct = 0
 
 CONVICTION TIERS:
-  LOW (0.50-0.65):    5-8% allocation    — edge is marginal, take a starter position
-  MEDIUM (0.65-0.80): 10-15% allocation  — good setup with confirming signals
-  HIGH (0.80-1.00):   18-25% allocation  — exceptional multi-factor confluence
+  LOW (0.50-0.65):    10-15% allocation  — decent setup, take a starter position
+  MEDIUM (0.65-0.80): 15-25% allocation  — good setup with confirming signals
+  HIGH (0.80-1.00):   25-35% allocation  — exceptional multi-factor confluence
 ═══════════════════════════════════════════════
 
 Output ONLY valid JSON:
@@ -833,16 +841,16 @@ Output ONLY valid JSON:
             result["sell_target_pct"] = round((result["sell_target"] - ctx["price"]) / ctx["price"] * 100, 2)
 
         result = _sanitize_for_json(result)
-        _AI_CACHE[cache_key] = {"data": result, "timestamp": now}
+        _AI_CACHE.set(cache_key, {"data": result})
         print(f"[ai_indicator] {ticker}: {signal} (confidence={confidence:.0%})")
         return result
 
     except json.JSONDecodeError as e:
         print(f"[ai_indicator] JSON parse error for {ticker}: {e}")
     except Exception as e:
-        print(f"[ai_indicator] Groq error for {ticker}: {e}")
+        print(f"[ai_indicator] AI Model error for {ticker}: {e}")
 
-    # Fallback if Groq call fails
+    # Fallback if AI call fails
     result = _fallback_signal(ctx, available_cash, account_equity)
     result.update({
         "sentiment_score": sent.get("score", 0.0),
@@ -851,7 +859,7 @@ Output ONLY valid JSON:
         "sentiment_key_factor": sent.get("key_factor", "N/A"),
     })
     result = _sanitize_for_json(result)
-    _AI_CACHE[cache_key] = {"data": result, "timestamp": now}
+    _AI_CACHE.set(cache_key, {"data": result})
     return result
 
 
@@ -907,12 +915,23 @@ def get_ai_decision_for_bar(
     if bar_data is None:
         # Live Bot scan mode - check cache first (unless force_refresh is True)
         cache_minutes = getattr(cfg, "AI_INDICATOR_CACHE_MINUTES", 10)
-        cache_key = (ticker.upper(), f"autopilot_{timeframe}")
-        if not force_refresh and cache_key in _AI_CACHE:
-            entry = _AI_CACHE[cache_key]
-            if now - entry["timestamp"] < cache_minutes * 60:
-                result = dict(entry["data"])
+        # Determine the model string for the cache key to avoid cross-model cache hits
+        cache_model = model or getattr(cfg, "AI_INDICATOR_MODEL", "llama-3.3-70b-versatile")
+        cache_key = (
+            ticker.upper(),
+            f"autopilot_{timeframe}",
+            cache_model,
+        )
+        
+        if not force_refresh:
+            cached_entry = _AI_CACHE.get(cache_key, cache_minutes * 60)
+            if cached_entry is not None:
+                result = dict(cached_entry["data"])
                 result["cached"] = True
+                # Update dynamic sizing based on current cash
+                pos_pct = result.get("position_size_pct", 0.0)
+                pos_usd = float(available_cash) * pos_pct
+                result["position_size_usd"] = round(min(pos_usd, float(available_cash)), 2)
                 return result
                 
         ctx = gather_market_context(ticker, timeframe)
@@ -1017,7 +1036,7 @@ def get_ai_decision_for_bar(
         result = _fallback_signal(ctx, available_cash, account_equity)
         result["reason"] = f"Technical Confluence Fallback (Groq Offline) - Signal: {result['signal']}"
         if bar_data is None:
-            _AI_CACHE[cache_key] = {"data": result, "timestamp": now}
+            _AI_CACHE.set(cache_key, {"data": result})
         return result
         
     # 3. Construct Position Info for prompt
@@ -1053,17 +1072,17 @@ def get_ai_decision_for_bar(
     sr_str = f"Support=${ctx['support']:.2f}  Resistance=${ctx['resistance']:.2f}" if ctx.get("support") else "N/A"
     headlines_text = "\n".join(f"  • {h}" for h in ctx["headlines"][:12]) if ctx["headlines"] else "  • No recent headlines/historical news available."
     
-    system_msg = """You are an institutional-grade quantitative trading analyst AI running in AUTOPILOT MODE. Your primary objective is CAPITAL PRESERVATION first, PROFITABLE TRADES second.
+    system_msg = """You are an aggressive, institutional-grade quantitative trading analyst AI running in AUTOPILOT MODE. Your primary objective is to CAPTURE TRENDS and MAXIMIZE PROFITABLE TRADES.
 You are fully responsible for both entry (BUY) and exit (SELL) decisions.
 
 CORE PRINCIPLES:
-1. ONLY generate BUY when you have HIGH CONVICTION with multiple confirming signals. Default to HOLD.
-2. If we currently hold an open position (provided in CURRENT POSITION below), you must decide whether to CONTINUE HOLDING (return HOLD) or exit immediately (return SELL).
-3. Every BUY MUST have a minimum 2:1 reward-to-risk ratio (sell_target upside >= 2x the stop_loss downside).
-4. Scale position size proportionally to conviction: low conviction = 5%, high conviction = 15-20%, maximum 25%.
-5. Always set stop_loss using ATR-based levels (1.5-2.5x ATR below entry). Never use arbitrary round numbers.
-6. Set sell_target at the next resistance level, or use 3-5x ATR above entry.
-7. If VIX is HIGH (>25), cut all position sizes by 50% and tighten stops.
+1. Generate a BUY signal when you see a favorable setup. Actively seek entry points rather than defaulting to HOLD.
+2. If we currently hold an open position (provided in CURRENT POSITION below), evaluate strictly: if momentum is still strong, HOLD. If momentum breaks, SELL immediately.
+3. Every BUY should aim for a positive reward-to-risk ratio.
+4. Scale position size proportionally to conviction: low conviction = 10%, high conviction = 25-35%.
+5. Always set stop_loss using ATR-based levels to manage risk dynamically.
+6. Set sell_target at the next resistance level or trailing ATR target.
+7. Adapt to volatility without freezing.
 
 You MUST output valid JSON only. No markdown, no comments, no explanation outside the JSON object."""
 
@@ -1209,7 +1228,7 @@ Output ONLY valid JSON:
             result["sell_target_pct"] = round((result["sell_target"] - ctx["price"]) / ctx["price"] * 100, 2)
 
         if bar_data is None:
-            _AI_CACHE[cache_key] = {"data": result, "timestamp": now}
+            _AI_CACHE.set(cache_key, {"data": result})
             
         return result
         
@@ -1219,7 +1238,7 @@ Output ONLY valid JSON:
         result = _fallback_signal(ctx, available_cash, account_equity)
         result["reason"] = f"Technical Confluence Fallback (Error) - Signal: {result['signal']}"
         if bar_data is None:
-            _AI_CACHE[cache_key] = {"data": result, "timestamp": now}
+            _AI_CACHE.set(cache_key, {"data": result})
         return result
 
 
@@ -1229,18 +1248,15 @@ def clear_ai_cache(ticker: str = None, timeframe: str = None):
     if ticker is None:
         _AI_CACHE.clear()
     else:
-        keys_to_remove = [
-            k for k in _AI_CACHE
-            if k[0] == ticker.upper() and (timeframe is None or k[1] == timeframe)
-        ]
-        for k in keys_to_remove:
-            del _AI_CACHE[k]
+        _AI_CACHE.delete_matching(
+            lambda k: k[0] == ticker.upper() and (timeframe is None or k[1] == timeframe)
+        )
 
 
 # ───────────────────────────────────────────────────────────────────────────
 # AI Sentiment Analysis (merged from sentiment.py)
 # ───────────────────────────────────────────────────────────────────────────
-SENTIMENT_CACHE: dict = {}
+SENTIMENT_CACHE = TTLCacheStore(maxsize=128)
 SENTIMENT_CACHE_DURATION: int = 1800  # 30 minutes
 
 def _fallback_sentiment(ticker: str, headlines: list) -> dict:
@@ -1302,11 +1318,9 @@ def get_ai_sentiment(ticker: str) -> dict:
     global SENTIMENT_CACHE
 
     # 1. Check Cache First
-    now = time.time()
-    if ticker in SENTIMENT_CACHE:
-        cache_entry = SENTIMENT_CACHE[ticker]
-        if now - cache_entry['timestamp'] < SENTIMENT_CACHE_DURATION:
-            return cache_entry['data']
+    cached_entry = SENTIMENT_CACHE.get(ticker, SENTIMENT_CACHE_DURATION)
+    if cached_entry is not None:
+        return cached_entry['data']
 
     # 2. Fetch recent headlines using internal RSS fetcher
     headlines = _fetch_news_headlines(ticker, max_headlines=10)
@@ -1316,10 +1330,7 @@ def get_ai_sentiment(ticker: str) -> dict:
     groq_key = getattr(cfg, "GROQ_API_KEY", "")
     if not _GROQ_AVAILABLE or not groq_key or groq_key in ("", "your_groq_api_key_here"):
         result = _fallback_sentiment(ticker, headlines)
-        SENTIMENT_CACHE[ticker] = {
-            "data": result,
-            "timestamp": time.time()
-        }
+        SENTIMENT_CACHE.set(ticker, {"data": result})
         return result
 
     try:
@@ -1389,20 +1400,17 @@ Confidence guide:
         }
 
         # Save to cache
-        SENTIMENT_CACHE[ticker] = {
-            "data": result,
-            "timestamp": time.time()
-        }
+        SENTIMENT_CACHE.set(ticker, {"data": result})
 
         return result
 
     except json.JSONDecodeError as e:
         print(f"[ai_indicator] JSON parse error for {ticker}, using fallback: {e}")
         result = _fallback_sentiment(ticker, headlines)
-        SENTIMENT_CACHE[ticker] = {"data": result, "timestamp": time.time()}
+        SENTIMENT_CACHE.set(ticker, {"data": result})
         return result
     except Exception as e:
         print(f"[ai_indicator] Error fetching sentiment for {ticker}, using fallback: {e}")
         result = _fallback_sentiment(ticker, headlines)
-        SENTIMENT_CACHE[ticker] = {"data": result, "timestamp": time.time()}
+        SENTIMENT_CACHE.set(ticker, {"data": result})
         return result

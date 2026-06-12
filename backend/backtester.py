@@ -8,7 +8,7 @@ import config as global_config
 from user_config import get_user_config
 
 class Backtester:
-    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=0.02, max_pos_pct=0.25, ext_hours=True, sell_mode="indicator", atr_stop_multiplier=2.0, atr_trail_multiplier=3.0, atr_take_profit_multiplier=4.0, ai_autopilot=False, ai_interval=10, ai_model="llama-3.3-70b-versatile"):
+    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=0.02, max_pos_pct=0.25, ext_hours=True, sell_mode="indicator", atr_stop_multiplier=2.0, atr_trail_multiplier=3.0, atr_take_profit_multiplier=4.0, ai_autopilot=False, ai_interval=10, ai_model="llama-3.3-70b-versatile", cancel_event=None):
         self.ticker = ticker
         self.timeframe = timeframe
         self.start_date = start_date
@@ -27,6 +27,7 @@ class Backtester:
         self.ai_autopilot = ai_autopilot or (sell_mode == "ai_autopilot")
         self.ai_interval = ai_interval
         self.ai_model = ai_model
+        self.cancel_event = cancel_event
         self._last_ai_decision = None
         
         self.equity = initial_capital
@@ -34,6 +35,31 @@ class Backtester:
         self.trades = []
         self.equity_history = []
         self.df = None
+
+        # Pre-cache timezones to prevent massive slowdowns in tight loops
+        import pytz
+        clean_ticker = self.ticker.upper().replace("/", "")
+        self.is_crypto = any(clean_ticker.endswith(base) for base in ["USD", "USDT", "USDC"])
+        self.local_tz = pytz.utc if self.is_crypto else pytz.timezone("America/New_York")
+        self.central_tz = pytz.timezone("America/Chicago")
+        self.utc_tz = pytz.utc
+
+    def _localize_dt(self, ts):
+        localized_dt = self.local_tz.localize(ts)
+        return localized_dt.astimezone(self.utc_tz)
+
+    def _to_utc_iso(self, ts):
+        utc_dt = self._localize_dt(ts)
+        return utc_dt.strftime("%Y-%m-%d %H:%M:%SZ")
+
+    def _to_unix(self, ts):
+        utc_dt = self._localize_dt(ts)
+        return int(utc_dt.timestamp())
+
+    def _to_central_str(self, ts):
+        utc_dt = self._localize_dt(ts)
+        central_dt = utc_dt.astimezone(self.central_tz)
+        return central_dt.strftime("%Y-%m-%d %H:%M")
 
     def run(self):
         # Force naive datetimes to match pandas index
@@ -79,6 +105,10 @@ class Backtester:
         
         # 4. Simulate bar-by-bar
         for i in range(len(self.df)):
+            if self.cancel_event and self.cancel_event.is_set():
+                print(f"[backtest] Cancelled by user halfway through execution ({i}/{len(self.df)} bars)")
+                return {"error": "Backtest cancelled by user"}
+                
             current_bar = self.df.iloc[i]
             timestamp = self.df.index[i]
 
@@ -208,7 +238,7 @@ class Backtester:
                     self._exit_trade(current_bar, timestamp, reason)
 
             self.equity_history.append({
-                'time': timestamp.strftime("%Y-%m-%d %H:%M"),
+                'time': self._to_utc_iso(timestamp),
                 'equity': self.equity + (self._get_unrealized_pl(current_price=current_bar['Close']) if self.position else 0)
             })
 
@@ -257,7 +287,7 @@ class Backtester:
             'take_profit': take_profit,
             'reason': ai_decision.get("summary", "AI Autopilot Entry")
         }
-        print(f"[{timestamp.strftime('%Y-%m-%d %H:%M')}] BUY  {self.ticker} @ ${price:.2f} | Stop: ${stop_loss:.2f} | Target: ${take_profit:.2f} | Reason: AI Autopilot Entry (Conf: {ai_decision.get('confidence'):.0%})")
+        print(f"[{self._to_central_str(timestamp)}] BUY  {self.ticker} @ ${price:.2f} | Stop: ${stop_loss:.2f} | Target: ${take_profit:.2f} | Reason: AI Autopilot Entry (Conf: {ai_decision.get('confidence'):.0%})")
 
     def _enter_trade(self, bar, timestamp, reason):
         price = bar['Close']
@@ -288,7 +318,7 @@ class Backtester:
             'take_profit': take_profit, 
             'reason': reason
         }
-        print(f"[{timestamp.strftime('%Y-%m-%d %H:%M')}] BUY  {self.ticker} @ ${price:.2f} | Stop: ${stop_loss:.2f} | Target: ${take_profit:.2f} | Reason: {reason}")
+        print(f"[{self._to_central_str(timestamp)}] BUY  {self.ticker} @ ${price:.2f} | Stop: ${stop_loss:.2f} | Target: ${take_profit:.2f} | Reason: {reason}")
 
     def _exit_trade(self, bar, timestamp, reason, exit_price_override=None):
         if not self.position: return
@@ -304,12 +334,12 @@ class Backtester:
         pl_pct = (pl / entry_cost) * 100
         self.equity += (exit_value - entry_cost - fee)
         
-        print(f"[{timestamp.strftime('%Y-%m-%d %H:%M')}] SELL {self.ticker} @ ${exit_price:.2f} | P/L: ${pl:.2f} ({pl_pct:+.2f}%) | Fee: ${fee:.2f} | Reason: {reason}")
+        print(f"[{self._to_central_str(timestamp)}] SELL {self.ticker} @ ${exit_price:.2f} | P/L: ${pl:.2f} ({pl_pct:+.2f}%) | Fee: ${fee:.2f} | Reason: {reason}")
 
         self.trades.append({
             'ticker': self.ticker,
-            'entry_time': self.position['entry_time'].strftime("%Y-%m-%d %H:%M"),
-            'exit_time': timestamp.strftime("%Y-%m-%d %H:%M"),
+            'entry_time': self._to_utc_iso(self.position['entry_time']),
+            'exit_time': self._to_utc_iso(timestamp),
             'qty': round(self.position['qty'], 4),
             'entry_price': round(self.position['entry_price'], 2),
             'exit_price': round(exit_price, 2),
@@ -346,15 +376,29 @@ class Backtester:
         end_price = self.df.iloc[-1]['Close']
         buy_hold_equity = (end_price / start_price) * self.initial_capital
         buy_hold_roi = ((end_price - start_price) / start_price) * 100
+
+        # Max drawdown from equity history
+        max_dd = 0.0
+        if self.equity_history:
+            equity_vals = [e['equity'] for e in self.equity_history]
+            peak = equity_vals[0]
+            for v in equity_vals:
+                if v > peak:
+                    peak = v
+                dd = (peak - v) / peak * 100 if peak > 0 else 0
+                if dd > max_dd:
+                    max_dd = dd
+
         # Downsample to max 500 bars to keep JSON payload manageable (~150KB)
         total_bars = len(self.df)
         step = max(1, total_bars // 500)
         candles = []
+        equity_curve_downsampled = []
         for i in range(0, total_bars, step):
             row = self.df.iloc[i]
             ts = self.df.index[i]
             try:
-                unix_time = int(ts.timestamp())
+                unix_time = self._to_unix(ts)
                 o = float(row.get('Open', row.get('open', 0)))
                 h = float(row.get('High', row.get('high', 0)))
                 l = float(row.get('Low', row.get('low', 0)))
@@ -369,11 +413,28 @@ class Backtester:
                         "close": round(c, 4),
                         "volume": v,
                     })
+                    
+                    # Grab perfectly aligned equity point
+                    eq_idx = i - 30
+                    if 0 <= eq_idx < len(self.equity_history):
+                        eq_val = self.equity_history[eq_idx]['equity']
+                    else:
+                        eq_val = self.initial_capital
+                        
+                    equity_curve_downsampled.append({
+                        "time": self._to_utc_iso(ts),
+                        "equity": eq_val
+                    })
             except Exception:
                 continue
 
         return {
             "summary": {
+                "ticker": self.ticker,
+                "timeframe": self.timeframe,
+                "period_days": (self.end_date - self.start_date).days,
+                "start_date_utc": self.df.index[0].isoformat(),
+                "end_date_utc": self.df.index[-1].isoformat(),
                 "initial_capital": self.initial_capital,
                 "final_equity": round(self.equity, 2),
                 "total_pl": round(total_pl, 2),
@@ -386,9 +447,11 @@ class Backtester:
                 "losing_trades": len(df_trades[df_trades['pl'] <= 0]),
                 "avg_trade_pl": round(df_trades['pl'].mean(), 2),
                 "best_trade": round(df_trades['pl'].max(), 2),
-                "worst_trade": round(df_trades['pl'].min(), 2)
+                "worst_trade": round(df_trades['pl'].min(), 2),
+                "max_drawdown_pct": round(max_dd, 2),
             },
-            "equity_curve": self.equity_history[::max(1, len(self.equity_history)//200)],
+            "equity_curve": equity_curve_downsampled,
             "trades": self.trades[::-1],
             "candles": candles,
         }
+
