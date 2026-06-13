@@ -437,6 +437,7 @@ async function runBacktest() {
             const tradeAmount = parseFloat(document.getElementById('btOptionsTradeAmount').value || '100');
             const expiryDays = parseInt(document.getElementById('btOptionsExpiryDays').value || '7');
             const strikeType = document.getElementById('btOptionsStrikeType').value;
+            const optionsType = document.getElementById('btOptionsType').value;
             const exitStrategy = document.getElementById('btOptionsExitStrategy').value;
             const stopLossPct = parseFloat(document.getElementById('btOptionsStopLossPct').value || '50') / 100.0;
             const takeProfitPct = parseFloat(document.getElementById('btOptionsTakeProfitPct').value || '100') / 100.0;
@@ -447,6 +448,7 @@ async function runBacktest() {
                 is_options: true,
                 ticker, timeframe, days: parseInt(days), capital: parseFloat(capital),
                 trade_amount: tradeAmount, expiry_days: expiryDays, strike_type: strikeType,
+                options_type: optionsType,
                 stop_loss_pct: stopLossPct, take_profit_pct: takeProfitPct,
                 exit_strategy: exitStrategy, close_before_expiry_hours: closeBeforeExpiry,
                 threshold: parseInt(threshold), sell_threshold: parseInt(sellThreshold),
@@ -465,6 +467,7 @@ async function runBacktest() {
                     trade_amount: tradeAmount,
                     expiry_days: expiryDays,
                     strike_type: strikeType,
+                    options_type: optionsType,
                     stop_loss_pct: stopLossPct,
                     take_profit_pct: takeProfitPct,
                     exit_strategy: exitStrategy,

@@ -111,6 +111,13 @@ class OptionsBacktester:
         if raw_df is None or raw_df.empty:
             return {"error": "No underlying historical data found."}
 
+        # Normalize column names to Title Case to prevent KeyErrors
+        raw_df = raw_df.rename(columns={
+            'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume',
+            'OPEN': 'Open', 'HIGH': 'High', 'LOW': 'Low', 'CLOSE': 'Close', 'VOLUME': 'Volume'
+        })
+        raw_df = raw_df.loc[:, ~raw_df.columns.duplicated()]
+
         # Filter RTH: Options are only traded during regular market hours. Enforce strictly for intraday.
         clean_ticker = self.ticker.upper().replace("/", "")
         is_crypto = any(clean_ticker.endswith(base) for base in ["USD", "USDT", "USDC"])
@@ -130,18 +137,21 @@ class OptionsBacktester:
                 print(f"[options-backtest] RTH filtering failed: {e}")
 
         # 2. Add technical indicators (skip if already present like BotBulls3)
-        if "BotBulls3" not in self.enabled_indicators and "UT_Above" not in raw_df.columns:
-            self.df = _add_indicators(raw_df, self.ticker)
+        if "UT_Above" not in raw_df.columns:
+            res = calculate_indicators_for_df(raw_df, self.timeframe, self.ticker)
+            self.df = res["df"] if isinstance(res, dict) and "df" in res else res
         else:
             self.df = raw_df
             
-        if self.df is None or self.df.empty:
+        if self.df is None or (hasattr(self.df, 'empty') and self.df.empty):
             return {"error": "Failed to calculate technical indicators."}
 
         full_df = self.df
         
         # 3. Pre-calculate historical volatility rolling vector
         closes = full_df['Close'].values
+        if closes.ndim > 1:
+            closes = closes[:, 0]
         returns = np.diff(closes) / closes[:-1]
         returns = np.insert(returns, 0, 0)
         

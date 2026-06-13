@@ -1673,9 +1673,31 @@ async function loadOllamaModels() {
     }
 }
 
-const AI_INDICATOR_CACHE = new Map(); // key: "ticker|timeframe|model" → { data, timestamp }
 const AI_INDICATOR_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 let _aiIndicatorFetchId = 0; // prevents stale response rendering
+
+function getAICache(key) {
+    try {
+        const cachedStr = localStorage.getItem(`ai_cache_${key}`);
+        if (cachedStr) {
+            const cached = JSON.parse(cachedStr);
+            if ((Date.now() - cached.timestamp) < AI_INDICATOR_CACHE_TTL) {
+                return cached;
+            }
+            localStorage.removeItem(`ai_cache_${key}`);
+        }
+    } catch (e) { console.error('Cache read error', e); }
+    return null;
+}
+
+function setAICache(key, data) {
+    try {
+        localStorage.setItem(`ai_cache_${key}`, JSON.stringify({
+            data: data,
+            timestamp: Date.now()
+        }));
+    } catch (e) { console.error('Cache write error', e); }
+}
 
 async function fetchAIIndicator(ticker, timeframe, force = false) {
     if (!ticker) return;
@@ -1684,8 +1706,8 @@ async function fetchAIIndicator(ticker, timeframe, force = false) {
 
     // Check client-side cache first (unless forced)
     if (!force) {
-        const cached = AI_INDICATOR_CACHE.get(key);
-        if (cached && (Date.now() - cached.timestamp) < AI_INDICATOR_CACHE_TTL) {
+        const cached = getAICache(key);
+        if (cached) {
             renderAIIndicatorCard(cached.data, true);
             recomputeConfluence();
             return;
@@ -1716,7 +1738,7 @@ async function fetchAIIndicator(ticker, timeframe, force = false) {
             return;
         }
 
-        AI_INDICATOR_CACHE.set(key, { data, timestamp: Date.now() });
+        setAICache(key, data);
         renderAIIndicatorCard(data, false);
 
         // Refresh the signal grid so the Botbulls4 News AI row syncs with the fresh score
@@ -2145,8 +2167,8 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
         if (name === 'Botbulls4 News AI') {
             const tickerStr = typeof selectedTicker !== 'undefined' ? selectedTicker : '';
             const timeframeStr = typeof selectedTimeframe !== 'undefined' ? selectedTimeframe : '';
-            const aiCacheKey = `${tickerStr}|${timeframeStr}`;
-            const cachedAi = AI_INDICATOR_CACHE.get(aiCacheKey);
+            const aiCacheKey = `${tickerStr}|${timeframeStr}|${localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile'}`;
+            const cachedAi = getAICache(aiCacheKey);
             if (cachedAi && cachedAi.data && cachedAi.data.sentiment_score != null) {
                 const score = parseFloat(cachedAi.data.sentiment_score);
                 data.value = score;

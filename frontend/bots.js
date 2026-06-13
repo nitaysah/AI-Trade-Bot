@@ -1131,7 +1131,13 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         titleEl.textContent = `Deploy ${currentStrategySymbol}`;
         subtitleEl.textContent = name ? `Configure parameters for ${name}` : 'Set initial strategy parameters';
         actionBtn.textContent = 'Deploy Strategy 🚀';
-        actionBtn.className = "w-full bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-black py-4 rounded-2xl hover:shadow-lg hover:shadow-emerald-500/30 transition-all active:scale-[0.98] uppercase tracking-[0.2em] shadow-md flex items-center justify-center gap-2";
+        actionBtn.className = "w-full bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-black py-4 rounded-2xl hover:shadow-lg hover:shadow-emerald-500/30 transition-all active:scale-[0.98] uppercase tracking-[0.2em] shadow-md flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-none disabled:active:scale-100";
+        actionBtn.disabled = true;
+
+        const riskContainer = document.getElementById('deployRiskAgreementContainer');
+        const riskCheck = document.getElementById('riskAgreementCheckbox');
+        if(riskContainer) riskContainer.classList.remove('hidden');
+        if(riskCheck) riskCheck.checked = false;
 
         // Defaults for deployment
         document.getElementById('strategyCapital').value = 100;
@@ -1182,6 +1188,10 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         subtitleEl.textContent = 'Adjust active bot strategy parameters';
         actionBtn.textContent = 'Save Settings 💾';
         actionBtn.className = "w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-black py-4 rounded-2xl hover:shadow-lg hover:shadow-indigo-500/30 transition-all active:scale-[0.98] uppercase tracking-[0.2em] shadow-md flex items-center justify-center gap-2";
+        actionBtn.disabled = false;
+
+        const riskContainer = document.getElementById('deployRiskAgreementContainer');
+        if(riskContainer) riskContainer.classList.add('hidden');
 
         // Load existing settings
         const settings = (window.lastBotsData?.ticker_settings || {})[currentStrategySymbol] || {};
@@ -1289,6 +1299,24 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
 window.closeStrategyModal = function () {
     document.getElementById('botStrategyModal').classList.add('hidden');
     currentStrategySymbol = null;
+};
+
+window.toggleDeployButton = function () {
+    const riskCheck = document.getElementById('riskAgreementCheckbox');
+    const actionBtn = document.getElementById('strategyActionButton');
+    if (riskCheck && actionBtn) {
+        actionBtn.disabled = !riskCheck.checked;
+    }
+};
+
+window.openRiskAgreementModal = function () {
+    const modal = document.getElementById('riskAgreementModal');
+    if (modal) modal.classList.remove('hidden');
+};
+
+window.closeRiskAgreementModal = function () {
+    const modal = document.getElementById('riskAgreementModal');
+    if (modal) modal.classList.add('hidden');
 };
 
 window.updateStrategySignalLabels = function () {
@@ -2659,13 +2687,13 @@ let _aiIndicatorFetchId = 0; // prevents stale response rendering
 
 function getAICache(key) {
     try {
-        const cachedStr = sessionStorage.getItem(`ai_cache_${key}`);
+        const cachedStr = localStorage.getItem(`ai_cache_${key}`);
         if (cachedStr) {
             const cached = JSON.parse(cachedStr);
             if ((Date.now() - cached.timestamp) < AI_INDICATOR_CACHE_TTL) {
                 return cached;
             }
-            sessionStorage.removeItem(`ai_cache_${key}`);
+            localStorage.removeItem(`ai_cache_${key}`);
         }
     } catch (e) { console.error('Cache read error', e); }
     return null;
@@ -2673,7 +2701,7 @@ function getAICache(key) {
 
 function setAICache(key, data) {
     try {
-        sessionStorage.setItem(`ai_cache_${key}`, JSON.stringify({
+        localStorage.setItem(`ai_cache_${key}`, JSON.stringify({
             data: data,
             timestamp: Date.now()
         }));

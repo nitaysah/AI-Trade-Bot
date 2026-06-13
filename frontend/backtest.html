@@ -271,9 +271,16 @@
                 <div id="btOptionsSection" class="hidden space-y-4 pt-2 border-t border-purple-200/40">
                     <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 text-left">
                         <div class="space-y-1">
+                            <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Trade Direction</label>
+                            <select id="btOptionsType" class="w-full bg-white border border-indigo-100 rounded-xl px-3 py-2 text-xs font-black text-indigo-900 shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none cursor-pointer">
+                                <option value="both" selected>Both (Calls & Puts)</option>
+                                <option value="calls_only">Calls Only</option>
+                                <option value="puts_only">Puts Only</option>
+                            </select>
+                        </div>
+                        <div class="space-y-1">
                             <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Trade Allocation ($)</label>
                             <input type="number" id="btOptionsTradeAmount" value="100" min="1" class="w-full bg-white border border-indigo-100 rounded-xl px-3 py-2 text-xs font-black text-indigo-900 shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none">
-                            <p class="text-[9px] text-indigo-400 mt-0.5">Allocation per trade (never exceeded).</p>
                         </div>
                         <div class="space-y-1">
                             <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Options Expiry (Days)</label>
@@ -1109,11 +1116,10 @@
         <div class="flex flex-col items-center gap-4">
             <div class="flex items-center gap-2">
                 <span class="h-1.5 w-1.5 rounded-full bg-purple-400 opacity-50"></span>
-                <p>Bot Bulls — Sentient Backtest Engine v2.0</p>
+                <p>Bot Bulls — Autonomous Backtest Core</p>
                 <span class="h-1.5 w-1.5 rounded-full bg-purple-400 opacity-50"></span>
             </div>
-            <p class="text-[0.6rem] text-rose-400/80 max-w-md">⚠️ Algorithmic trading involves significant risk. This
-                simulator is for educational use only and does not guarantee future results.</p>
+            <p class="text-[0.6rem] text-rose-400/80 max-w-md">⚠️ RISK DISCLAIMER: Algorithmic systems carry inherent market risks. Simulation runs do not guarantee live profitability or account for transaction slippage.</p>
         </div>
     </footer>
 
