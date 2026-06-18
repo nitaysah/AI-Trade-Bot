@@ -672,13 +672,50 @@ function displayResults(res) {
     const ddEl = document.getElementById('resMaxDrawdown');
     if (ddEl) ddEl.textContent = (s.max_drawdown_pct || 0).toFixed(2) + '%';
 
+    // Professional Metrics
+    document.getElementById('resSharpe').textContent = (s.sharpe_ratio !== undefined) ? s.sharpe_ratio.toFixed(2) : '—';
+    document.getElementById('resProfitFactor').textContent = (s.profit_factor !== undefined && s.profit_factor !== null) ? s.profit_factor.toFixed(2) + 'x' : '—';
+    
+    // Win / Loss Ratio text formatting
+    const wlEl = document.getElementById('resWinLossRatio');
+    if (s.win_loss_ratio !== undefined && s.win_loss_ratio !== null && isFinite(s.win_loss_ratio)) {
+        wlEl.textContent = s.win_loss_ratio.toFixed(2) + 'x';
+    } else {
+        wlEl.textContent = '—';
+    }
+
+    // Advanced Metrics Row
+    document.getElementById('resSortino').textContent = (s.sortino_ratio !== undefined) ? s.sortino_ratio.toFixed(2) : '—';
+    document.getElementById('resCalmar').textContent = (s.calmar_ratio !== undefined) ? s.calmar_ratio.toFixed(2) : '—';
+    document.getElementById('resHoldTime').textContent = (s.avg_hold_hours !== undefined) ? s.avg_hold_hours.toFixed(1) + 'h' : '—';
+    document.getElementById('resExpectancy').textContent = (s.expectancy !== undefined) ? '$' + s.expectancy.toFixed(2) : '—';
+    document.getElementById('resWinStreak').textContent = (s.max_win_streak !== undefined) ? s.max_win_streak : '—';
+    document.getElementById('resLossStreak').textContent = (s.max_loss_streak !== undefined) ? s.max_loss_streak : '—';
+
     // Color logic for ROI
     const roiEl = document.getElementById('resRoi');
     roiEl.className = `text-xl font-black tracking-tight ${s.roi_pct >= 0 ? 'text-emerald-500' : 'text-rose-500'}`;
 
+    // Color logic for new cards
+    const sharpeEl = document.getElementById('resSharpe');
+    if (s.sharpe_ratio >= 1.2) sharpeEl.className = 'text-xl font-black tracking-tight text-emerald-600';
+    else if (s.sharpe_ratio >= 0.5) sharpeEl.className = 'text-xl font-black tracking-tight text-amber-600';
+    else sharpeEl.className = 'text-xl font-black tracking-tight text-rose-600';
+
+    const pfEl = document.getElementById('resProfitFactor');
+    if (s.profit_factor >= 1.5) pfEl.className = 'text-xl font-black tracking-tight text-emerald-600';
+    else if (s.profit_factor >= 1.0) pfEl.className = 'text-xl font-black tracking-tight text-amber-600';
+    else pfEl.className = 'text-xl font-black tracking-tight text-rose-600';
+
     const holdRoiEl = document.getElementById('resHoldRoi');
     const holdColor = s.buy_hold_roi_pct >= 0 ? 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20' : 'text-rose-400 bg-rose-400/10 border-rose-400/20';
     holdRoiEl.className = `text-[0.65rem] font-black uppercase tracking-widest px-3 py-1 rounded-full inline-block mt-2 border transition-all ${holdColor}`;
+
+    // Reset Monte Carlo panel state
+    document.getElementById('mcResults').classList.add('hidden');
+    document.getElementById('mcHint').classList.remove('hidden');
+    document.getElementById('mcLoading').classList.add('hidden');
+    document.getElementById('runMcBtn').disabled = false;
 
     // Trade Log (existing table below)
     allBtTrades = [...(res.trades || [])].reverse(); // oldest-first chronological order
@@ -1780,3 +1817,165 @@ window.deployStrategyAsBot = deployStrategyAsBot;
 window.showDeployToast = showDeployToast;
 
 
+// ── Monte Carlo Simulation Functions ─────────────────────────────────────
+
+async function runMonteCarlo() {
+    if (!window.lastBacktestRun || !window.lastBacktestRun.results || !window.lastBacktestRun.results.trades) {
+        alert("Run a backtest first before running Monte Carlo.");
+        return;
+    }
+
+    const trades = window.lastBacktestRun.results.trades;
+    if (trades.length < 3) {
+        alert("Not enough trades executed in the backtest to run a meaningful Monte Carlo simulation. Need at least 3 trades.");
+        return;
+    }
+
+    const capital = window.lastBacktestRun.capital || 1000.0;
+    
+    // UI state
+    document.getElementById('runMcBtn').disabled = true;
+    document.getElementById('mcHint').classList.add('hidden');
+    document.getElementById('mcResults').classList.add('hidden');
+    document.getElementById('mcLoading').classList.remove('hidden');
+
+    try {
+        const headers = await getAuthHeaders();
+        const response = await fetch(`${API_BASE}/api/backtest/monte_carlo`, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({
+                trades: trades,
+                capital: capital,
+                n_simulations: 1000
+            })
+        });
+
+        if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
+        const data = await response.json();
+
+        if (data.status === 'success') {
+            _renderMonteCarloResults(data.result);
+        } else {
+            alert("Monte Carlo Failed: " + (data.message || "Unknown error"));
+            document.getElementById('mcHint').classList.remove('hidden');
+        }
+    } catch (err) {
+        console.error("MONTE CARLO ERROR:", err);
+        alert("Failed to run simulation. Check connection.");
+        document.getElementById('mcHint').classList.remove('hidden');
+    } finally {
+        document.getElementById('mcLoading').classList.add('hidden');
+        document.getElementById('runMcBtn').disabled = false;
+    }
+}
+
+function _renderMonteCarloResults(res) {
+    document.getElementById('mcResults').classList.remove('hidden');
+
+    // Update text stats
+    document.getElementById('mcOrigSharpe').textContent = res.original_sharpe.toFixed(2);
+    document.getElementById('mcMedianSharpe').textContent = res.median_sharpe.toFixed(2);
+    document.getElementById('mcBest5Sharpe').textContent = res.best_5pct_sharpe.toFixed(2);
+    document.getElementById('mcPercentile').textContent = res.percentile_rank.toFixed(1) + '%';
+    document.getElementById('mcRiskDesc').textContent = res.risk_description;
+
+    // Badge styling
+    const badge = document.getElementById('mcRiskBadge');
+    badge.textContent = res.overfitting_risk;
+    badge.className = "text-[0.6rem] font-black px-2.5 py-1 rounded-full uppercase tracking-wider ";
+    if (res.overfitting_risk === 'LOW') {
+        badge.className += "bg-emerald-100 text-emerald-700";
+        badge.textContent += " ✅";
+    } else if (res.overfitting_risk === 'MEDIUM') {
+        badge.className += "bg-amber-100 text-amber-700";
+        badge.textContent += " ⚠️";
+    } else {
+        badge.className += "bg-rose-100 text-rose-700";
+        badge.textContent += " 🚨";
+    }
+
+    // Render Fan Chart
+    _renderMonteCarloFanChart(res.fan_curves, res.original_equity_curve);
+}
+
+let mcChartInstance = null;
+
+function _renderMonteCarloFanChart(fanCurves, originalCurve) {
+    const canvas = document.getElementById('mcFanChart');
+    if (!canvas) return;
+    
+    const ctx = canvas.getContext('2d');
+    
+    // Destroy previous Chart.js instance if it exists
+    if (mcChartInstance) {
+        mcChartInstance.destroy();
+    }
+
+    // Use Chart.js to draw the fan chart since it handles hundreds of datasets better than TV lightweight-charts
+    const datasets = [];
+    
+    // Add all simulation curves (faint grey/blue)
+    fanCurves.forEach((curve, idx) => {
+        datasets.push({
+            data: curve,
+            borderColor: 'rgba(99, 102, 241, 0.04)', // very faint indigo
+            borderWidth: 1,
+            pointRadius: 0,
+            pointHoverRadius: 0,
+            fill: false,
+            tension: 0.1
+        });
+    });
+
+    // Add the original strategy curve (bright gold/amber)
+    datasets.push({
+        data: originalCurve,
+        borderColor: 'rgba(245, 158, 11, 1)', // amber-500
+        borderWidth: 2.5,
+        pointRadius: 0,
+        pointHoverRadius: 0,
+        fill: false,
+        tension: 0.1,
+        zIndex: 100 // draw on top
+    });
+
+    const labels = Array.from({length: originalCurve.length}, (_, i) => i);
+
+    mcChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: datasets
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 0 },
+            plugins: {
+                legend: { display: false },
+                tooltip: { enabled: false }
+            },
+            scales: {
+                x: { display: false },
+                y: { 
+                    display: true,
+                    position: 'right',
+                    grid: { color: 'rgba(99, 102, 241, 0.05)' },
+                    ticks: {
+                        color: '#94a3b8',
+                        font: { size: 9 },
+                        callback: function(value) {
+                            if (value >= 1000) return '$' + (value/1000).toFixed(1) + 'k';
+                            return '$' + value;
+                        }
+                    }
+                }
+            },
+            interaction: {
+                mode: 'nearest',
+                intersect: false,
+            }
+        }
+    });
+}

@@ -1434,6 +1434,36 @@ async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_en
         return {"status": "error", "message": "An internal error occurred during options backtest simulation."}
 
 
+@app.post("/api/backtest/monte_carlo")
+async def run_monte_carlo_endpoint(data: dict, eng: UserEngine = Depends(get_user_engine)):
+    """
+    Monte Carlo simulation on a completed trade list.
+    Accepts the raw trades array from a previous backtest result — no re-running needed.
+    Returns overfitting risk classification, Sharpe distribution, and fan chart data.
+    """
+    trades = data.get("trades", [])
+    capital = float(data.get("capital", 1000.0))
+    n_simulations = int(data.get("n_simulations", 1000))
+
+    if not trades:
+        return {"status": "error", "message": "No trades provided for Monte Carlo simulation."}
+    if len(trades) < 3:
+        return {"status": "error", "message": "Need at least 3 trades to run Monte Carlo simulation."}
+
+    # Cap simulations for safety
+    n_simulations = min(n_simulations, 5000)
+
+    from monte_carlo import run_monte_carlo
+    try:
+        result = await asyncio.to_thread(run_monte_carlo, trades, capital, n_simulations)
+        if "error" in result:
+            return {"status": "error", "message": result["error"]}
+        return {"status": "success", "result": result}
+    except Exception as e:
+        print(f"[api] Monte Carlo error: {e}")
+        return {"status": "error", "message": "An error occurred during Monte Carlo simulation."}
+
+
 @app.post("/api/backtest/deploy")
 async def deploy_backtest_as_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
     """

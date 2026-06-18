@@ -411,6 +411,71 @@ class Backtester:
                 if dd > max_dd:
                     max_dd = dd
 
+        # ── Professional Risk-Adjusted Metrics ──────────────────────────────────
+        pl_series = df_trades['pl'].values
+        entry_costs = df_trades['entry_cost'].values
+        returns = np.where(entry_costs > 0, pl_series / entry_costs, 0.0)
+
+        winning_pl = df_trades[df_trades['pl'] > 0]['pl']
+        losing_pl  = df_trades[df_trades['pl'] <= 0]['pl'].abs()
+
+        # Profit Factor
+        gross_profit = winning_pl.sum()
+        gross_loss   = losing_pl.sum()
+        profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else float('inf')
+
+        # Avg Win / Avg Loss
+        avg_win  = round(winning_pl.mean(), 2) if len(winning_pl) > 0 else 0.0
+        avg_loss = round(losing_pl.mean(),  2) if len(losing_pl)  > 0 else 0.0
+        win_loss_ratio = round(avg_win / avg_loss, 2) if avg_loss > 0 else float('inf')
+
+        # Expectancy (expected $ per trade)
+        wr = win_rate / 100
+        expectancy = round((wr * avg_win) - ((1 - wr) * avg_loss), 2)
+
+        # Sharpe Ratio (annualised, using per-trade returns)
+        sharpe = 0.0
+        if len(returns) > 1 and returns.std() > 0:
+            sharpe = round((returns.mean() / returns.std()) * np.sqrt(252), 2)
+
+        # Sortino Ratio (only penalises downside volatility)
+        sortino = 0.0
+        downside = returns[returns < 0]
+        if len(downside) > 1 and downside.std() > 0:
+            sortino = round((returns.mean() / downside.std()) * np.sqrt(252), 2)
+
+        # Calmar Ratio (annualised return / max drawdown)
+        calmar = 0.0
+        period_days = max((self.end_date - self.start_date).days, 1)
+        annualised_roi = roi * (365 / period_days)
+        if max_dd > 0:
+            calmar = round(annualised_roi / max_dd, 2)
+
+        # Avg Hold Time (hours)
+        avg_hold_hours = 0.0
+        try:
+            entry_times = pd.to_datetime(df_trades['entry_time'])
+            exit_times  = pd.to_datetime(df_trades['exit_time'])
+            hold_durations = (exit_times - entry_times).dt.total_seconds() / 3600
+            avg_hold_hours = round(hold_durations.mean(), 1)
+        except Exception:
+            pass
+
+        # Win / Loss Streak
+        max_win_streak = max_loss_streak = cur_win = cur_loss = 0
+        for pl_val in df_trades['pl']:
+            if pl_val > 0:
+                cur_win += 1; cur_loss = 0
+            else:
+                cur_loss += 1; cur_win = 0
+            max_win_streak  = max(max_win_streak,  cur_win)
+            max_loss_streak = max(max_loss_streak, cur_loss)
+
+        # Avg win/loss as percentage
+        avg_win_pct  = round(df_trades[df_trades['pl'] > 0]['pl_pct'].mean(),  2) if len(winning_pl) > 0 else 0.0
+        avg_loss_pct = round(df_trades[df_trades['pl'] <= 0]['pl_pct'].mean(), 2) if len(losing_pl)  > 0 else 0.0
+        # ────────────────────────────────────────────────────────────────────────
+
         # Downsample to max 500 bars to keep JSON payload manageable (~150KB)
         total_bars = len(self.df)
         step = max(1, total_bars // 500)
@@ -471,9 +536,23 @@ class Backtester:
                 "best_trade": round(df_trades['pl'].max(), 2),
                 "worst_trade": round(df_trades['pl'].min(), 2),
                 "max_drawdown_pct": round(max_dd, 2),
+                # ── Professional Metrics ──
+                "sharpe_ratio": sharpe,
+                "sortino_ratio": sortino,
+                "calmar_ratio": calmar,
+                "profit_factor": profit_factor,
+                "avg_win": avg_win,
+                "avg_loss": avg_loss,
+                "avg_win_pct": avg_win_pct,
+                "avg_loss_pct": avg_loss_pct,
+                "win_loss_ratio": win_loss_ratio,
+                "avg_hold_hours": avg_hold_hours,
+                "max_win_streak": max_win_streak,
+                "max_loss_streak": max_loss_streak,
+                "expectancy": expectancy,
+                "annualised_roi_pct": round(annualised_roi, 2),
             },
             "equity_curve": equity_curve_downsampled,
             "trades": self.trades[::-1],
             "candles": candles,
         }
-
