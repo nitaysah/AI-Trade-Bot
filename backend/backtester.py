@@ -8,7 +8,7 @@ import config as global_config
 from user_config import get_user_config
 
 class Backtester:
-    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=0.02, max_pos_pct=0.25, ext_hours=True, sell_mode="indicator", atr_stop_multiplier=2.0, atr_trail_multiplier=3.0, atr_take_profit_multiplier=4.0, ai_autopilot=False, ai_interval=10, ai_model="llama-3.3-70b-versatile", cancel_event=None):
+    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=0.02, max_pos_pct=0.25, ext_hours=True, sell_mode="indicator", atr_stop_multiplier=2.0, atr_trail_multiplier=3.0, atr_take_profit_multiplier=4.0, ai_autopilot=False, ai_interval=10, ai_model="llama-3.3-70b-versatile", enable_cooldown=True, cooldown_minutes=None, cancel_event=None):
         self.ticker = ticker
         self.timeframe = timeframe
         self.start_date = start_date
@@ -27,8 +27,11 @@ class Backtester:
         self.ai_autopilot = ai_autopilot or (sell_mode == "ai_autopilot")
         self.ai_interval = ai_interval
         self.ai_model = ai_model
+        self.enable_cooldown = enable_cooldown
+        self.cooldown_minutes = cooldown_minutes
         self.cancel_event = cancel_event
         self._last_ai_decision = None
+        self.last_exit_time = None
         
         self.equity = initial_capital
         self.position = None 
@@ -174,8 +177,17 @@ class Backtester:
                     reason = self._last_ai_decision.get("reason", "AI Autopilot Decision")
                     
                     if action == "BUY" and not self.position:
-                        self._enter_trade_ai(current_bar, timestamp, self._last_ai_decision)
-                        self._last_ai_decision = None  # Reset to re-evaluate next bars
+                        if self.enable_cooldown and self.last_exit_time:
+                            from engine import parse_timeframe_to_seconds
+                            tf_seconds = parse_timeframe_to_seconds(self.timeframe)
+                            cooldown_secs = self.cooldown_minutes * 60 if self.cooldown_minutes is not None else tf_seconds * 4
+                            if (timestamp - self.last_exit_time).total_seconds() < cooldown_secs:
+                                action = "HOLD"
+                                reason = "Trade Cooldown Active"
+
+                        if action == "BUY":
+                            self._enter_trade_ai(current_bar, timestamp, self._last_ai_decision)
+                            self._last_ai_decision = None  # Reset to re-evaluate next bars
                     elif action == "SELL" and self.position:
                         # Hybrid / Dynamic Sell check: exit only if sell_mode supports indicator/hybrid
                         if self.sell_mode in ["indicator", "hybrid", "ai_autopilot"]:
@@ -233,7 +245,16 @@ class Backtester:
                             reason = f"Dynamic Sell: {analysis['bearish_count']} signals ({', '.join(names)})"
 
                 if action == 'BUY' and not self.position:
-                    self._enter_trade(current_bar, timestamp, reason)
+                    if self.enable_cooldown and self.last_exit_time:
+                        from engine import parse_timeframe_to_seconds
+                        tf_seconds = parse_timeframe_to_seconds(self.timeframe)
+                        cooldown_secs = self.cooldown_minutes * 60 if self.cooldown_minutes is not None else tf_seconds * 4
+                        if (timestamp - self.last_exit_time).total_seconds() < cooldown_secs:
+                            action = "HOLD"
+                            reason = "Trade Cooldown Active"
+                            
+                    if action == 'BUY':
+                        self._enter_trade(current_bar, timestamp, reason)
                 elif action == 'SELL' and self.position:
                     self._exit_trade(current_bar, timestamp, reason)
 
@@ -341,18 +362,19 @@ class Backtester:
             'entry_time': self._to_utc_iso(self.position['entry_time']),
             'exit_time': self._to_utc_iso(timestamp),
             'qty': round(self.position['qty'], 4),
-            'entry_price': round(self.position['entry_price'], 2),
-            'exit_price': round(exit_price, 2),
+            'entry_price': round(self.position['entry_price'], 8 if is_crypto else 2),
+            'exit_price': round(exit_price, 8 if is_crypto else 2),
             'entry_cost': round(entry_cost, 2),
             'exit_value': round(exit_value, 2),
             'fees': fee,
             'pl': round(pl, 2),
             'pl_pct': round(pl_pct, 2),
             'reason': reason,
-            'stop_loss': round(self.position.get('stop_loss', 0), 2),
-            'take_profit': round(self.position.get('take_profit', 0), 2),
+            'stop_loss': round(self.position.get('stop_loss', 0), 8 if is_crypto else 2),
+            'take_profit': round(self.position.get('take_profit', 0), 8 if is_crypto else 2),
         })
         self.position = None
+        self.last_exit_time = timestamp
 
     def _check_exit_conditions(self, bar, timestamp):
         if bar['Low'] <= self.position['stop_loss']:
@@ -407,10 +429,10 @@ class Backtester:
                 if o > 0 and c > 0:
                     candles.append({
                         "time": unix_time,
-                        "open": round(o, 4),
-                        "high": round(h, 4),
-                        "low": round(l, 4),
-                        "close": round(c, 4),
+                        "open": round(o, 8 if "USD" in self.ticker.upper() else 4),
+                        "high": round(h, 8 if "USD" in self.ticker.upper() else 4),
+                        "low": round(l, 8 if "USD" in self.ticker.upper() else 4),
+                        "close": round(c, 8 if "USD" in self.ticker.upper() else 4),
                         "volume": v,
                     })
                     

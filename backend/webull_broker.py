@@ -331,6 +331,10 @@ class WebullBroker:
             p = float(price)
             if p == 0:
                 return 0.0
+                
+            if "USD" in str(symbol).upper() or "BTC" in str(symbol).upper():
+                return round(p, 8)
+                
             # Dynamic rounding based on size of the price
             if p < 0.0001:
                 return round(p, 8)

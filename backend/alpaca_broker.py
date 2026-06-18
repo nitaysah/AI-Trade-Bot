@@ -147,6 +147,10 @@ class AlpacaBroker:
             p = float(price)
             if p == 0:
                 return 0.0
+                
+            if "USD" in str(symbol).upper() or "BTC" in str(symbol).upper():
+                return round(p, 8)
+                
             # Dynamic rounding based on size of the price
             if p < 0.0001:
                 return round(p, 8)
@@ -1048,6 +1052,7 @@ class AlpacaBroker:
                     clean_profit_loss_pct.append(round(float(pl_pct or 0.0) * 100 if pl_pct is not None else 0.0, 4))
             
             if period.upper() == "1D" and len(clean_timestamp) > 0:
+                final_equity = clean_equity[-1]
                 import datetime
                 import pytz
                 try:

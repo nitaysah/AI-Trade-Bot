@@ -853,8 +853,9 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
         return {
             "ticker": ticker,
             "price": float(latest["Close"]),
-            "atr": round(float(latest["ATR"]), 4),
+            "atr": round(float(latest["ATR"]), 8),
             "rsi": round(float(latest["RSI"]), 2),
+            "vwap": float(latest["VWAP"]) if "VWAP" in latest else float(latest["Close"]),
             "bullish_count": sum(
                 s.get("weight", 1) for s in signals.values() if s["signal"] == "BULLISH"
             ),

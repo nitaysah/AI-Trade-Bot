@@ -222,11 +222,22 @@ def _format_quote_price(symbol: str, price) -> str:
         return ""
     clean = _normalize_quote_symbol(symbol)
     is_crypto = any(clean.endswith(base) for base in ["USD", "USDT", "USDC"])
-    decimals = 4 if is_crypto or price_float < 10 else 2
-    return f"${price_float:.{decimals}f}"
+    
+    if is_crypto:
+        decimals = 8
+    elif price_float < 1.0:
+        decimals = 4
+    else:
+        decimals = 2
+        
+    res = f"${price_float:.{decimals}f}"
+    if is_crypto and '.' in res:
+        res = res.rstrip('0').rstrip('.')
+        if not res[1:]: return "$0" # if it was $0.00000000 -> $
+    return res
 
 
-def _get_cached_latest_prices(eng: UserEngine, tickers: list) -> dict:
+def _get_cached_latest_prices(eng: UserEngine, tickers: list, max_age: int = 3) -> dict:
     clean_tickers = list(dict.fromkeys(_normalize_quote_symbol(t) for t in tickers if _normalize_quote_symbol(t)))
     if not clean_tickers:
         return {}
@@ -237,7 +248,7 @@ def _get_cached_latest_prices(eng: UserEngine, tickers: list) -> dict:
 
     for ticker in clean_tickers:
         cache_key = stable_cache_key(eng.uid, ticker, "quote", 1)
-        cached, age = _quote_cache.get_with_age(cache_key, 3)
+        cached, age = _quote_cache.get_with_age(cache_key, max_age)
         if cached is not None:
             result[ticker] = cached
         else:
@@ -454,8 +465,16 @@ async def get_portfolio_history(
     except Exception as e:
         print(f"[api] Error getting portfolio history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+import time as time_module
+_MARKET_DATA_CACHE = None
+_MARKET_DATA_LAST_FETCH = 0
+
 @app.get("/api/market-data")
 async def get_market_data(eng: UserEngine = Depends(get_user_engine)):
+    global _MARKET_DATA_CACHE, _MARKET_DATA_LAST_FETCH
+    # Cache for 60 seconds
+    if _MARKET_DATA_CACHE and time_module.time() - _MARKET_DATA_LAST_FETCH < 60:
+        return _MARKET_DATA_CACHE
     try:
         # Run yfinance operations in a background thread to prevent blocking the async event loop
         def fetch_data():
@@ -760,10 +779,14 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
     else:
         sentiment_label = "Neutral"
 
-    # Fetch live Webull prices for every visible ticker, even when trading uses Alpaca.
-    all_tickers = list(dict.fromkeys(eng.config.WATCHLIST + eng.config.TRADELIST + [primary_ticker]))
+    # Fetch live Webull prices, caching inactive watchlist tickers for 60 seconds to save API calls
+    fast_tickers = list(dict.fromkeys(eng.config.TRADELIST + [primary_ticker]))
+    slow_tickers = [t for t in eng.config.WATCHLIST if t not in fast_tickers]
+    
     quote_start = time.perf_counter()
-    latest_prices = await asyncio.to_thread(_get_cached_latest_prices, eng, all_tickers)
+    fast_prices = await asyncio.to_thread(_get_cached_latest_prices, eng, fast_tickers, 3)
+    slow_prices = await asyncio.to_thread(_get_cached_latest_prices, eng, slow_tickers, 60)
+    latest_prices = {**slow_prices, **fast_prices}
     quote_ms = (time.perf_counter() - quote_start) * 1000
 
     def _inject_price(scan_ui, t):
@@ -789,6 +812,171 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
         }, t)
 
     formatted_primary = _inject_price(formatted_primary, primary_ticker)
+
+    # --- Inject exit_forecast into positions ---
+    from option_selector import parse_occ_symbol
+    import re
+    for p in positions:
+        try:
+            symbol = p.get('symbol', '')
+            asset_class = p.get('asset_class', '')
+            qty = float(p.get('qty', 0))
+            if qty == 0:
+                p['exit_forecast'] = ""
+                continue
+                
+            # Parse OCC options:
+            parsed_occ = parse_occ_symbol(symbol)
+            is_option = (parsed_occ is not None) or p.get('is_option', False) or (asset_class == 'option') or (len(symbol) >= 15)
+            
+            if parsed_occ:
+                underlying = parsed_occ['underlying']
+            else:
+                m = re.match(r"^([A-Z]+)", symbol)
+                underlying = m.group(1) if m else symbol
+            
+            active_ctx = eng.config.contexts.get(active_evaluation_context.get(), {})
+            strategy_overrides = active_ctx.get("parameters", {})
+            toggle_overrides = active_ctx.get("toggles", {})
+            
+            settings = eng.config.TICKER_SETTINGS.get(underlying, {})
+            if is_option:
+                strat = toggle_overrides.get('options_exit_strategy') or eng.config.active_toggles.get('options_exit_strategy', 'hybrid')
+            else:
+                strat = settings.get('sell_mode') or toggle_overrides.get('exit_strategy') or eng.config.active_toggles.get('exit_strategy', 'hybrid')
+                
+            underlying_scan = eng._pick_scan(underlying, timeframe, prefer_bot=True, ignore_freshness=True)
+            if not underlying_scan:
+                underlying_scan = eng.latest_scans.get(underlying, {})
+                
+            avg_price = float(p.get('avg_price') or p.get('avg_entry_price') or 0)
+            current_price = float(p.get('current_price', 0))
+            
+            targets = []
+            
+            # --- STOCK / CRYPTO ---
+            if not is_option:
+                is_long = qty > 0
+                atr = underlying_scan.get('atr', 0)
+                
+                if strat in ('indicator', 'hybrid'):
+                    targets.append({"label": "Tech", "val": float('-inf') if is_long else float('inf'), "type": "cond", "desc": "Reversal to BEARISH" if is_long else "Reversal to BULLISH"})
+                
+                if strat in ('sltp', 'hybrid') and atr > 0 and avg_price > 0:
+                    sl_mult = settings.get('sl_atr_multiplier', eng.config.active_parameters.get('sl_atr_multiplier', 2.0))
+                    tp_mult = settings.get('tp_atr_multiplier', eng.config.active_parameters.get('tp_atr_multiplier', 3.0))
+                    
+                    sl_price = avg_price - (atr * sl_mult) if is_long else avg_price + (atr * sl_mult)
+                    trailing = eng.last_trailing_stops.get(symbol)
+                    if isinstance(trailing, dict):
+                        trailing = trailing.get("trailing_stop_price")
+                    if isinstance(trailing, (int, float)):
+                        sl_price = trailing
+                        
+                    tp_price = avg_price + (atr * tp_mult) if is_long else avg_price - (atr * tp_mult)
+                    
+                    targets.append({"label": "SL", "val": sl_price, "type": "price"})
+                    targets.append({"label": "TP", "val": tp_price, "type": "price"})
+            
+            # --- OPTIONS ---
+            else:
+                op_type = parsed_occ.get('type', 'CALL') if parsed_occ else 'CALL'
+                is_call = op_type == 'CALL'
+                
+                if strat in ('premium_pct', 'hybrid') and avg_price > 0:
+                    sl_pct = strategy_overrides.get('options_premium_sl_pct') or eng.config.active_parameters.get('options_premium_sl_pct', 30.0)
+                    tp_pct = strategy_overrides.get('options_premium_tp_pct') or eng.config.active_parameters.get('options_premium_tp_pct', 50.0)
+                    sl_price = avg_price * (1.0 - (sl_pct / 100.0))
+                    tp_price = avg_price * (1.0 + (tp_pct / 100.0))
+                    targets.append({"label": "Prem SL", "val": sl_price, "type": "price"})
+                    targets.append({"label": "Prem TP", "val": tp_price, "type": "price"})
+                    
+                if strat in ('pivot_points', 'hybrid'):
+                    hist = underlying_scan.get('price_history', [])
+                    if len(hist) > 0:
+                        last_day = hist[-1]
+                        h = last_day.get('high')
+                        l = last_day.get('low')
+                        c = last_day.get('close')
+                        if h is not None and l is not None and c is not None:
+                            p_val = (h + l + c) / 3
+                            r1 = (2 * p_val) - l
+                            s1 = (2 * p_val) - h
+                            
+                            target_price = r1 if is_call else s1
+                            sl_target = s1 if is_call else r1
+                            targets.append({"label": "Pivot TP", "val": target_price, "type": "underlying_price"})
+                            targets.append({"label": "Pivot SL", "val": sl_target, "type": "underlying_price"})
+                            
+                if strat in ('high_low', 'hybrid'):
+                    hist = underlying_scan.get('price_history', [])
+                    if len(hist) > 0:
+                        dh = hist[-1].get('high')
+                        dl = hist[-1].get('low')
+                        if dh is not None and dl is not None:
+                            target_price = dh if is_call else dl
+                            sl_target = dl if is_call else dh
+                            targets.append({"label": "H/L TP", "val": target_price, "type": "underlying_price"})
+                            targets.append({"label": "H/L SL", "val": sl_target, "type": "underlying_price"})
+
+                if strat in ('indicator', 'hybrid'):
+                    targets.append({"label": "Tech", "val": float('-inf') if is_call else float('inf'), "type": "cond", "desc": "Reversal to BEARISH" if is_call else "Reversal to BULLISH"})
+            
+            if not targets:
+                p['exit_forecast'] = f"Strategy: {strat.upper()} (No targets found)"
+                continue
+                
+            min_pct_dist = float('inf')
+            closest_target = None
+            
+            for t in targets:
+                t['dist_pct'] = float('inf')
+                if t['type'] == 'price' and current_price > 0:
+                    pct = abs(current_price - t['val']) / current_price
+                    t['dist_pct'] = pct
+                    if pct < min_pct_dist:
+                        min_pct_dist = pct
+                        closest_target = t
+                elif t['type'] == 'underlying_price':
+                    live_u = _lookup_quote_price(latest_prices, underlying) or underlying_scan.get('price_raw', 0)
+                    if live_u > 0:
+                        pct = abs(live_u - t['val']) / live_u
+                        t['dist_pct'] = pct
+                        if pct < min_pct_dist:
+                            min_pct_dist = pct
+                            closest_target = t
+
+            # Sort targets: closest first, conditions/tech at the end
+            targets.sort(key=lambda x: x.get('dist_pct', float('inf')))
+
+            def fmt_val(v):
+                if not ("USD" in str(symbol).upper() or "BTC" in str(symbol).upper()):
+                    return f"{v:.2f}"
+                s = f"{v:.8f}".rstrip('0')
+                if s.endswith('.'): s += '00'
+                elif len(s.split('.')[1]) == 1: s += '0'
+                return s
+
+            final_strs = []
+            for t in targets:
+                is_closest = (t == closest_target and strat == 'hybrid' and closest_target is not None)
+                prefix = "★ " if is_closest else ""
+                suffix = " ★" if is_closest else ""
+                
+                if t['type'] == 'cond':
+                    final_strs.append(f"{prefix}[{t['label']}] {t['desc']}{suffix}")
+                elif t['type'] == 'price':
+                    final_strs.append(f"{prefix}[{t['label']}] ${fmt_val(t['val'])}{suffix}")
+                elif t['type'] == 'underlying_price':
+                    final_strs.append(f"{prefix}[U-{t['label']}] ${fmt_val(t['val'])}{suffix}")
+
+            p['exit_forecast'] = " | ".join(final_strs)
+            
+        except Exception as e:
+            import traceback
+            print(f"[dashboard] Error forecasting exit for {p.get('symbol')}: {e}")
+            traceback.print_exc()
+            p['exit_forecast'] = "Forecast Error"
 
     # Build the final payload
     payload = {
@@ -1149,6 +1337,8 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
         ai_autopilot=ai_autopilot,
         ai_interval=ai_interval,
         ai_model=ai_model,
+        enable_cooldown=bool(data.get("enable_cooldown", True)),
+        cooldown_minutes=int(data["cooldown_minutes"]) if data.get("cooldown_minutes") is not None else None,
         cancel_event=global_backtest_cancel
     )
     
@@ -1190,6 +1380,14 @@ async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_en
     indicators = data.get("indicators", [])
     ext_hours = data.get("ext_hours", True)
     r = float(data.get("r", 0.05))
+
+    enable_signal_reset = bool(data.get("enable_signal_reset", False))
+    enable_smart_reentry = bool(data.get("enable_smart_reentry", False))
+    smart_reentry_type = data.get("smart_reentry_type", "RSI")
+    smart_reentry_rsi_call_max = int(data.get("smart_reentry_rsi_call_max", 70))
+    smart_reentry_rsi_put_min = int(data.get("smart_reentry_rsi_put_min", 30))
+    smart_reentry_vwap_call_max_dist_pct = float(data.get("smart_reentry_vwap_call_max_dist_pct", 0.5))
+    smart_reentry_vwap_put_max_dist_pct = float(data.get("smart_reentry_vwap_put_max_dist_pct", 0.5))
     
     end_date = get_now()
     start_date = end_date - timedelta(days=days)
@@ -1214,7 +1412,16 @@ async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_en
         enabled_indicators=indicators,
         ext_hours=ext_hours,
         r=r,
-        cancel_event=global_backtest_cancel
+        cancel_event=global_backtest_cancel,
+        enable_signal_reset=enable_signal_reset,
+        enable_smart_reentry=enable_smart_reentry,
+        smart_reentry_type=smart_reentry_type,
+        smart_reentry_rsi_call_max=smart_reentry_rsi_call_max,
+        smart_reentry_rsi_put_min=smart_reentry_rsi_put_min,
+        smart_reentry_vwap_call_max_dist_pct=smart_reentry_vwap_call_max_dist_pct,
+        smart_reentry_vwap_put_max_dist_pct=smart_reentry_vwap_put_max_dist_pct,
+        enable_cooldown=bool(data.get("enable_cooldown", True)),
+        cooldown_minutes=int(data["cooldown_minutes"]) if data.get("cooldown_minutes") is not None else 0
     )
     
     try:
@@ -1283,8 +1490,13 @@ async def deploy_backtest_as_bot(data: dict, eng: UserEngine = Depends(get_user_
         })
         if "ai_autopilot" in data:
             deploy_payload["ai_autopilot"] = data.get("ai_autopilot")
-        if "ai_model" in data:
+            deploy_payload["ai_interval"] = data.get("ai_interval")
             deploy_payload["ai_model"] = data.get("ai_model")
+            
+    if "enable_cooldown" in data:
+        deploy_payload["enable_cooldown"] = data.get("enable_cooldown")
+    if "cooldown_minutes" in data:
+        deploy_payload["cooldown_minutes"] = data.get("cooldown_minutes")
 
     # Call create_bot to initialize/update ticker
     res = await create_bot(deploy_payload, eng)
@@ -1299,6 +1511,10 @@ async def deploy_backtest_as_bot(data: dict, eng: UserEngine = Depends(get_user_
         indicator_overrides = data.get("indicator_overrides", {})
         if indicator_overrides:
             eng.config.TICKER_SETTINGS[symbol]["indicator_overrides"] = indicator_overrides
+            
+        # Robust sync fix: Ensure symbol is strictly in the tradelist memory
+        if symbol not in eng.config.TRADELIST:
+            eng.config.TRADELIST.append(symbol)
             
         await eng.save_settings()
         res["settings"] = eng.config.TICKER_SETTINGS[symbol]
@@ -1960,3 +2176,23 @@ def _format_scan_for_ui(scan: dict, use_global_settings: bool = False) -> dict:
         "position_size_usd": scan.get("position_size_usd"),
         "position_size_pct": scan.get("position_size_pct"),
     }
+
+@app.get("/api/debug-doge")
+async def get_debug_doge():
+    if not user_manager.engines: return {"error": "no engines"}
+    eng = list(user_manager.engines.values())[0]
+    
+    from main import _format_trade_for_ui
+    ui_trade_log = [_format_trade_for_ui(trade) for trade in eng.trade_log]
+    
+    # Find DOGEUSD trade
+    doge_trades = [t for t in ui_trade_log if t.get('ticker') == 'DOGEUSD' and t.get('action') == 'BUY']
+    if not doge_trades:
+        return {"error": "No open DOGEUSD trades found", "trades": ui_trade_log}
+    
+    p = doge_trades[0]
+    
+    from main import _lookup_quote_price, _format_quote_price, fmt_val
+    scan = eng._pick_scan('DOGEUSD', '5Min', prefer_bot=True)
+    return {"trade": p, "scan_targets": {"sl": scan.get("stop_loss"), "tp": scan.get("sell_target")}}
+

@@ -28,7 +28,17 @@ class OptionsBacktester:
         enabled_indicators: list = None,
         ext_hours: bool = True,
         r: float = 0.05,
-        cancel_event=None
+        cancel_event=None,
+        intraday_only: bool = False,
+        enable_signal_reset: bool = False,
+        enable_smart_reentry: bool = False,
+        smart_reentry_type: str = "RSI",
+        smart_reentry_rsi_call_max: int = 70,  # Max RSI to allow buying a CALL
+        smart_reentry_rsi_put_min: int = 30,   # Min RSI to allow buying a PUT
+        smart_reentry_vwap_call_max_dist_pct: float = 0.5,
+        smart_reentry_vwap_put_max_dist_pct: float = 0.5,
+        enable_cooldown: bool = True,
+        cooldown_minutes: int = 0
     ):
         self.ticker = ticker
         self.timeframe = timeframe
@@ -49,7 +59,16 @@ class OptionsBacktester:
         self.ext_hours = ext_hours
         self.r = r
         self.cancel_event = cancel_event
-        
+        self.intraday_only = intraday_only
+        self.enable_signal_reset = enable_signal_reset
+        self.enable_smart_reentry = enable_smart_reentry
+        self.smart_reentry_type = smart_reentry_type
+        self.smart_reentry_rsi_call_max = smart_reentry_rsi_call_max
+        self.smart_reentry_rsi_put_min = smart_reentry_rsi_put_min
+        self.smart_reentry_vwap_call_max_dist_pct = smart_reentry_vwap_call_max_dist_pct
+        self.smart_reentry_vwap_put_max_dist_pct = smart_reentry_vwap_put_max_dist_pct
+        self.enable_cooldown = enable_cooldown
+        self.cooldown_minutes = cooldown_minutes
         # Real-market pricing proxy parameters
         self.q = 0.013 # SPY/broad market approx dividend yield
         self.iv_markup = 0.04 # 4% markup for Implied Volatility over Historical
@@ -208,6 +227,8 @@ class OptionsBacktester:
         self._today_high = None
         self._today_low = None
         self._last_date = None
+        self.signal_locked_direction = None
+        self.last_exit_time = None
 
         for i in range(len(self.df)):
             if self.cancel_event and self.cancel_event.is_set():
@@ -256,8 +277,13 @@ class OptionsBacktester:
                 exit_triggered = False
                 exit_reason = ""
                 
+                # Intraday Check
+                if self.intraday_only and timestamp.time() >= datetime.time(15, 55):
+                    exit_triggered = True
+                    exit_reason = "Intraday End of Day (15:55 PM ET)"
+
                 # Expiration safeguard
-                if hours_elapsed >= (self.expiry_days * 24.0 - self.close_before_expiry_hours):
+                if not exit_triggered and hours_elapsed >= (self.expiry_days * 24.0 - self.close_before_expiry_hours):
                     exit_triggered = True
                     exit_reason = f"Expiration Safeguard ({self.close_before_expiry_hours}h remaining)"
 
@@ -346,13 +372,58 @@ class OptionsBacktester:
 
             # Evaluate entries if no position is held
             else:
+                if self.enable_cooldown and self.last_exit_time is not None:
+                    if self.cooldown_minutes > 0:
+                        cooldown_secs = self.cooldown_minutes * 60
+                    else:
+                        from engine import parse_timeframe_to_seconds
+                        tf_seconds = parse_timeframe_to_seconds(self.timeframe)
+                        cooldown_secs = tf_seconds * 4
+                        
+                    if (timestamp - self.last_exit_time).total_seconds() < cooldown_secs:
+                        continue
+                        
                 signals = _generate_signals(current_bar, prev_bar)
                 filtered_signals = {k: v for k, v in signals.items() if k in self.enabled_indicators}
                 
                 bullish_count = sum(s.get('weight', 1) for s in filtered_signals.values() if s['signal'] == 'BULLISH')
                 bearish_count = sum(s.get('weight', 1) for s in filtered_signals.values() if s['signal'] == 'BEARISH')
 
-                if bullish_count >= self.threshold and self.options_type in ["both", "calls_only"]:
+                if self.enable_signal_reset:
+                    if self.signal_locked_direction == 'BUY' and bullish_count < self.threshold:
+                        self.signal_locked_direction = None
+                    elif self.signal_locked_direction == 'SELL' and bearish_count < self.sell_threshold:
+                        self.signal_locked_direction = None
+
+                action = "HOLD"
+                if bullish_count >= self.threshold:
+                    action = "BUY"
+                elif bearish_count >= self.sell_threshold:
+                    action = "SELL"
+
+                if action == 'BUY' and self.enable_signal_reset and self.signal_locked_direction == 'BUY':
+                    action = "HOLD"
+                elif action == 'SELL' and self.enable_signal_reset and self.signal_locked_direction == 'SELL':
+                    action = "HOLD"
+
+                if action in ["BUY", "SELL"] and self.enable_smart_reentry:
+                    if self.smart_reentry_type == "RSI":
+                        current_rsi = current_bar.get("RSI")
+                        if current_rsi is not None:
+                            if action == "BUY" and current_rsi > self.smart_reentry_rsi_call_max:
+                                action = "HOLD"
+                            elif action == "SELL" and current_rsi < self.smart_reentry_rsi_put_min:
+                                action = "HOLD"
+                    elif self.smart_reentry_type == "VWAP":
+                        current_vwap = current_bar.get("VWAP")
+                        if current_vwap is not None and current_vwap > 0:
+                            dist_pct = abs(current_price - current_vwap) / current_vwap * 100.0
+                            if action == "BUY" and dist_pct > self.smart_reentry_vwap_call_max_dist_pct:
+                                action = "HOLD"
+                            elif action == "SELL" and dist_pct > self.smart_reentry_vwap_put_max_dist_pct:
+                                action = "HOLD"
+
+                if action == "BUY" and self.options_type in ["both", "calls_only"]:
                     # Enter CALL
                     self._enter_option_trade(
                         option_type="CALL",
@@ -361,7 +432,7 @@ class OptionsBacktester:
                         timestamp=timestamp,
                         reason=f"Bullish signals crossover ({bullish_count} Bullish)"
                     )
-                elif bearish_count >= self.sell_threshold and self.options_type in ["both", "puts_only"]:
+                elif action == "SELL" and self.options_type in ["both", "puts_only"]:
                     # Enter PUT
                     self._enter_option_trade(
                         option_type="PUT",
@@ -465,6 +536,9 @@ class OptionsBacktester:
             'pl_pct': round(pl_pct, 2),
             'reason': reason,
         })
+        if self.enable_signal_reset:
+            self.signal_locked_direction = 'BUY' if self.position['option_type'] == 'CALL' else 'SELL'
+        self.last_exit_time = timestamp
         self.position = None
 
     def _get_unrealized_pl(self, current_price: float, vol: float, timestamp: datetime.datetime) -> float:

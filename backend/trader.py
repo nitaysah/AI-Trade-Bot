@@ -322,6 +322,7 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         "total_signals": len(analysis['signals']),
         "atr": analysis['atr'],
         "rsi": analysis.get('rsi', 50),
+        "vwap": analysis.get('vwap'),
         "position_sizing": position_sizing,
         "price_history": analysis.get('price_history', []),
         "risk_status": risk_mgr.get_risk_status(account_equity, ticker),

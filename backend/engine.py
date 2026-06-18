@@ -42,6 +42,7 @@ class UserEngine:
         self.bot_scans = {}
         self.bot_scans_by_tf = {}
         self.last_scan_timestamps = {}
+        self.signal_locked_direction = {}
         
         self.bot_running = False
         self.task = None
@@ -488,27 +489,6 @@ class UserEngine:
 
                                 tf_seconds = parse_timeframe_to_seconds(tf_to_use)
                                 
-                                # Use custom cooldown if set, otherwise default to 4 candles
-                                custom_cooldown_min = t_settings.get("cooldown_minutes")
-                                if custom_cooldown_min is not None:
-                                    cooldown_secs = custom_cooldown_min * 60
-                                else:
-                                    cooldown_secs = tf_seconds * 4
-
-                                if ticker in self.last_trade_timestamps:
-                                    elapsed = (self.get_now() - self.last_trade_timestamps[ticker]).total_seconds()
-                                    if elapsed < cooldown_secs:
-                                        # ONLY block BUY orders during cooldown to prevent trapping the bot in a bad position
-                                        if result['action'] == 'BUY':
-                                            result['action'] = 'HOLD'
-                                            rem = int(cooldown_secs - elapsed)
-                                            if rem >= 3600:
-                                                result['reason'] = f"Trade Cooldown Active ({rem // 3600}h {(rem % 3600) // 60}m remaining)"
-                                            elif rem >= 60:
-                                                result['reason'] = f"Trade Cooldown Active ({rem // 60}m {rem % 60}s remaining)"
-                                            else:
-                                                result['reason'] = f"Trade Cooldown Active ({rem}s remaining)"
-
                                 # Check options trading toggle
                                 is_options_enabled = t_settings.get('options_trading', getattr(self.config, 'ENABLE_OPTIONS_TRADING', False))
                                 
@@ -545,8 +525,84 @@ class UserEngine:
                                     has_open_order = any(o['symbol'] == ticker_norm and o['side'].lower() == 'buy' for o in all_orders)
                                     pos_info = next((p for p in all_positions if p['symbol'].replace("/", "").upper() == ticker_norm), None)
  
+                                enable_cooldown = t_settings.get("enable_cooldown", True)
+                                if enable_cooldown and not has_this_pos:
+                                    # Use custom cooldown if set, otherwise default to 4 candles
+                                    custom_cooldown_min = t_settings.get("cooldown_minutes")
+                                    if custom_cooldown_min is not None:
+                                        cooldown_secs = custom_cooldown_min * 60
+                                    else:
+                                        cooldown_secs = tf_seconds * 4
+
+                                    if ticker in self.last_trade_timestamps:
+                                        elapsed = (self.get_now() - self.last_trade_timestamps[ticker]).total_seconds()
+                                        if elapsed < cooldown_secs:
+                                            # ONLY block entry orders during cooldown to prevent trapping the bot in a bad position
+                                            blocked_entry = False
+                                            if is_options_enabled and result['action'] in ['BUY', 'SELL']:
+                                                blocked_entry = True
+                                            elif not is_options_enabled and result['action'] == 'BUY':
+                                                blocked_entry = True
+                                                
+                                            if blocked_entry:
+                                                result['action'] = 'HOLD'
+                                                rem = int(cooldown_secs - elapsed)
+                                                if rem >= 3600:
+                                                    result['reason'] = f"Trade Cooldown Active ({rem // 3600}h {(rem % 3600) // 60}m remaining)"
+                                                elif rem >= 60:
+                                                    result['reason'] = f"Trade Cooldown Active ({rem // 60}m {rem % 60}s remaining)"
+                                                else:
+                                                    result['reason'] = f"Trade Cooldown Active ({rem}s remaining)"
+
                                 if not has_this_pos:
                                     self.last_trailing_stops.pop(ticker, None)
+
+                                    # Get Smart Re-entry Settings
+                                    enable_signal_reset = t_settings.get('enable_signal_reset', getattr(self.config, 'ENABLE_SIGNAL_RESET', False))
+                                    enable_smart_reentry = t_settings.get('enable_smart_reentry', getattr(self.config, 'ENABLE_SMART_REENTRY', False))
+                                    smart_reentry_type = t_settings.get('smart_reentry_type', getattr(self.config, 'SMART_REENTRY_TYPE', 'RSI'))
+                                    smart_reentry_rsi_call_max = t_settings.get('smart_reentry_rsi_call_max', getattr(self.config, 'SMART_REENTRY_RSI_CALL_MAX', 70))
+                                    smart_reentry_rsi_put_min = t_settings.get('smart_reentry_rsi_put_min', getattr(self.config, 'SMART_REENTRY_RSI_PUT_MIN', 30))
+                                    smart_reentry_vwap_call_max_dist_pct = t_settings.get('smart_reentry_vwap_call_max_dist_pct', getattr(self.config, 'SMART_REENTRY_VWAP_CALL_MAX_DIST_PCT', 0.5))
+                                    smart_reentry_vwap_put_max_dist_pct = t_settings.get('smart_reentry_vwap_put_max_dist_pct', getattr(self.config, 'SMART_REENTRY_VWAP_PUT_MAX_DIST_PCT', 0.5))
+
+                                    # Apply Signal Reset Check/Clear
+                                    if enable_signal_reset:
+                                        action = result.get('action', 'HOLD')
+                                        locked_dir = self.signal_locked_direction.get(ticker)
+                                        if locked_dir:
+                                            if action == locked_dir:
+                                                result['action'] = 'HOLD'
+                                                result['reason'] = f"Signal Reset Active: Blocked immediate re-entry on stale {locked_dir} signal."
+                                            else:
+                                                self.signal_locked_direction[ticker] = None
+                                    else:
+                                        self.signal_locked_direction[ticker] = None
+
+                                    # Apply Smart Re-entry Pullback Filters
+                                    if enable_smart_reentry:
+                                        action = result.get('action', 'HOLD')
+                                        if action in ['BUY', 'SELL']:
+                                            if smart_reentry_type == 'RSI':
+                                                rsi = result.get('rsi')
+                                                if rsi is not None:
+                                                    if action == 'BUY' and rsi > smart_reentry_rsi_call_max:
+                                                        result['action'] = 'HOLD'
+                                                        result['reason'] = f"Smart Re-entry RSI Filter: Blocked BUY since RSI ({rsi:.1f}) > {smart_reentry_rsi_call_max} (Overbought)."
+                                                    elif action == 'SELL' and rsi < smart_reentry_rsi_put_min:
+                                                        result['action'] = 'HOLD'
+                                                        result['reason'] = f"Smart Re-entry RSI Filter: Blocked SELL since RSI ({rsi:.1f}) < {smart_reentry_rsi_put_min} (Oversold)."
+                                            elif smart_reentry_type == 'VWAP':
+                                                vwap = result.get('vwap')
+                                                price = result.get('price_raw', 0.0)
+                                                if vwap is not None and vwap > 0 and price > 0:
+                                                    dist_pct = abs(price - vwap) / vwap * 100.0
+                                                    if action == 'BUY' and dist_pct > smart_reentry_vwap_call_max_dist_pct:
+                                                        result['action'] = 'HOLD'
+                                                        result['reason'] = f"Smart Re-entry VWAP Filter: Blocked BUY since price is too far from VWAP ({dist_pct:.2f}% > {smart_reentry_vwap_call_max_dist_pct}%)."
+                                                    elif action == 'SELL' and dist_pct > smart_reentry_vwap_put_max_dist_pct:
+                                                        result['action'] = 'HOLD'
+                                                        result['reason'] = f"Smart Re-entry VWAP Filter: Blocked SELL since price is too far from VWAP ({dist_pct:.2f}% > {smart_reentry_vwap_put_max_dist_pct}%)."
                                 
                                 # Sell Mode Logic
                                 if has_this_pos and pos_info:
@@ -886,6 +942,12 @@ class UserEngine:
                                                 current_realized = t_settings.get('realized_pl', 0.0)
                                                 t_settings['realized_pl'] = round(current_realized + pl, 2)
                                                 await self.save_settings()
+
+                                                enable_signal_reset = t_settings.get('enable_signal_reset', getattr(self.config, 'ENABLE_SIGNAL_RESET', False))
+                                                if enable_signal_reset:
+                                                    locked_dir = 'BUY' if opt_type == 'CALL' else 'SELL'
+                                                    self.signal_locked_direction[ticker] = locked_dir
+                                                    print(f"[engine-{self.uid}] Signal Reset Activated: Locked {locked_dir} re-entry for {ticker}")
                                             else:
                                                 result['reason'] = f"Option sell failed: {order_result.get('error')}"
                                         else:
@@ -1014,6 +1076,11 @@ class UserEngine:
                                                     result['reason'] = f"✅ SOLD at {result['price']}: {result['reason']}"
                                                 self.last_trade_timestamps[ticker] = self.get_now()
                                                 await self._increment_trade_count(ticker)
+
+                                                enable_signal_reset = t_settings.get('enable_signal_reset', getattr(self.config, 'ENABLE_SIGNAL_RESET', False))
+                                                if enable_signal_reset:
+                                                    self.signal_locked_direction[ticker] = 'BUY'
+                                                    print(f"[engine-{self.uid}] Signal Reset Activated: Locked BUY re-entry for standard asset {ticker}")
                                             else:
                                                 result['reason'] = f"Sell order failed: {order_result.get('error', 'Broker Error')}"
                                         else:

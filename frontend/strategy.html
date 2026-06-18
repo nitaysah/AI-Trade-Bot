@@ -43,7 +43,7 @@
                 localStorage.setItem('loginTimestamp', Date.now().toString());
             }
         };
-        ['mousemove', 'keydown', 'click', 'scroll'].forEach(evt => {
+        ['mousemove', 'keydown', 'click', 'scroll', 'touchstart', 'touchmove'].forEach(evt => {
             window.addEventListener(evt, resetSessionActivity, { passive: true });
         });
 

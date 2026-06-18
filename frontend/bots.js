@@ -1,3 +1,16 @@
+
+function formatAssetPrice(val, isCrypto) {
+    if (val === undefined || val === null || isNaN(val)) return '---';
+    const v = parseFloat(val);
+    if (v === 0) return '0.00';
+    if (isCrypto) {
+        return new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 8, useGrouping: false }).format(v);
+    }
+    if (v < 0.0001) return v.toFixed(8);
+    if (v < 0.01) return v.toFixed(6);
+    if (v < 1.0) return v.toFixed(4);
+    return v.toFixed(2);
+}
 // ═══════════════════════════════════════════════════
 // AI Trading Bot — Active Bots Page JS
 // Dedicated management console for active trading bots
@@ -279,7 +292,8 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         const scan = (scans || {})[ticker];
         const tickerSettings = (window.lastBotsData?.ticker_settings || {})[ticker] || {};
         const isOptions = tickerSettings.options_trading || false;
-        const premiumCardClass = isOptions ? 'options-premium-card' : '';
+        const isCryptoFlag = ticker.includes('USD') || ticker.includes('BTC') || ticker.includes('ETH') || ticker.includes('SOL') || ticker.includes('DOGE') || ticker.includes('LTC');
+        const premiumCardClass = isOptions ? 'options-premium-card' : (isCryptoFlag ? 'crypto-premium-card' : '');
 
         const item = document.createElement('div');
         item.className = `watchlist-item group active-bot ${premiumCardClass} ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2 flex flex-col gap-2 transition-transform duration-200`;
@@ -298,7 +312,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         const isCrypto = ticker.includes('USD') || ticker.includes('BTC') || ticker.includes('ETH') || ticker.includes('SOL') || ticker.includes('DOGE') || ticker.includes('LTC');
         if (scan?.price) {
             const parsedPrice = parseFloat(scan.price.toString().replace('$', ''));
-            price = isCrypto ? `$${parsedPrice.toFixed(4)}` : `$${parsedPrice.toFixed(2)}`;
+            price = `$${formatAssetPrice(parsedPrice, isCrypto)}`;
         }
         const actionColor = action === 'BUY' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : action === 'SELL' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-400 border-slate-100';
 
@@ -339,16 +353,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             const avgCostVal = activePosition.avg_price;
             
             // Dynamic price formatting helper
-            const formatPrice = (val) => {
-                if (val === undefined || val === null) return '---';
-                const v = parseFloat(val);
-                if (v === 0) return '0.00';
-                if (v < 0.0001) return v.toFixed(8);
-                if (v < 0.01) return v.toFixed(6);
-                if (v < 1.0) return v.toFixed(5);
-                if (v < 10.0) return v.toFixed(4);
-                return v.toFixed(2);
-            };
+            const formatPrice = (val) => formatAssetPrice(val, isCrypto);
 
             const avgCost = formatPrice(avgCostVal);
             const mktValue = activePosition.market_value.toFixed(2);
@@ -396,6 +401,10 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                             <span class="text-[0.55rem] font-black font-mono tracking-tight ml-1">${totalPlStr} <span class="opacity-75 text-[0.45rem] font-medium ml-0.5">${totalPlPcStr}</span></span>
                         </div>
                     </div>
+                </div>
+                <div class="mt-1.5 pt-1.5 border-t border-slate-50 flex items-center justify-between cursor-pointer" onclick="selectTicker('${ticker}')">
+                    <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Forecast Exit</span>
+                    <span class="text-[0.58rem] font-bold text-slate-600 truncate max-w-[80%] font-mono" title="${activePosition.exit_forecast || 'Checking exit criteria...'}">${activePosition.exit_forecast || 'Checking exit criteria...'}</span>
                 </div>
             `;
         } else {
@@ -481,7 +490,9 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         ${isPaused ? '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-500 border border-amber-200">PAUSED</span>' : '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-100">ACTIVE</span>'}
                         ${
                             isOptions 
-                                ? `<span class="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-700 font-black text-[0.5rem] border border-amber-500/20 uppercase tracking-widest">Options</span>`
+                                ? `<span class="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-700 font-black text-[0.5rem] border border-amber-500/20 uppercase tracking-widest">Options</span>
+                                   <span class="px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 font-black text-[0.45rem] border border-amber-200 uppercase tracking-widest">${tickerSettings.options_type === 'calls_only' ? 'Calls Only' : (tickerSettings.options_type === 'puts_only' ? 'Puts Only' : 'Calls & Puts')}</span>
+                                   <span class="px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 font-black text-[0.45rem] border border-amber-200 uppercase tracking-widest">${tickerSettings.options_expiry_days || 7}D Exp</span>`
                                 : (isCrypto 
                                     ? `<span class="px-1.5 py-0.5 rounded bg-fuchsia-500/10 text-fuchsia-700 font-black text-[0.5rem] border border-fuchsia-500/20 uppercase tracking-widest">Crypto</span>`
                                     : `<span class="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-700 font-black text-[0.5rem] border border-indigo-500/20 uppercase tracking-widest">Stocks</span>`)
@@ -929,8 +940,7 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
             // Dynamic precision price formatting
             const cleanSym = String(item.symbol).toUpperCase();
             const isCrypto = cleanSym.includes("USD") || cleanSym.includes("USDT") || cleanSym.includes("USDC");
-            const priceDecimals = (isCrypto || (item.filled_avg_price && item.filled_avg_price < 10)) ? 4 : 2;
-            const avgPriceStr = item.filled_avg_price ? Number(item.filled_avg_price).toFixed(priceDecimals) : '0.00';
+            const avgPriceStr = item.filled_avg_price ? formatAssetPrice(item.filled_avg_price, isCrypto) : '0.00';
             const totalCostStr = item.total_cost ? Number(item.total_cost).toFixed(2) : '0.00';
             
             // Realized P/L cell formatting
@@ -995,11 +1005,10 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
             `;
         } else if (currentLogTab === 'positions') {
             const isCrypto = String(item.symbol).toUpperCase().includes("USD");
-            const decimals = (isCrypto || (item.current_price && item.current_price < 10)) ? 4 : 2;
-            
-            const qtyStr = Number(item.qty).toFixed(4);
-            const avgPriceStr = `$${Number(item.avg_price || 0).toFixed(decimals)}`;
-            const currentPriceStr = `$${Number(item.current_price || 0).toFixed(decimals)}`;
+            const qtyStr = Number(item.qty) % 1 === 0 ? Number(item.qty).toString() : Number(item.qty) < 1 ? Number(item.qty).toFixed(6) : Number(item.qty).toFixed(4);
+            const formatVal = (v) => formatAssetPrice(v, isCrypto);
+            const avgPriceStr = `$${formatVal(item.avg_price || 0)}`;
+            const currentPriceStr = `$${formatVal(item.current_price || 0)}`;
             const marketValueStr = `$${Number(item.market_value || 0).toFixed(2)}`;
             
             const plVal = Number(item.unrealized_pl || 0);
@@ -1100,18 +1109,22 @@ function formatMinutes(min) {
 }
 
 function updateDefaultCooldownLabel() {
-    const tf = document.getElementById('strategyTimeframe').value || '1Hour';
-    const minutes = getTimeframeMinutes(tf) * 4;
-    const defaultOption = document.querySelector('#strategyCooldownMinutes option[value="default"]');
-    if (defaultOption) {
-        defaultOption.textContent = `Default (${formatMinutes(minutes)})`;
-    }
+    const modes = ['regular', 'options'];
+    modes.forEach(mode => {
+        const tfEl = document.getElementById(`strategyTimeframe_${mode}`);
+        if (!tfEl) return;
+        const minutes = getTimeframeMinutes(tfEl.value) * 4;
+        const defaultOption = document.querySelector(`#strategyCooldownMinutes_${mode} option[value="default"]`);
+        if (defaultOption) {
+            defaultOption.textContent = `Default (${formatMinutes(minutes)})`;
+        }
+    });
 }
 
-function getCooldownMinutesValue() {
-    const val = document.getElementById('strategyCooldownMinutes').value;
+function getCooldownMinutesValue(mode = 'regular') {
+    const val = document.getElementById(`strategyCooldownMinutes_${mode}`).value;
     if (val === 'default') return "default";
-    if (val === 'custom') return parseInt(document.getElementById('strategyCooldownCustomMinutes').value) || 60;
+    if (val === 'custom') return parseInt(document.getElementById(`strategyCooldownCustomMinutes_${mode}`).value) || 60;
     return parseInt(val) || 60;
 }
 
@@ -1141,10 +1154,18 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
 
         // Defaults for deployment
         document.getElementById('strategyCapital').value = 100;
-        document.getElementById('strategyBuyThreshold').value = INDICATOR_DEFAULTS['MIN_BULLISH_SIGNALS'] || 4;
-        document.getElementById('strategySellThreshold').value = INDICATOR_DEFAULTS['MIN_BEARISH_SIGNALS'] || 4;
-        document.getElementById('strategyTimeframe').value = "1Hour";
-        document.getElementById('strategySellMode').value = "indicator";
+        document.getElementById('strategyBuyThreshold_regular').value = INDICATOR_DEFAULTS['MIN_BULLISH_SIGNALS'] || 4;
+        document.getElementById('strategyBuyThreshold_options').value = INDICATOR_DEFAULTS['MIN_BULLISH_SIGNALS'] || 4;
+        document.getElementById('strategySellThreshold_regular').value = INDICATOR_DEFAULTS['MIN_BEARISH_SIGNALS'] || 4;
+        document.getElementById('strategySellThreshold_options').value = INDICATOR_DEFAULTS['MIN_BEARISH_SIGNALS'] || 4;
+        document.getElementById('strategyTimeframe_regular').value = "1Hour";
+        document.getElementById('strategyTimeframe_options').value = "1Hour";
+        if (document.getElementById('regularModeToggle')) document.getElementById('regularModeToggle').checked = false;
+        if (document.getElementById('optionsModeToggle')) document.getElementById('optionsModeToggle').checked = false;
+        if (document.getElementById('regularTradingBox')) document.getElementById('regularTradingBox').classList.add('hidden');
+        if (document.getElementById('optionsTradingBox')) document.getElementById('optionsTradingBox').classList.add('hidden');
+        window.activeTradingMode = null;
+        document.getElementById('strategySellMode_regular').value = "indicator";
         window._strategyPaused = false;
         
         const autopilotEl = document.getElementById('strategyAiAutopilot');
@@ -1152,9 +1173,7 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         window.handleStrategyAutopilotToggle(false);
 
         // Reset Options Defaults
-        const optionsToggle = document.getElementById('strategyOptionsToggle');
-        if (optionsToggle) optionsToggle.checked = false;
-        window.handleStrategyOptionsToggle(false);
+        
         document.getElementById('strategyOptionsType').value = "both";
         document.getElementById('strategyOptionsTradeAmount').value = 100;
         document.getElementById('strategyOptionsExpiryDays').value = 7;
@@ -1170,9 +1189,16 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyAtrStopMult').value = INDICATOR_DEFAULTS['ATR_STOP_MULTIPLIER'] || 2.0;
         document.getElementById('strategyAtrTrailMult').value = INDICATOR_DEFAULTS['ATR_TRAIL_MULTIPLIER'] || 3.0;
         document.getElementById('strategyAtrTpMult').value = INDICATOR_DEFAULTS['ATR_TAKE_PROFIT_MULTIPLIER'] || 4.0;
-        document.getElementById('strategyCooldownMinutes').value = "default";
-        document.getElementById('strategyCooldownCustomContainer').classList.add('hidden');
-        document.getElementById('strategyCooldownCustomMinutes').value = "";
+        document.getElementById('strategyEnableCooldown_regular').checked = true;
+        document.getElementById('strategyEnableCooldown_options').checked = true;
+        document.getElementById('strategyCooldownSettingsWrapper_regular').classList.remove('hidden');
+        document.getElementById('strategyCooldownSettingsWrapper_options').classList.remove('hidden');
+        document.getElementById('strategyCooldownMinutes_regular').value = "default";
+        document.getElementById('strategyCooldownMinutes_options').value = "default";
+        document.getElementById('strategyCooldownCustomContainer_regular').classList.add('hidden');
+        document.getElementById('strategyCooldownCustomContainer_options').classList.add('hidden');
+        document.getElementById('strategyCooldownCustomMinutes_regular').value = "";
+        document.getElementById('strategyCooldownCustomMinutes_options').value = "";
 
         // Ensure collapsed on open
         document.getElementById('riskControlsContent').classList.add('hidden');
@@ -1196,10 +1222,15 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         // Load existing settings
         const settings = (window.lastBotsData?.ticker_settings || {})[currentStrategySymbol] || {};
         document.getElementById('strategyCapital').value = settings.amount || '';
-        document.getElementById('strategyBuyThreshold').value = settings.min_buy_signals !== undefined ? settings.min_buy_signals : (INDICATOR_DEFAULTS['MIN_BULLISH_SIGNALS'] || 4);
-        document.getElementById('strategySellThreshold').value = settings.min_sell_signals !== undefined ? settings.min_sell_signals : (INDICATOR_DEFAULTS['MIN_BEARISH_SIGNALS'] || 4);
-        document.getElementById('strategyTimeframe').value = settings.timeframe || '1Hour';
-        document.getElementById('strategySellMode').value = settings.sell_mode || 'indicator';
+        const buySignals = settings.min_buy_signals !== undefined ? settings.min_buy_signals : (INDICATOR_DEFAULTS['MIN_BULLISH_SIGNALS'] || 4);
+        document.getElementById('strategyBuyThreshold_regular').value = buySignals;
+        document.getElementById('strategyBuyThreshold_options').value = buySignals;
+        const sellSignals = settings.min_sell_signals !== undefined ? settings.min_sell_signals : (INDICATOR_DEFAULTS['MIN_BEARISH_SIGNALS'] || 4);
+        document.getElementById('strategySellThreshold_regular').value = sellSignals;
+        document.getElementById('strategySellThreshold_options').value = sellSignals;
+        document.getElementById('strategyTimeframe_regular').value = settings.timeframe || '1Hour';
+        document.getElementById('strategyTimeframe_options').value = settings.timeframe || '1Hour';
+        if(document.getElementById('strategySellMode_regular')) if (document.getElementById('strategySellMode_regular')) document.getElementById('strategySellMode_regular').value = settings.sell_mode || 'indicator';
         window._strategyPaused = settings.paused || false;
         
         const aiAutopilot = settings.ai_autopilot || false;
@@ -1213,9 +1244,16 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
 
         // Load Options settings
         const optEnabled = settings.options_trading || false;
-        const optToggle = document.getElementById('strategyOptionsToggle');
-        if (optToggle) optToggle.checked = optEnabled;
-        window.handleStrategyOptionsToggle(optEnabled);
+        window.activeTradingMode = optEnabled ? 'options' : 'regular';
+        if (document.getElementById('regularModeToggle')) document.getElementById('regularModeToggle').checked = !optEnabled;
+        if (document.getElementById('optionsModeToggle')) document.getElementById('optionsModeToggle').checked = optEnabled;
+        if (optEnabled) {
+            if (document.getElementById('optionsTradingBox')) document.getElementById('optionsTradingBox').classList.remove('hidden');
+            if (document.getElementById('regularTradingBox')) document.getElementById('regularTradingBox').classList.add('hidden');
+        } else {
+            if (document.getElementById('regularTradingBox')) document.getElementById('regularTradingBox').classList.remove('hidden');
+            if (document.getElementById('optionsTradingBox')) document.getElementById('optionsTradingBox').classList.add('hidden');
+        }
         document.getElementById('strategyOptionsType').value = settings.options_type || 'both';
         document.getElementById('strategyOptionsTradeAmount').value = settings.options_trade_amount !== undefined ? settings.options_trade_amount : 100;
         document.getElementById('strategyOptionsExpiryDays').value = settings.options_expiry_days !== undefined ? settings.options_expiry_days : 7;
@@ -1223,6 +1261,16 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyOptionsExitStrategy').value = settings.options_exit_strategy || 'hybrid';
         document.getElementById('strategyOptionsStopLoss').value = settings.options_stop_loss_pct !== undefined ? Math.round(settings.options_stop_loss_pct * 100) : 50;
         document.getElementById('strategyOptionsTakeProfit').value = settings.options_take_profit_pct !== undefined ? Math.round(settings.options_take_profit_pct * 100) : 100;
+
+        // Load Smart Re-entry and Signal Reset
+        document.getElementById('strategyOptionsSignalReset').checked = settings.enable_signal_reset || false;
+        document.getElementById('strategyOptionsSmartReentry').checked = settings.enable_smart_reentry || false;
+        document.getElementById('strategyOptionsSmartReentryType').value = settings.smart_reentry_type || 'RSI';
+        document.getElementById('strategyOptionsRsiCallMax').value = settings.smart_reentry_rsi_call_max !== undefined ? settings.smart_reentry_rsi_call_max : 70;
+        document.getElementById('strategyOptionsRsiPutMin').value = settings.smart_reentry_rsi_put_min !== undefined ? settings.smart_reentry_rsi_put_min : 30;
+        document.getElementById('strategyOptionsVwapCallMaxPct').value = settings.smart_reentry_vwap_call_max_dist_pct !== undefined ? settings.smart_reentry_vwap_call_max_dist_pct : 0.5;
+        document.getElementById('strategyOptionsVwapPutMaxPct').value = settings.smart_reentry_vwap_put_max_dist_pct !== undefined ? settings.smart_reentry_vwap_put_max_dist_pct : 0.5;
+        window.updateStrategySmartReentryFields();
 
         // Load Risk Overrides
         document.getElementById('strategyRiskPerTrade').value = settings.risk_per_trade !== undefined ? (settings.risk_per_trade * 100).toFixed(1) : 2.0;
@@ -1232,20 +1280,36 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyAtrTrailMult').value = settings.atr_trail_multiplier !== undefined ? settings.atr_trail_multiplier : (INDICATOR_DEFAULTS['ATR_TRAIL_MULTIPLIER'] || 3.0);
         document.getElementById('strategyAtrTpMult').value = settings.take_profit_multiplier !== undefined ? settings.take_profit_multiplier : (INDICATOR_DEFAULTS['ATR_TAKE_PROFIT_MULTIPLIER'] || 4.0);
         
+        // Enable Cooldown logic
+        const enableCooldown = settings.enable_cooldown !== undefined ? settings.enable_cooldown : true;
+        document.getElementById('strategyEnableCooldown_regular').checked = enableCooldown;
+        document.getElementById('strategyEnableCooldown_options').checked = enableCooldown;
+        document.getElementById('strategyCooldownSettingsWrapper_regular').classList.toggle('hidden', !enableCooldown);
+        document.getElementById('strategyCooldownSettingsWrapper_options').classList.toggle('hidden', !enableCooldown);
+
         let cooldownVal = settings.cooldown_minutes;
         const standardCooldowns = [5, 15, 30, 60, 240];
         if (cooldownVal === undefined || cooldownVal === null || cooldownVal === "default") {
-            document.getElementById('strategyCooldownMinutes').value = "default";
-            document.getElementById('strategyCooldownCustomContainer').classList.add('hidden');
-            document.getElementById('strategyCooldownCustomMinutes').value = "";
+            document.getElementById('strategyCooldownMinutes_regular').value = "default";
+        document.getElementById('strategyCooldownMinutes_options').value = "default";
+            document.getElementById('strategyCooldownCustomContainer_regular').classList.add('hidden');
+        document.getElementById('strategyCooldownCustomContainer_options').classList.add('hidden');
+            document.getElementById('strategyCooldownCustomMinutes_regular').value = "";
+        document.getElementById('strategyCooldownCustomMinutes_options').value = "";
         } else if (standardCooldowns.includes(cooldownVal)) {
-            document.getElementById('strategyCooldownMinutes').value = cooldownVal.toString();
-            document.getElementById('strategyCooldownCustomContainer').classList.add('hidden');
-            document.getElementById('strategyCooldownCustomMinutes').value = "";
+            document.getElementById('strategyCooldownMinutes_regular').value = cooldownVal.toString();
+            document.getElementById('strategyCooldownMinutes_options').value = cooldownVal.toString();
+            document.getElementById('strategyCooldownCustomContainer_regular').classList.add('hidden');
+            document.getElementById('strategyCooldownCustomContainer_options').classList.add('hidden');
+            document.getElementById('strategyCooldownCustomMinutes_regular').value = "";
+            document.getElementById('strategyCooldownCustomMinutes_options').value = "";
         } else {
-            document.getElementById('strategyCooldownMinutes').value = "custom";
-            document.getElementById('strategyCooldownCustomContainer').classList.remove('hidden');
-            document.getElementById('strategyCooldownCustomMinutes').value = cooldownVal;
+            document.getElementById('strategyCooldownMinutes_regular').value = "custom";
+            document.getElementById('strategyCooldownMinutes_options').value = "custom";
+            document.getElementById('strategyCooldownCustomContainer_regular').classList.remove('hidden');
+            document.getElementById('strategyCooldownCustomContainer_options').classList.remove('hidden');
+            document.getElementById('strategyCooldownCustomMinutes_regular').value = cooldownVal;
+            document.getElementById('strategyCooldownCustomMinutes_options').value = cooldownVal;
         }
 
         // Ensure collapsed on open
@@ -1265,12 +1329,17 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
     // Run crypto option status check to disable if it is a crypto coin
     window.checkStrategyCryptoOptionStatus(currentStrategySymbol);
 
-    const tfEl = document.getElementById('strategyTimeframe');
-    tfEl.removeEventListener('change', updateDefaultCooldownLabel);
-    tfEl.addEventListener('change', updateDefaultCooldownLabel);
+    const modes = ['regular', 'options'];
+    modes.forEach(mode => {
+        const tfEl = document.getElementById(`strategyTimeframe_${mode}`);
+        if (tfEl) {
+            tfEl.removeEventListener('change', updateDefaultCooldownLabel);
+            tfEl.addEventListener('change', updateDefaultCooldownLabel);
+        }
+    });
     updateDefaultCooldownLabel();
 
-    updateStrategySignalLabels();
+    updateStrategySignalLabels(window.activeTradingMode || 'regular');
     updateStrategyPauseButton();
     modal.classList.remove('hidden');
 
@@ -1304,8 +1373,12 @@ window.closeStrategyModal = function () {
 window.toggleDeployButton = function () {
     const riskCheck = document.getElementById('riskAgreementCheckbox');
     const actionBtn = document.getElementById('strategyActionButton');
-    if (riskCheck && actionBtn) {
-        actionBtn.disabled = !riskCheck.checked;
+    if (actionBtn) {
+        if (strategyModalMode === 'deploy') {
+            actionBtn.disabled = !window.activeTradingMode || (riskCheck && !riskCheck.checked);
+        } else {
+            actionBtn.disabled = !window.activeTradingMode;
+        }
     }
 };
 
@@ -1319,12 +1392,15 @@ window.closeRiskAgreementModal = function () {
     if (modal) modal.classList.add('hidden');
 };
 
-window.updateStrategySignalLabels = function () {
-    const checkedCount = document.querySelectorAll('.strategy-indicator-check:checked').length;
-    const buyInput = document.getElementById('strategyBuyThreshold');
-    const sellInput = document.getElementById('strategySellThreshold');
-    const buyLabel = document.getElementById('strategyBuyLabel');
-    const sellLabel = document.getElementById('strategySellLabel');
+window.updateStrategySignalLabels = function (mode = window.activeTradingMode || 'regular') {
+    if (!mode) return;
+    const container = document.getElementById(`indicatorChecksContainer_${mode}`);
+    if (!container) return;
+    const checkedCount = container.querySelectorAll('.strategy-indicator-check:checked').length;
+    const buyInput = document.getElementById(`strategyBuyThreshold_${mode}`);
+    const sellInput = document.getElementById(`strategySellThreshold_${mode}`);
+    const buyLabel = document.getElementById(`strategyBuyLabel_${mode}`);
+    const sellLabel = document.getElementById(`strategySellLabel_${mode}`);
 
     if (!buyInput || !sellInput || !buyLabel || !sellLabel) return;
 
@@ -1348,17 +1424,19 @@ window.updateStrategySignalLabels = function () {
     sellLabel.textContent = `${sellInput.value} of ${checkedCount} Signals`;
 };
 
-window.adjustStrategyThreshold = function (type, delta) {
-    const checkedCount = document.querySelectorAll('.strategy-indicator-check:checked').length;
+window.adjustStrategyThreshold = function (mode, type, delta) {
+    const container = document.getElementById(`indicatorChecksContainer_${mode}`);
+    if (!container) return;
+    const checkedCount = container.querySelectorAll('.strategy-indicator-check:checked').length;
     if (checkedCount === 0) return;
 
-    const input = type === 'buy' ? document.getElementById('strategyBuyThreshold') : document.getElementById('strategySellThreshold');
+    const input = type === 'buy' ? document.getElementById(`strategyBuyThreshold_${mode}`) : document.getElementById(`strategySellThreshold_${mode}`);
     if (!input) return;
 
     let val = parseInt(input.value) + delta;
     val = Math.max(0, Math.min(val, checkedCount));
     input.value = val;
-    window.updateStrategySignalLabels();
+    window.updateStrategySignalLabels(mode);
 };
 
 window.toggleRiskSection = function () {
@@ -1498,6 +1576,30 @@ window.handleStrategyOptionsToggle = function (enabled) {
     }
 };
 
+window.updateStrategySmartReentryFields = function () {
+    const reentryEnabled = document.getElementById('strategyOptionsSmartReentry')?.checked || false;
+    const fieldsDiv = document.getElementById('strategySmartReentryFields');
+    if (fieldsDiv) {
+        if (reentryEnabled) {
+            fieldsDiv.classList.remove('hidden');
+            const type = document.getElementById('strategyOptionsSmartReentryType')?.value || 'RSI';
+            if (type === 'RSI') {
+                document.getElementById('strategyOptionsRsiCallContainer')?.classList.remove('hidden');
+                document.getElementById('strategyOptionsRsiPutContainer')?.classList.remove('hidden');
+                document.getElementById('strategyOptionsVwapCallContainer')?.classList.add('hidden');
+                document.getElementById('strategyOptionsVwapPutContainer')?.classList.add('hidden');
+            } else {
+                document.getElementById('strategyOptionsRsiCallContainer')?.classList.add('hidden');
+                document.getElementById('strategyOptionsRsiPutContainer')?.classList.add('hidden');
+                document.getElementById('strategyOptionsVwapCallContainer')?.classList.remove('hidden');
+                document.getElementById('strategyOptionsVwapPutContainer')?.classList.remove('hidden');
+            }
+        } else {
+            fieldsDiv.classList.add('hidden');
+        }
+    }
+};
+
 window.checkStrategyCryptoOptionStatus = function (symbol) {
     const isCrypto = symbol && (
         symbol.toUpperCase().includes('USD') || 
@@ -1505,23 +1607,33 @@ window.checkStrategyCryptoOptionStatus = function (symbol) {
         symbol.toUpperCase().includes('USDC') ||
         ['BTC', 'ETH', 'LTC', 'SOL', 'DOGE', 'ADA', 'DOT', 'SHIB', 'AVAX'].some(c => symbol.toUpperCase().startsWith(c))
     );
-    const optionsToggle = document.getElementById('strategyOptionsToggle');
-    const optionsCard = document.getElementById('strategyOptionsCard');
+    const optionsContainer = document.getElementById('optionsAccordionContainer');
+    const disabledOverlay = document.getElementById('optionsDisabledOverlay');
     
     if (isCrypto) {
-        if (optionsToggle && optionsToggle.checked) {
-            optionsToggle.checked = false;
-            window.handleStrategyOptionsToggle(false);
+        if (optionsContainer) {
+            optionsContainer.style.opacity = '0.6';
+            optionsContainer.style.pointerEvents = 'none';
         }
-        if (optionsCard) {
-            optionsCard.style.opacity = '0.4';
-            optionsCard.style.pointerEvents = 'none';
+        if (disabledOverlay) disabledOverlay.classList.remove('hidden');
+        
+        const regToggle = document.getElementById('regularModeToggle');
+        const optToggle = document.getElementById('optionsModeToggle');
+        if (optToggle && optToggle.checked) {
+            optToggle.checked = false;
+            // Only force to regular if options was checked. Else leave as is.
+            if (regToggle) regToggle.checked = true;
+            window.activeTradingMode = 'regular';
+            if (document.getElementById('regularTradingBox')) document.getElementById('regularTradingBox').classList.remove('hidden');
+            if (document.getElementById('optionsTradingBox')) document.getElementById('optionsTradingBox').classList.add('hidden');
         }
+
     } else {
-        if (optionsCard) {
-            optionsCard.style.opacity = '1';
-            optionsCard.style.pointerEvents = 'auto';
+        if (optionsContainer) {
+            optionsContainer.style.opacity = '1';
+            optionsContainer.style.pointerEvents = 'auto';
         }
+        if (disabledOverlay) disabledOverlay.classList.add('hidden');
     }
 };
 
@@ -1536,41 +1648,55 @@ window.handleStrategyAction = async function () {
 async function saveTickerSettings() {
     if (!currentStrategySymbol) return;
 
-    const buyThresholdVal = parseInt(document.getElementById('strategyBuyThreshold').value);
-    const sellThresholdVal = parseInt(document.getElementById('strategySellThreshold').value);
+    const mode = window.activeTradingMode || 'regular';
+
+    const buyThresholdVal = parseInt(document.getElementById(`strategyBuyThreshold_${mode}`).value);
+    const sellThresholdVal = parseInt(document.getElementById(`strategySellThreshold_${mode}`).value);
+    
     const indicators = [];
-    document.querySelectorAll('.strategy-indicator-check:checked').forEach(check => {
-        indicators.push(check.value);
-    });
+    const container = document.getElementById(`indicatorChecksContainer_${mode}`);
+    if (container) {
+        container.querySelectorAll('.strategy-indicator-check:checked').forEach(chk => {
+            indicators.push(chk.value);
+        });
+    }
 
     const data = {
         ticker: currentStrategySymbol,
         add_to_watchlist: document.getElementById('strategyAddWatchlist')?.checked || false,
         settings: {
             amount: parseFloat(document.getElementById('strategyCapital').value) || null,
-            timeframe: document.getElementById('strategyTimeframe').value || null,
+            timeframe: document.getElementById(`strategyTimeframe_${mode}`).value || null,
             min_buy_signals: buyThresholdVal,
             min_sell_signals: sellThresholdVal,
-            sell_mode: document.getElementById('strategySellMode').value,
+            sell_mode: document.getElementById('strategySellMode_regular')?.value || 'hybrid',
             indicators: indicators,
             paused: window._strategyPaused || false,
-            ai_autopilot: document.getElementById('strategyAiAutopilot').checked || false,
+            ai_autopilot: document.getElementById('strategyAiAutopilot')?.checked || false,
             ai_model: document.getElementById('strategyAiModel')?.value || 'llama-3.3-70b-versatile',
-            risk_per_trade: parseFloat(document.getElementById('strategyRiskPerTrade').value) / 100.0,
-            max_daily_drawdown: parseFloat(document.getElementById('strategyMaxDailyDrawdown').value) / 100.0,
-            max_position_pct: parseFloat(document.getElementById('strategyMaxPositionPct').value) / 100.0,
-            atr_stop_multiplier: parseFloat(document.getElementById('strategyAtrStopMult').value),
-            atr_trail_multiplier: parseFloat(document.getElementById('strategyAtrTrailMult').value),
-            take_profit_multiplier: parseFloat(document.getElementById('strategyAtrTpMult').value),
-            cooldown_minutes: getCooldownMinutesValue(),
-            options_trading: document.getElementById('strategyOptionsToggle').checked || false,
-            options_type: document.getElementById('strategyOptionsType').value || 'both',
-            options_trade_amount: parseFloat(document.getElementById('strategyOptionsTradeAmount').value) || 100,
-            options_expiry_days: parseInt(document.getElementById('strategyOptionsExpiryDays').value) || 7,
-            options_strike_type: document.getElementById('strategyOptionsStrikeType').value || 'ATM',
-            options_exit_strategy: document.getElementById('strategyOptionsExitStrategy').value || 'hybrid',
-            options_stop_loss_pct: parseFloat(document.getElementById('strategyOptionsStopLoss').value) / 100.0,
-            options_take_profit_pct: parseFloat(document.getElementById('strategyOptionsTakeProfit').value) / 100.0
+            risk_per_trade: parseFloat(document.getElementById('strategyRiskPerTrade')?.value || 2.0) / 100.0,
+            max_daily_drawdown: parseFloat(document.getElementById('strategyMaxDailyDrawdown')?.value || 5.0) / 100.0,
+            max_position_pct: parseFloat(document.getElementById('strategyMaxPositionPct')?.value || 100.0) / 100.0,
+            atr_stop_multiplier: parseFloat(document.getElementById('strategyAtrStopMult')?.value || 2.0),
+            atr_trail_multiplier: parseFloat(document.getElementById('strategyAtrTrailMult')?.value || 3.0),
+            take_profit_multiplier: parseFloat(document.getElementById('strategyAtrTpMult')?.value || 4.0),
+            enable_cooldown: document.getElementById(`strategyEnableCooldown_${mode}`)?.checked || false,
+            cooldown_minutes: getCooldownMinutesValue(mode),
+            options_trading: mode === 'options',
+            options_type: document.getElementById('strategyOptionsType')?.value || 'both',
+            options_trade_amount: parseFloat(document.getElementById('strategyOptionsTradeAmount')?.value || 100),
+            options_expiry_days: parseInt(document.getElementById('strategyOptionsExpiryDays')?.value || 7),
+            options_strike_type: document.getElementById('strategyOptionsStrikeType')?.value || 'ATM',
+            options_exit_strategy: document.getElementById('strategyOptionsExitStrategy')?.value || 'hybrid',
+            options_stop_loss_pct: parseFloat(document.getElementById('strategyOptionsStopLoss')?.value || 50) / 100.0,
+            options_take_profit_pct: parseFloat(document.getElementById('strategyOptionsTakeProfit')?.value || 100) / 100.0,
+            enable_signal_reset: document.getElementById('strategyOptionsSignalReset')?.checked || false,
+            enable_smart_reentry: document.getElementById('strategyOptionsSmartReentry')?.checked || false,
+            smart_reentry_type: document.getElementById('strategyOptionsSmartReentryType')?.value || 'RSI',
+            smart_reentry_rsi_call_max: parseInt(document.getElementById('strategyOptionsRsiCallMax')?.value || 70),
+            smart_reentry_rsi_put_min: parseInt(document.getElementById('strategyOptionsRsiPutMin')?.value || 30),
+            smart_reentry_vwap_call_max_dist_pct: parseFloat(document.getElementById('strategyOptionsVwapCallMaxPct')?.value || 0.5),
+            smart_reentry_vwap_put_max_dist_pct: parseFloat(document.getElementById('strategyOptionsVwapPutMaxPct')?.value || 0.5)
         }
     };
 
@@ -1591,9 +1717,13 @@ async function saveTickerSettings() {
             }
             closeStrategyModal();
             fetchBotsData(); // let it refresh in background
+        } else {
+            const errData = await response.json().catch(() => ({}));
+            alert(`Failed to save settings: ${errData.message || response.statusText}`);
         }
     } catch (e) {
         console.error('Error saving ticker settings:', e);
+        alert(`Error saving ticker settings: ${e.message}`);
     }
 }
 
@@ -1947,36 +2077,36 @@ function selectSearchResult(item) {
 window.confirmAndDeployBot = async function () {
     if (!currentStrategySymbol) return;
 
+    const mode = window.activeTradingMode || 'regular';
+
     // Gather Settings
     const capital = document.getElementById('strategyCapital').value;
-    const threshold = document.getElementById('strategyBuyThreshold').value;
-    const sellThreshold = document.getElementById('strategySellThreshold').value;
-    const sellMode = document.getElementById('strategySellMode').value;
-    const timeframe = document.getElementById('strategyTimeframe').value;
+    const threshold = document.getElementById(`strategyBuyThreshold_${mode}`).value;
+    const sellThreshold = document.getElementById(`strategySellThreshold_${mode}`).value;
+    const sellMode = document.getElementById('strategySellMode_regular')?.value || 'hybrid';
+    const timeframe = document.getElementById(`strategyTimeframe_${mode}`).value;
 
     // Gather Indicators
     const indicators = [];
-    document.querySelectorAll('.strategy-indicator-check').forEach(chk => {
-        if (chk.checked) indicators.push(chk.value);
-    });
+    const container = document.getElementById(`indicatorChecksContainer_${mode}`);
+    if (container) {
+        container.querySelectorAll('.strategy-indicator-check').forEach(chk => {
+            if (chk.checked) indicators.push(chk.value);
+        });
+    }
 
-    // Watchlist Preference
     const addWatchlistEl = document.getElementById('strategyAddWatchlist');
     const addToWatchlist = addWatchlistEl ? addWatchlistEl.checked : false;
 
-    // Optimistic UI Update
     const symbol = currentStrategySymbol;
-    const container = document.getElementById('tradelistContainer');
+    const tradelistContainer = document.getElementById('tradelistContainer');
 
-    // Close Modal
     closeStrategyModal();
 
-    // Remove "No active bots" text if present
-    if (container.querySelector('p')) {
-        container.innerHTML = '';
+    if (tradelistContainer.querySelector('p')) {
+        tradelistContainer.innerHTML = '';
     }
 
-    // Insert optimistic card
     const tempDiv = document.createElement('div');
     tempDiv.id = `temp-bot-${symbol}`;
     tempDiv.className = "watchlist-item group active-bot p-3 mb-2 flex flex-col gap-2 bg-indigo-50 border-indigo-200 animate-pulse";
@@ -1989,48 +2119,56 @@ window.confirmAndDeployBot = async function () {
             </div>
         </div>
     `;
-    container.insertBefore(tempDiv, container.firstChild);
+    tradelistContainer.insertBefore(tempDiv, tradelistContainer.firstChild);
 
     try {
         const headers = await getAuthHeaders();
+        const payload = {
+            symbol,
+            add_to_watchlist: addToWatchlist,
+            capital: parseFloat(capital),
+            threshold: parseInt(threshold),
+            sell_threshold: parseInt(sellThreshold),
+            sell_mode: sellMode,
+            indicators: indicators,
+            timeframe: timeframe,
+            paused: window._strategyPaused || false,
+            ai_autopilot: document.getElementById('strategyAiAutopilot')?.checked || false,
+            ai_model: document.getElementById('strategyAiModel')?.value || 'llama-3.3-70b-versatile',
+            risk_per_trade: parseFloat(document.getElementById('strategyRiskPerTrade')?.value || 2.0) / 100.0,
+            max_daily_drawdown: parseFloat(document.getElementById('strategyMaxDailyDrawdown')?.value || 5.0) / 100.0,
+            max_position_pct: parseFloat(document.getElementById('strategyMaxPositionPct')?.value || 100.0) / 100.0,
+            atr_stop_multiplier: parseFloat(document.getElementById('strategyAtrStopMult')?.value || 2.0),
+            atr_trail_multiplier: parseFloat(document.getElementById('strategyAtrTrailMult')?.value || 3.0),
+            take_profit_multiplier: parseFloat(document.getElementById('strategyAtrTpMult')?.value || 4.0),
+            enable_cooldown: document.getElementById(`strategyEnableCooldown_${mode}`)?.checked || false,
+            cooldown_minutes: getCooldownMinutesValue(mode),
+            options_trading: mode === 'options',
+            options_type: document.getElementById('strategyOptionsType')?.value || 'both',
+            options_trade_amount: parseFloat(document.getElementById('strategyOptionsTradeAmount')?.value || 100),
+            options_expiry_days: parseInt(document.getElementById('strategyOptionsExpiryDays')?.value || 7),
+            options_strike_type: document.getElementById('strategyOptionsStrikeType')?.value || 'ATM',
+            options_exit_strategy: document.getElementById('strategyOptionsExitStrategy')?.value || 'hybrid',
+            options_stop_loss_pct: parseFloat(document.getElementById('strategyOptionsStopLoss')?.value || 50) / 100.0,
+            options_take_profit_pct: parseFloat(document.getElementById('strategyOptionsTakeProfit')?.value || 100) / 100.0,
+            enable_signal_reset: document.getElementById('strategyOptionsSignalReset')?.checked || false,
+            enable_smart_reentry: document.getElementById('strategyOptionsSmartReentry')?.checked || false,
+            smart_reentry_type: document.getElementById('strategyOptionsSmartReentryType')?.value || 'RSI',
+            smart_reentry_rsi_call_max: parseInt(document.getElementById('strategyOptionsRsiCallMax')?.value || 70),
+            smart_reentry_rsi_put_min: parseInt(document.getElementById('strategyOptionsRsiPutMin')?.value || 30),
+            smart_reentry_vwap_call_max_dist_pct: parseFloat(document.getElementById('strategyOptionsVwapCallMaxPct')?.value || 0.5),
+            smart_reentry_vwap_put_max_dist_pct: parseFloat(document.getElementById('strategyOptionsVwapPutMaxPct')?.value || 0.5)
+        };
+
         const response = await fetch(`${API_BASE}/api/bots/create`, {
             method: 'POST',
             headers: headers,
-            body: JSON.stringify({
-                symbol,
-                add_to_watchlist: addToWatchlist,
-                capital: parseFloat(capital),
-                threshold: parseInt(threshold),
-                sell_threshold: parseInt(sellThreshold),
-                sell_mode: sellMode,
-                indicators: indicators,
-                timeframe: timeframe,
-                paused: window._strategyPaused || false,
-                ai_autopilot: document.getElementById('strategyAiAutopilot').checked || false,
-                ai_model: document.getElementById('strategyAiModel')?.value || 'llama-3.3-70b-versatile',
-                risk_per_trade: parseFloat(document.getElementById('strategyRiskPerTrade').value) / 100.0,
-                max_daily_drawdown: parseFloat(document.getElementById('strategyMaxDailyDrawdown').value) / 100.0,
-                max_position_pct: parseFloat(document.getElementById('strategyMaxPositionPct').value) / 100.0,
-                atr_stop_multiplier: parseFloat(document.getElementById('strategyAtrStopMult').value),
-                atr_trail_multiplier: parseFloat(document.getElementById('strategyAtrTrailMult').value),
-                take_profit_multiplier: parseFloat(document.getElementById('strategyAtrTpMult').value),
-                cooldown_minutes: getCooldownMinutesValue(),
-                options_trading: document.getElementById('strategyOptionsToggle').checked || false,
-                options_type: document.getElementById('strategyOptionsType').value || 'both',
-                options_trade_amount: parseFloat(document.getElementById('strategyOptionsTradeAmount').value) || 100,
-                options_expiry_days: parseInt(document.getElementById('strategyOptionsExpiryDays').value) || 7,
-                options_strike_type: document.getElementById('strategyOptionsStrikeType').value || 'ATM',
-                options_exit_strategy: document.getElementById('strategyOptionsExitStrategy').value || 'hybrid',
-                options_stop_loss_pct: parseFloat(document.getElementById('strategyOptionsStopLoss').value) / 100.0,
-                options_take_profit_pct: parseFloat(document.getElementById('strategyOptionsTakeProfit').value) / 100.0
-            })
+            body: JSON.stringify(payload)
         });
 
         if (response.ok) {
-            // Force an immediate refresh to sync real data
             await fetchBotsData();
         } else {
-            // Revert on error
             tempDiv.remove();
             alert("Failed to launch bot. Please try again.");
         }
@@ -3096,5 +3234,47 @@ window.openAIInfoModal = function () {
 window.closeAIInfoModal = function () {
     const modal = document.getElementById('aiInfoModal');
     if (modal) modal.classList.add('hidden');
+};
+
+
+
+window.toggleModeActive = function(mode) {
+    const regToggle = document.getElementById('regularModeToggle');
+    const optToggle = document.getElementById('optionsModeToggle');
+    const regBox = document.getElementById('regularTradingBox');
+    const optBox = document.getElementById('optionsTradingBox');
+    const optionsContainer = document.getElementById('optionsAccordionContainer');
+    
+    // Prevent toggling options if disabled (crypto)
+    if (mode === 'options' && optionsContainer && optionsContainer.style.pointerEvents === 'none') {
+        optToggle.checked = false;
+        return;
+    }
+    
+    if (mode === 'regular') {
+        if (regToggle.checked) {
+            if (optToggle) optToggle.checked = false;
+            window.activeTradingMode = 'regular';
+            if (regBox) regBox.classList.remove('hidden');
+            if (optBox) optBox.classList.add('hidden');
+            window.updateStrategySignalLabels('regular');
+        } else {
+            window.activeTradingMode = null;
+            if (regBox) regBox.classList.add('hidden');
+        }
+    } else {
+        if (optToggle.checked) {
+            if (regToggle) regToggle.checked = false;
+            window.activeTradingMode = 'options';
+            if (optBox) optBox.classList.remove('hidden');
+            if (regBox) regBox.classList.add('hidden');
+            window.updateStrategySignalLabels('options');
+        } else {
+            window.activeTradingMode = null;
+            if (optBox) optBox.classList.add('hidden');
+        }
+    }
+    
+    window.toggleDeployButton();
 };
 

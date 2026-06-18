@@ -201,7 +201,7 @@ def gather_market_context(ticker: str, timeframe: str = "1Hour") -> dict:
             macd_line = ema12 - ema26
             signal_line = macd_line.ewm(span=9, adjust=False).mean()
             macd_hist_series = macd_line - signal_line
-            ctx["macd_hist"] = round(float(macd_hist_series.iloc[-1]), 4)
+            ctx["macd_hist"] = round(float(macd_hist_series.iloc[-1]), 8)
             if len(macd_hist_series) >= 2:
                 prev_h = float(macd_hist_series.iloc[-2])
                 curr_h = float(macd_hist_series.iloc[-1])
@@ -215,7 +215,7 @@ def gather_market_context(ticker: str, timeframe: str = "1Hour") -> dict:
             ctx["ema_21"] = round(float(close.ewm(span=21, adjust=False).mean().iloc[-1]), 4)
             ctx["ema_50"] = round(float(close.ewm(span=50, adjust=False).mean().iloc[-1]), 4)
             if len(close) >= 200:
-                ctx["sma_200"] = round(float(close.rolling(200).mean().iloc[-1]), 4)
+                ctx["sma_200"] = round(float(close.rolling(200).mean().iloc[-1]), 8)
             e9, e21, e50, s200 = ctx["ema_9"], ctx["ema_21"], ctx["ema_50"], ctx["sma_200"]
             if e9 and e21 and e50:
                 if s200 and e9 > e21 > e50 > s200:
@@ -235,8 +235,8 @@ def gather_market_context(ticker: str, timeframe: str = "1Hour") -> dict:
             boll_u = sma20 + 2 * std20
             boll_l = sma20 - 2 * std20
             if not np.isnan(boll_u.iloc[-1]):
-                ctx["boll_upper"] = round(float(boll_u.iloc[-1]), 4)
-                ctx["boll_lower"] = round(float(boll_l.iloc[-1]), 4)
+                ctx["boll_upper"] = round(float(boll_u.iloc[-1]), 8)
+                ctx["boll_lower"] = round(float(boll_l.iloc[-1]), 8)
                 bw = ctx["boll_upper"] - ctx["boll_lower"]
                 ctx["boll_width_pct"] = round(bw / ctx["price"] * 100, 2) if ctx["price"] else None
                 if bw > 0:
@@ -244,8 +244,8 @@ def gather_market_context(ticker: str, timeframe: str = "1Hour") -> dict:
 
             # Support / Resistance (20-day lookback low/high)
             lookback = min(20, len(hist))
-            ctx["support"] = round(float(low.iloc[-lookback:].min()), 4)
-            ctx["resistance"] = round(float(high.iloc[-lookback:].max()), 4)
+            ctx["support"] = round(float(low.iloc[-lookback:].min()), 8)
+            ctx["resistance"] = round(float(high.iloc[-lookback:].max()), 8)
 
             # Realized Volatility (30-day annualized)
             if len(close) >= 31:
@@ -416,14 +416,14 @@ def _fallback_signal(ctx: dict, available_cash: float, account_equity: float) ->
     pos_pct = 0.10 if signal == "BUY" else 0.0
     pos_usd = round(available_cash * pos_pct, 2)
 
-    stop_loss = round(price - atr * 2, 4) if price else None
-    sell_target = round(price + atr * 4, 4) if price else None
+    stop_loss = round(price - atr * 2, 8) if price else None
+    sell_target = round(price + atr * 4, 8) if price else None
     sell_target_pct = round((sell_target - price) / price * 100, 2) if price and sell_target else None
 
     return {
         "signal": signal,
         "confidence": round(confidence, 2),
-        "entry_price": round(price, 4) if price else None,
+        "entry_price": round(price, 8) if price else None,
         "position_size_pct": pos_pct,
         "position_size_usd": pos_usd,
         "stop_loss": stop_loss,
@@ -830,13 +830,13 @@ Output ONLY valid JSON:
 
         # Ensure we always have trade levels even for HOLD signals
         if not result.get("entry_price") and ctx.get("price"):
-            result["entry_price"] = round(ctx["price"], 4)
+            result["entry_price"] = round(ctx["price"], 8)
         if not result.get("stop_loss") and ctx.get("price"):
             atr_val = ctx.get("atr") or (ctx["price"] * 0.02)
-            result["stop_loss"] = round(ctx["price"] - atr_val * 2, 4)
+            result["stop_loss"] = round(ctx["price"] - atr_val * 2, 8)
         if not result.get("sell_target") and ctx.get("price"):
             atr_val = ctx.get("atr") or (ctx["price"] * 0.02)
-            result["sell_target"] = round(ctx["price"] + atr_val * 4, 4)
+            result["sell_target"] = round(ctx["price"] + atr_val * 4, 8)
         if not result.get("sell_target_pct") and result.get("sell_target") and ctx.get("price"):
             result["sell_target_pct"] = round((result["sell_target"] - ctx["price"]) / ctx["price"] * 100, 2)
 
@@ -886,7 +886,7 @@ def _safe_float(val):
         f = float(val)
         if math.isnan(f) or math.isinf(f):
             return None
-        return round(f, 4)
+        return round(f, 8)
     except (TypeError, ValueError):
         return None
 
@@ -1217,13 +1217,13 @@ Output ONLY valid JSON:
                 
         # Ensure we always have trade levels even for HOLD signals
         if not result.get("entry_price") and ctx.get("price"):
-            result["entry_price"] = round(ctx["price"], 4)
+            result["entry_price"] = round(ctx["price"], 8)
         if not result.get("stop_loss") and ctx.get("price"):
             atr_val = ctx.get("atr") or (ctx["price"] * 0.02)
-            result["stop_loss"] = round(ctx["price"] - atr_val * 2, 4)
+            result["stop_loss"] = round(ctx["price"] - atr_val * 2, 8)
         if not result.get("sell_target") and ctx.get("price"):
             atr_val = ctx.get("atr") or (ctx["price"] * 0.02)
-            result["sell_target"] = round(ctx["price"] + atr_val * 4, 4)
+            result["sell_target"] = round(ctx["price"] + atr_val * 4, 8)
         if not result.get("sell_target_pct") and result.get("sell_target") and ctx.get("price"):
             result["sell_target_pct"] = round((result["sell_target"] - ctx["price"]) / ctx["price"] * 100, 2)
 

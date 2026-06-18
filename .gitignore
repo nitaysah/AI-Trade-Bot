@@ -79,3 +79,13 @@ extracted_diffs.txt
 *.pem
 *.key
 *.cert
+
+# Local Scratch / Diagnostics / Docs
+backend/check_*.py
+backend/get_*.py
+*_diagram.*
+*_workflow.*
+format_*.py
+get_*.py
+*.csv
+tsla_sweep_log.txt

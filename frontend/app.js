@@ -184,8 +184,8 @@ function updateVisibleHighLow() {
 function formatPrice(n, forceTicker = null) {
     if (isNaN(n) || n === null) return '---';
     const t = forceTicker || document.getElementById('chartTickerLabel')?.textContent;
-    if (t && isCryptoTicker(t)) return n.toFixed(4);
-    return n > 10 ? n.toFixed(2) : n.toFixed(4);
+    if (t && isCryptoTicker(t)) return new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 8, useGrouping: false }).format(n);
+    return n >= 1.0 ? n.toFixed(2) : n.toFixed(4);
 }
 
 const DEFAULT_TICKER = 'SPY';
@@ -1333,12 +1333,12 @@ function _updateChartHeader(bars) {
     const priceEl = document.getElementById('chartPrice');
     const changeEl = document.getElementById('chartPriceChange');
     if (priceEl) {
-        priceEl.textContent = price.toFixed(price > 10 ? 2 : 4);
+        priceEl.textContent = formatPrice(price, selectedTicker);
         priceEl.className = `text-xl font-black ${change >= 0 ? 'text-emerald-600' : 'text-red-500'}`;
     }
     if (changeEl) {
         const sign = change >= 0 ? '+' : '';
-        changeEl.textContent = `${sign}${change.toFixed(price > 10 ? 2 : 4)} (${sign}${changePct.toFixed(2)}%)`;
+        changeEl.textContent = `${sign}${formatPrice(Math.abs(change), selectedTicker)} (${sign}${changePct.toFixed(2)}%)`;
         changeEl.className = `text-xs font-bold ${change >= 0 ? 'text-emerald-500' : 'text-red-400'}`;
     }
 }
@@ -1907,7 +1907,7 @@ function renderAIIndicatorCard(data, fromCache = false) {
     const sentConfidence = data.sentiment_confidence != null ? data.sentiment_confidence : confidence;
     const sentConfPct = Math.round(sentConfidence * 100);
 
-    const fmtPrice = (v) => (v == null || parseFloat(v) === 0) ? '—' : (parseFloat(v) < 10 ? `$${parseFloat(v).toFixed(4)}` : `$${parseFloat(v).toFixed(2)}`);
+    const fmtPrice = (v) => (v == null || parseFloat(v) === 0) ? '—' : `$${formatPrice(parseFloat(v), data?.ticker || selectedTicker)}`;
     const fmtUsd = (v) => (v == null || parseFloat(v) === 0) ? '—' : `$${parseFloat(v).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 
     const confBarWidth = `${confPct}%`;
@@ -2276,7 +2276,7 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
                         <div class="flex items-center gap-1.5">
                             <span class="font-bold text-xs text-amber-800 ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${name}</span>
                             <div class="group/tooltip relative inline-flex items-center">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <svg onclick="event.stopPropagation(); event.preventDefault(); typeof openInfoModal === 'function' ? openInfoModal('${name}') : null" xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                 </svg>
                                 <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal normal-case tracking-normal">
@@ -2415,7 +2415,7 @@ function renderWatchlist(scans, watchlist) {
         item.className = `watchlist-item group cursor-pointer ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2 flex flex-col gap-2`;
         item.onclick = () => selectTicker(ticker);
 
-        const price = scan?.price ? `$${parseFloat(scan.price.toString().replace('$', '')).toFixed(isCryptoTicker(ticker) ? 4 : 2)}` : '---';
+        const price = scan?.price ? `$${isCryptoTicker(ticker) ? new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 8, useGrouping: false }).format(parseFloat(scan.price.toString().replace('$', ''))) : parseFloat(scan.price.toString().replace('$', '')).toFixed(2)}` : '---';
 
         item.innerHTML = `
                 <div class="flex items-center justify-between">

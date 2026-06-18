@@ -45,7 +45,7 @@
                 localStorage.setItem('loginTimestamp', Date.now().toString());
             }
         };
-        ['mousemove', 'keydown', 'click', 'scroll'].forEach(evt => {
+        ['mousemove', 'keydown', 'click', 'scroll', 'touchstart', 'touchmove'].forEach(evt => {
             window.addEventListener(evt, resetSessionActivity, { passive: true });
         });
 
@@ -485,7 +485,7 @@
                                 onclick="openIndicatorSettings('BotBulls1')" id="botbulls1Label">
                                 BotBulls1 (WaveTrend + MFI)
                                 <div class="group/tooltip relative inline-flex items-center ml-1">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('BotBulls1')" xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                     </svg>
                                     <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
@@ -1019,6 +1019,59 @@
         </div>
     </div>
 
-</body>
+    <!-- Info Modal -->
+    <div id="infoModal" class="fixed inset-0 z-[9999] hidden items-center justify-center bg-slate-900/60 backdrop-blur-md transition-opacity opacity-0">
+        <div class="bg-white/95 backdrop-blur-xl border border-white/50 shadow-2xl rounded-2xl w-full max-w-xl flex flex-col overflow-hidden transform scale-95 transition-transform duration-300 mx-4">
+            <div class="px-6 py-5 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white/95 backdrop-blur-xl z-10 rounded-t-2xl">
+                <h3 id="infoModalTitle" class="text-lg font-black text-slate-800 tracking-tight flex items-center gap-2">Indicator Info</h3>
+                <button onclick="closeInfoModal()" class="text-slate-400 hover:text-slate-700 transition-colors p-2 hover:bg-slate-100 rounded-full">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+                    </svg>
+                </button>
+            </div>
+            <div id="infoModalContent" class="p-6 space-y-4 text-xs text-slate-600 leading-relaxed overflow-y-auto max-h-[70vh]">
+                <!-- Content injected here -->
+            </div>
+        </div>
+    </div>
 
+    <script>
+        const indicatorInfoMap = {
+            'BotBulls1': `<b>BotBulls 1 (WaveTrend + MFI)</b><br><br>BotBulls 1 is an advanced momentum oscillator modeled after famous premium "Sniper" indicators (like Market Cipher B).<br><br><b class="text-slate-800">How it works:</b><br>It combines a smoothed WaveTrend momentum oscillator with a 14-period Money Flow Index (MFI).<br><br><b class="text-slate-800">The Strategy:</b><br>It looks for precise reversal points. A <b class="text-emerald-500">BUY</b> signal fires when the fast momentum wave crosses the slow wave upwards while deep in the oversold zone (-53), but <i>only</i> if the Money Flow Index confirms institutional money is entering the asset (MFI < 30).`,
+            'BotBulls2': `<b>BotBulls 2 (Smart Trail + Trend Tracer)</b><br><br>BotBulls 2 is a powerful trend-following and dynamic stop-loss suite modeled after premium indicators like LuxAlgo Premium.<br><br><b class="text-slate-800">How it works:</b><br>It calculates an adaptive ATR trailing stop (Smart Trail), an institutional double-smoothed EMA (Trend Tracer), and extreme statistical deviation bands (Reversal Zones).<br><br><b class="text-slate-800">The Strategy:</b><br>It waits for a full confluence of momentum. It fires a signal when the asset flips bullish on the Smart Trail, holds above the Trend Tracer, and the RSI is in a healthy 40-70 range. It filters out false breakouts effectively.`,
+            'BotBulls3': `<b>BotBulls 3 (Heikin-Ashi Volatility)</b><br><br>BotBulls 3 is a pure volatility breakout momentum engine designed for fast scalping (such as 0-DTE options strategies).<br><br><b class="text-slate-800">How it works:</b><br>It converts standard price action into smoothed Heikin-Ashi candles to remove noise, then applies a hyper-sensitive Average True Range (ATR) trailing stop-loss directly to those smoothed candles.<br><br><b class="text-slate-800">The Strategy:</b><br>When sudden volatility expands and price breaks above the trailing ATR channel on the Heikin-Ashi chart, it fires a high-probability breakout signal. Best used for quick momentum scalps.`,
+            'Botbulls4 News AI': `<b>Botbulls 4 News AI (Fundamental Sentiment)</b><br><br>BotBulls 4 relies entirely on artificial intelligence and macro-fundamental data rather than price action.<br><br><b class="text-slate-800">How it works:</b><br>It continuously fetches real-time financial news, SEC filings, and macro-economic data, then feeds it through Groq's blazing-fast LLM to analyze the sentiment.<br><br><b class="text-slate-800">The Strategy:</b><br>If the AI determines the news is overwhelmingly bullish (e.g., strong earnings beat, massive new contract), it fires a buy signal. This indicator acts as an ultimate filter against trading into bad news.`
+        };
+
+        function openInfoModal(indicator) {
+            const modal = document.getElementById('infoModal');
+            const title = document.getElementById('infoModalTitle');
+            const content = document.getElementById('infoModalContent');
+            
+            if (indicatorInfoMap[indicator]) {
+                title.innerText = indicator + " Explained";
+                content.innerHTML = indicatorInfoMap[indicator];
+                
+                modal.classList.remove('hidden');
+                modal.classList.add('flex');
+                
+                setTimeout(() => {
+                    modal.classList.remove('opacity-0');
+                    modal.children[0].classList.remove('scale-95');
+                }, 10);
+            }
+        }
+
+        function closeInfoModal() {
+            const modal = document.getElementById('infoModal');
+            modal.classList.add('opacity-0');
+            modal.children[0].classList.add('scale-95');
+            setTimeout(() => {
+                modal.classList.add('hidden');
+                modal.classList.remove('flex');
+            }, 300);
+        }
+    </script>
+</body>
 </html>

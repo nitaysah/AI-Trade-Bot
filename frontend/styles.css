@@ -188,8 +188,11 @@
 }
 
 .watchlist-item.active {
-    background: rgba(139, 92, 246, 0.1);
-    border-color: rgba(139, 92, 246, 0.4);
+    background: rgba(139, 92, 246, 0.15);
+    border-color: rgba(139, 92, 246, 0.6);
+    box-shadow: 0 0 20px rgba(139, 92, 246, 0.4), inset 0 0 10px rgba(139, 92, 246, 0.1);
+    transform: scale(1.02);
+    z-index: 10;
 }
 
 .watchlist-delete {
@@ -929,13 +932,15 @@
 .watchlist-item.options-premium-card.active {
     background: linear-gradient(
         135deg,
-        rgba(254, 243, 199, 0.8) 0%,
-        rgba(253, 230, 138, 0.7) 100%
+        rgba(254, 243, 199, 0.85) 0%,
+        rgba(253, 230, 138, 0.75) 100%
     );
-    border-color: rgba(245, 158, 11, 0.8);
+    border-color: rgba(245, 158, 11, 0.9);
     box-shadow: 
-        0 0 15px rgba(245, 158, 11, 0.25),
+        0 0 25px rgba(245, 158, 11, 0.5),
         inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    transform: scale(1.02);
+    z-index: 10;
 }
 
 /* Glowing golden accent bar for options */
@@ -956,3 +961,67 @@
     z-index: 2;
 }
 
+
+/* ── Premium Crypto Trading Glassmorphic Card (Pinkish Gold / Rose Gold) ── */
+.watchlist-item.crypto-premium-card {
+    background: linear-gradient(
+        135deg,
+        rgba(255, 240, 245, 0.72) 0%,
+        rgba(253, 225, 235, 0.65) 50%,
+        rgba(251, 205, 220, 0.55) 100%
+    );
+    border: 1px solid rgba(244, 114, 182, 0.35);
+    box-shadow: 
+        0 8px 32px rgba(244, 114, 182, 0.05),
+        0 2px 8px rgba(244, 114, 182, 0.03),
+        inset 0 1px 0 rgba(255, 255, 255, 0.75);
+    position: relative;
+    overflow: hidden;
+}
+
+.watchlist-item.crypto-premium-card:hover {
+    background: linear-gradient(
+        135deg,
+        rgba(255, 245, 250, 0.82) 0%,
+        rgba(254, 230, 240, 0.75) 50%,
+        rgba(252, 215, 225, 0.65) 100%
+    );
+    border-color: rgba(244, 114, 182, 0.55);
+    box-shadow: 
+        0 12px 40px rgba(244, 114, 182, 0.12),
+        0 4px 12px rgba(244, 114, 182, 0.06),
+        inset 0 1px 0 rgba(255, 255, 255, 0.85);
+    transform: translateY(-2px) translateX(2px);
+}
+
+.watchlist-item.crypto-premium-card.active {
+    background: linear-gradient(
+        135deg,
+        rgba(254, 215, 225, 0.85) 0%,
+        rgba(253, 195, 210, 0.75) 100%
+    );
+    border-color: rgba(244, 114, 182, 0.9);
+    box-shadow: 
+        0 0 25px rgba(244, 114, 182, 0.5),
+        inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    transform: scale(1.02);
+    z-index: 10;
+}
+
+/* Glowing pinkish gold accent bar for crypto */
+.watchlist-item.crypto-premium-card::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    border-radius: 0.625rem 0.625rem 0 0;
+    background: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(244, 114, 182, 0.4) 20%,
+        rgba(236, 72, 153, 0.85) 50%,
+        rgba(244, 114, 182, 0.4) 80%,
+        transparent 100%
+    );
+    z-index: 2;
+}

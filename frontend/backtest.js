@@ -1,3 +1,22 @@
+
+function isCrypto(ticker) {
+    if (!ticker) return false;
+    const t = ticker.toUpperCase();
+    return t.includes('USD') || t.includes('BTC') || t.includes('ETH') || t.includes('SOL') || t.includes('DOGE') || t.includes('LTC');
+}
+
+function formatAssetPrice(val, isCrypto) {
+    if (val === undefined || val === null || isNaN(val)) return '---';
+    const v = parseFloat(val);
+    if (v === 0) return '0.00';
+    if (isCrypto) {
+        return new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 8, useGrouping: false }).format(v);
+    }
+    if (v < 0.0001) return v.toFixed(8);
+    if (v < 0.01) return v.toFixed(6);
+    if (v < 1.0) return v.toFixed(4);
+    return v.toFixed(2);
+}
 // ──────────────────────────────────────────────
 // BACKTEST CENTER LOGIC v2.0
 // ──────────────────────────────────────────────
@@ -213,12 +232,37 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    window.updateBacktestSmartReentryFields = function () {
+        const reentryEnabled = document.getElementById('btOptionsSmartReentry')?.checked || false;
+        const fieldsDiv = document.getElementById('btSmartReentryFields');
+        if (fieldsDiv) {
+            if (reentryEnabled) {
+                fieldsDiv.classList.remove('hidden');
+                const type = document.getElementById('btOptionsSmartReentryType')?.value || 'RSI';
+                if (type === 'RSI') {
+                    document.getElementById('btOptionsRsiCallContainer')?.classList.remove('hidden');
+                    document.getElementById('btOptionsRsiPutContainer')?.classList.remove('hidden');
+                    document.getElementById('btOptionsVwapCallContainer')?.classList.add('hidden');
+                    document.getElementById('btOptionsVwapPutContainer')?.classList.add('hidden');
+                } else {
+                    document.getElementById('btOptionsRsiCallContainer')?.classList.add('hidden');
+                    document.getElementById('btOptionsRsiPutContainer')?.classList.add('hidden');
+                    document.getElementById('btOptionsVwapCallContainer')?.classList.remove('hidden');
+                    document.getElementById('btOptionsVwapPutContainer')?.classList.remove('hidden');
+                }
+            } else {
+                fieldsDiv.classList.add('hidden');
+            }
+        }
+    };
+
     // Initialize/Sync strategy settings display on load
     setTimeout(() => {
         const isAiOnLoad = document.getElementById('btAiAutopilotToggle')?.checked || false;
         const isOptionsOnLoad = document.getElementById('btOptionsToggle')?.checked || false;
         window.handleBacktestAutopilotToggle(isAiOnLoad);
         window.handleBacktestOptionsToggle(isOptionsOnLoad);
+        window.updateBacktestSmartReentryFields();
     }, 50);
 
     // Setup Ticker Search Dropdown
@@ -408,6 +452,15 @@ async function runBacktest() {
     const aiInterval = parseInt(document.getElementById('btAiInterval')?.value || '10');
     const aiModel = document.getElementById('btAiModel')?.value || 'llama-3.3-70b-versatile';
 
+    const enableCooldown = document.getElementById('btEnableCooldown')?.checked ?? true;
+    let cooldownVal = document.getElementById('btCooldownMinutes')?.value || '0';
+    let cooldownMinutes = null;
+    if (cooldownVal === 'custom') {
+        cooldownMinutes = parseInt(document.getElementById('btCooldownCustomMinutes')?.value || '60');
+    } else if (cooldownVal !== 'default') {
+        cooldownMinutes = parseInt(cooldownVal);
+    }
+
     // Options properties
     const optionsEnabled = document.getElementById('btOptionsToggle')?.checked || false;
 
@@ -442,7 +495,13 @@ async function runBacktest() {
             const stopLossPct = parseFloat(document.getElementById('btOptionsStopLossPct').value || '50') / 100.0;
             const takeProfitPct = parseFloat(document.getElementById('btOptionsTakeProfitPct').value || '100') / 100.0;
             const r = parseFloat(document.getElementById('btOptionsRiskFreeRate').value || '5.0') / 100.0;
-            const closeBeforeExpiry = parseFloat(document.getElementById('btOptionsCloseBeforeExpiry').value || '2.0');
+            const enableSignalReset = document.getElementById('btOptionsSignalReset').checked;
+            const enableSmartReentry = document.getElementById('btOptionsSmartReentry').checked;
+            const smartReentryType = document.getElementById('btOptionsSmartReentryType').value;
+            const smartReentryRsiCallMax = parseInt(document.getElementById('btOptionsRsiCallMax').value || '70');
+            const smartReentryRsiPutMin = parseInt(document.getElementById('btOptionsRsiPutMin').value || '30');
+            const smartReentryVwapCallMaxPct = parseFloat(document.getElementById('btOptionsVwapCallMaxPct').value || '0.5');
+            const smartReentryVwapPutMaxPct = parseFloat(document.getElementById('btOptionsVwapPutMaxPct').value || '0.5');
 
             window.lastBacktestRun = {
                 is_options: true,
@@ -452,7 +511,16 @@ async function runBacktest() {
                 stop_loss_pct: stopLossPct, take_profit_pct: takeProfitPct,
                 exit_strategy: exitStrategy, close_before_expiry_hours: closeBeforeExpiry,
                 threshold: parseInt(threshold), sell_threshold: parseInt(sellThreshold),
-                indicators, ext_hours: extHoursVal, r, results: null
+                indicators, ext_hours: extHoursVal, r, results: null,
+                enable_signal_reset: enableSignalReset,
+                enable_smart_reentry: enableSmartReentry,
+                smart_reentry_type: smartReentryType,
+                smart_reentry_rsi_call_max: smartReentryRsiCallMax,
+                smart_reentry_rsi_put_min: smartReentryRsiPutMin,
+                smart_reentry_vwap_call_max_dist_pct: smartReentryVwapCallMaxPct,
+                smart_reentry_vwap_put_max_dist_pct: smartReentryVwapPutMaxPct,
+                enable_cooldown: enableCooldown,
+                cooldown_minutes: cooldownMinutes
             };
 
             console.log(`[backtest] Starting Options request to: ${API_BASE}/api/options/backtest`);
@@ -476,7 +544,16 @@ async function runBacktest() {
                     sell_threshold: parseInt(sellThreshold),
                     indicators: indicators,
                     ext_hours: extHoursVal,
-                    r
+                    r,
+                    enable_signal_reset: enableSignalReset,
+                    enable_smart_reentry: enableSmartReentry,
+                    smart_reentry_type: smartReentryType,
+                    smart_reentry_rsi_call_max: smartReentryRsiCallMax,
+                    smart_reentry_rsi_put_min: smartReentryRsiPutMin,
+                    smart_reentry_vwap_call_max_dist_pct: smartReentryVwapCallMaxPct,
+                    smart_reentry_vwap_put_max_dist_pct: smartReentryVwapPutMaxPct,
+                    enable_cooldown: enableCooldown,
+                    cooldown_minutes: cooldownMinutes
                 })
             });
         } else {
@@ -497,6 +574,7 @@ async function runBacktest() {
                 max_position_pct: maxPositionPct, atr_stop_multiplier: atrStopMult,
                 atr_trail_multiplier: atrTrailMult, atr_take_profit_multiplier: atrTpMult,
                 ai_autopilot: aiAutopilot, ai_interval: aiInterval, ai_model: aiModel,
+                enable_cooldown: enableCooldown, cooldown_minutes: cooldownMinutes,
                 results: null
             };
 
@@ -521,7 +599,9 @@ async function runBacktest() {
                     take_profit_multiplier: atrTpMult,
                     ai_autopilot: aiAutopilot,
                     ai_interval: aiInterval,
-                    ai_model: aiModel
+                    ai_model: aiModel,
+                    enable_cooldown: enableCooldown,
+                    cooldown_minutes: cooldownMinutes
                 })
             });
         }
@@ -643,24 +723,24 @@ function renderBtTradesPage() {
         const isOption = t.option_type !== undefined;
         let entryHtml = `
             <div class="text-xs font-semibold text-indigo-950">${formatDate(t.entry_time)}</div>
-            <div class="text-[0.6rem] text-purple-400 font-medium mt-0.5">Entry @ $${t.entry_price.toFixed(2)}</div>
+            <div class="text-[0.6rem] text-purple-400 font-medium mt-0.5">Entry @ $${formatAssetPrice(t.entry_price, isCrypto(t.symbol || window.activeTicker))}</div>
         `;
         let exitHtml = `
             <div class="text-xs font-semibold text-indigo-950">${formatDate(t.exit_time)}</div>
-            <div class="text-[0.6rem] text-purple-400 font-medium mt-0.5">Exit @ $${t.exit_price.toFixed(2)}</div>
+            <div class="text-[0.6rem] text-purple-400 font-medium mt-0.5">Exit @ $${formatAssetPrice(t.exit_price, isCrypto(t.symbol || window.activeTicker))}</div>
         `;
         let qtyHtml = `${t.qty.toFixed(4)}`;
 
         if (isOption) {
             entryHtml = `
                 <div class="text-xs font-semibold text-indigo-950">${formatDate(t.entry_time)}</div>
-                <div class="text-[0.65rem] text-indigo-600 font-black mt-0.5">${t.option_type} $${t.strike} @ $${t.entry_price.toFixed(2)}</div>
-                <div class="text-[0.55rem] text-slate-400">Stock: $${t.entry_underlying.toFixed(2)}</div>
+                <div class="text-[0.65rem] text-indigo-600 font-black mt-0.5">${t.option_type} $${t.strike} @ $${formatAssetPrice(t.entry_price, isCrypto(t.symbol || window.activeTicker))}</div>
+                <div class="text-[0.55rem] text-slate-400">Stock: $${formatAssetPrice(t.entry_underlying, isCrypto(t.symbol || window.activeTicker))}</div>
             `;
             exitHtml = `
                 <div class="text-xs font-semibold text-indigo-950">${formatDate(t.exit_time)}</div>
-                <div class="text-[0.65rem] text-indigo-600 font-black mt-0.5">Exit @ $${t.exit_price.toFixed(2)}</div>
-                <div class="text-[0.55rem] text-slate-400">Stock: $${t.exit_underlying.toFixed(2)}</div>
+                <div class="text-[0.65rem] text-indigo-600 font-black mt-0.5">Exit @ $${formatAssetPrice(t.exit_price, isCrypto(t.symbol || window.activeTicker))}</div>
+                <div class="text-[0.55rem] text-slate-400">Stock: $${formatAssetPrice(t.exit_underlying, isCrypto(t.symbol || window.activeTicker))}</div>
                 <div class="text-[0.55rem] text-rose-500 font-bold max-w-[120px] truncate" title="${t.reason || ''}">${t.reason || ''}</div>
             `;
             qtyHtml = `${t.qty} Contract${t.qty !== 1 ? 's' : ''}`;
@@ -915,8 +995,8 @@ function _btInitChart(candles, trades, equityCurve) {
             ? (isOption
                 ? `<div class="mt-1 pt-1 border-t border-indigo-50 text-[0.55rem]">
                      <span class="text-emerald-600 font-black">IN ${activePos.option_type} ${activePos.strike}</span>
-                     <span class="text-slate-400 ml-1">Premium: $${activePos.entry_price.toFixed(2)}</span>
-                     <span class="text-slate-400 ml-1">Stock Entry: $${activePos.entry_underlying.toFixed(2)}</span>
+                     <span class="text-slate-400 ml-1">Premium: $${formatAssetPrice(activePos.entry_price, isCrypto(activePos.symbol || window.activeTicker))}</span>
+                     <span class="text-slate-400 ml-1">Stock Entry: $${formatAssetPrice(activePos.entry_underlying, isCrypto(activePos.symbol || window.activeTicker))}</span>
                    </div>`
                 : `<div class="mt-1 pt-1 border-t border-indigo-50 text-[0.55rem]">
                      <span class="text-emerald-600 font-black">IN POSITION</span>
@@ -941,10 +1021,10 @@ function _btInitChart(candles, trades, equityCurve) {
         tooltip.innerHTML = `
             <div class="text-[0.55rem] text-slate-400 mb-1">${new Date(param.time * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}</div>
             <div class="grid grid-cols-2 gap-x-3 gap-y-0.5">
-                <span class="text-slate-400">O</span><span class="font-bold">$${bar.open.toFixed(2)}</span>
-                <span class="text-slate-400">H</span><span class="font-bold text-emerald-600">$${bar.high.toFixed(2)}</span>
-                <span class="text-slate-400">L</span><span class="font-bold text-rose-500">$${bar.low.toFixed(2)}</span>
-                <span class="text-slate-400">C</span><span class="font-bold">$${bar.close.toFixed(2)}</span>
+                <span class="text-slate-400">O</span><span class="font-bold">$${bar.open < 10 || String(bar.open).split(".")[1]?.length > 2 ? new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 8, useGrouping: false }).format(bar.open) : bar.open.toFixed(2)}</span>
+                <span class="text-slate-400">H</span><span class="font-bold text-emerald-600">$${bar.high < 10 || String(bar.high).split(".")[1]?.length > 2 ? new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 8, useGrouping: false }).format(bar.high) : bar.high.toFixed(2)}</span>
+                <span class="text-slate-400">L</span><span class="font-bold text-rose-500">$${bar.low < 10 || String(bar.low).split(".")[1]?.length > 2 ? new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 8, useGrouping: false }).format(bar.low) : bar.low.toFixed(2)}</span>
+                <span class="text-slate-400">C</span><span class="font-bold">$${bar.close < 10 || String(bar.close).split(".")[1]?.length > 2 ? new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 8, useGrouping: false }).format(bar.close) : bar.close.toFixed(2)}</span>
             </div>
             ${posLine}
             ${eqLine}

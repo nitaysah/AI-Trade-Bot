@@ -1,8 +1,8 @@
 
 @app.post("/api/alpaca_config")
 async def update_alpaca_config(cfg: AlpacaConfig, user: dict = Depends(verify_token)):
-    success = eng.broker.connect(cfg.api_key, cfg.secret_key, cfg.paper)
     eng = user_manager.get_engine(user['uid'])
+    success = eng.broker.connect(cfg.api_key, cfg.secret_key, cfg.paper)
     if success:
         # Persist to cloud (Encrypted)
         await save_config_to_cloud(cfg.api_key, cfg.secret_key, cfg.paper)
@@ -512,6 +512,7 @@ def get_watchlist(user: dict = Depends(verify_token)):
 @app.post("/api/watchlist")
 async def add_to_watchlist(data: dict, user: dict = Depends(verify_token)):
     """Add a ticker to the watchlist."""
+    eng = user_manager.get_engine(user['uid'])
     ticker = data.get("ticker", "").upper()
     if ticker and ticker not in eng.config.WATCHLIST:
         eng.config.WATCHLIST.append(ticker)
@@ -542,6 +543,7 @@ async def remove_from_watchlist(ticker: str, user: dict = Depends(verify_token))
 @app.get("/api/tradelist")
 def get_tradelist(user: dict = Depends(verify_token)):
     """Returns the current active trade list."""
+    eng = user_manager.get_engine(user['uid'])
     return eng.config.TRADELIST
 
 
@@ -583,6 +585,7 @@ async def debug_history(user: dict = Depends(verify_token)):
 @app.delete("/api/tradelist/{ticker}")
 async def remove_from_tradelist(ticker: str, user: dict = Depends(verify_token)):
     """Remove a ticker from the active trade list."""
+    eng = user_manager.get_engine(user['uid'])
     ticker = ticker.upper()
     if ticker in eng.config.TRADELIST:
         eng.config.TRADELIST.remove(ticker)
@@ -670,6 +673,9 @@ async def create_bot(data: dict, user: dict = Depends(verify_token)):
         if rk in data:
             eng.config.TICKER_SETTINGS[symbol][rk] = float(data[rk])
             
+    if "enable_cooldown" in data:
+        eng.config.TICKER_SETTINGS[symbol]["enable_cooldown"] = bool(data["enable_cooldown"])
+        
     if "cooldown_minutes" in data:
         if data["cooldown_minutes"] is None or data["cooldown_minutes"] == "default":
             if "cooldown_minutes" in eng.config.TICKER_SETTINGS[symbol]:
@@ -692,6 +698,22 @@ async def create_bot(data: dict, user: dict = Depends(verify_token)):
         eng.config.TICKER_SETTINGS[symbol]["options_stop_loss_pct"] = float(data["options_stop_loss_pct"])
     if "options_take_profit_pct" in data:
         eng.config.TICKER_SETTINGS[symbol]["options_take_profit_pct"] = float(data["options_take_profit_pct"])
+
+    # Smart Re-entry Settings
+    if "enable_signal_reset" in data:
+        eng.config.TICKER_SETTINGS[symbol]["enable_signal_reset"] = bool(data["enable_signal_reset"])
+    if "enable_smart_reentry" in data:
+        eng.config.TICKER_SETTINGS[symbol]["enable_smart_reentry"] = bool(data["enable_smart_reentry"])
+    if "smart_reentry_type" in data:
+        eng.config.TICKER_SETTINGS[symbol]["smart_reentry_type"] = data["smart_reentry_type"]
+    if "smart_reentry_rsi_call_max" in data:
+        eng.config.TICKER_SETTINGS[symbol]["smart_reentry_rsi_call_max"] = int(data["smart_reentry_rsi_call_max"])
+    if "smart_reentry_rsi_put_min" in data:
+        eng.config.TICKER_SETTINGS[symbol]["smart_reentry_rsi_put_min"] = int(data["smart_reentry_rsi_put_min"])
+    if "smart_reentry_vwap_call_max_dist_pct" in data:
+        eng.config.TICKER_SETTINGS[symbol]["smart_reentry_vwap_call_max_dist_pct"] = float(data["smart_reentry_vwap_call_max_dist_pct"])
+    if "smart_reentry_vwap_put_max_dist_pct" in data:
+        eng.config.TICKER_SETTINGS[symbol]["smart_reentry_vwap_put_max_dist_pct"] = float(data["smart_reentry_vwap_put_max_dist_pct"])
 
     if "paused" in data:
         eng.config.TICKER_SETTINGS[symbol]["paused"] = bool(data["paused"])
@@ -809,6 +831,7 @@ async def update_ticker_settings(data: dict, user: dict = Depends(verify_token))
 @app.delete("/api/settings/ticker/{ticker}")
 async def reset_ticker_settings(ticker: str, user: dict = Depends(verify_token)):
     """Reset a ticker to global defaults."""
+    eng = user_manager.get_engine(user['uid'])
     ticker = ticker.upper()
     if ticker in eng.config.TICKER_SETTINGS:
         del eng.config.TICKER_SETTINGS[ticker]

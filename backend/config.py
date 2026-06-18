@@ -161,3 +161,11 @@ OPTIONS_EXIT_STRATEGY = "hybrid"     # "premium_pct" | "pivot_points" | "high_lo
 OPTIONS_STOP_LOSS_PCT = 0.50         # Exit trade if premium decays by 50%
 OPTIONS_TAKE_PROFIT_PCT = 1.00       # Take profit when premium reaches +100%
 OPTIONS_CLOSE_BEFORE_EXPIRY_HOURS = 2.0  # Safe exit buffer before expiration
+
+# Smart Re-entry / Risk filters
+ENABLE_SMART_REENTRY = False
+SMART_REENTRY_TYPE = "RSI"               # "RSI" | "VWAP"
+SMART_REENTRY_RSI_THRESHOLD = 35         # Blocks BUY if RSI > 65, blocks SELL if RSI < 35
+SMART_REENTRY_VWAP_PCT = 0.5             # Max allowed distance from VWAP (%)
+ENABLE_SIGNAL_RESET = False
+
