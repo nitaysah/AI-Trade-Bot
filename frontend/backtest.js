@@ -182,6 +182,21 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     // Setup Options Trading Toggle handlers
+    
+    window.handleOptimizeToggle = function(enabled) {
+        const section = document.getElementById('btOptimizeSection');
+        const indicatorCards = document.querySelectorAll('.indicator-card');
+        const thresholdsCard = document.getElementById('btThresholdsCard');
+        if (enabled) {
+            section?.classList.remove('hidden');
+            // Dim thresholds since optimizer takes over thresholds and exit multipliers
+            if (thresholdsCard) { thresholdsCard.style.opacity = '0.5'; thresholdsCard.style.pointerEvents = 'none'; }
+        } else {
+            section?.classList.add('hidden');
+            if (thresholdsCard) { thresholdsCard.style.opacity = '1'; thresholdsCard.style.pointerEvents = 'auto'; }
+        }
+    };
+
     window.handleBacktestOptionsToggle = function (enabled) {
         const section = document.getElementById('btOptionsSection');
         const exitCard = document.getElementById('btExitStrategyCard');
@@ -463,6 +478,8 @@ async function runBacktest() {
 
     // Options properties
     const optionsEnabled = document.getElementById('btOptionsToggle')?.checked || false;
+    const optimizeEnabled = document.getElementById('btOptimizeToggle')?.checked || false;
+    const oosSplit = parseFloat(document.getElementById('btOosSplit')?.value || '30');
 
     // Collect checked indicators
     const indicators = Array.from(document.querySelectorAll('.bt-indicator-check:checked'))
@@ -578,7 +595,23 @@ async function runBacktest() {
                 results: null
             };
 
-            console.log(`[backtest] Starting Stock request to: ${API_BASE}/api/backtest`);
+            
+            if (optimizeEnabled) {
+                console.log(`[backtest] Starting Optimizer request to: ${API_BASE}/api/backtest/optimize`);
+                response = await fetch(`${API_BASE}/api/backtest/optimize`, {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify({
+                        ticker, timeframe, days: parseInt(days), capital: parseFloat(capital),
+                        oos_split_pct: oosSplit,
+                        indicators: aiAutopilot ? [] : indicators, ext_hours: extHoursVal, sell_mode: sellMode,
+                        risk_per_trade: riskPerTrade, max_position_pct: maxPositionPct,
+                        enable_cooldown: enableCooldown, cooldown_minutes: cooldownMinutes
+                    })
+                });
+            } else {
+                console.log(`[backtest] Starting Stock request to: ${API_BASE}/api/backtest`);
+
             response = await fetch(`${API_BASE}/api/backtest`, {
                 method: 'POST',
                 headers: headers,
@@ -605,8 +638,9 @@ async function runBacktest() {
                 })
             });
         }
+    }
 
-        if (!response.ok) {
+    if (!response.ok) {
             throw new Error(`HTTP Error: ${response.status}`);
         }
 
@@ -614,12 +648,21 @@ async function runBacktest() {
         console.log('[backtest] Response received:', data.status);
 
         if (data.status === 'success') {
-            if (window.lastBacktestRun) {
-                window.lastBacktestRun.results = data.results;
+            let resToDisplay = data.results;
+            if (data.results && data.results.outsample_results) {
+                resToDisplay = data.results.outsample_results;
+                resToDisplay.optimizer_meta = {
+                    overfit_score: data.results.overfit_score,
+                    insample_roi: data.results.insample_results?.summary?.roi_pct || 0,
+                    best_params: data.results.best_parameters
+                };
             }
-            displayResults(data.results);
-            if (window.lastBacktestRun && data.results && data.results.summary) {
-                showDeployButton(data.results.summary);
+            if (window.lastBacktestRun) {
+                window.lastBacktestRun.results = resToDisplay;
+            }
+            displayResults(resToDisplay);
+            if (window.lastBacktestRun && resToDisplay && resToDisplay.summary) {
+                showDeployButton(resToDisplay.summary);
             }
         } else {
             const errMsg = data.message || data.error || "Unknown error";
@@ -644,20 +687,41 @@ function displayResults(res) {
 
     const s = res.summary;
 
-    // ── Header Metadata (Ticker · Timeframe · Days · Date Range CST) ─────
+    if (!s) {
+        console.error('[backtest] displayResults called with no summary:', res);
+        alert('Backtest returned an unexpected result format. Check browser console for details.');
+        resetBacktestUI();
+        return;
+    }
+    // ── Header Metadata
+
     const metaEl = document.getElementById('resRunMeta');
-    if (metaEl && s.ticker) {
-        const cstOpts = { timeZone: 'America/Chicago', month: 'short', day: 'numeric', year: 'numeric' };
-        let startCST = '';
-        let endCST = '';
-        try {
-            startCST = new Date(s.start_date_utc).toLocaleString('en-US', cstOpts);
-            endCST = new Date(s.end_date_utc).toLocaleString('en-US', cstOpts);
-        } catch (e) {
-            startCST = s.start_date_utc || '';
-            endCST = s.end_date_utc || '';
+    if (res.optimizer_meta) {
+        let overfitHtml = '';
+        if (res.optimizer_meta.overfit_score >= 0.8) {
+            overfitHtml = `<span class="bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded ml-2">🟢 ROBUST (Score: ${res.optimizer_meta.overfit_score})</span>`;
+        } else if (res.optimizer_meta.overfit_score >= 0.5) {
+            overfitHtml = `<span class="bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded ml-2">🟡 DEGRADED (Score: ${res.optimizer_meta.overfit_score})</span>`;
+        } else {
+            overfitHtml = `<span class="bg-rose-500/20 text-rose-300 px-2 py-0.5 rounded ml-2">🔴 OVERFITTED (Score: ${res.optimizer_meta.overfit_score})</span>`;
         }
-        metaEl.textContent = `${s.ticker}  ·  ${s.timeframe}  ·  ${s.period_days} Days  ·  ${startCST} – ${endCST} CST`;
+        if (metaEl) {
+            metaEl.innerHTML = `Out-of-Sample Validation Result ${overfitHtml} <br> Best Params: Thresh ${res.optimizer_meta.best_params.threshold}, Sell ${res.optimizer_meta.best_params.sell_threshold}, ATR Stop ${res.optimizer_meta.best_params.atr_stop_multiplier}`;
+        }
+    } else {
+        if (metaEl && s.ticker) {
+            const cstOpts = { timeZone: 'America/Chicago', month: 'short', day: 'numeric', year: 'numeric' };
+            let startCST = '';
+            let endCST = '';
+            try {
+                startCST = new Date(s.start_date_utc).toLocaleString('en-US', cstOpts);
+                endCST = new Date(s.end_date_utc).toLocaleString('en-US', cstOpts);
+            } catch (e) {
+                startCST = s.start_date_utc || '';
+                endCST = s.end_date_utc || '';
+            }
+            metaEl.textContent = `${s.ticker}  ·  ${s.timeframe}  ·  ${s.period_days} Days  ·  ${startCST} – ${endCST} CST`;
+        }
     }
 
     // Stats
@@ -1614,7 +1678,8 @@ function showDeployButton(summary) {
     }
 }
 
-async function openDeployModal() {
+async function openDeployModal(isIncubator = false) {
+    window._deployIsIncubator = isIncubator;
     const run = window.lastBacktestRun;
     if (!run || !run.results) return;
 
@@ -1750,6 +1815,7 @@ async function deployStrategyAsBot() {
         const payload = {
             ...run,
             deploy_mode: _pendingDeployMode,   // 'override' | 'liquidate'
+            is_incubator: window._deployIsIncubator || false,
             indicator_overrides: window.lastBacktestData?.indicator_overrides || {},
             backtest_roi_pct: run.results?.summary?.roi_pct,
             backtest_win_rate: run.results?.summary?.win_rate_pct,

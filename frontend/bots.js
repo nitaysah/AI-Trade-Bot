@@ -297,11 +297,21 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
 
         const item = document.createElement('div');
         item.className = `watchlist-item group active-bot ${premiumCardClass} ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2 flex flex-col gap-2 transition-transform duration-200`;
-        item.draggable = true;
+        item.dataset.ticker = ticker;
         item.dataset.ticker = ticker;
         
-        item.addEventListener('dragstart', handleDragStart);
-        item.addEventListener('dragend', handleDragEnd);
+        item.addEventListener('dragstart', (e) => {
+            // Only allow dragging if the drag handle activated it
+            if (!item.draggable) {
+                e.preventDefault();
+                return;
+            }
+            handleDragStart.call(item, e);
+        });
+        item.addEventListener('dragend', (e) => {
+            item.draggable = false;
+            handleDragEnd.call(item, e);
+        });
         item.addEventListener('dragover', handleDragOver);
         item.addEventListener('dragenter', handleDragEnter);
         item.addEventListener('dragleave', handleDragLeave);
@@ -442,20 +452,32 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         }
 
         const fromBacktest = (window.lastBotsData?.ticker_settings || {})[ticker]?.source === 'backtest';
-        const backtestBadge = fromBacktest
+        const isIncubator = (window.lastBotsData?.ticker_settings || {})[ticker]?.is_incubator;
+        const backtestBadge = fromBacktest && !isIncubator
             ? `<span class="px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-600 font-black text-[0.5rem] border border-violet-200 uppercase tracking-widest ml-1">
                  🧪 From Backtest
+               </span>`
+            : '';
+        const incubatorBadge = isIncubator
+            ? `<span class="px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-600 font-black text-[0.5rem] border border-teal-200 uppercase tracking-widest ml-1 shadow-sm">
+                 🧪 Incubator Sandbox
                </span>`
             : '';
 
         item.innerHTML = `
                 <!-- 1st Line: Ticker Name, Price, Watchlist Star, Settings Gear, and Remove Bot Cross -->
-                <div class="flex items-center justify-between cursor-pointer" onclick="selectTicker('${ticker}')">
+                <div class="flex items-center justify-between cursor-text">
                     <div class="flex items-center gap-2">
-                        <div class="${dotClass}"></div>
-                        <span class="font-black text-sm ${isPaused ? 'text-slate-400' : 'text-indigo-950'} tracking-tight">${ticker}</span>
+                        <span class="cursor-grab text-slate-300 hover:text-slate-500 hover:bg-slate-100 p-0.5 rounded transition-all active:cursor-grabbing" 
+                              onmousedown="this.closest('.watchlist-item').draggable = true;" 
+                              onmouseup="this.closest('.watchlist-item').draggable = false;"
+                              title="Drag to reorder">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/></svg>
+                        </span>
+                        <div class="${dotClass} cursor-pointer" onclick="selectTicker('${ticker}')"></div>
+                        <span class="font-black text-sm ${isPaused ? 'text-slate-400' : 'text-indigo-950'} tracking-tight cursor-pointer" onclick="selectTicker('${ticker}')">${ticker}</span>
                         <span class="text-[0.75rem] font-black text-slate-600 font-mono tracking-tight ml-1">${price}</span>
-                        ${backtestBadge}
+                        ${backtestBadge}${incubatorBadge}
                     </div>
                     
                     <div class="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity ml-1">
@@ -704,6 +726,7 @@ async function handleDrop(e) {
 }
 
 function selectTicker(ticker) {
+    if (window.getSelection().toString().length > 0) return; // Allow text selection without triggering navigation
     if (selectedTicker === ticker) return;
     selectedTicker = ticker;
 
@@ -1857,8 +1880,21 @@ function applyBotsData(data) {
         selectedTicker = data.tradelist[0];
     }
 
-    // Fetch AI Indicator for selected bot (reuses caching mechanism)
-    if (selectedTicker) {
+    // Try to mirror global AI analysis if it exists, to prevent duplicate queries
+    let mirrored = false;
+    try {
+        const globalAiStr = localStorage.getItem('latest_global_ai_analysis');
+        if (globalAiStr) {
+            const globalAi = JSON.parse(globalAiStr);
+            if ((Date.now() - globalAi.timestamp) < AI_INDICATOR_CACHE_TTL) {
+                renderAIIndicatorCard(globalAi.data, true);
+                mirrored = true;
+            }
+        }
+    } catch (e) {}
+
+    // Only fetch if we didn't mirror the global AI indicator
+    if (selectedTicker && !mirrored) {
         fetchAIIndicator(selectedTicker, currentBackendTf);
     }
 
@@ -2839,10 +2875,12 @@ function getAICache(key) {
 
 function setAICache(key, data) {
     try {
-        localStorage.setItem(`ai_cache_${key}`, JSON.stringify({
+        const payload = {
             data: data,
             timestamp: Date.now()
-        }));
+        };
+        localStorage.setItem(`ai_cache_${key}`, JSON.stringify(payload));
+        localStorage.setItem(`latest_global_ai_analysis`, JSON.stringify(payload));
     } catch (e) { console.error('Cache write error', e); }
 }
 
@@ -2963,28 +3001,41 @@ function _showAIIndicatorLoading(ticker) {
     const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
     const isOllamaActive = selectedModel.startsWith('ollama/') || selectedModel.startsWith('ollama:');
     const badgeHtml = isOllamaActive
-        ? `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-indigo-500 to-blue-600 text-white border border-indigo-600/50 shadow-sm animate-pulse">OLLAMA</span>`
-        : `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-amber-200 to-amber-300 text-amber-800 border border-amber-400/50 shadow-sm animate-pulse">GROQ AI</span>`;
+        ? `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-indigo-500 to-blue-600 text-white border border-indigo-600/50 shadow-sm">OLLAMA</span>`
+        : `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-amber-200 to-amber-300 text-amber-800 border border-amber-400/50 shadow-sm">GROQ AI</span>`;
     const selectHtml = _getAIModelSelectHtml(selectedModel, false);
 
-    el.className = 'ai-indicator-card p-4 rounded-xl border relative overflow-hidden transition-all duration-300 border-indigo-100 bg-white/40 backdrop-blur-md animate-pulse shadow-sm';
+    el.className = 'ai-indicator-card ai-indicator-loading border-amber-200/60 bg-gradient-to-br from-amber-50/50 to-orange-50/30';
     el.innerHTML = `
-        <div class="flex items-center justify-between mb-3 relative z-10">
-            <div class="flex items-center gap-2">
-                <span class="text-base">🤖</span>
+        <div class="ai-orb bg-gradient-to-r from-amber-400 to-orange-500 opacity-20"></div>
+        <div class="flex flex-wrap items-center justify-between gap-y-2 mb-3 relative z-10">
+            <div class="flex flex-wrap items-center gap-1.5 sm:gap-2">
+                <span class="text-base drop-shadow-sm">🤖</span>
                 <span class="font-black text-xs text-amber-900 tracking-wide uppercase">BotBulls AI Analysis - ${ticker || '---'}</span>
                 ${badgeHtml}
             </div>
             <div class="flex items-center gap-2 relative z-30">
                 ${selectHtml}
+                <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm">
+                    ℹ
+                </button>
+                <button disabled class="w-5 h-5 rounded-full flex items-center justify-center text-xs text-amber-300 bg-amber-50 border border-amber-200 animate-spin">
+                    ↻
+                </button>
             </div>
         </div>
-        <div class="space-y-2 mt-4 relative z-10 text-left">
-            <div class="h-3 bg-slate-200/60 rounded w-1/4"></div>
-            <div class="h-2.5 bg-slate-200/50 rounded w-full"></div>
-            <div class="h-2.5 bg-slate-200/50 rounded w-5/6"></div>
-            <div class="h-2 bg-slate-200/40 rounded w-1/2"></div>
+        <div class="space-y-2 animate-pulse relative z-10">
+            <div class="h-8 bg-amber-200/60 rounded-lg w-2/3"></div>
+            <div class="h-4 bg-amber-200/40 rounded w-full"></div>
+            <div class="h-4 bg-amber-200/40 rounded w-4/5"></div>
+            <div class="h-4 bg-amber-200/40 rounded w-3/5"></div>
         </div>
+        <p class="text-[0.6rem] text-amber-700 mt-3 flex items-center gap-1 font-bold relative z-10">
+            <svg class="h-3 w-3 animate-spin text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 4v4m0 8v4m4-12h-4m4 8h-4" />
+            </svg>
+            Analyzing market catalysts and news sentiment...
+        </p>
     `;
 }
 
@@ -2995,13 +3046,13 @@ function _showAIIndicatorError(err, ticker) {
     const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
     const selectHtml = _getAIModelSelectHtml(selectedModel, true);
 
-    el.className = 'ai-indicator-card p-4 rounded-xl border relative overflow-hidden transition-all duration-300 border-red-200/60 bg-red-50/20 shadow-sm';
+    el.className = 'ai-indicator-card ai-indicator-error relative overflow-hidden p-4 rounded-xl border transition-all duration-300';
     el.innerHTML = `
-        <div class="flex items-center justify-between mb-3 relative z-10">
-            <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center justify-between gap-y-2 mb-3 relative z-10">
+            <div class="flex flex-wrap items-center gap-1.5 sm:gap-2">
                 <span class="text-base">🤖</span>
                 <span class="font-black text-xs text-red-800 tracking-wide uppercase">BotBulls AI Analysis - ${ticker || '---'}</span>
-                <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-red-100 text-red-700 border border-red-300/50 shadow-sm">ERROR</span>
+                <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-bold bg-red-100 text-red-600 border border-red-300/50">Error</span>
             </div>
             <div class="flex items-center gap-2 relative z-30">
                 ${selectHtml}
@@ -3087,8 +3138,8 @@ function renderAIIndicatorCard(data, fromCache = false) {
     el.className = `ai-indicator-card ${colors.bg} relative overflow-hidden p-4 rounded-xl border border-amber-200/60 bg-gradient-to-br from-amber-50/50 to-orange-50/30 transition-all duration-300`;
     el.innerHTML = `
         <div class="ai-orb bg-gradient-to-r from-amber-400 to-orange-500 opacity-20"></div>
-        <div class="flex items-center justify-between mb-3 relative z-10">
-            <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center justify-between gap-y-2 mb-3 relative z-10">
+            <div class="flex flex-wrap items-center gap-1.5 sm:gap-2">
                 <span class="text-base drop-shadow-sm">🤖</span>
                 <span class="font-black text-xs text-amber-900 tracking-wide uppercase" id="aiIndicatorHeader">BotBulls AI Analysis - ${data.ticker || selectedTicker || '---'}</span>
                 ${badgeHtml}

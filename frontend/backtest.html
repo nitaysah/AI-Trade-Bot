@@ -101,6 +101,12 @@
                 <p class="text-purple-500 text-xs md:text-sm font-black uppercase tracking-[0.2em] opacity-80">
                     Historical Strategy Simulation & Alpha Engine
                 </p>
+                <div class="mt-3">
+                    <button onclick="document.getElementById('backtestGuideModal').classList.remove('hidden')"
+                        class="px-5 py-2 bg-fuchsia-50 hover:bg-fuchsia-100 text-fuchsia-600 font-black rounded-full border border-fuchsia-200 transition-all text-[0.65rem] uppercase tracking-widest active:scale-95 shadow-sm inline-flex items-center gap-2">
+                        <span>📖</span> Read Backtesting Guide
+                    </button>
+                </div>
             </div>
 
             <div class="flex flex-wrap justify-center items-center gap-2 md:gap-3 w-full">
@@ -250,6 +256,42 @@
                 </div>
             </div>
 
+            <!-- Auto-Optimizer Config Card (Coming Soon) -->
+            <div id="btOptimizerCard" class="p-6 border border-slate-200/50 rounded-3xl bg-gradient-to-br from-slate-100/60 via-slate-50/40 to-transparent backdrop-blur-xl shadow-xl shadow-slate-500/5 space-y-4 relative overflow-hidden transition-all duration-300 z-10 mb-6 opacity-50 pointer-events-none select-none">
+                <!-- Coming Soon Badge -->
+                <div class="absolute top-3 right-3 z-20">
+                    <span class="px-2.5 py-1 rounded-full bg-slate-700 text-white font-black text-[0.55rem] uppercase tracking-widest shadow-lg">🚧 Coming Soon</span>
+                </div>
+
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-3.5">
+                        <span class="text-3xl grayscale">⚙️</span>
+                        <div class="text-left">
+                            <h3 class="text-sm font-black text-slate-400 uppercase tracking-widest leading-none">Auto-Optimizer (Grid Search)</h3>
+                            <p class="text-[0.65rem] font-bold text-slate-400 uppercase tracking-wider mt-1.5">Prevent Overfitting with Out-of-Sample Validation</p>
+                        </div>
+                    </div>
+                    <label class="relative inline-flex items-center cursor-not-allowed">
+                        <input type="checkbox" id="btOptimizeToggle" class="sr-only peer" disabled>
+                        <div class="w-11 h-6 bg-slate-200 rounded-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all shadow-md"></div>
+                    </label>
+                </div>
+                
+                <div id="btOptimizeSection" class="hidden space-y-4 pt-2 border-t border-emerald-200/40">
+                    <div class="p-3.5 bg-emerald-50/80 border border-emerald-200/50 rounded-2xl text-[11px] text-emerald-700 font-bold leading-relaxed text-left">
+                        ℹ️ <strong>How it works:</strong> The backend will grid-search hundreds of parameter combinations on the <strong>In-Sample</strong> period to find the best Sharpe Ratio, then validate it blindly on the <strong>Out-of-Sample</strong> period.
+                    </div>
+                    
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div class="space-y-1 text-left">
+                            <label class="block text-[0.65rem] font-black text-emerald-600 uppercase tracking-widest">Out-of-Sample Split (%)</label>
+                            <input type="number" id="btOosSplit" value="30" min="10" max="50" class="w-full bg-white border border-emerald-100 rounded-xl px-3 py-2 text-xs font-black text-emerald-900 shadow-sm focus:ring-2 focus:ring-emerald-500 outline-none" disabled>
+                            <p class="text-[9px] text-emerald-600/70 mt-1 uppercase font-bold">e.g. 30% of days used for blind validation</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Options Trading Config Card -->
             <div id="btOptionsCard" class="p-6 border border-purple-300/50 rounded-3xl bg-gradient-to-br from-purple-900/10 via-indigo-900/10 to-transparent backdrop-blur-xl shadow-xl shadow-purple-500/5 space-y-4 relative overflow-hidden transition-all duration-300 z-10">
                 <!-- Glowing blur details -->
@@ -381,7 +423,9 @@
                 </div>
             </div>
 
-            <!-- Backtest Exit Strategy & Risk Controls -->
+            
+
+<!-- Backtest Exit Strategy & Risk Controls -->
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <!-- Exit Strategy Card -->
                 <div
@@ -1275,13 +1319,15 @@
                       <div id="backtest-pnl-warning" class="hidden mb-3 text-xs font-bold text-rose-700 bg-rose-50 border border-rose-200 rounded-xl px-4 py-3 text-center">
                         ⚠️ This strategy had a negative return in the backtest. Deploy with caution.
                       </div>
-                      <button id="btn-deploy-to-bot" onclick="openDeployModal()"
-                        class="w-full py-3.5 rounded-xl font-black text-sm tracking-wider uppercase transition-all duration-300 shadow-lg text-center bg-indigo-600 text-white hover:bg-indigo-500">
-                        🚀 Deploy as Live Bot
-                      </button>
+                      <div>
+                        <button id="btn-deploy-to-bot" onclick="openDeployModal(false)"
+                          class="w-full py-3.5 rounded-xl font-black text-sm tracking-wider uppercase transition-all duration-300 shadow-lg text-center bg-indigo-600 text-white hover:bg-indigo-500">
+                          🚀 Deploy Live
+                        </button>
+                      </div>
                     </div>
                     <button onclick="resetBacktestUI()"
-                        class="px-6 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-black text-[0.75rem] rounded-xl hover:shadow-2xl hover:shadow-indigo-500/40 transition-all active:scale-95 uppercase tracking-[0.2em] shadow-xl">
+                        class="w-full py-3.5 rounded-xl font-black text-sm tracking-wider uppercase transition-all duration-300 shadow-lg text-center bg-gradient-to-r from-indigo-600 to-purple-600 text-white hover:shadow-2xl hover:shadow-indigo-500/40 active:scale-95">
                         ↻ Configure New Simulation
                     </button>
                 </div>
@@ -1497,5 +1543,85 @@
             }, 300);
         }
     </script>
+
+    <!-- Backtest User Guide Modal (Glassmorphism) -->
+    <div id="backtestGuideModal" class="fixed inset-0 z-[999] hidden flex items-center justify-center p-4">
+        <!-- Backdrop -->
+        <div class="absolute inset-0 bg-fuchsia-950/20 backdrop-blur-md transition-opacity duration-300" onclick="document.getElementById('backtestGuideModal').classList.add('hidden')"></div>
+        
+        <!-- Modal Content -->
+        <div class="relative w-full max-w-4xl bg-white/70 backdrop-blur-3xl rounded-[2rem] shadow-2xl border border-white/60 overflow-hidden flex flex-col max-h-[85vh] animate-in zoom-in-95 duration-300">
+            <!-- Glassy Glow Orbs -->
+            <div class="absolute -top-32 -left-32 w-64 h-64 bg-fuchsia-500/20 rounded-full blur-3xl pointer-events-none"></div>
+            <div class="absolute -bottom-32 -right-32 w-64 h-64 bg-purple-500/20 rounded-full blur-3xl pointer-events-none"></div>
+
+            <!-- Header -->
+            <div class="p-6 md:p-8 flex justify-between items-center relative z-10 border-b border-purple-100/50">
+                <div class="flex items-center gap-4">
+                    <div class="w-12 h-12 rounded-2xl bg-gradient-to-br from-fuchsia-500 to-purple-600 flex items-center justify-center shadow-lg shadow-fuchsia-500/30">
+                        <span class="text-2xl">📖</span>
+                    </div>
+                    <div>
+                        <h2 class="text-xl md:text-2xl font-black text-indigo-950 uppercase tracking-tight">Backtesting & Optimization Guide</h2>
+                        <p class="text-[0.65rem] font-bold text-fuchsia-600 uppercase tracking-widest mt-1">Master the Alpha Engine</p>
+                    </div>
+                </div>
+                <button onclick="document.getElementById('backtestGuideModal').classList.add('hidden')" class="w-10 h-10 flex items-center justify-center rounded-xl bg-purple-50 text-indigo-950 hover:bg-purple-100 transition-all border border-purple-200">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+
+            <!-- Body (Markdown styled) -->
+            <div class="p-6 md:p-8 overflow-y-auto space-y-8 custom-scrollbar relative z-10 text-sm font-medium text-indigo-900 leading-relaxed">
+                
+                <!-- Section 1 -->
+                <div class="space-y-3">
+                    <h3 class="text-lg font-black text-fuchsia-700 uppercase tracking-widest border-b border-fuchsia-200 pb-2">1. Engine Logic & Architecture</h3>
+                    <p>The backtesting engine is designed to accurately simulate historical market conditions using your custom algorithmic parameters.</p>
+                    <ul class="list-disc pl-5 space-y-2 text-[0.8rem]">
+                        <li><strong class="text-indigo-950 font-black">Data Ingestion:</strong> Fetches historical OHLCV data using Yahoo Finance (yfinance) and optionally Alpaca's historical API. Data is cleaned and filtered for Regular Trading Hours (RTH) if extended hours are disabled.</li>
+                        <li><strong class="text-indigo-950 font-black">Indicator Engine:</strong> Calculates complex technical indicators (RSI, MACD, EMA Cross, Supertrend, Bollinger Bands, VWAP, etc.) across the entire historical timeframe to prevent iterative lag.</li>
+                        <li><strong class="text-indigo-950 font-black">ATR-Based Stops:</strong> Volatility-adjusted Stop Loss & Take Profit using the Average True Range (ATR). Instead of a fixed percentage, the stop loss widens in volatile markets and tightens in quiet markets.</li>
+                    </ul>
+                </div>
+
+                <!-- Section 2 -->
+                <div class="space-y-3 p-5 rounded-2xl bg-gradient-to-r from-fuchsia-500/10 to-purple-500/10 border border-fuchsia-200/50 shadow-inner">
+                    <h3 class="text-lg font-black text-fuchsia-800 uppercase tracking-widest border-b border-fuchsia-200/60 pb-2">2. Auto-Optimization & Preventing Overfitting</h3>
+                    <p class="text-sm">A common trap in algorithmic trading is "Curve Fitting"—tweaking parameters until the backtest looks perfect, only to watch the strategy fail in live markets. To solve this, Bot Bulls includes an <strong>Auto-Optimizer</strong> using Grid Search and Out-of-Sample (OOS) validation.</p>
+                    <ul class="list-disc pl-5 space-y-2 mt-2 text-[0.8rem] text-fuchsia-950">
+                        <li><strong class="font-black">Grid Search:</strong> The engine tests hundreds of combinations of parameters (Signal Thresholds, ATR Multipliers, etc.) simultaneously.</li>
+                        <li><strong class="font-black">Data Splitting:</strong> The historical data is split. <strong>In-Sample</strong> data is used to train and find the best Sharpe Ratio. <strong>Out-of-Sample</strong> data is unseen "blind" data to test those best parameters.</li>
+                        <li><strong class="font-black">Overfit Badge:</strong> If a strategy performs exceptionally well In-Sample but fails Out-of-Sample, it is tagged as <span class="bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded font-black text-[0.6rem]">🔴 OVERFITTED</span>. If it maintains its edge, it is tagged as <span class="bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded font-black text-[0.6rem]">🟢 ROBUST</span>.</li>
+                    </ul>
+                </div>
+
+                <!-- Section 3 -->
+                <div class="space-y-3">
+                    <h3 class="text-lg font-black text-fuchsia-700 uppercase tracking-widest border-b border-fuchsia-200 pb-2">3. How to Get the Best Results (Best Practices)</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
+                        <div class="p-4 bg-white/50 border border-white rounded-xl shadow-sm">
+                            <h4 class="font-black text-indigo-950 text-xs uppercase mb-1">Avoid Signal Starvation</h4>
+                            <p class="text-[0.7rem] text-indigo-800">Selecting 8 different indicators doesn't guarantee a better strategy; it often causes the bot to never trade. Stick to 2-4 complementary indicators.</p>
+                        </div>
+                        <div class="p-4 bg-white/50 border border-white rounded-xl shadow-sm">
+                            <h4 class="font-black text-indigo-950 text-xs uppercase mb-1">Prioritize Sharpe Ratio</h4>
+                            <p class="text-[0.7rem] text-indigo-800">A strategy with 500% ROI but an 80% Max Drawdown is a gamble. Aim for the highest Sharpe Ratio (>1.5) to ensure consistent growth.</p>
+                        </div>
+                        <div class="p-4 bg-white/50 border border-white rounded-xl shadow-sm">
+                            <h4 class="font-black text-indigo-950 text-xs uppercase mb-1">Always Use Optimizer</h4>
+                            <p class="text-[0.7rem] text-indigo-800">Never deploy a bot based purely on a standard backtest. Always toggle Auto-Optimizer and rely on the Out-of-Sample validation badge.</p>
+                        </div>
+                        <div class="p-4 bg-white/50 border border-white rounded-xl shadow-sm">
+                            <h4 class="font-black text-indigo-950 text-xs uppercase mb-1">Test in the Incubator</h4>
+                            <p class="text-[0.7rem] text-indigo-800">Once you find a 🟢 ROBUST strategy, deploy it to the Incubator Sandbox. Monitor it in live paper-trading conditions before risking real capital.</p>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
 </body>
 </html>

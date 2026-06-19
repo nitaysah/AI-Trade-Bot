@@ -416,9 +416,16 @@ def _fallback_signal(ctx: dict, available_cash: float, account_equity: float) ->
     pos_pct = 0.10 if signal == "BUY" else 0.0
     pos_usd = round(available_cash * pos_pct, 2)
 
-    stop_loss = round(price - atr * 2, 8) if price else None
-    sell_target = round(price + atr * 4, 8) if price else None
-    sell_target_pct = round((sell_target - price) / price * 100, 2) if price and sell_target else None
+    if signal == "SELL":
+        stop_loss = round(price + atr * 2, 8) if price else None
+        sell_target = round(price - atr * 4, 8) if price else None
+    else:
+        stop_loss = round(price - atr * 2, 8) if price else None
+        sell_target = round(price + atr * 4, 8) if price else None
+        
+    sell_target_pct = None
+    if price and sell_target:
+        sell_target_pct = round(abs(sell_target - price) / price * 100, 2)
 
     return {
         "signal": signal,
@@ -631,8 +638,8 @@ CORE PRINCIPLES:
 3. Every BUY should aim for a favorable reward-to-risk ratio (e.g., 1.5:1 or better).
 4. Avoid buying into extreme overextension (RSI > 80), but be willing to ride strong momentum.
 5. Scale position size proportionally to conviction: low conviction = 10%, high conviction = 25%, maximum 35%.
-6. Always set stop_loss using ATR-based levels. Never use arbitrary round numbers.
-7. Set sell_target at the next resistance level, or use ATR-based targets.
+6. Always set stop_loss using ATR-based levels. For a BUY, stop_loss MUST be < entry_price. For a SELL, stop_loss MUST be > entry_price.
+7. Set sell_target at resistance/support or ATR-based targets. For a BUY, sell_target MUST be > entry_price. For a SELL, sell_target MUST be < entry_price.
 8. If VIX is HIGH (>30), cut position sizes slightly but do not stop trading.
 9. If the ticker has relative strength against SPY, treat it aggressively as a BUY.
 
@@ -833,12 +840,12 @@ Output ONLY valid JSON:
             result["entry_price"] = round(ctx["price"], 8)
         if not result.get("stop_loss") and ctx.get("price"):
             atr_val = ctx.get("atr") or (ctx["price"] * 0.02)
-            result["stop_loss"] = round(ctx["price"] - atr_val * 2, 8)
+            result["stop_loss"] = round(ctx["price"] + atr_val * 2, 8) if signal == "SELL" else round(ctx["price"] - atr_val * 2, 8)
         if not result.get("sell_target") and ctx.get("price"):
             atr_val = ctx.get("atr") or (ctx["price"] * 0.02)
-            result["sell_target"] = round(ctx["price"] + atr_val * 4, 8)
+            result["sell_target"] = round(ctx["price"] - atr_val * 4, 8) if signal == "SELL" else round(ctx["price"] + atr_val * 4, 8)
         if not result.get("sell_target_pct") and result.get("sell_target") and ctx.get("price"):
-            result["sell_target_pct"] = round((result["sell_target"] - ctx["price"]) / ctx["price"] * 100, 2)
+            result["sell_target_pct"] = round(abs(result["sell_target"] - ctx["price"]) / ctx["price"] * 100, 2)
 
         result = _sanitize_for_json(result)
         _AI_CACHE.set(cache_key, {"data": result})
@@ -1080,8 +1087,8 @@ CORE PRINCIPLES:
 2. If we currently hold an open position (provided in CURRENT POSITION below), evaluate strictly: if momentum is still strong, HOLD. If momentum breaks, SELL immediately.
 3. Every BUY should aim for a positive reward-to-risk ratio.
 4. Scale position size proportionally to conviction: low conviction = 10%, high conviction = 25-35%.
-5. Always set stop_loss using ATR-based levels to manage risk dynamically.
-6. Set sell_target at the next resistance level or trailing ATR target.
+5. Always set stop_loss using ATR-based levels. For a BUY, stop_loss MUST be < entry_price. For a SELL, stop_loss MUST be > entry_price.
+6. Set sell_target at resistance/support or ATR-based targets. For a BUY, sell_target MUST be > entry_price. For a SELL, sell_target MUST be < entry_price.
 7. Adapt to volatility without freezing.
 
 You MUST output valid JSON only. No markdown, no comments, no explanation outside the JSON object."""
@@ -1220,12 +1227,12 @@ Output ONLY valid JSON:
             result["entry_price"] = round(ctx["price"], 8)
         if not result.get("stop_loss") and ctx.get("price"):
             atr_val = ctx.get("atr") or (ctx["price"] * 0.02)
-            result["stop_loss"] = round(ctx["price"] - atr_val * 2, 8)
+            result["stop_loss"] = round(ctx["price"] + atr_val * 2, 8) if signal == "SELL" else round(ctx["price"] - atr_val * 2, 8)
         if not result.get("sell_target") and ctx.get("price"):
             atr_val = ctx.get("atr") or (ctx["price"] * 0.02)
-            result["sell_target"] = round(ctx["price"] + atr_val * 4, 8)
+            result["sell_target"] = round(ctx["price"] - atr_val * 4, 8) if signal == "SELL" else round(ctx["price"] + atr_val * 4, 8)
         if not result.get("sell_target_pct") and result.get("sell_target") and ctx.get("price"):
-            result["sell_target_pct"] = round((result["sell_target"] - ctx["price"]) / ctx["price"] * 100, 2)
+            result["sell_target_pct"] = round(abs(result["sell_target"] - ctx["price"]) / ctx["price"] * 100, 2)
 
         if bar_data is None:
             _AI_CACHE.set(cache_key, {"data": result})

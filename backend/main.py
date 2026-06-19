@@ -683,10 +683,27 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
     if timeframe is None:
         timeframe = eng.config.TICKER_SETTINGS.get(primary_ticker, {}).get('timeframe') or eng.config.DEFAULT_TIMEFRAME
     
-    # Get general account info
-    account = eng.broker.get_account_info()
-    positions = eng.broker.get_positions()
-    orders = eng.broker.get_open_orders()
+    # Get general account info and broker data concurrently
+    import asyncio
+    try:
+        account, positions, orders, profit_data, orders_history = await asyncio.wait_for(
+            asyncio.gather(
+                asyncio.to_thread(eng.broker.get_account_info),
+                asyncio.to_thread(eng.broker.get_positions),
+                asyncio.to_thread(eng.broker.get_open_orders),
+                asyncio.to_thread(eng.broker.get_all_time_profit),
+                asyncio.to_thread(eng.broker.get_order_history),
+                return_exceptions=False
+            ),
+            timeout=3.0
+        )
+        total_profit, total_profit_pct = profit_data
+    except Exception as e:
+        print(f"[dashboard] Broker API error (timeout/failure): {e}")
+        account = {'equity': 0, 'cash': 0, 'buying_power': 0, 'simulation': True, 'daily_pl': 0, 'daily_pl_pct': 0}
+        positions, orders, orders_history = [], [], []
+        total_profit, total_profit_pct = 0.0, 0.0
+    
     account_ms = (time.perf_counter() - account_start) * 1000
     
     # Active bot status check
@@ -754,14 +771,11 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
     daily_pl_sign = "+" if daily_pl >= 0 else ""
 
     # Calculate All-Time Profit (Realized + Unrealized) directly from the broker history
-    total_profit, total_profit_pct = eng.broker.get_all_time_profit()
     total_pl_sign = "+" if total_profit >= 0 else ""
 
     # Format trade log (scans/decisions)
     ui_trade_log = [_format_trade_for_ui(trade) for trade in eng.trade_log]
-    order_history_start = time.perf_counter()
-    orders_history = eng.broker.get_order_history()
-    order_history_ms = (time.perf_counter() - order_history_start) * 1000
+    order_history_ms = 0  # fetched concurrently above
 
     # Warmup or background scan triggers
     last_scan_time = eng.last_scan_time
@@ -784,8 +798,17 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
     slow_tickers = [t for t in eng.config.WATCHLIST if t not in fast_tickers]
     
     quote_start = time.perf_counter()
-    fast_prices = await asyncio.to_thread(_get_cached_latest_prices, eng, fast_tickers, 3)
-    slow_prices = await asyncio.to_thread(_get_cached_latest_prices, eng, slow_tickers, 60)
+    try:
+        fast_prices, slow_prices = await asyncio.wait_for(
+            asyncio.gather(
+                asyncio.to_thread(_get_cached_latest_prices, eng, fast_tickers, 3),
+                asyncio.to_thread(_get_cached_latest_prices, eng, slow_tickers, 60)
+            ),
+            timeout=3.0
+        )
+    except Exception as e:
+        print(f"[dashboard] Quote API error: {e}")
+        fast_prices, slow_prices = {}, {}
     latest_prices = {**slow_prices, **fast_prices}
     quote_ms = (time.perf_counter() - quote_start) * 1000
 
@@ -845,9 +868,10 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
             else:
                 strat = settings.get('sell_mode') or toggle_overrides.get('exit_strategy') or eng.config.active_toggles.get('exit_strategy', 'hybrid')
                 
-            underlying_scan = eng._pick_scan(underlying, timeframe, prefer_bot=True, ignore_freshness=True)
+            underlying_tf = settings.get('timeframe') or eng.config.DEFAULT_TIMEFRAME
+            underlying_scan = eng._pick_scan(underlying, underlying_tf, prefer_bot=True, ignore_freshness=True)
             if not underlying_scan:
-                underlying_scan = eng.latest_scans.get(underlying, {})
+                underlying_scan = eng.bot_scans.get(underlying) or eng.latest_scans.get(underlying, {})
                 
             avg_price = float(p.get('avg_price') or p.get('avg_entry_price') or 0)
             current_price = float(p.get('current_price', 0))
@@ -863,8 +887,8 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                     targets.append({"label": "Tech", "val": float('-inf') if is_long else float('inf'), "type": "cond", "desc": "Reversal to BEARISH" if is_long else "Reversal to BULLISH"})
                 
                 if strat in ('sltp', 'hybrid') and atr > 0 and avg_price > 0:
-                    sl_mult = settings.get('sl_atr_multiplier', eng.config.active_parameters.get('sl_atr_multiplier', 2.0))
-                    tp_mult = settings.get('tp_atr_multiplier', eng.config.active_parameters.get('tp_atr_multiplier', 3.0))
+                    sl_mult = settings.get('atr_stop_multiplier', getattr(eng.config, 'ATR_STOP_MULTIPLIER', 2.0))
+                    tp_mult = settings.get('take_profit_multiplier', getattr(eng.config, 'ATR_TAKE_PROFIT_MULTIPLIER', 4.0))
                     
                     sl_price = avg_price - (atr * sl_mult) if is_long else avg_price + (atr * sl_mult)
                     trailing = eng.last_trailing_stops.get(symbol)
@@ -1352,6 +1376,55 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
         return {"status": "error", "message": "An internal error occurred during backtest simulation."}
 
 
+
+@app.post("/api/backtest/optimize")
+async def run_optimization_endpoint(data: dict, eng: UserEngine = Depends(get_user_engine)):
+    """Runs an Auto-Optimization grid search with In-Sample/Out-of-Sample splitting."""
+    global_backtest_cancel.clear()
+    from user_config import active_evaluation_context, active_ticker_context
+    active_evaluation_context.set("backtest")
+    ticker = data.get("ticker", "AAPL").upper()
+    active_ticker_context.set(ticker)
+    
+    if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
+        return {"status": "error", "message": "Invalid ticker format"}
+        
+    timeframe = data.get("timeframe", "1Day")
+    days = int(data.get("days", 90))
+    capital = float(data.get("capital", 1000.0))
+    split_pct = float(data.get("oos_split_pct", 30.0))
+    
+    end_date = get_now()
+    start_date = end_date - timedelta(days=days)
+    
+    # Base kwargs for the backtester
+    base_kwargs = {
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "start_date": start_date,
+        "end_date": end_date,
+        "initial_capital": capital,
+        "enabled_indicators": data.get("indicators", []),
+        "risk_per_trade": float(data.get("risk_per_trade", 0.02)),
+        "max_pos_pct": float(data.get("max_position_pct", 0.25)),
+        "ext_hours": data.get("ext_hours", True),
+        "sell_mode": data.get("sell_mode", "indicator"),
+        "ai_autopilot": False, # Disable AI autopilot during massive grid search to save Groq limits
+        "enable_cooldown": bool(data.get("enable_cooldown", True)),
+        "cooldown_minutes": int(data["cooldown_minutes"]) if data.get("cooldown_minutes") is not None else None,
+    }
+    
+    from optimizer import run_optimization
+    try:
+        results = await run_optimization(base_kwargs, split_pct)
+        if "error" in results:
+            return {"status": "error", "message": results["error"]}
+        return {"status": "success", "results": results}
+    except Exception as e:
+        import traceback
+        print(f"[api] Auto-Optimize crash: {e}\n{traceback.format_exc()}")
+        return {"status": "error", "message": "Optimization engine crashed."}
+
 @app.post("/api/options/backtest")
 async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
     """Runs a historical options backtest."""
@@ -1496,6 +1569,7 @@ async def deploy_backtest_as_bot(data: dict, eng: UserEngine = Depends(get_user_
         "sell_threshold": data.get("sell_threshold"),
         "indicators": data.get("indicators", []),
         "add_to_watchlist": True,
+        "is_incubator": data.get("is_incubator", False),
     }
 
     if is_options:
@@ -1887,6 +1961,8 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
     
     if "timeframe" in data:
         eng.config.TICKER_SETTINGS[symbol]["timeframe"] = data["timeframe"]
+    if "is_incubator" in data:
+        eng.config.TICKER_SETTINGS[symbol]["is_incubator"] = data["is_incubator"]
         
     if "sell_mode" in data:
         eng.config.TICKER_SETTINGS[symbol]["sell_mode"] = data["sell_mode"]

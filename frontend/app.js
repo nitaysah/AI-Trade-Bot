@@ -1692,10 +1692,12 @@ function getAICache(key) {
 
 function setAICache(key, data) {
     try {
-        localStorage.setItem(`ai_cache_${key}`, JSON.stringify({
+        const payload = {
             data: data,
             timestamp: Date.now()
-        }));
+        };
+        localStorage.setItem(`ai_cache_${key}`, JSON.stringify(payload));
+        localStorage.setItem(`latest_global_ai_analysis`, JSON.stringify(payload));
     } catch (e) { console.error('Cache write error', e); }
 }
 
@@ -1826,8 +1828,8 @@ function _showAIIndicatorLoading(ticker) {
     el.className = 'ai-indicator-card ai-indicator-loading border-amber-200/60 bg-gradient-to-br from-amber-50/50 to-orange-50/30';
     el.innerHTML = `
         <div class="ai-orb bg-gradient-to-r from-amber-400 to-orange-500 opacity-20"></div>
-        <div class="flex items-center justify-between mb-3 relative z-10">
-            <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center justify-between gap-y-2 mb-3 relative z-10">
+            <div class="flex flex-wrap items-center gap-1.5 sm:gap-2">
                 <span class="text-base drop-shadow-sm">🤖</span>
                 <span class="font-black text-xs text-amber-900 tracking-wide uppercase">BotBulls AI Analysis - ${ticker || '---'}</span>
                 ${badgeHtml}
@@ -1865,8 +1867,8 @@ function _showAIIndicatorError(err, ticker) {
 
     el.className = 'ai-indicator-card ai-indicator-error relative overflow-hidden p-4 rounded-xl border transition-all duration-300';
     el.innerHTML = `
-        <div class="flex items-center justify-between mb-3 relative z-10">
-            <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center justify-between gap-y-2 mb-3 relative z-10">
+            <div class="flex flex-wrap items-center gap-1.5 sm:gap-2">
                 <span class="text-base">🤖</span>
                 <span class="font-black text-xs text-red-800 tracking-wide uppercase">BotBulls AI Analysis - ${ticker || '---'}</span>
                 <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-bold bg-red-100 text-red-600 border border-red-300/50">Error</span>
@@ -1955,8 +1957,8 @@ function renderAIIndicatorCard(data, fromCache = false) {
     el.className = `ai-indicator-card ${colors.bg} relative overflow-hidden p-4 rounded-xl border border-amber-200/60 bg-gradient-to-br from-amber-50/50 to-orange-50/30 transition-all duration-300`;
     el.innerHTML = `
         <div class="ai-orb bg-gradient-to-r from-amber-400 to-orange-500 opacity-20"></div>
-        <div class="flex items-center justify-between mb-3 relative z-10">
-            <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center justify-between gap-y-2 mb-3 relative z-10">
+            <div class="flex flex-wrap items-center gap-1.5 sm:gap-2">
                 <span class="text-base drop-shadow-sm">🤖</span>
                 <span class="font-black text-xs text-amber-900 tracking-wide uppercase" id="aiIndicatorHeader">BotBulls AI Analysis - ${data.ticker || selectedTicker || '---'}</span>
                 ${badgeHtml}
@@ -2811,7 +2813,23 @@ async function fetchDashboard(mode = 'heavy') {
         // Set default selected ticker
         if (!selectedTicker && data.watchlist?.length > 0) {
             selectedTicker = normalizeTicker(data.primaryTicker || data.watchlist[0]);
-            fetchAIIndicator(selectedTicker, currentBackendTf);
+            
+            // Try to mirror global AI analysis if it exists
+            let mirrored = false;
+            try {
+                const globalAiStr = localStorage.getItem('latest_global_ai_analysis');
+                if (globalAiStr) {
+                    const globalAi = JSON.parse(globalAiStr);
+                    if ((Date.now() - globalAi.timestamp) < AI_INDICATOR_CACHE_TTL) {
+                        renderAIIndicatorCard(globalAi.data, true);
+                        mirrored = true;
+                    }
+                }
+            } catch (e) {}
+
+            if (!mirrored) {
+                fetchAIIndicator(selectedTicker, currentBackendTf);
+            }
         }
 
         // Cache the first watchlist ticker for instant use on next load
@@ -3234,12 +3252,8 @@ document.addEventListener('DOMContentLoaded', () => {
             console.log('[dashboard] Phase 2 — Loading fast dashboard scan...');
             const dashboardWarmup = fetchDashboard('fast');
 
-            if (chartWarmup) {
-                await chartWarmup;
-            }
-            await dashboardWarmup;
-
-            // PHASE 3: Bots data prefetch — fires immediately after fast dashboard loads
+            // We intentionally do NOT await the warmups so the UI does not block if one of them hangs.
+            // PHASE 3: Bots data prefetch — fires immediately in background
             console.log('[dashboard] Phase 3 — Prefetching bots data for instant bots page...');
             prefetchBotsData();
 
