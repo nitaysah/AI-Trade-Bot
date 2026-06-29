@@ -35,11 +35,11 @@ let portfolioChartInstance = null;
 // ──────────────────────────────────────────────
 async function getAuthHeaders() {
     const auth = window.auth;
-    const baseHeaders = { 
+    const baseHeaders = {
         'Content-Type': 'application/json',
         'Bypass-Tunnel-Reminder': 'true'
     };
-    
+
     if (!auth) return baseHeaders;
     const user = auth.currentUser;
     if (!user) {
@@ -162,21 +162,21 @@ function setBotTab(tab) {
     }
 }
 
-window.goToDashboardChart = async function(ticker) {
+window.goToDashboardChart = async function (ticker) {
     try {
         if (window.lastBotsData && window.lastBotsData.ticker_settings) {
             const settings = window.lastBotsData.ticker_settings[ticker];
             if (settings) {
                 const headers = await getAuthHeaders();
-                
+
                 // Update timeframe
                 if (settings.timeframe) {
                     localStorage.setItem('lastChartTf', settings.timeframe);
-                    
+
                     // Enforce chart ranges based on timeframes when coming from active bots
                     const midTimeframes = ['15Min', '30Min', '1Hour', '2Hour', '4Hour'];
                     const shortTimeframes = ['1Min', '2Min', '3Min', '5Min', '10Min'];
-                    
+
                     if (midTimeframes.includes(settings.timeframe)) {
                         localStorage.setItem('lastChartRange', '1M');
                     } else if (shortTimeframes.includes(settings.timeframe)) {
@@ -189,7 +189,7 @@ window.goToDashboardChart = async function(ticker) {
                         body: JSON.stringify({ timeframe: settings.timeframe })
                     });
                 }
-                
+
                 // Overwrite global dashboard indicators
                 if (settings.indicators) {
                     const SIGNAL_TO_TOGGLE = {
@@ -200,19 +200,19 @@ window.goToDashboardChart = async function(ticker) {
                         'ADX Trend': 'ENABLE_ADX_TREND', 'SMA': 'ENABLE_SMA',
                         'BotBulls1': 'ENABLE_BOTBULLS1', 'BotBulls2': 'ENABLE_BOTBULLS2', 'BotBulls3': 'ENABLE_BOTBULLS3'
                     };
-                    
+
                     const payload = {};
                     const newPrefs = {};
                     Object.values(SIGNAL_TO_TOGGLE).forEach(k => payload[k] = false); // Disable all
                     Object.keys(SIGNAL_TO_TOGGLE).forEach(ind => newPrefs[ind] = false);
-                    
+
                     settings.indicators.forEach(ind => {
                         if (SIGNAL_TO_TOGGLE[ind]) {
                             payload[SIGNAL_TO_TOGGLE[ind]] = true; // Enable bot's in backend
                             newPrefs[ind] = true; // Enable in frontend
                         }
                     });
-                    
+
                     // Inject bot's custom settings (overrides) into the payload
                     // so the global chart accurately reflects the bot's custom parameters
                     if (settings.indicator_overrides) {
@@ -220,7 +220,7 @@ window.goToDashboardChart = async function(ticker) {
                             payload[key] = val;
                         }
                     }
-                    
+
                     // Save the bot's threshold settings so the Dashboard Backtest modal can auto-load them
                     if (settings.min_buy_signals !== undefined) {
                         localStorage.setItem('lastBotBuyThreshold', settings.min_buy_signals);
@@ -228,10 +228,10 @@ window.goToDashboardChart = async function(ticker) {
                     if (settings.min_sell_signals !== undefined) {
                         localStorage.setItem('lastBotSellThreshold', settings.min_sell_signals);
                     }
-                    
+
                     // Save to local storage so the UI updates immediately
                     localStorage.setItem('globalIndicatorPrefs', JSON.stringify(newPrefs));
-                    
+
                     await fetch(`${API_BASE}/api/settings/indicators?context=dashboard`, {
                         method: 'POST',
                         headers: headers,
@@ -240,7 +240,7 @@ window.goToDashboardChart = async function(ticker) {
                 }
             }
         }
-    } catch(e) {
+    } catch (e) {
         console.error("Failed to transfer settings:", e);
     }
 
@@ -299,7 +299,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         item.className = `watchlist-item group active-bot ${premiumCardClass} ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2 flex flex-col gap-2 transition-transform duration-200`;
         item.dataset.ticker = ticker;
         item.dataset.ticker = ticker;
-        
+
         item.addEventListener('dragstart', (e) => {
             // Only allow dragging if the drag handle activated it
             if (!item.draggable) {
@@ -361,7 +361,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         if (activePosition) {
             const qty = activePosition.qty;
             const avgCostVal = activePosition.avg_price;
-            
+
             // Dynamic price formatting helper
             const formatPrice = (val) => formatAssetPrice(val, isCrypto);
 
@@ -382,8 +382,8 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             const totalPlPcStr = totalPlPc >= 0 ? `(+${totalPlPc.toFixed(2)}%)` : `(${totalPlPc.toFixed(2)}%)`;
             const totalColorClass = totalPl >= 0 ? 'text-emerald-500 bg-emerald-50/50' : 'text-rose-500 bg-rose-50/50';
 
-            const costBasis = activePosition.cost_basis !== undefined 
-                ? activePosition.cost_basis.toFixed(2) 
+            const costBasis = activePosition.cost_basis !== undefined
+                ? activePosition.cost_basis.toFixed(2)
                 : (qty * avgCostVal).toFixed(2);
             const qtyDisp = qty % 1 === 0 ? qty : (qty < 1 ? qty.toFixed(6) : qty.toFixed(4));
 
@@ -412,16 +412,18 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         </div>
                     </div>
                 </div>
-                <div class="mt-1.5 pt-1.5 border-t border-slate-50 flex items-center justify-between cursor-pointer" onclick="selectTicker('${ticker}')">
-                    <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Forecast Exit</span>
-                    <span class="text-[0.58rem] font-bold text-slate-600 truncate max-w-[80%] font-mono" title="${activePosition.exit_forecast || 'Checking exit criteria...'}">${activePosition.exit_forecast || 'Checking exit criteria...'}</span>
+                <div class="mt-1.5 pt-1.5 border-t border-slate-50 flex flex-col justify-center cursor-pointer" onclick="selectTicker('${ticker}')">
+                    <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider mb-1">Forecast Exit</span>
+                    <span class="text-[0.55rem] font-bold text-slate-600 font-mono leading-tight whitespace-normal break-words" title="${(activePosition.exit_forecast || 'Checking exit criteria...').replace(/<[^>]*>?/gm, '')}">${activePosition.exit_forecast || 'Checking exit criteria...'}</span>
                 </div>
             `;
         } else {
+            const forecastText = scan.entry_forecast || "💤 Standing by. Watching market for entry...";
             positionHtml = `
-                <div class="mt-2 pt-2 border-t border-slate-50 flex items-center justify-center py-1 cursor-pointer" onclick="selectTicker('${ticker}')">
-                    <span class="text-[0.65rem] font-bold text-slate-400 animate-pulse tracking-wide flex items-center gap-1.5">
-                        💤 Standing by. Watching market for entry...
+                <div class="mt-2 pt-2 border-t border-slate-50 flex flex-col justify-center cursor-pointer" onclick="selectTicker('${ticker}')">
+                    <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider mb-1">Forecast Entry</span>
+                    <span class="text-[0.55rem] font-bold text-slate-500 font-mono leading-tight whitespace-normal break-words" title="${forecastText.replace(/<[^>]*>?/gm, '')}">
+                        ${forecastText}
                     </span>
                 </div>
             `;
@@ -430,7 +432,14 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         const startedAt = tickerSettings.started_at;
         const lastTradeAt = tickerSettings.last_trade_at;
         const totalTrades = tickerSettings.total_trades || 0;
-        const todayTrades = tickerSettings.today_trades || 0;
+        let todayTrades = tickerSettings.today_trades || 0;
+        
+        // Validate daily count based on local date
+        const lastTradeDate = tickerSettings.last_trade_date;
+        const currentDate = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
+        if (lastTradeDate && lastTradeDate !== currentDate) {
+            todayTrades = 0;
+        }
 
         let runtimeText = 'Not started';
         if (isPaused) {
@@ -444,12 +453,10 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             lastTradeText = `Last trade: ${formatRelativeTime(lastTradeAt)}`;
         }
 
-        let tradeBadgeHtml = '';
-        if (todayTrades > 0) {
-            tradeBadgeHtml = `<span class="px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-600 font-black text-[0.55rem] border border-indigo-100/50 uppercase tracking-tight">${todayTrades} trades today</span>`;
-        } else {
-            tradeBadgeHtml = `<span class="px-1.5 py-0.5 rounded-md bg-slate-50 text-slate-500 font-black text-[0.55rem] border border-slate-200 uppercase tracking-tight">${totalTrades} trades total</span>`;
-        }
+        let tradeBadgeHtml = `<div class="flex items-center divide-x divide-indigo-200/50 rounded-md bg-indigo-50/50 border border-indigo-100/50 overflow-hidden shadow-sm">
+            <span class="px-1.5 py-0.5 text-indigo-600 font-black text-[0.55rem] uppercase tracking-tight">${todayTrades} TODAY</span>
+            <span class="px-1.5 py-0.5 text-indigo-600 font-black text-[0.55rem] uppercase tracking-tight">${totalTrades} TOTAL</span>
+        </div>`;
 
         const fromBacktest = (window.lastBotsData?.ticker_settings || {})[ticker]?.source === 'backtest';
         const isIncubator = (window.lastBotsData?.ticker_settings || {})[ticker]?.is_incubator;
@@ -458,11 +465,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                  🧪 From Backtest
                </span>`
             : '';
-        const incubatorBadge = isIncubator
-            ? `<span class="px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-600 font-black text-[0.5rem] border border-teal-200 uppercase tracking-widest ml-1 shadow-sm">
-                 🧪 Incubator Sandbox
-               </span>`
-            : '';
+        const incubatorBadge = '';
 
         item.innerHTML = `
                 <!-- 1st Line: Ticker Name, Price, Watchlist Star, Settings Gear, and Remove Bot Cross -->
@@ -510,15 +513,14 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 <div class="flex items-center justify-between cursor-pointer" onclick="selectTicker('${ticker}')">
                     <div class="flex items-center gap-1.5 flex-wrap">
                         ${isPaused ? '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-500 border border-amber-200">PAUSED</span>' : '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-100">ACTIVE</span>'}
-                        ${
-                            isOptions 
-                                ? `<span class="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-700 font-black text-[0.5rem] border border-amber-500/20 uppercase tracking-widest">Options</span>
+                        ${isOptions
+                ? `<span class="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-700 font-black text-[0.5rem] border border-amber-500/20 uppercase tracking-widest">Options</span>
                                    <span class="px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 font-black text-[0.45rem] border border-amber-200 uppercase tracking-widest">${tickerSettings.options_type === 'calls_only' ? 'Calls Only' : (tickerSettings.options_type === 'puts_only' ? 'Puts Only' : 'Calls & Puts')}</span>
                                    <span class="px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 font-black text-[0.45rem] border border-amber-200 uppercase tracking-widest">${tickerSettings.options_expiry_days || 7}D Exp</span>`
-                                : (isCrypto 
-                                    ? `<span class="px-1.5 py-0.5 rounded bg-fuchsia-500/10 text-fuchsia-700 font-black text-[0.5rem] border border-fuchsia-500/20 uppercase tracking-widest">Crypto</span>`
-                                    : `<span class="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-700 font-black text-[0.5rem] border border-indigo-500/20 uppercase tracking-widest">Stocks</span>`)
-                        }
+                : (isCrypto
+                    ? `<span class="px-1.5 py-0.5 rounded bg-fuchsia-500/10 text-fuchsia-700 font-black text-[0.5rem] border border-fuchsia-500/20 uppercase tracking-widest">Crypto</span>`
+                    : `<span class="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-700 font-black text-[0.5rem] border border-indigo-500/20 uppercase tracking-widest">Stocks</span>`)
+            }
                         <span class="px-1.5 py-0.5 rounded bg-indigo-50/50 text-indigo-500 font-mono font-black text-[0.55rem] border border-indigo-100/50 uppercase">${tfLabel}</span>
                         <button class="px-1.5 py-0.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-600 font-black text-[0.5rem] border border-blue-200 transition-colors uppercase tracking-widest flex items-center gap-0.5" onclick="event.stopPropagation(); window.goToDashboardChart('${ticker}')">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-2.5 w-2.5" viewBox="0 0 20 20" fill="currentColor">
@@ -592,21 +594,21 @@ function handleDragStart(e) {
     originalSibling = this.nextSibling;
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', this.dataset.ticker);
-    
+
     // Create a smooth visual placeholder
     dragPlaceholder = document.createElement('div');
     dragPlaceholder.className = 'drag-placeholder rounded-2xl border-2 border-dashed border-indigo-400 bg-indigo-500/5 transition-all duration-200';
     dragPlaceholder.style.height = `${this.offsetHeight}px`;
     dragPlaceholder.style.width = `${this.offsetWidth}px`;
     dragPlaceholder.style.marginBottom = window.getComputedStyle(this).marginBottom;
-    
+
     // Allow drop directly on placeholder
     dragPlaceholder.addEventListener('dragover', (ev) => {
         ev.preventDefault();
         ev.dataTransfer.dropEffect = 'move';
     });
     dragPlaceholder.addEventListener('drop', handleDrop);
-    
+
     // Hide the actual element from view but keep the ghost image
     setTimeout(() => {
         this.classList.add('hidden');
@@ -641,13 +643,13 @@ function handleDragOver(e) {
         e.preventDefault();
     }
     e.dataTransfer.dropEffect = 'move';
-    
+
     // Skip if we are dragging over the dragged item or the placeholder itself
     if (this === draggedItem || this === dragPlaceholder) return false;
-    
+
     const bounding = this.getBoundingClientRect();
     const offset = bounding.y + (bounding.height / 2);
-    
+
     // Smoothly insert placeholder in the target position
     if (e.clientY - offset > 0) {
         this.parentNode.insertBefore(dragPlaceholder, this.nextSibling);
@@ -661,19 +663,19 @@ function handleDragEnter(e) {
     if (e.preventDefault) e.preventDefault();
 }
 
-function handleDragLeave(e) {}
+function handleDragLeave(e) { }
 
 async function handleDrop(e) {
     if (e.stopPropagation) e.stopPropagation();
-    
+
     if (draggedItem && dragPlaceholder) {
         const container = document.getElementById('tradelistContainer');
-        
+
         // Put the dragged item in its final position
         dragPlaceholder.parentNode.insertBefore(draggedItem, dragPlaceholder);
         dragPlaceholder.remove();
         draggedItem.classList.remove('hidden');
-        
+
         // Build the new list of visible tickers directly from the DOM, ensuring no duplicates
         const newVisibleTickers = [];
         container.querySelectorAll('.watchlist-item').forEach(el => {
@@ -682,10 +684,10 @@ async function handleDrop(e) {
                 newVisibleTickers.push(ticker);
             }
         });
-        
+
         const currentFullList = window.lastBotsData?.tradelist || [];
         const originalVisibleSet = new Set(newVisibleTickers);
-        
+
         // Reconstruct the full list preserving non-visible (hidden tab) items
         let visibleIdx = 0;
         const newFullList = [];
@@ -696,12 +698,12 @@ async function handleDrop(e) {
                 newFullList.push(t);
             }
         }
-        
+
         // Sanity deduplication
         const finalFullList = [...new Set(newFullList)];
-        
+
         container.classList.add('opacity-75', 'pointer-events-none');
-        
+
         try {
             const headers = await getAuthHeaders();
             const response = await fetch(`${API_BASE}/api/bots/reorder`, {
@@ -959,13 +961,13 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
             `;
         } else if (currentLogTab === 'trades') {
             const sideColor = item.side === 'buy' ? 'text-emerald-600 font-bold' : 'text-rose-500 font-bold';
-            
+
             // Dynamic precision price formatting
             const cleanSym = String(item.symbol).toUpperCase();
             const isCrypto = cleanSym.includes("USD") || cleanSym.includes("USDT") || cleanSym.includes("USDC");
             const avgPriceStr = item.filled_avg_price ? formatAssetPrice(item.filled_avg_price, isCrypto) : '0.00';
             const totalCostStr = item.total_cost ? Number(item.total_cost).toFixed(2) : '0.00';
-            
+
             // Realized P/L cell formatting
             let plHtml = '<td class="py-2.5 pr-4 text-center text-slate-300 text-[11px]">—</td>';
             if (item.pl !== undefined && item.pl !== null) {
@@ -997,16 +999,16 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
             `;
         } else if (currentLogTab === 'pending') {
             const sideColor = item.side === 'buy' ? 'text-emerald-600 font-bold' : 'text-rose-500 font-bold';
-            
+
             // Dynamic precision price formatting
             const cleanSym = String(item.symbol).toUpperCase();
             const isCrypto = cleanSym.includes("USD") || cleanSym.includes("USDT") || cleanSym.includes("USDC");
             const priceDecimals = (isCrypto || (item.limit_price && item.limit_price < 10)) ? 4 : 2;
-            
+
             const limitPriceVal = item.limit_price ? Number(item.limit_price) : (item.stop_price ? Number(item.stop_price) : 0);
             const limitPriceStr = limitPriceVal > 0 ? `$${limitPriceVal.toFixed(priceDecimals)}` : 'Market';
             const totalValueStr = item.total_cost ? `$${Number(item.total_cost).toFixed(2)}` : '—';
-            
+
             const tifBadge = `<span class="px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-500 font-black text-[0.55rem] border border-indigo-100 uppercase">${item.time_in_force || 'GTC'}</span>`;
             const aiReason = item.reason || 'AI Strategy: Order pending execution.';
 
@@ -1033,12 +1035,12 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
             const avgPriceStr = `$${formatVal(item.avg_price || 0)}`;
             const currentPriceStr = `$${formatVal(item.current_price || 0)}`;
             const marketValueStr = `$${Number(item.market_value || 0).toFixed(2)}`;
-            
+
             const plVal = Number(item.unrealized_pl || 0);
             const plPct = Number(item.unrealized_pl_pct || 0);
             const plColor = plVal >= 0 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold';
             const sign = plVal >= 0 ? '+' : '';
-            
+
             const dayPlVal = Number(item.unrealized_intraday_pl || 0);
             const dayPlPct = Number(item.unrealized_intraday_plpc || 0);
             const dayPlColor = dayPlVal >= 0 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold';
@@ -1106,6 +1108,7 @@ function changeLogPage(delta) {
 // Unified Bot Strategy Modal
 // ──────────────────────────────────────────────
 let currentStrategySymbol = null;
+    window.currentStrategySymbol = null;
 let strategyModalMode = 'deploy'; // 'deploy' or 'edit'
 
 function getTimeframeMinutes(tf) {
@@ -1153,6 +1156,7 @@ function getCooldownMinutesValue(mode = 'regular') {
 
 window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
     currentStrategySymbol = symbol.toUpperCase();
+    window.currentStrategySymbol = currentStrategySymbol;
     strategyModalMode = mode;
 
     const modal = document.getElementById('botStrategyModal');
@@ -1172,8 +1176,8 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
 
         const riskContainer = document.getElementById('deployRiskAgreementContainer');
         const riskCheck = document.getElementById('riskAgreementCheckbox');
-        if(riskContainer) riskContainer.classList.remove('hidden');
-        if(riskCheck) riskCheck.checked = false;
+        if (riskContainer) riskContainer.classList.remove('hidden');
+        if (riskCheck) riskCheck.checked = false;
 
         // Defaults for deployment
         document.getElementById('strategyCapital').value = 100;
@@ -1182,36 +1186,41 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategySellThreshold_regular').value = INDICATOR_DEFAULTS['MIN_BEARISH_SIGNALS'] || 4;
         document.getElementById('strategySellThreshold_options').value = INDICATOR_DEFAULTS['MIN_BEARISH_SIGNALS'] || 4;
         document.getElementById('strategyTimeframe_regular').value = "1Hour";
-        document.getElementById('strategyTimeframe_options').value = "1Hour";
-        if (document.getElementById('regularModeToggle')) document.getElementById('regularModeToggle').checked = false;
-        if (document.getElementById('optionsModeToggle')) document.getElementById('optionsModeToggle').checked = false;
-        if (document.getElementById('regularTradingBox')) document.getElementById('regularTradingBox').classList.add('hidden');
-        if (document.getElementById('optionsTradingBox')) document.getElementById('optionsTradingBox').classList.add('hidden');
-        window.activeTradingMode = null;
+        document.getElementById('strategyTimeframe_options').value = "5Min";
+        window.toggleModeActive('regular');
         document.getElementById('strategySellMode_regular').value = "indicator";
         window._strategyPaused = false;
-        
+
         const autopilotEl = document.getElementById('strategyAiAutopilot');
         if (autopilotEl) autopilotEl.checked = false;
         window.handleStrategyAutopilotToggle(false);
 
         // Reset Options Defaults
-        
+
         document.getElementById('strategyOptionsType').value = "both";
         document.getElementById('strategyOptionsTradeAmount').value = 100;
-        document.getElementById('strategyOptionsExpiryDays').value = 7;
+        document.getElementById('strategyOptionsExpiryDays').value = 3;
         document.getElementById('strategyOptionsStrikeType').value = "ATM";
-        document.getElementById('strategyOptionsExitStrategy').value = "hybrid";
-        document.getElementById('strategyOptionsStopLoss').value = 50;
-        document.getElementById('strategyOptionsTakeProfit').value = 100;
+        if (document.getElementById('strategySellMode_options')) document.getElementById('strategySellMode_options').value = "hybrid";
+        if (document.getElementById('strategyOptionsSlPct')) document.getElementById('strategyOptionsSlPct').value = 10;
+        if (document.getElementById('strategyOptionsTpPct')) document.getElementById('strategyOptionsTpPct').value = 20;
 
         // Reset Risk Overrides to defaults
-        document.getElementById('strategyRiskPerTrade').value = 2.0;
-        document.getElementById('strategyMaxDailyDrawdown').value = 5.0;
-        document.getElementById('strategyMaxPositionPct').value = 100.0;
-        document.getElementById('strategyAtrStopMult').value = INDICATOR_DEFAULTS['ATR_STOP_MULTIPLIER'] || 2.0;
-        document.getElementById('strategyAtrTrailMult').value = INDICATOR_DEFAULTS['ATR_TRAIL_MULTIPLIER'] || 3.0;
-        document.getElementById('strategyAtrTpMult').value = INDICATOR_DEFAULTS['ATR_TAKE_PROFIT_MULTIPLIER'] || 4.0;
+        document.getElementById('strategyRiskPerTrade').value = '10';
+        document.getElementById('strategyMaxDailyDrawdown').value = '50';
+        document.getElementById('strategyMaxPositionPct').value = '100';
+        document.getElementById('strategyEnableRisk_regular').checked = true;
+        document.getElementById('strategyEnableRisk_options').checked = true;
+        window.toggleRiskControls(true, 'regular');
+        window.toggleRiskControls(true, 'options');
+        if(document.getElementById('strategyOptionsRiskPerTrade')) {
+            document.getElementById('strategyOptionsRiskPerTrade').value = '30';
+            document.getElementById('strategyOptionsMaxDailyDrawdown').value = '60';
+            document.getElementById('strategyOptionsMaxPositionPct').value = '100';
+        }
+        document.getElementById('strategyAtrStopMult').value = INDICATOR_DEFAULTS['ATR_STOP_MULTIPLIER'] || 2;
+        document.getElementById('strategyAtrTrailMult').value = INDICATOR_DEFAULTS['ATR_TRAIL_MULTIPLIER'] || 3;
+        document.getElementById('strategyAtrTpMult').value = INDICATOR_DEFAULTS['ATR_TAKE_PROFIT_MULTIPLIER'] || 4;
         document.getElementById('strategyEnableCooldown_regular').checked = true;
         document.getElementById('strategyEnableCooldown_options').checked = true;
         document.getElementById('strategyCooldownSettingsWrapper_regular').classList.remove('hidden');
@@ -1223,9 +1232,7 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyCooldownCustomMinutes_regular').value = "";
         document.getElementById('strategyCooldownCustomMinutes_options').value = "";
 
-        // Ensure collapsed on open
-        document.getElementById('riskControlsContent').classList.add('hidden');
-        document.getElementById('riskArrowIcon').classList.remove('rotate-180');
+
 
         // Reset Indicators
         document.querySelectorAll('.strategy-indicator-check').forEach(chk => chk.checked = false);
@@ -1240,7 +1247,7 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         actionBtn.disabled = false;
 
         const riskContainer = document.getElementById('deployRiskAgreementContainer');
-        if(riskContainer) riskContainer.classList.add('hidden');
+        if (riskContainer) riskContainer.classList.add('hidden');
 
         // Load existing settings
         const settings = (window.lastBotsData?.ticker_settings || {})[currentStrategySymbol] || {};
@@ -1253,9 +1260,10 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategySellThreshold_options').value = sellSignals;
         document.getElementById('strategyTimeframe_regular').value = settings.timeframe || '1Hour';
         document.getElementById('strategyTimeframe_options').value = settings.timeframe || '1Hour';
-        if(document.getElementById('strategySellMode_regular')) if (document.getElementById('strategySellMode_regular')) document.getElementById('strategySellMode_regular').value = settings.sell_mode || 'indicator';
+        if (document.getElementById('strategyMarketSession_regular')) document.getElementById('strategyMarketSession_regular').value = settings.market_session || 'regular';
+        if (document.getElementById('strategySellMode_regular')) if (document.getElementById('strategySellMode_regular')) document.getElementById('strategySellMode_regular').value = settings.sell_mode || 'indicator';
         window._strategyPaused = settings.paused || false;
-        
+
         const aiAutopilot = settings.ai_autopilot || false;
         const autopilotEl = document.getElementById('strategyAiAutopilot');
         if (autopilotEl) autopilotEl.checked = aiAutopilot;
@@ -1267,42 +1275,52 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
 
         // Load Options settings
         const optEnabled = settings.options_trading || false;
-        window.activeTradingMode = optEnabled ? 'options' : 'regular';
-        if (document.getElementById('regularModeToggle')) document.getElementById('regularModeToggle').checked = !optEnabled;
-        if (document.getElementById('optionsModeToggle')) document.getElementById('optionsModeToggle').checked = optEnabled;
-        if (optEnabled) {
-            if (document.getElementById('optionsTradingBox')) document.getElementById('optionsTradingBox').classList.remove('hidden');
-            if (document.getElementById('regularTradingBox')) document.getElementById('regularTradingBox').classList.add('hidden');
-        } else {
-            if (document.getElementById('regularTradingBox')) document.getElementById('regularTradingBox').classList.remove('hidden');
-            if (document.getElementById('optionsTradingBox')) document.getElementById('optionsTradingBox').classList.add('hidden');
-        }
+        window.toggleModeActive(optEnabled ? 'options' : 'regular');
         document.getElementById('strategyOptionsType').value = settings.options_type || 'both';
         document.getElementById('strategyOptionsTradeAmount').value = settings.options_trade_amount !== undefined ? settings.options_trade_amount : 100;
         document.getElementById('strategyOptionsExpiryDays').value = settings.options_expiry_days !== undefined ? settings.options_expiry_days : 7;
         document.getElementById('strategyOptionsStrikeType').value = settings.options_strike_type || 'ATM';
-        document.getElementById('strategyOptionsExitStrategy').value = settings.options_exit_strategy || 'hybrid';
-        document.getElementById('strategyOptionsStopLoss').value = settings.options_stop_loss_pct !== undefined ? Math.round(settings.options_stop_loss_pct * 100) : 50;
-        document.getElementById('strategyOptionsTakeProfit').value = settings.options_take_profit_pct !== undefined ? Math.round(settings.options_take_profit_pct * 100) : 100;
+        if (document.getElementById('strategySellMode_options')) document.getElementById('strategySellMode_options').value = settings.sell_mode_options || settings.options_exit_strategy || 'hybrid';
+        if (document.getElementById('strategyOptionsSlPct')) document.getElementById('strategyOptionsSlPct').value = settings.options_stop_loss_pct !== undefined ? Math.round(settings.options_stop_loss_pct * 100) : 50;
+        if (document.getElementById('strategyOptionsTpPct')) document.getElementById('strategyOptionsTpPct').value = settings.options_take_profit_pct !== undefined ? Math.round(settings.options_take_profit_pct * 100) : 100;
 
         // Load Smart Re-entry and Signal Reset
-        document.getElementById('strategyOptionsSignalReset').checked = settings.enable_signal_reset || false;
-        document.getElementById('strategyOptionsSmartReentry').checked = settings.enable_smart_reentry || false;
-        document.getElementById('strategyOptionsSmartReentryType').value = settings.smart_reentry_type || 'RSI';
-        document.getElementById('strategyOptionsRsiCallMax').value = settings.smart_reentry_rsi_call_max !== undefined ? settings.smart_reentry_rsi_call_max : 70;
-        document.getElementById('strategyOptionsRsiPutMin').value = settings.smart_reentry_rsi_put_min !== undefined ? settings.smart_reentry_rsi_put_min : 30;
-        document.getElementById('strategyOptionsVwapCallMaxPct').value = settings.smart_reentry_vwap_call_max_dist_pct !== undefined ? settings.smart_reentry_vwap_call_max_dist_pct : 0.5;
-        document.getElementById('strategyOptionsVwapPutMaxPct').value = settings.smart_reentry_vwap_put_max_dist_pct !== undefined ? settings.smart_reentry_vwap_put_max_dist_pct : 0.5;
-        window.updateStrategySmartReentryFields();
+        ['regular', 'options'].forEach(m => {
+            const capMode = m === 'regular' ? 'Regular' : 'Options';
+            if (document.getElementById(`strategy${capMode}SignalReset`)) document.getElementById(`strategy${capMode}SignalReset`).checked = settings.enable_signal_reset || false;
+            if (document.getElementById(`strategy${capMode}SmartReentry`)) document.getElementById(`strategy${capMode}SmartReentry`).checked = settings.enable_smart_reentry || false;
+            if (document.getElementById(`strategy${capMode}SmartReentryType`)) document.getElementById(`strategy${capMode}SmartReentryType`).value = settings.smart_reentry_type || 'RSI';
+            if (document.getElementById(`strategy${capMode}RsiCallMax`)) document.getElementById(`strategy${capMode}RsiCallMax`).value = settings.smart_reentry_rsi_call_max !== undefined ? settings.smart_reentry_rsi_call_max : 70;
+            if (document.getElementById(`strategy${capMode}RsiPutMin`)) document.getElementById(`strategy${capMode}RsiPutMin`).value = settings.smart_reentry_rsi_put_min !== undefined ? settings.smart_reentry_rsi_put_min : 30;
+            if (document.getElementById(`strategy${capMode}VwapCallMaxPct`)) document.getElementById(`strategy${capMode}VwapCallMaxPct`).value = settings.smart_reentry_vwap_call_max_dist_pct !== undefined ? settings.smart_reentry_vwap_call_max_dist_pct : 0.5;
+            if (document.getElementById(`strategy${capMode}VwapPutMaxPct`)) document.getElementById(`strategy${capMode}VwapPutMaxPct`).value = settings.smart_reentry_vwap_put_max_dist_pct !== undefined ? settings.smart_reentry_vwap_put_max_dist_pct : 0.5;
+        });
+        window.updateStrategySmartReentryFields('regular');
+        window.updateStrategySmartReentryFields('options');
 
         // Load Risk Overrides
-        document.getElementById('strategyRiskPerTrade').value = settings.risk_per_trade !== undefined ? (settings.risk_per_trade * 100).toFixed(1) : 2.0;
-        document.getElementById('strategyMaxDailyDrawdown').value = settings.max_daily_drawdown !== undefined ? (settings.max_daily_drawdown * 100).toFixed(1) : 5.0;
-        document.getElementById('strategyMaxPositionPct').value = settings.max_position_pct !== undefined ? (settings.max_position_pct * 100).toFixed(1) : 100.0;
+        const hasRisk = (settings.risk_per_trade !== undefined && settings.risk_per_trade !== null);
+        
+        document.getElementById('strategyEnableRisk_regular').checked = hasRisk;
+        document.getElementById('strategyEnableRisk_options').checked = hasRisk;
+        window.toggleRiskControls(hasRisk, 'regular');
+        window.toggleRiskControls(hasRisk, 'options');
+
+        document.getElementById('strategyRiskPerTrade').value = hasRisk ? (settings.risk_per_trade * 100).toFixed(0) : 10;
+        document.getElementById('strategyMaxDailyDrawdown').value = hasRisk ? (settings.max_daily_drawdown * 100).toFixed(0) : 50;
+        document.getElementById('strategyMaxPositionPct').value = hasRisk ? (settings.max_position_pct * 100).toFixed(0) : 100;
+        
+        // Also fix options inputs
+        if(document.getElementById('strategyOptionsRiskPerTrade')) {
+            document.getElementById('strategyOptionsRiskPerTrade').value = hasRisk ? (settings.risk_per_trade * 100).toFixed(0) : 30;
+            document.getElementById('strategyOptionsMaxDailyDrawdown').value = hasRisk ? (settings.max_daily_drawdown * 100).toFixed(0) : 60;
+            document.getElementById('strategyOptionsMaxPositionPct').value = hasRisk ? (settings.max_position_pct * 100).toFixed(0) : 100;
+        }
+
         document.getElementById('strategyAtrStopMult').value = settings.atr_stop_multiplier !== undefined ? settings.atr_stop_multiplier : (INDICATOR_DEFAULTS['ATR_STOP_MULTIPLIER'] || 2.0);
         document.getElementById('strategyAtrTrailMult').value = settings.atr_trail_multiplier !== undefined ? settings.atr_trail_multiplier : (INDICATOR_DEFAULTS['ATR_TRAIL_MULTIPLIER'] || 3.0);
         document.getElementById('strategyAtrTpMult').value = settings.take_profit_multiplier !== undefined ? settings.take_profit_multiplier : (INDICATOR_DEFAULTS['ATR_TAKE_PROFIT_MULTIPLIER'] || 4.0);
-        
+
         // Enable Cooldown logic
         const enableCooldown = settings.enable_cooldown !== undefined ? settings.enable_cooldown : true;
         document.getElementById('strategyEnableCooldown_regular').checked = enableCooldown;
@@ -1314,11 +1332,11 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         const standardCooldowns = [5, 15, 30, 60, 240];
         if (cooldownVal === undefined || cooldownVal === null || cooldownVal === "default") {
             document.getElementById('strategyCooldownMinutes_regular').value = "default";
-        document.getElementById('strategyCooldownMinutes_options').value = "default";
+            document.getElementById('strategyCooldownMinutes_options').value = "default";
             document.getElementById('strategyCooldownCustomContainer_regular').classList.add('hidden');
-        document.getElementById('strategyCooldownCustomContainer_options').classList.add('hidden');
+            document.getElementById('strategyCooldownCustomContainer_options').classList.add('hidden');
             document.getElementById('strategyCooldownCustomMinutes_regular').value = "";
-        document.getElementById('strategyCooldownCustomMinutes_options').value = "";
+            document.getElementById('strategyCooldownCustomMinutes_options').value = "";
         } else if (standardCooldowns.includes(cooldownVal)) {
             document.getElementById('strategyCooldownMinutes_regular').value = cooldownVal.toString();
             document.getElementById('strategyCooldownMinutes_options').value = cooldownVal.toString();
@@ -1335,13 +1353,15 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
             document.getElementById('strategyCooldownCustomMinutes_options').value = cooldownVal;
         }
 
-        // Ensure collapsed on open
-        document.getElementById('riskControlsContent').classList.add('hidden');
-        document.getElementById('riskArrowIcon').classList.remove('rotate-180');
 
-        const enabledIndicators = settings.indicators || [];
+
+        const enabledIndicators = settings.indicators;
         document.querySelectorAll('.strategy-indicator-check').forEach(chk => {
-            chk.checked = enabledIndicators.includes(chk.value);
+            if (enabledIndicators === undefined) {
+                chk.checked = true;
+            } else {
+                chk.checked = enabledIndicators.includes(chk.value);
+            }
         });
 
         const inWatchlist = (window.lastBotsData?.watchlist || []).includes(currentStrategySymbol);
@@ -1362,7 +1382,12 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
     });
     updateDefaultCooldownLabel();
 
-    updateStrategySignalLabels(window.activeTradingMode || 'regular');
+        updateStrategySignalLabels(window.activeTradingMode || 'regular');
+    if (typeof window.updateRegularExitFields === 'function') window.updateRegularExitFields();
+    if (typeof window.updateRegularEntryFields === 'function') window.updateRegularEntryFields();
+    if (typeof window.updateOptionsExitFields === 'function') window.updateOptionsExitFields();
+    if (typeof window.updateOptionsEntryFields === 'function') window.updateOptionsEntryFields();
+    if (typeof window.updateStrategySmartReentryFields === 'function') window.updateStrategySmartReentryFields();
     updateStrategyPauseButton();
     modal.classList.remove('hidden');
 
@@ -1391,6 +1416,7 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
 window.closeStrategyModal = function () {
     document.getElementById('botStrategyModal').classList.add('hidden');
     currentStrategySymbol = null;
+    window.currentStrategySymbol = null;
 };
 
 window.toggleDeployButton = function () {
@@ -1467,10 +1493,10 @@ window.toggleRiskSection = function () {
     const arrow = document.getElementById('riskArrowIcon');
     if (content.classList.contains('hidden')) {
         content.classList.remove('hidden');
-        arrow.classList.add('rotate-180');
+        if(arrow) arrow.classList.add('rotate-180');
     } else {
         content.classList.add('hidden');
-        arrow.classList.remove('rotate-180');
+        if(arrow) arrow.classList.remove('rotate-180');
     }
 };
 
@@ -1495,7 +1521,7 @@ function populateStrategyAiModelSelect() {
     const select = document.getElementById('strategyAiModel');
     if (!select) return;
     const currentValue = select.value;
-    
+
     let html = '';
     html += '<optgroup label="Groq AI (Cloud)">';
     html += '  <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile (Default)</option>';
@@ -1512,7 +1538,7 @@ function populateStrategyAiModelSelect() {
     }
     html += '</optgroup>';
     select.innerHTML = html;
-    
+
     if (currentValue) {
         select.value = currentValue;
     }
@@ -1522,7 +1548,7 @@ window.handleStrategyAutopilotToggle = function (enabled) {
     const section = document.getElementById('strategyAiAutopilotSection');
     const sellModeSelect = document.getElementById('strategySellMode');
     const optionsCard = document.getElementById('strategyOptionsCard');
-    
+
     if (enabled) {
         populateStrategyAiModelSelect();
         section?.classList.remove('hidden');
@@ -1555,8 +1581,8 @@ window.handleStrategyAutopilotToggle = function (enabled) {
         if (optionsCard) {
             const symbol = currentStrategySymbol || '';
             const isCrypto = symbol && (
-                symbol.toUpperCase().includes('USD') || 
-                symbol.toUpperCase().includes('USDT') || 
+                symbol.toUpperCase().includes('USD') ||
+                symbol.toUpperCase().includes('USDT') ||
                 symbol.toUpperCase().includes('USDC') ||
                 ['BTC', 'ETH', 'LTC', 'SOL', 'DOGE', 'ADA', 'DOT', 'SHIB', 'AVAX'].some(c => symbol.toUpperCase().startsWith(c))
             );
@@ -1572,7 +1598,7 @@ window.handleStrategyOptionsToggle = function (enabled) {
     const section = document.getElementById('strategyOptionsSection');
     const riskCard = document.getElementById('riskControlsContent')?.parentElement;
     const autopilotCard = document.getElementById('strategyAiAutopilot')?.closest('.border');
-    
+
     if (enabled) {
         section?.classList.remove('hidden');
         if (riskCard) {
@@ -1625,38 +1651,36 @@ window.updateStrategySmartReentryFields = function () {
 
 window.checkStrategyCryptoOptionStatus = function (symbol) {
     const isCrypto = symbol && (
-        symbol.toUpperCase().includes('USD') || 
-        symbol.toUpperCase().includes('USDT') || 
+        symbol.toUpperCase().includes('USD') ||
+        symbol.toUpperCase().includes('USDT') ||
         symbol.toUpperCase().includes('USDC') ||
         ['BTC', 'ETH', 'LTC', 'SOL', 'DOGE', 'ADA', 'DOT', 'SHIB', 'AVAX'].some(c => symbol.toUpperCase().startsWith(c))
     );
-    const optionsContainer = document.getElementById('optionsAccordionContainer');
-    const disabledOverlay = document.getElementById('optionsDisabledOverlay');
-    
-    if (isCrypto) {
-        if (optionsContainer) {
-            optionsContainer.style.opacity = '0.6';
-            optionsContainer.style.pointerEvents = 'none';
-        }
-        if (disabledOverlay) disabledOverlay.classList.remove('hidden');
-        
-        const regToggle = document.getElementById('regularModeToggle');
-        const optToggle = document.getElementById('optionsModeToggle');
-        if (optToggle && optToggle.checked) {
-            optToggle.checked = false;
-            // Only force to regular if options was checked. Else leave as is.
-            if (regToggle) regToggle.checked = true;
-            window.activeTradingMode = 'regular';
-            if (document.getElementById('regularTradingBox')) document.getElementById('regularTradingBox').classList.remove('hidden');
-            if (document.getElementById('optionsTradingBox')) document.getElementById('optionsTradingBox').classList.add('hidden');
-        }
+    const btnOpt = document.getElementById('btnOptionsMode');
+    const tooltip = document.getElementById('optionsCryptoDisableTooltip');
 
-    } else {
-        if (optionsContainer) {
-            optionsContainer.style.opacity = '1';
-            optionsContainer.style.pointerEvents = 'auto';
+    if (isCrypto) {
+        if (btnOpt) {
+            btnOpt.disabled = true;
+            btnOpt.style.opacity = '0.5';
+            btnOpt.style.cursor = 'not-allowed';
+            btnOpt.onmouseover = () => tooltip && tooltip.classList.remove('hidden');
+            btnOpt.onmouseout = () => tooltip && tooltip.classList.add('hidden');
         }
-        if (disabledOverlay) disabledOverlay.classList.add('hidden');
+        
+        // Force back to regular if they were on options
+        if (window.activeTradingMode === 'options') {
+            window.toggleModeActive('regular');
+        }
+    } else {
+        if (btnOpt) {
+            btnOpt.disabled = false;
+            btnOpt.style.opacity = '1';
+            btnOpt.style.cursor = 'pointer';
+            btnOpt.onmouseover = null;
+            btnOpt.onmouseout = null;
+        }
+        if (tooltip) tooltip.classList.add('hidden');
     }
 };
 
@@ -1675,7 +1699,7 @@ async function saveTickerSettings() {
 
     const buyThresholdVal = parseInt(document.getElementById(`strategyBuyThreshold_${mode}`).value);
     const sellThresholdVal = parseInt(document.getElementById(`strategySellThreshold_${mode}`).value);
-    
+
     const indicators = [];
     const container = document.getElementById(`indicatorChecksContainer_${mode}`);
     if (container) {
@@ -1690,6 +1714,7 @@ async function saveTickerSettings() {
         settings: {
             amount: parseFloat(document.getElementById('strategyCapital').value) || null,
             timeframe: document.getElementById(`strategyTimeframe_${mode}`).value || null,
+            market_session: document.getElementById(`strategyMarketSession_${mode}`)?.value || 'regular',
             min_buy_signals: buyThresholdVal,
             min_sell_signals: sellThresholdVal,
             sell_mode: document.getElementById('strategySellMode_regular')?.value || 'hybrid',
@@ -1697,9 +1722,9 @@ async function saveTickerSettings() {
             paused: window._strategyPaused || false,
             ai_autopilot: document.getElementById('strategyAiAutopilot')?.checked || false,
             ai_model: document.getElementById('strategyAiModel')?.value || 'llama-3.3-70b-versatile',
-            risk_per_trade: parseFloat(document.getElementById('strategyRiskPerTrade')?.value || 2.0) / 100.0,
-            max_daily_drawdown: parseFloat(document.getElementById('strategyMaxDailyDrawdown')?.value || 5.0) / 100.0,
-            max_position_pct: parseFloat(document.getElementById('strategyMaxPositionPct')?.value || 100.0) / 100.0,
+            risk_per_trade: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyRiskPerTrade' : 'strategyOptionsRiskPerTrade')?.value || 2.0) / 100.0 : null,
+            max_daily_drawdown: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxDailyDrawdown' : 'strategyOptionsMaxDailyDrawdown')?.value || (mode === 'regular' ? 5.0 : 50.0)) / 100.0 : null,
+            max_position_pct: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxPositionPct' : 'strategyOptionsMaxPositionPct')?.value || 100.0) / 100.0 : null,
             atr_stop_multiplier: parseFloat(document.getElementById('strategyAtrStopMult')?.value || 2.0),
             atr_trail_multiplier: parseFloat(document.getElementById('strategyAtrTrailMult')?.value || 3.0),
             take_profit_multiplier: parseFloat(document.getElementById('strategyAtrTpMult')?.value || 4.0),
@@ -1710,16 +1735,16 @@ async function saveTickerSettings() {
             options_trade_amount: parseFloat(document.getElementById('strategyOptionsTradeAmount')?.value || 100),
             options_expiry_days: parseInt(document.getElementById('strategyOptionsExpiryDays')?.value || 7),
             options_strike_type: document.getElementById('strategyOptionsStrikeType')?.value || 'ATM',
-            options_exit_strategy: document.getElementById('strategyOptionsExitStrategy')?.value || 'hybrid',
-            options_stop_loss_pct: parseFloat(document.getElementById('strategyOptionsStopLoss')?.value || 50) / 100.0,
-            options_take_profit_pct: parseFloat(document.getElementById('strategyOptionsTakeProfit')?.value || 100) / 100.0,
-            enable_signal_reset: document.getElementById('strategyOptionsSignalReset')?.checked || false,
-            enable_smart_reentry: document.getElementById('strategyOptionsSmartReentry')?.checked || false,
-            smart_reentry_type: document.getElementById('strategyOptionsSmartReentryType')?.value || 'RSI',
-            smart_reentry_rsi_call_max: parseInt(document.getElementById('strategyOptionsRsiCallMax')?.value || 70),
-            smart_reentry_rsi_put_min: parseInt(document.getElementById('strategyOptionsRsiPutMin')?.value || 30),
-            smart_reentry_vwap_call_max_dist_pct: parseFloat(document.getElementById('strategyOptionsVwapCallMaxPct')?.value || 0.5),
-            smart_reentry_vwap_put_max_dist_pct: parseFloat(document.getElementById('strategyOptionsVwapPutMaxPct')?.value || 0.5)
+            options_exit_strategy: document.getElementById('strategySellMode_options')?.value || 'hybrid',
+            options_stop_loss_pct: parseFloat(document.getElementById('strategyOptionsSlPct')?.value || 50) / 100.0,
+            options_take_profit_pct: parseFloat(document.getElementById('strategyOptionsTpPct')?.value || 100) / 100.0,
+            enable_signal_reset: document.getElementById(mode === 'regular' ? 'strategyRegularSignalReset' : 'strategyOptionsSignalReset')?.checked || false,
+            enable_smart_reentry: document.getElementById(mode === 'regular' ? 'strategyRegularSmartReentry' : 'strategyOptionsSmartReentry')?.checked || false,
+            smart_reentry_type: document.getElementById(mode === 'regular' ? 'strategyRegularSmartReentryType' : 'strategyOptionsSmartReentryType')?.value || 'RSI',
+            smart_reentry_rsi_call_max: parseInt(document.getElementById(mode === 'regular' ? 'strategyRegularRsiCallMax' : 'strategyOptionsRsiCallMax')?.value || 70),
+            smart_reentry_rsi_put_min: parseInt(document.getElementById(mode === 'regular' ? 'strategyRegularRsiPutMin' : 'strategyOptionsRsiPutMin')?.value || 30),
+            smart_reentry_vwap_call_max_dist_pct: parseFloat(document.getElementById(mode === 'regular' ? 'strategyRegularVwapCallMaxPct' : 'strategyOptionsVwapCallMaxPct')?.value || 0.5),
+            smart_reentry_vwap_put_max_dist_pct: parseFloat(document.getElementById(mode === 'regular' ? 'strategyRegularVwapPutMaxPct' : 'strategyOptionsVwapPutMaxPct')?.value || 0.5)
         }
     };
 
@@ -1769,9 +1794,9 @@ window.resetTickerSettings = async function () {
 
 window.toggleWatchlist = async function (ticker) {
     if (!ticker) return;
-    
+
     const inWatchlist = (window.lastBotsData?.watchlist || []).includes(ticker);
-    
+
     try {
         const headers = await getAuthHeaders();
         if (inWatchlist) {
@@ -1800,8 +1825,8 @@ window.toggleWatchlist = async function (ticker) {
 async function fetchBotsData() {
     try {
         const headers = await getAuthHeaders();
-        const url = `${API_BASE}/api/dashboard?mode=fast&source=bots`;
-        const response = await fetch(url, { headers });
+        const url = `${API_BASE}/api/dashboard?mode=fast&source=bots&_t=${Date.now()}`;
+        const response = await fetch(url, { headers, cache: 'no-store' });
         const data = await response.json();
 
         // Cache for modal access
@@ -1836,6 +1861,19 @@ function applyBotsData(data) {
     }
 
     // Portfolio cards
+        if (document.getElementById('globalMaxDrawdown')) {
+        if (document.activeElement !== document.getElementById('globalMaxDrawdown')) {
+            let dd = data.indicator_parameters?.MAX_DAILY_DRAWDOWN;
+            if (dd !== undefined && dd !== null) document.getElementById('globalMaxDrawdown').value = Math.round(dd * 100);
+        }
+    }
+    if (document.getElementById('globalHardStop')) {
+        if (document.activeElement !== document.getElementById('globalHardStop')) {
+            let hs = data.indicator_parameters?.GLOBAL_HARD_STOP_PCT;
+            if (hs !== undefined && hs !== null) document.getElementById('globalHardStop').value = Math.round(hs * 100);
+        }
+    }
+
     if (document.getElementById('totalCapital')) {
         document.getElementById('totalCapital').textContent = data.capital || '---';
         document.getElementById('totalCapital').classList.remove('animate-pulse');
@@ -1852,17 +1890,29 @@ function applyBotsData(data) {
     }
     if (document.getElementById('dailyPL')) {
         const plEl = document.getElementById('dailyPL');
-        plEl.textContent = data.dailyPL || '$0.00 (0.0%)';
+        const plStr = data.dailyPL || '$0.00 (0.0%)';
+        const plParts = plStr.split(' (');
+        if (plParts.length === 2) {
+            plEl.innerHTML = `${plParts[0]}<div class="text-[0.65rem] opacity-80 font-bold leading-tight -mt-0.5">(${plParts[1]}</div>`;
+        } else {
+            plEl.textContent = plStr;
+        }
         plEl.classList.remove('animate-pulse');
         const plVal = parseFloat((data.dailyPL || '').replace(/[^-\d.]/g, ''));
-        plEl.className = `card-value ${plVal >= 0 ? 'text-emerald-600' : 'text-red-500'}`;
+        plEl.classList.remove('text-emerald-600', 'text-red-500'); plEl.classList.add(plVal >= 0 ? 'text-emerald-600' : 'text-red-500');
     }
     if (document.getElementById('totalProfit')) {
         const tpEl = document.getElementById('totalProfit');
-        tpEl.textContent = data.totalProfit || '$0.00 (0.0%)';
+        const tpStr = data.totalProfit || '$0.00 (0.0%)';
+        const tpParts = tpStr.split(' (');
+        if (tpParts.length === 2) {
+            tpEl.innerHTML = `${tpParts[0]}<div class="text-[0.65rem] opacity-80 font-bold leading-tight -mt-0.5">(${tpParts[1]}</div>`;
+        } else {
+            tpEl.textContent = tpStr;
+        }
         tpEl.classList.remove('animate-pulse');
         const tpVal = parseFloat((data.totalProfit || '').replace(/[^-\d.]/g, ''));
-        tpEl.className = `card-value ${tpVal >= 0 ? 'text-emerald-600' : 'text-red-500'}`;
+        tpEl.classList.remove('text-emerald-600', 'text-red-500'); tpEl.classList.add(tpVal >= 0 ? 'text-emerald-600' : 'text-red-500');
     }
 
     // Last scan time
@@ -1891,7 +1941,7 @@ function applyBotsData(data) {
                 mirrored = true;
             }
         }
-    } catch (e) {}
+    } catch (e) { }
 
     // Only fetch if we didn't mirror the global AI indicator
     if (selectedTicker && !mirrored) {
@@ -2162,18 +2212,19 @@ window.confirmAndDeployBot = async function () {
         const payload = {
             symbol,
             add_to_watchlist: addToWatchlist,
-            capital: parseFloat(capital),
-            threshold: parseInt(threshold),
-            sell_threshold: parseInt(sellThreshold),
+            capital: parseFloat(capital) || 100,
+            threshold: parseInt(threshold) || 0,
+            sell_threshold: parseInt(sellThreshold) || 0,
             sell_mode: sellMode,
             indicators: indicators,
             timeframe: timeframe,
+                market_session: document.getElementById(`strategyMarketSession_${mode}`)?.value || 'regular',
             paused: window._strategyPaused || false,
             ai_autopilot: document.getElementById('strategyAiAutopilot')?.checked || false,
             ai_model: document.getElementById('strategyAiModel')?.value || 'llama-3.3-70b-versatile',
-            risk_per_trade: parseFloat(document.getElementById('strategyRiskPerTrade')?.value || 2.0) / 100.0,
-            max_daily_drawdown: parseFloat(document.getElementById('strategyMaxDailyDrawdown')?.value || 5.0) / 100.0,
-            max_position_pct: parseFloat(document.getElementById('strategyMaxPositionPct')?.value || 100.0) / 100.0,
+            risk_per_trade: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyRiskPerTrade' : 'strategyOptionsRiskPerTrade')?.value || 2.0) / 100.0 : null,
+            max_daily_drawdown: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxDailyDrawdown' : 'strategyOptionsMaxDailyDrawdown')?.value || (mode === 'regular' ? 5.0 : 50.0)) / 100.0 : null,
+            max_position_pct: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxPositionPct' : 'strategyOptionsMaxPositionPct')?.value || 100.0) / 100.0 : null,
             atr_stop_multiplier: parseFloat(document.getElementById('strategyAtrStopMult')?.value || 2.0),
             atr_trail_multiplier: parseFloat(document.getElementById('strategyAtrTrailMult')?.value || 3.0),
             take_profit_multiplier: parseFloat(document.getElementById('strategyAtrTpMult')?.value || 4.0),
@@ -2184,16 +2235,16 @@ window.confirmAndDeployBot = async function () {
             options_trade_amount: parseFloat(document.getElementById('strategyOptionsTradeAmount')?.value || 100),
             options_expiry_days: parseInt(document.getElementById('strategyOptionsExpiryDays')?.value || 7),
             options_strike_type: document.getElementById('strategyOptionsStrikeType')?.value || 'ATM',
-            options_exit_strategy: document.getElementById('strategyOptionsExitStrategy')?.value || 'hybrid',
-            options_stop_loss_pct: parseFloat(document.getElementById('strategyOptionsStopLoss')?.value || 50) / 100.0,
-            options_take_profit_pct: parseFloat(document.getElementById('strategyOptionsTakeProfit')?.value || 100) / 100.0,
-            enable_signal_reset: document.getElementById('strategyOptionsSignalReset')?.checked || false,
-            enable_smart_reentry: document.getElementById('strategyOptionsSmartReentry')?.checked || false,
-            smart_reentry_type: document.getElementById('strategyOptionsSmartReentryType')?.value || 'RSI',
-            smart_reentry_rsi_call_max: parseInt(document.getElementById('strategyOptionsRsiCallMax')?.value || 70),
-            smart_reentry_rsi_put_min: parseInt(document.getElementById('strategyOptionsRsiPutMin')?.value || 30),
-            smart_reentry_vwap_call_max_dist_pct: parseFloat(document.getElementById('strategyOptionsVwapCallMaxPct')?.value || 0.5),
-            smart_reentry_vwap_put_max_dist_pct: parseFloat(document.getElementById('strategyOptionsVwapPutMaxPct')?.value || 0.5)
+            options_exit_strategy: document.getElementById('strategySellMode_options')?.value || 'hybrid',
+            options_stop_loss_pct: parseFloat(document.getElementById('strategyOptionsSlPct')?.value || 50) / 100.0,
+            options_take_profit_pct: parseFloat(document.getElementById('strategyOptionsTpPct')?.value || 100) / 100.0,
+            enable_signal_reset: document.getElementById(mode === 'regular' ? 'strategyRegularSignalReset' : 'strategyOptionsSignalReset')?.checked || false,
+            enable_smart_reentry: document.getElementById(mode === 'regular' ? 'strategyRegularSmartReentry' : 'strategyOptionsSmartReentry')?.checked || false,
+            smart_reentry_type: document.getElementById(mode === 'regular' ? 'strategyRegularSmartReentryType' : 'strategyOptionsSmartReentryType')?.value || 'RSI',
+            smart_reentry_rsi_call_max: parseInt(document.getElementById(mode === 'regular' ? 'strategyRegularRsiCallMax' : 'strategyOptionsRsiCallMax')?.value || 70),
+            smart_reentry_rsi_put_min: parseInt(document.getElementById(mode === 'regular' ? 'strategyRegularRsiPutMin' : 'strategyOptionsRsiPutMin')?.value || 30),
+            smart_reentry_vwap_call_max_dist_pct: parseFloat(document.getElementById(mode === 'regular' ? 'strategyRegularVwapCallMaxPct' : 'strategyOptionsVwapCallMaxPct')?.value || 0.5),
+            smart_reentry_vwap_put_max_dist_pct: parseFloat(document.getElementById(mode === 'regular' ? 'strategyRegularVwapPutMaxPct' : 'strategyOptionsVwapPutMaxPct')?.value || 0.5)
         };
 
         const response = await fetch(`${API_BASE}/api/bots/create`, {
@@ -2246,7 +2297,7 @@ async function unlinkAlpaca() {
     const waitForAuth = setInterval(() => {
         if (window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true')) {
             clearInterval(waitForAuth);
-            
+
             // Prioritize loading the dashboard layout and chart first!
             const dashContent = document.getElementById('dashboardContent');
             if (dashContent) dashContent.classList.remove('hidden');
@@ -2271,7 +2322,7 @@ async function unlinkAlpaca() {
                     const { data, fetchedAt } = JSON.parse(cachedRaw);
                     const ageMs = Date.now() - fetchedAt;
                     if (ageMs < 60000) { // Cache valid for 60 seconds
-                        console.log(`[bots] Using prefetched cache (${Math.round(ageMs/1000)}s old) for instant render.`);
+                        console.log(`[bots] Using prefetched cache (${Math.round(ageMs / 1000)}s old) for instant render.`);
                         window.lastBotsData = data;
                         window.lastDashboardData = data;
                         applyBotsData(data); // Render immediately from cache
@@ -2291,7 +2342,7 @@ async function unlinkAlpaca() {
                 setTimeout(() => fetchBotsData(), 2000);
             }
             loadOllamaModels();
-            
+
             setInterval(() => {
                 fetchBotsData();
                 fetchPortfolioHistory();
@@ -2403,7 +2454,7 @@ function openIndicatorSettings(indicatorName) {
 
     let currentParams = {};
     let overrides = {};
-    
+
     if (currentStrategySymbol) {
         const tickerSettings = (window.lastBotsData?.ticker_settings || {})[currentStrategySymbol] || {};
         const tickerOverrides = tickerSettings.indicator_overrides || {};
@@ -2481,7 +2532,7 @@ async function saveIndicatorSettings() {
         if (currentStrategySymbol) {
             url += `&ticker=${encodeURIComponent(currentStrategySymbol)}`;
         }
-        
+
         const response = await fetch(url, {
             method: 'POST',
             headers: headers,
@@ -2493,12 +2544,12 @@ async function saveIndicatorSettings() {
             if (!window.lastBotsData) {
                 window.lastBotsData = { indicator_parameters: {}, indicator_overrides: {}, ticker_settings: {} };
             }
-            
+
             if (currentStrategySymbol) {
                 if (!window.lastBotsData.ticker_settings) window.lastBotsData.ticker_settings = {};
                 if (!window.lastBotsData.ticker_settings[currentStrategySymbol]) window.lastBotsData.ticker_settings[currentStrategySymbol] = {};
                 if (!window.lastBotsData.ticker_settings[currentStrategySymbol].indicator_overrides) window.lastBotsData.ticker_settings[currentStrategySymbol].indicator_overrides = {};
-                
+
                 for (const [k, v] of Object.entries(updates)) {
                     if (v === "" || v === null) {
                         delete window.lastBotsData.ticker_settings[currentStrategySymbol].indicator_overrides[k];
@@ -2509,7 +2560,7 @@ async function saveIndicatorSettings() {
             } else {
                 if (!window.lastBotsData.indicator_parameters) window.lastBotsData.indicator_parameters = {};
                 if (!window.lastBotsData.indicator_overrides) window.lastBotsData.indicator_overrides = {};
-                
+
                 for (const [k, v] of Object.entries(updates)) {
                     if (v === "" || v === null) {
                         delete window.lastBotsData.indicator_overrides[k];
@@ -2520,7 +2571,7 @@ async function saveIndicatorSettings() {
                     }
                 }
             }
-            
+
             closeIndicatorSettings();
         } else {
             alert("Error saving indicator settings.");
@@ -2621,11 +2672,11 @@ async function fetchPortfolioHistory() {
         if (equities && equities.length > 0 && data.timestamp && data.timestamp.length > 0) {
             const firstEq = equities[0];
             const lastEq = equities[equities.length - 1];
-            
+
             // Align 1D Performance metric with standard brokerage Daily P/L (inclusive of overnight gaps)
             let finalPl = lastEq - firstEq;
             let finalPlPct = firstEq > 0 ? (finalPl / firstEq * 100) : 0.0;
-            
+
             if (currentChartPeriod.toUpperCase() === '1D' && data.profit_loss && data.profit_loss.length > 0) {
                 finalPl = data.profit_loss[data.profit_loss.length - 1];
                 if (data.profit_loss_pct && data.profit_loss_pct.length > 0) {
@@ -2640,12 +2691,12 @@ async function fetchPortfolioHistory() {
             if (subEl) {
                 const sign = finalPl >= 0 ? '+' : '';
                 const colorClass = finalPl >= 0 ? 'text-emerald-500' : 'text-rose-500';
-                
+
                 const firstTs = data.timestamp[0];
                 const lastTs = data.timestamp[data.timestamp.length - 1];
                 const firstDate = new Date(firstTs * 1000);
                 const lastDate = new Date(lastTs * 1000);
-                
+
                 let dateRangeStr = '';
                 if (currentChartPeriod.toUpperCase() === '1D') {
                     const optTime = { hour: '2-digit', minute: '2-digit', hour12: false };
@@ -2657,7 +2708,7 @@ async function fetchPortfolioHistory() {
                     const optDate = { month: 'short', day: 'numeric', year: 'numeric' };
                     dateRangeStr = `from ${firstDate.toLocaleDateString('en-US', optDate)} to ${lastDate.toLocaleDateString('en-US', optDate)}`;
                 }
-                
+
                 subEl.innerHTML = `Performance: <span class="${colorClass} font-black">${sign}$${finalPl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${sign}${finalPlPct.toFixed(2)}%)</span> ${dateRangeStr}`;
             }
         }
@@ -2683,7 +2734,7 @@ async function fetchPortfolioHistory() {
                 if (equities && equities.length > 0) {
                     const lastEquity = equities[equities.length - 1];
                     const yPos = y.getPixelForValue(lastEquity);
-                    
+
                     ctx.save();
                     ctx.beginPath();
                     ctx.setLineDash([4, 4]); // Dashed line
@@ -2692,13 +2743,13 @@ async function fetchPortfolioHistory() {
                     ctx.moveTo(left, yPos);
                     ctx.lineTo(right, yPos);
                     ctx.stroke();
-                    
+
                     // Draw a little badge showing the current equity value at the right end
                     ctx.font = 'bold 9px Inter, sans-serif';
                     ctx.textBaseline = 'middle';
                     const text = `$${lastEquity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
                     const textWidth = ctx.measureText(text).width;
-                    
+
                     // Background badge
                     ctx.beginPath();
                     if (ctx.roundRect) {
@@ -2708,11 +2759,11 @@ async function fetchPortfolioHistory() {
                     }
                     ctx.fillStyle = 'rgba(147, 51, 234, 0.95)';
                     ctx.fill();
-                    
+
                     // Text
                     ctx.fillStyle = '#ffffff';
                     ctx.fillText(text, right - textWidth - 4, yPos);
-                    
+
                     ctx.restore();
                 }
             }
@@ -3289,43 +3340,350 @@ window.closeAIInfoModal = function () {
 
 
 
-window.toggleModeActive = function(mode) {
-    const regToggle = document.getElementById('regularModeToggle');
-    const optToggle = document.getElementById('optionsModeToggle');
+window.toggleModeActive = function (mode) {
     const regBox = document.getElementById('regularTradingBox');
     const optBox = document.getElementById('optionsTradingBox');
-    const optionsContainer = document.getElementById('optionsAccordionContainer');
+    const pill = document.getElementById('modeTogglePill');
+    const btnReg = document.getElementById('btnRegularMode');
+    const btnOpt = document.getElementById('btnOptionsMode');
     
-    // Prevent toggling options if disabled (crypto)
-    if (mode === 'options' && optionsContainer && optionsContainer.style.pointerEvents === 'none') {
-        optToggle.checked = false;
+    // Prevent options if disabled
+    if (mode === 'options' && btnOpt && btnOpt.disabled) {
         return;
     }
-    
+
     if (mode === 'regular') {
-        if (regToggle.checked) {
-            if (optToggle) optToggle.checked = false;
-            window.activeTradingMode = 'regular';
-            if (regBox) regBox.classList.remove('hidden');
-            if (optBox) optBox.classList.add('hidden');
-            window.updateStrategySignalLabels('regular');
+        window.activeTradingMode = 'regular';
+        if (pill) pill.style.transform = 'translateX(0)';
+        if (btnReg) { btnReg.classList.remove('text-indigo-400'); btnReg.classList.add('text-indigo-950'); }
+        if (btnOpt) { btnOpt.classList.remove('text-indigo-950'); btnOpt.classList.add('text-indigo-400'); }
+        if (regBox) regBox.classList.remove('hidden');
+        if (optBox) optBox.classList.add('hidden');
+        window.updateStrategySignalLabels('regular');
+    } else {
+        window.activeTradingMode = 'options';
+        if (pill) pill.style.transform = 'translateX(100%)';
+        if (btnReg) { btnReg.classList.remove('text-indigo-950'); btnReg.classList.add('text-indigo-400'); }
+        if (btnOpt) { btnOpt.classList.remove('text-indigo-400'); btnOpt.classList.add('text-indigo-950'); }
+        if (optBox) optBox.classList.remove('hidden');
+        if (regBox) regBox.classList.add('hidden');
+        window.updateStrategySignalLabels('options');
+    }
+
+    window.toggleDeployButton();
+    
+    if (window.fetchLiveAtrForPreview && window.currentStrategySymbol && window.activeTradingMode) {
+        window.fetchLiveAtrForPreview(window.currentStrategySymbol);
+    }
+};
+
+
+
+window.updateRegularExitFields = function() {
+    const mode = document.getElementById('strategySellMode_regular')?.value || 'indicator';
+    const showIndicator = ['indicator', 'hybrid', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low'].includes(mode);
+    const showATR       = ['sltp', 'hybrid'].includes(mode);
+    const showPct       = ['percentage', 'hybrid_pct'].includes(mode);
+    
+    if(document.getElementById('exitFieldsIndicator')) document.getElementById('exitFieldsIndicator').classList.toggle('hidden', !showIndicator);
+    if(document.getElementById('exitFieldsATR')) document.getElementById('exitFieldsATR').classList.toggle('hidden', !showATR);
+    if(document.getElementById('exitFieldsPct')) document.getElementById('exitFieldsPct').classList.toggle('hidden', !showPct);
+
+    if (window.updateLivePreview_bots) window.updateLivePreview_bots('regular');
+};
+
+window.updateRegularEntryFields = function() {
+    const mode = document.getElementById('strategyBuyMode_regular')?.value || 'indicator';
+    const showIndicator = mode === 'indicator';
+    const showCustom    = mode === 'custom_price';
+    if(document.getElementById('strategyBuyFields_regular')) document.getElementById('strategyBuyFields_regular').classList.toggle('hidden', !showIndicator);
+    if(document.getElementById('strategyCustomBuyFields_regular')) document.getElementById('strategyCustomBuyFields_regular').classList.toggle('hidden', !showCustom);
+};
+
+window.updateOptionsEntryFields = function() {
+    const mode = document.getElementById('strategyBuyMode_options')?.value || 'indicator';
+    const showIndicator = mode === 'indicator';
+    const showCustom    = mode === 'custom_price';
+    if(document.getElementById('strategyBuyFields_options')) document.getElementById('strategyBuyFields_options').classList.toggle('hidden', !showIndicator);
+    if(document.getElementById('strategyCustomBuyFields_options')) document.getElementById('strategyCustomBuyFields_options').classList.toggle('hidden', !showCustom);
+};
+
+window.updateOptionsExitFields = function() {
+    const mode = document.getElementById('strategySellMode_options')?.value || 'hybrid';
+    
+    const showIndicator = ['indicator', 'hybrid', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low'].includes(mode);
+    const showATR       = ['sltp', 'hybrid'].includes(mode);
+    const showPct       = ['percentage', 'hybrid_pct'].includes(mode);
+    
+    if(document.getElementById('exitFieldsIndicator_options')) document.getElementById('exitFieldsIndicator_options').classList.toggle('hidden', !showIndicator);
+    if(document.getElementById('exitFieldsATR_options')) document.getElementById('exitFieldsATR_options').classList.toggle('hidden', !showATR);
+    if(document.getElementById('exitFieldsPct_options')) document.getElementById('exitFieldsPct_options').classList.toggle('hidden', !showPct);
+
+    if (window.updateLivePreview_bots) window.updateLivePreview_bots('options');
+};
+
+window.updateStrategySmartReentryFields = function (mode) {
+    if (!mode) mode = window.activeTradingMode || 'regular';
+    const capMode = mode === 'regular' ? 'Regular' : 'Options';
+    
+    const isEnabled = document.getElementById(`strategy${capMode}SmartReentry`)?.checked;
+    const fieldsContainer = document.getElementById(`strategySmartReentryFields_${mode}`);
+    if (!fieldsContainer) return;
+
+    if (!isEnabled) {
+        fieldsContainer.classList.add('hidden');
+        return;
+    }
+
+    fieldsContainer.classList.remove('hidden');
+    const type = document.getElementById(`strategy${capMode}SmartReentryType`)?.value || 'RSI';
+
+    const rsiCall = document.getElementById(`strategy${capMode}RsiCallContainer`);
+    const rsiPut = document.getElementById(`strategy${capMode}RsiPutContainer`);
+    const vwapCall = document.getElementById(`strategy${capMode}VwapCallContainer`);
+    const vwapPut = document.getElementById(`strategy${capMode}VwapPutContainer`);
+
+    if (type === 'RSI') {
+        if (rsiCall) rsiCall.classList.remove('hidden');
+        if (rsiPut) rsiPut.classList.remove('hidden');
+        if (vwapCall) vwapCall.classList.add('hidden');
+        if (vwapPut) vwapPut.classList.add('hidden');
+    } else {
+        if (rsiCall) rsiCall.classList.add('hidden');
+        if (rsiPut) rsiPut.classList.add('hidden');
+        if (vwapCall) vwapCall.classList.remove('hidden');
+        if (vwapPut) vwapPut.classList.remove('hidden');
+    }
+};
+
+window.currentAtrPreviewData = { price: 100, atr: 2.0, symbol: null, isLive: false, prior_day: null, timeframe: '5Min' };
+
+window.fetchLiveAtrForPreview = async function(ticker, overrideTf) {
+    if (!ticker) return;
+    try {
+        const headers = await getAuthHeaders();
+        const activeMode = window.activeTradingMode || 'regular';
+        const tf = overrideTf || document.getElementById(`strategyTimeframe_${activeMode}`)?.value || '5Min';
+        
+        const boxRegular = document.getElementById('livePreviewBox_regular');
+        const boxOptions = document.getElementById('livePreviewBox_options');
+        const loadingHtml = `&#8987; Fetching live market data for ${ticker} (${tf})...`;
+        if (boxRegular && !boxRegular.classList.contains('hidden')) boxRegular.innerHTML = loadingHtml;
+        if (boxOptions && !boxOptions.classList.contains('hidden')) boxOptions.innerHTML = loadingHtml;
+        
+        const res = await fetch(`${API_BASE}/api/chart/${ticker}?timeframe=${tf}&source=dashboard`, { headers });
+        if (res.ok) {
+            const data = await res.json();
+            if (data && data.primaryScan) {
+                window.currentAtrPreviewData = {
+                    price: parseFloat(data.primaryScan.price_raw || String(data.primaryScan.price || '100').replace(/[^0-9.-]+/g, '')),
+                    atr: parseFloat(data.primaryScan.atr || 2.0),
+                    symbol: ticker,
+                    isLive: true,
+                    prior_day: data.primaryScan.prior_day_ohlc || null,
+                    timeframe: tf
+                };
+                if (window.updateLivePreview_bots) {
+                    window.updateLivePreview_bots('regular');
+                    window.updateLivePreview_bots('options');
+                }
+            }
+        }
+    } catch (e) {
+        console.error("Failed to fetch preview data", e);
+    }
+};
+
+window.updateLivePreview_bots = function (mode) {
+    const isOptions = mode === 'options';
+    const suffix = isOptions ? '_options' : '';
+    const boxId = 'livePreviewBox' + (isOptions ? '_options' : '_regular');
+    const box = document.getElementById(boxId);
+    
+    if (!box) return;
+
+    // Use correct sell mode ID based on recent changes!
+    const sellModeEl = document.getElementById(isOptions ? 'strategySellMode_options' : 'strategySellMode_regular');
+    if (!sellModeEl) return;
+    const sellMode = sellModeEl.value;
+
+    const showATR = ['sltp', 'hybrid'].includes(sellMode);
+    const showPct = ['percentage', 'hybrid_pct'].includes(sellMode);
+    const showPivot = ['pivot_points', 'hybrid_pivot'].includes(sellMode);
+    const showHL = ['high_low', 'hybrid'].includes(sellMode) && !showATR; // Only if not hybrid ATR
+
+    if (!showATR && !showPct && !showPivot && !showHL) {
+        box.classList.add('hidden');
+        return;
+    }
+
+    let simPrice = window.currentAtrPreviewData ? window.currentAtrPreviewData.price || 100 : 100;
+    const isLive = window.currentAtrPreviewData ? window.currentAtrPreviewData.isLive : false;
+    let symbol = window.currentAtrPreviewData ? window.currentAtrPreviewData.symbol || 'Example' : 'Example';
+    const simAtr = window.currentAtrPreviewData ? window.currentAtrPreviewData.atr || 2.0 : 2;
+    const priorDay = window.currentAtrPreviewData ? window.currentAtrPreviewData.prior_day : null;
+    const tf = window.currentAtrPreviewData ? window.currentAtrPreviewData.timeframe : '5m';
+
+    let html = '';
+
+    if (showPivot || showHL) {
+        if (!priorDay) {
+            html = `&#128302; Live Preview (${symbol}) | Price: $${simPrice.toFixed(2)}<br/>Awaiting Prior Day Data...`;
         } else {
-            window.activeTradingMode = null;
-            if (regBox) regBox.classList.add('hidden');
+            if (showPivot) {
+                const h = priorDay.high, l = priorDay.low, c = priorDay.close;
+                const p = (h + l + c) / 3;
+                const r1 = (p * 2) - l;
+                const s1 = (p * 2) - h;
+                html = `&#128302; Live Preview: ${symbol} (Prior Day Pivots) | Price: $${simPrice.toFixed(2)}<br/>
+                        Floor Pivot: $${p.toFixed(2)}<br/>
+                        Stop Loss (S1): $${s1.toFixed(2)} &nbsp;|&nbsp; Take Profit (R1): $${r1.toFixed(2)}`;
+            } else if (showHL) {
+                html = `&#128302; Live Preview: ${symbol} (Prior Day High/Low) | Price: $${simPrice.toFixed(2)}<br/>
+                        Stop Loss (Prior Low): $${priorDay.low.toFixed(2)} &nbsp;|&nbsp; Take Profit (Prior High): $${priorDay.high.toFixed(2)}`;
+            }
         }
     } else {
-        if (optToggle.checked) {
-            if (regToggle) regToggle.checked = false;
-            window.activeTradingMode = 'options';
-            if (optBox) optBox.classList.remove('hidden');
-            if (regBox) regBox.classList.add('hidden');
-            window.updateStrategySignalLabels('options');
+        let slDist = 0;
+        let tpDist = 0;
+        let trailDist = 0;
+        let hasTrail = false;
+
+        if (showATR) {
+            const stopEl = document.getElementById('strategyAtrStopMult' + suffix);
+            const tpEl = document.getElementById('strategyAtrTpMult' + suffix);
+            const trailEnableEl = document.getElementById('strategyEnableAtrTrail' + suffix);
+            const trailMultEl = document.getElementById('strategyAtrTrailMult' + suffix);
+            
+            const stopMult = stopEl ? parseFloat(stopEl.value) || 0 : 0;
+            const tpMult = tpEl ? parseFloat(tpEl.value) || 0 : 0;
+            hasTrail = trailEnableEl ? trailEnableEl.checked : false;
+            const trailMult = trailMultEl ? parseFloat(trailMultEl.value) || 0 : 0;
+            
+            slDist = stopMult * simAtr;
+            tpDist = tpMult * simAtr;
+            if (hasTrail) trailDist = trailMult * simAtr;
+            
+        } else if (showPct) {
+            if (isOptions) {
+                simPrice = 5.00; // Mock option premium
+                symbol = "Assumed Option Premium";
+            }
+            let slId = isOptions ? 'strategyOptionsSlPct' : 'strategyRegularSlPct';
+            let tpId = isOptions ? 'strategyOptionsTpPct' : 'strategyRegularTpPct';
+            let enableTrailId = isOptions ? 'strategyEnablePctTrail_options' : 'strategyEnablePctTrail';
+            let trailPctId = isOptions ? 'strategyOptionsTrailPct' : 'strategyRegularTrailPct';
+            
+            const stopEl = document.getElementById(slId);
+            const tpEl = document.getElementById(tpId);
+            const trailEnableEl = document.getElementById(enableTrailId);
+            const trailPctEl = document.getElementById(trailPctId);
+            
+            const stopPct = stopEl ? parseFloat(stopEl.value) || 0 : 0;
+            const tpPct = tpEl ? parseFloat(tpEl.value) || 0 : 0;
+            hasTrail = trailEnableEl ? trailEnableEl.checked : false;
+            const trailPct = trailPctEl ? parseFloat(trailPctEl.value) || 0 : 0;
+            
+            slDist = simPrice * (stopPct / 100);
+            tpDist = simPrice * (tpPct / 100);
+            if (hasTrail) trailDist = simPrice * (trailPct / 100);
+        }
+
+                const slPrice = simPrice - slDist;
+        const tpPrice = simPrice + tpDist;
+        
+        const slPctCalc = simPrice > 0 ? ((slDist / simPrice) * 100).toFixed(2) : '0.00';
+        const tpPctCalc = simPrice > 0 ? ((tpDist / simPrice) * 100).toFixed(2) : '0.00';
+        
+        let label = isLive 
+            ? `&#128302; Live Preview: ${symbol} (${tf} Timeframe) &nbsp;|&nbsp; Price: $${simPrice.toFixed(2)}${showATR ? ` &nbsp;|&nbsp; ATR: $${simAtr.toFixed(2)}` : ''}` 
+            : `&#128302; Example Preview (Assuming $100 Entry${showATR ? ' & $2 ATR' : ''})`;
+            
+        html = `${label} <br/> Stop Loss: $${slPrice.toFixed(2)} (-${slPctCalc}%) &nbsp;|&nbsp; Take Profit: $${tpPrice.toFixed(2)} (+${tpPctCalc}%)`;
+        
+        if (hasTrail) {
+            if (showATR) {
+                html += `<br/>Trail Distance: $${trailDist.toFixed(2)} (ATR * ${document.getElementById('strategyAtrTrailMult'+suffix)?.value || '0'})`;
+            } else {
+                html += `<br/>Trail Distance: $${trailDist.toFixed(2)} (${document.getElementById(isOptions ? 'strategyOptionsTrailPct' : 'strategyRegularTrailPct')?.value || '0'}%)`;
+            }
+        }
+    }
+
+    box.innerHTML = html;
+    box.classList.remove('hidden');
+};
+
+const oldOpenStrategyModalUnified = window.openStrategyModal;
+if(oldOpenStrategyModalUnified && !window._livePreviewPatchedUnified) {
+    window._livePreviewPatchedUnified = true;
+    window.openStrategyModal = function(symbol, existingBot) {
+        window.currentAtrPreviewData = { price: 100, atr: 2.0, symbol: symbol, isLive: false };
+        oldOpenStrategyModalUnified(symbol, existingBot);
+        if (symbol) window.fetchLiveAtrForPreview(symbol);
+        
+        if (window.updateLivePreview_bots) {
+            window.updateLivePreview_bots('regular');
+            window.updateLivePreview_bots('options');
+        }
+    };
+}
+
+
+window.toggleRiskControls = function(enabled, mode) {
+    const wrapperId = mode === 'regular' ? 'riskControlsContentWrapper_regular' : 'riskControlsContentWrapper_options';
+    const wrapper = document.getElementById(wrapperId);
+    if (wrapper) {
+        if (enabled) {
+            wrapper.style.display = 'block';
         } else {
-            window.activeTradingMode = null;
-            if (optBox) optBox.classList.add('hidden');
+            wrapper.style.display = 'none';
         }
     }
     
-    window.toggleDeployButton();
+    // Disable inputs
+    const contentId = mode === 'regular' ? 'riskControlsContent' : 'riskControlsContent_options';
+    const content = document.getElementById(contentId);
+    if (content) {
+        const inputs = content.querySelectorAll('input');
+        inputs.forEach(input => {
+            input.disabled = !enabled;
+        });
+    }
 };
 
+
+// ──────────────────────────────────────────────
+// Global Risk Settings Auto-Save
+// ──────────────────────────────────────────────
+async function saveGlobalRiskSettings() {
+    const maxDrawdownEl = document.getElementById('globalMaxDrawdown');
+    const hardStopEl = document.getElementById('globalHardStop');
+    
+    if (!maxDrawdownEl || !hardStopEl) return;
+    
+    const payload = {
+        MAX_DAILY_DRAWDOWN: maxDrawdownEl.value ? parseInt(maxDrawdownEl.value, 10) : null,
+        GLOBAL_HARD_STOP_PCT: hardStopEl.value ? parseInt(hardStopEl.value, 10) : null
+    };
+    
+    try {
+        const headers = await getAuthHeaders();
+        const response = await fetch(`${API_BASE}/api/settings/risk?context=dashboard`, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify(payload)
+        });
+        if (!response.ok) throw new Error('Failed to save risk settings');
+        console.log('[bots] Global Risk Settings Auto-saved');
+    } catch (e) {
+        console.error('[bots] Error saving global risk settings:', e);
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const dd = document.getElementById('globalMaxDrawdown');
+    const hs = document.getElementById('globalHardStop');
+    if (dd) dd.addEventListener('change', saveGlobalRiskSettings);
+    if (hs) hs.addEventListener('change', saveGlobalRiskSettings);
+});

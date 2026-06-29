@@ -74,7 +74,8 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
             account_equity=account['equity'], 
             available_cash=avail_cash,
             timeframe=timeframe,
-            data_source="webull"  # Dashboard always uses Webull for higher fidelity research
+            data_source="webull",  # Dashboard always uses Webull for higher fidelity research
+            use_bot_settings=is_active_bot
         )
         if primary_scan:
             _record_scan(primary_scan)
@@ -152,14 +153,14 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
         "watchlistScans": {
             ticker: _inject_price(_format_scan_for_ui(
                 eng._pick_scan(ticker, timeframe, prefer_bot=False) or 
-                eng._pick_scan(ticker, getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME), prefer_bot=False, ignore_freshness=True) or {}
+                eng._pick_scan(ticker, getattr(eng.config, 'TICKER_SETTINGS', {}).get(ticker, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME), prefer_bot=False, ignore_freshness=True) or {}
             ), ticker)
             for ticker in eng.config.WATCHLIST
         },
         "botScans": {
             ticker: _inject_price(_format_scan_for_ui(
                 eng._pick_scan(ticker, timeframe, prefer_bot=True) or 
-                eng._pick_scan(ticker, getattr(config, 'TICKER_SETTINGS', {}).get(ticker, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME), prefer_bot=True, ignore_freshness=True) or {}
+                eng._pick_scan(ticker, getattr(eng.config, 'TICKER_SETTINGS', {}).get(ticker, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME), prefer_bot=True, ignore_freshness=True) or {}
             ), ticker)
             for ticker in eng.config.TRADELIST
         },
@@ -171,13 +172,13 @@ async def get_dashboard(ticker: str = None, timeframe: str = None, mode: str = "
 
         # Risk Management
         "risk": risk_mgr.get_risk_status(account['equity']),
-        "ticker_settings": getattr(config, 'TICKER_SETTINGS', {}),
+        "ticker_settings": getattr(eng.config, 'TICKER_SETTINGS', {}),
 
         # Bot Meta
         "botRunning": eng.bot_running,
         "lastScan": last_scan_time or "Starting...",
-        "indicator_settings": {k: getattr(config, k, True) for k in dir(config) if k.startswith("ENABLE_")},
-        "indicator_parameters": {k: getattr(config, k) for k in dir(config) if k.isupper() and not k.startswith("_") and k not in ["ALPACA_API_KEY", "ALPACA_SECRET_KEY", "GROQ_API_KEY", "FERNET_KEY"]},
+        "indicator_settings": {k: getattr(eng.config, k, True) for k in dir(eng.config) if k.startswith("ENABLE_")},
+        "indicator_parameters": {k: getattr(eng.config, k) for k in dir(eng.config) if k.isupper() and not k.startswith("_") and k not in ["ALPACA_API_KEY", "ALPACA_SECRET_KEY", "GROQ_API_KEY", "FERNET_KEY"]},
         "strategyTimeframe": timeframe,
         "watchlist": eng.config.WATCHLIST,
         "tradelist": eng.config.TRADELIST,
@@ -296,12 +297,17 @@ async def run_backtest(data: dict, user: dict = Depends(verify_token)):
     end_date = get_now()
     start_date = end_date - timedelta(days=days)
     
+    buy_mode = data.get("buy_mode", "indicator")
+    custom_buy_price = float(data.get("custom_buy_price", 0.0))
     sell_mode = data.get("sell_mode", "indicator")
     risk_per_trade = float(data.get("risk_per_trade", 0.02))
     max_pos_pct = float(data.get("max_position_pct", 0.25))
     atr_stop_multiplier = float(data.get("atr_stop_multiplier", 2.0))
     atr_trail_multiplier = float(data.get("atr_trail_multiplier", 3.0))
     atr_take_profit_multiplier = float(data.get("atr_take_profit_multiplier", 4.0))
+    regular_stop_loss_pct = float(data.get("regular_stop_loss_pct", 0.05))
+    regular_take_profit_pct = float(data.get("regular_take_profit_pct", 0.10))
+    regular_trailing_pct = float(data.get("regular_trailing_pct", 0.03))
     
     # Backtester uses get_historical_data internally
     bt = Backtester(
@@ -316,10 +322,15 @@ async def run_backtest(data: dict, user: dict = Depends(verify_token)):
         risk_per_trade=risk_per_trade,
         max_pos_pct=max_pos_pct,
         ext_hours=ext_hours,
+        buy_mode=buy_mode,
+        custom_buy_price=custom_buy_price,
         sell_mode=sell_mode,
         atr_stop_multiplier=atr_stop_multiplier,
         atr_trail_multiplier=atr_trail_multiplier,
-        atr_take_profit_multiplier=atr_take_profit_multiplier
+        atr_take_profit_multiplier=atr_take_profit_multiplier,
+        regular_stop_loss_pct=regular_stop_loss_pct,
+        regular_take_profit_pct=regular_take_profit_pct,
+        regular_trailing_pct=regular_trailing_pct
     )
     
     try:
@@ -514,8 +525,10 @@ async def add_to_watchlist(data: dict, user: dict = Depends(verify_token)):
     """Add a ticker to the watchlist."""
     eng = user_manager.get_engine(user['uid'])
     ticker = data.get("ticker", "").upper()
-    if ticker and ticker not in eng.config.WATCHLIST:
-        eng.config.WATCHLIST.append(ticker)
+    if ticker:
+        if ticker in eng.config.WATCHLIST:
+            eng.config.WATCHLIST.remove(ticker)
+        eng.config.WATCHLIST.insert(0, ticker)
         asyncio.create_task(save_settings_to_cloud())
         print(f"[settings] Added {ticker} to watchlist")
     return {"status": "success", "watchlist": eng.config.WATCHLIST}
@@ -554,8 +567,10 @@ async def add_to_tradelist(data: dict, user: dict = Depends(verify_token)):
     ticker = data.get("ticker", "").upper()
     timeframe = data.get("timeframe", eng.config.DEFAULT_TIMEFRAME)
     
-    if ticker and ticker not in eng.config.TRADELIST:
-        eng.config.TRADELIST.append(ticker)
+    if ticker:
+        if ticker in eng.config.TRADELIST:
+            eng.config.TRADELIST.remove(ticker)
+        eng.config.TRADELIST.insert(0, ticker)
         
         # LOCK IN TIMEFRAME: Save to ticker settings so it's sticky
         if ticker not in eng.config.TICKER_SETTINGS:
@@ -564,8 +579,9 @@ async def add_to_tradelist(data: dict, user: dict = Depends(verify_token)):
         print(f"[settings] Activated {ticker} on locked {timeframe} timeframe")
 
         # Ensure it's also in watchlist so we can see it
-        if ticker not in eng.config.WATCHLIST:
-            eng.config.WATCHLIST.append(ticker)
+        if ticker in eng.config.WATCHLIST:
+            eng.config.WATCHLIST.remove(ticker)
+        eng.config.WATCHLIST.insert(0, ticker)
         asyncio.create_task(save_settings_to_cloud())
         if force_scan_trigger:
             force_scan_trigger.set()
@@ -649,6 +665,8 @@ async def create_bot(data: dict, user: dict = Depends(verify_token)):
     if symbol not in eng.config.TICKER_SETTINGS:
         eng.config.TICKER_SETTINGS[symbol] = {}
         
+    eng.config.TICKER_SETTINGS[symbol]["source"] = "bots"
+        
     if "capital" in data:
         eng.config.TICKER_SETTINGS[symbol]["amount"] = float(data["capital"])
         
@@ -659,6 +677,14 @@ async def create_bot(data: dict, user: dict = Depends(verify_token)):
     if "timeframe" in data:
         eng.config.TICKER_SETTINGS[symbol]["timeframe"] = data["timeframe"]
         
+    if "buy_mode" in data:
+        eng.config.TICKER_SETTINGS[symbol]["buy_mode"] = data["buy_mode"]
+    else:
+        eng.config.TICKER_SETTINGS[symbol]["buy_mode"] = "indicator"
+
+    if "custom_buy_price" in data:
+        eng.config.TICKER_SETTINGS[symbol]["custom_buy_price"] = float(data["custom_buy_price"])
+
     if "sell_mode" in data:
         eng.config.TICKER_SETTINGS[symbol]["sell_mode"] = data["sell_mode"]
     else:
@@ -727,13 +753,15 @@ async def create_bot(data: dict, user: dict = Depends(verify_token)):
                 eng.config.TICKER_SETTINGS[symbol]["started_at"] = get_now().isoformat()
 
     # Ensure it's in watchlist to be scanned
-    if symbol not in eng.config.WATCHLIST:
-        eng.config.WATCHLIST.append(symbol)
+    if symbol in eng.config.WATCHLIST:
+        eng.config.WATCHLIST.remove(symbol)
+    eng.config.WATCHLIST.insert(0, symbol)
         
     # Add to tradelist to activate the bot
-    if symbol not in eng.config.TRADELIST:
-        eng.config.TRADELIST.append(symbol)
-        print(f"[settings] Launched new bot for {symbol} with custom settings")
+    if symbol in eng.config.TRADELIST:
+        eng.config.TRADELIST.remove(symbol)
+    eng.config.TRADELIST.insert(0, symbol)
+    print(f"[settings] Launched new bot for {symbol} with custom settings")
         
     # Save settings to cloud (runs in background)
     asyncio.create_task(save_settings_to_cloud())
@@ -940,12 +968,22 @@ def _format_scan_for_ui(scan: dict) -> dict:
     all_signals = {}
     for name, data in raw_signals.items():
         toggle_key = SIGNAL_TO_TOGGLE.get(name, '')
-        enabled = getattr(config, toggle_key, True) if toggle_key else True
+        # Preserve existing 'enabled' status set by evaluate_trade, otherwise fallback to global
+        enabled = data.get('enabled', getattr(config, toggle_key, True) if toggle_key else True)
         all_signals[name] = {**data, 'enabled': enabled, 'toggle_key': toggle_key}
 
-    bullish = sum(s.get('weight', 1) for s in all_signals.values() if s.get('signal') == 'BULLISH' and s.get('enabled'))
-    bearish = sum(s.get('weight', 1) for s in all_signals.values() if s.get('signal') == 'BEARISH' and s.get('enabled'))
-    active_count = sum(1 for s in all_signals.values() if s.get('enabled'))
+    # Use precalculated bot counts if available, otherwise fallback to summing
+    bullish = scan.get('bullish_count')
+    if bullish is None:
+        bullish = sum(s.get('weight', 1) for s in all_signals.values() if s.get('signal') == 'BULLISH' and s.get('enabled'))
+
+    bearish = scan.get('bearish_count')
+    if bearish is None:
+        bearish = sum(s.get('weight', 1) for s in all_signals.values() if s.get('signal') == 'BEARISH' and s.get('enabled'))
+
+    active_count = scan.get('total_signals')
+    if active_count is None:
+        active_count = sum(1 for s in all_signals.values() if s.get('enabled'))
 
     return {
         "ticker": scan.get("ticker", ""),

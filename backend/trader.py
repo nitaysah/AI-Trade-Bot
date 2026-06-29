@@ -155,34 +155,51 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
             'premium': True
         }
 
-    # 3. Determine final action using per-ticker thresholds if available
     min_buy = t_settings.get('min_buy_signals', uc.MIN_BULLISH_SIGNALS)
     min_sell = t_settings.get('min_sell_signals', uc.MIN_BEARISH_SIGNALS)
+    buy_mode = t_settings.get('buy_mode', 'indicator')
+    custom_buy_price = t_settings.get('custom_buy_price', 0.0)
+    current_price = analysis_results.get('price', 0.0)
 
     action = "HOLD"
     reason = "Neutral"
-
-    if bullish_count >= min_buy and bearish_count >= min_sell:
-        # Both thresholds met: pick the stronger one
-        if bullish_count > bearish_count:
+    
+    # Evaluate Custom Price Entry Strategy
+    if buy_mode == 'custom_price':
+        # Ignore indicators for buy signals, only use price drop
+        if current_price > 0 and current_price <= custom_buy_price:
             action = "BUY"
-            bullish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BULLISH' and v.get('enabled')]
-            reason = f"BUY Triggered (Conflict Resolved): {bullish_count}B > {bearish_count}S. Signals: {', '.join(bullish_names)}"
-        elif bearish_count > bullish_count:
+            reason = f"BUY Triggered: Price {current_price} crossed below custom target {custom_buy_price}"
+        
+        # If not buying, we still need to check if we should sell (e.g. if we already own it)
+        if action != "BUY" and bearish_count >= min_sell:
             action = "SELL"
             bearish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BEARISH' and v.get('enabled')]
-            reason = f"SELL Triggered (Conflict Resolved): {bearish_count}S > {bullish_count}B. Signals: {', '.join(bearish_names)}"
-        else:
-            action = "HOLD"
-            reason = f"HOLD (Conflict Tie): Bullish ({bullish_count}) and Bearish ({bearish_count}) signals are equal and above threshold."
-    elif bullish_count >= min_buy:
-        action = "BUY"
-        bullish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BULLISH' and v.get('enabled')]
-        reason = f"BUY Triggered: {bullish_count} bullish signals ({', '.join(bullish_names)})"
-    elif bearish_count >= min_sell:
-        action = "SELL"
-        bearish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BEARISH' and v.get('enabled')]
-        reason = f"SELL Triggered: {bearish_count} bearish signals ({', '.join(bearish_names)})"
+            reason = f"SELL Triggered: {bearish_count} bearish signals ({', '.join(bearish_names)})"
+    
+    # Evaluate Standard Indicator Entry Strategy
+    else:
+        if bullish_count >= min_buy and bearish_count >= min_sell:
+            # Both thresholds met: pick the stronger one
+            if bullish_count > bearish_count:
+                action = "BUY"
+                bullish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BULLISH' and v.get('enabled')]
+                reason = f"BUY Triggered (Conflict Resolved): {bullish_count}B > {bearish_count}S. Signals: {', '.join(bullish_names)}"
+            elif bearish_count > bullish_count:
+                action = "SELL"
+                bearish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BEARISH' and v.get('enabled')]
+                reason = f"SELL Triggered (Conflict Resolved): {bearish_count}S > {bullish_count}B. Signals: {', '.join(bearish_names)}"
+            else:
+                action = "HOLD"
+                reason = f"HOLD (Conflict Tie): Bullish ({bullish_count}) and Bearish ({bearish_count}) signals are equal and above threshold."
+        elif bullish_count >= min_buy:
+            action = "BUY"
+            bullish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BULLISH' and v.get('enabled')]
+            reason = f"BUY Triggered: {bullish_count} bullish signals ({', '.join(bullish_names)})"
+        elif bearish_count >= min_sell:
+            action = "SELL"
+            bearish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BEARISH' and v.get('enabled')]
+            reason = f"SELL Triggered: {bearish_count} bearish signals ({', '.join(bearish_names)})"
     
     if ticker in uc.TRADELIST:
         print(f"[trader] {ticker} Decision: {action} ({bullish_count}B/{bearish_count}S, need {min_buy}B/{min_sell}S) - {reason}")

@@ -22,6 +22,7 @@ class OptionsBacktester:
         stop_loss_pct: float = 0.50,
         take_profit_pct: float = 1.00,
         exit_strategy: str = "hybrid",
+        sell_mode: str = "indicator",
         close_before_expiry_hours: float = 2.0,
         threshold: int = 5,
         sell_threshold: int = 3,
@@ -33,12 +34,22 @@ class OptionsBacktester:
         enable_signal_reset: bool = False,
         enable_smart_reentry: bool = False,
         smart_reentry_type: str = "RSI",
-        smart_reentry_rsi_call_max: int = 70,  # Max RSI to allow buying a CALL
-        smart_reentry_rsi_put_min: int = 30,   # Min RSI to allow buying a PUT
+        smart_reentry_rsi_call_max: int = 70,
+        smart_reentry_rsi_put_min: int = 30,
         smart_reentry_vwap_call_max_dist_pct: float = 0.5,
         smart_reentry_vwap_put_max_dist_pct: float = 0.5,
         enable_cooldown: bool = True,
-        cooldown_minutes: int = 0
+        cooldown_minutes: int = 0,
+        buy_mode: str = "indicator",
+        custom_buy_price: float = 0.0,
+        atr_stop_multiplier: float = 2.0,
+        atr_trail_multiplier: float = 3.0,
+        atr_take_profit_multiplier: float = 4.0,
+        regular_stop_loss_pct: float = 0.05,
+        regular_take_profit_pct: float = 0.10,
+        regular_trailing_pct: float = 0.03,
+        risk_per_trade: float = 1.0,
+        max_pos_pct: float = 1.0
     ):
         self.ticker = ticker
         self.timeframe = timeframe
@@ -51,7 +62,10 @@ class OptionsBacktester:
         self.options_type = options_type
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
-        self.exit_strategy = exit_strategy  # "premium_pct", "pivot_points", "high_low", "hybrid"
+        # sell_mode is the unified exit strategy key (mirrors regular backtester).
+        # exit_strategy is kept for backward-compat with old API callers.
+        self.sell_mode = sell_mode if sell_mode != 'indicator' else exit_strategy
+        self.exit_strategy = exit_strategy
         self.close_before_expiry_hours = close_before_expiry_hours
         self.threshold = threshold
         self.sell_threshold = sell_threshold
@@ -69,6 +83,21 @@ class OptionsBacktester:
         self.smart_reentry_vwap_put_max_dist_pct = smart_reentry_vwap_put_max_dist_pct
         self.enable_cooldown = enable_cooldown
         self.cooldown_minutes = cooldown_minutes
+        # Entry mode
+        self.buy_mode = buy_mode
+        self.custom_buy_price = custom_buy_price
+        # ATR exit params
+        self.atr_stop_multiplier = atr_stop_multiplier
+        self.atr_trail_multiplier = atr_trail_multiplier
+        self.atr_take_profit_multiplier = atr_take_profit_multiplier
+        # Percentage exit params
+        self.regular_stop_loss_pct = regular_stop_loss_pct or stop_loss_pct
+        self.regular_take_profit_pct = regular_take_profit_pct or take_profit_pct
+        self.regular_trailing_pct = regular_trailing_pct
+        # Risk sizing
+        self.risk_per_trade = risk_per_trade
+        self.max_pos_pct = max_pos_pct
+        
         # Real-market pricing proxy parameters
         self.q = 0.013 # SPY/broad market approx dividend yield
         self.iv_markup = 0.04 # 4% markup for Implied Volatility over Historical
@@ -362,13 +391,63 @@ class OptionsBacktester:
                     if opt_type == "CALL" and bearish_count >= self.sell_threshold:
                         exit_triggered = True
                         exit_reason = f"Indicator Reversal Signal ({bearish_count} Bearish)"
-                    elif opt_type == "PUT" and bullish_count >= self.threshold:
+                    elif opt_type == "PUT" and bullish_count >= self.sell_threshold:
                         exit_triggered = True
                         exit_reason = f"Indicator Reversal Signal ({bullish_count} Bullish)"
 
                 if exit_triggered:
                     self._exit_option_trade(opt_price, current_price, timestamp, exit_reason)
                     continue
+
+                # ── Resolve effective exit strategy ─────────────────────────
+                # sell_mode maps the UI dropdown to a strategy key.
+                # If sell_mode is set (non-indicator), it overrides exit_strategy.
+                eff_mode = self.sell_mode if self.sell_mode not in ('indicator', 'hybrid') else self.exit_strategy
+
+                # ── ATR-based Stop-Loss / Take-Profit ───────────────────────
+                current_atr = current_bar.get('ATR', None)
+                if current_atr is None or current_atr == 0:
+                    current_atr = current_price * 0.01  # 1% fallback
+
+                if not exit_triggered and eff_mode in ['sltp', 'hybrid']:
+                    atr_sl = self.position['entry_price'] - self.atr_stop_multiplier * current_atr
+                    atr_tp = self.position['entry_price'] + self.atr_take_profit_multiplier * current_atr
+                    if opt_type == 'CALL':
+                        if current_price <= atr_sl:
+                            exit_triggered = True
+                            exit_reason = f"ATR Stop Loss Hit (Underlying {current_price:.2f} <= SL {atr_sl:.2f})"
+                        elif current_price >= atr_tp:
+                            exit_triggered = True
+                            exit_reason = f"ATR Take Profit Hit (Underlying {current_price:.2f} >= TP {atr_tp:.2f})"
+                    else:  # PUT profits when underlying falls
+                        if current_price >= atr_tp:
+                            exit_triggered = True
+                            exit_reason = f"ATR Stop Loss Hit (Underlying {current_price:.2f} >= SL {atr_tp:.2f})"
+                        elif current_price <= atr_sl:
+                            exit_triggered = True
+                            exit_reason = f"ATR Take Profit Hit (Underlying {current_price:.2f} <= TP {atr_sl:.2f})"
+
+                # ── Percentage Stop-Loss / Take-Profit on Premium ───────────
+                if not exit_triggered and eff_mode in ['percentage', 'hybrid_pct', 'premium_pct', 'hybrid']:
+                    pct_sl = self.regular_stop_loss_pct
+                    pct_tp = self.regular_take_profit_pct
+                    trail_pct = self.regular_trailing_pct
+                    entry_prem = self.position['entry_premium']
+                    # Track trailing high-water mark
+                    if 'trail_high' not in self.position:
+                        self.position['trail_high'] = opt_price
+                    else:
+                        self.position['trail_high'] = max(self.position['trail_high'], opt_price)
+                    trail_sl = self.position['trail_high'] * (1 - trail_pct)
+                    if opt_price <= entry_prem * (1 - pct_sl):
+                        exit_triggered = True
+                        exit_reason = f"Premium Stop Loss Hit (-{pct_sl*100:.0f}%)"
+                    elif opt_price >= entry_prem * (1 + pct_tp):
+                        exit_triggered = True
+                        exit_reason = f"Premium Take Profit Hit (+{pct_tp*100:.0f}%)"
+                    elif trail_pct > 0 and opt_price < trail_sl and self.position['trail_high'] > entry_prem:
+                        exit_triggered = True
+                        exit_reason = f"Trailing Stop Hit (Premium fell {trail_pct*100:.0f}% from high)"
 
             # Evaluate entries if no position is held
             else:
@@ -422,6 +501,19 @@ class OptionsBacktester:
                                 action = "HOLD"
                             elif action == "SELL" and dist_pct > self.smart_reentry_vwap_put_max_dist_pct:
                                 action = "HOLD"
+
+                # Handle custom price entry mode: override indicator signals
+                if self.buy_mode == 'custom_price':
+                    if self.custom_buy_price > 0 and current_price <= self.custom_buy_price:
+                        if self.options_type in ["both", "calls_only"]:
+                            self._enter_option_trade(
+                                option_type="CALL",
+                                underlying_price=current_price,
+                                vol=current_vol,
+                                timestamp=timestamp,
+                                reason=f"Custom Price Entry: Underlying {current_price:.2f} <= {self.custom_buy_price:.2f}"
+                            )
+                    continue  # Skip indicator-based logic when in custom_price mode
 
                 if action == "BUY" and self.options_type in ["both", "calls_only"]:
                     # Enter CALL
@@ -479,13 +571,33 @@ class OptionsBacktester:
         if entry_premium <= 0:
             return
 
-        # Sizing rules: max size within self.trade_amount, but don't exceed cash
         contract_multiplier = 100.0
         single_contract_cost = entry_premium * contract_multiplier
 
-        # Check budget
-        budget = min(self.trade_amount, self.equity)
-        qty = math.floor(budget / single_contract_cost)
+        # Risk-based sizing
+        risk_amount = self.equity * self.risk_per_trade
+        
+        # Estimate risk distance per contract
+        if self.sell_mode in ['percentage', 'hybrid_pct']:
+            risk_per_contract = single_contract_cost * self.regular_stop_loss_pct
+        else:
+            # Conservative fallback: assume total loss of premium
+            risk_per_contract = single_contract_cost
+            
+        if risk_per_contract <= 0:
+            risk_per_contract = single_contract_cost
+
+        risk_based_qty = risk_amount / risk_per_contract
+        
+        # Max notional cap (Max Position Size %)
+        max_notional = self.equity * self.max_pos_pct
+        notional_qty = max_notional / single_contract_cost
+        
+        # Trade amount budget cap (Allocation limit)
+        budget_qty = self.trade_amount / single_contract_cost
+        
+        # Final quantity is the minimum of all constraints (and can't exceed cash on hand)
+        qty = math.floor(min(risk_based_qty, notional_qty, budget_qty, self.equity / single_contract_cost))
 
         if qty <= 0:
             # Insufficient allocation budget for even one contract

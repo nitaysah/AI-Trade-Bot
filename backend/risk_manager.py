@@ -54,19 +54,21 @@ class RiskManager:
     # Dynamic fallback properties matching user configs
     @property
     def risk_per_trade(self):
-        return getattr(get_user_config(), 'RISK_PER_TRADE', 0.02)
+        return getattr(get_user_config(), 'RISK_PER_TRADE', None)
 
     @property
     def max_daily_drawdown(self):
-        return getattr(get_user_config(), 'MAX_DAILY_DRAWDOWN', 0.05)
+        return getattr(get_user_config(), 'MAX_DAILY_DRAWDOWN', None)
 
     @property
     def max_position_pct(self):
-        return getattr(get_user_config(), 'MAX_POSITION_PCT', 0.25)
+        return getattr(get_user_config(), 'MAX_POSITION_PCT', None)
 
     @property
-    def atr_stop_multiplier(self):
-        return getattr(get_user_config(), 'ATR_STOP_MULTIPLIER', 2.0)
+    def global_hard_stop(self):
+        return getattr(get_user_config(), 'GLOBAL_HARD_STOP_PCT', None)
+
+
 
     def set_daily_equity(self, equity: float):
         """Called at market open to set the baseline for drawdown tracking."""
@@ -82,21 +84,23 @@ class RiskManager:
         if self.daily_starting_equity is None or self.daily_starting_equity <= 0:
             return True
 
+        t_settings = getattr(get_user_config(), 'TICKER_SETTINGS', {}).get(ticker.upper(), {}) if ticker else {}
+        if not t_settings.get('enable_risk_management', True):
+            return True
+
         drawdown = (self.daily_starting_equity - current_equity) / self.daily_starting_equity
 
         # 1. Check Global Drawdown
-        if drawdown >= self.max_daily_drawdown:
+        if self.max_daily_drawdown is not None and drawdown >= self.max_daily_drawdown:
             self.trading_halted = True
             self.halt_reason = f"Global daily drawdown {drawdown:.1%} >= {self.max_daily_drawdown:.1%} limit"
             return False
 
-        # 2. Check Ticker-Specific Drawdown Override (Stricter limits)
-        if ticker:
-            t_settings = getattr(get_user_config(), 'TICKER_SETTINGS', {}).get(ticker.upper(), {})
-            ticker_max_dd = t_settings.get('max_daily_drawdown')
-            if ticker_max_dd is not None and drawdown >= ticker_max_dd:
-                self.halt_reason = f"{ticker} specific drawdown limit {drawdown:.1%} >= {ticker_max_dd:.1%} reached"
-                return False
+        # 2. Check Global Hard Stop (Loss to Equity)
+        if self.global_hard_stop is not None and drawdown >= self.global_hard_stop:
+            self.trading_halted = True
+            self.halt_reason = f"Global Hard Stop {drawdown:.1%} >= {self.global_hard_stop:.1%} limit"
+            return False
 
         return True
 
@@ -106,7 +110,7 @@ class RiskManager:
         Includes a buying power check if available_cash is provided.
         """
         capital_basis = self.daily_starting_equity if (self.daily_starting_equity and self.daily_starting_equity > 0) else account_equity
-        if atr <= 0 or entry_price <= 0 or capital_basis <= 0:
+        if entry_price <= 0 or capital_basis <= 0:
             return {
                 'shares': 0,
                 'notional': 0.0,
@@ -116,6 +120,10 @@ class RiskManager:
                 'stop_distance': 0.0,
                 'error': 'Invalid inputs for position sizing'
             }
+            
+        if atr <= 0:
+            # Fallback to a tiny artificial ATR to allow Percentage/Fixed Amount sizing to proceed
+            atr = entry_price * 0.01
 
         # 0. Check for Per-Ticker Settings Override
         t_settings = getattr(get_user_config(), 'TICKER_SETTINGS', {}).get(ticker.upper(), {}) if ticker else {}
@@ -127,25 +135,38 @@ class RiskManager:
             custom_amount = getattr(get_user_config(), 'TICKER_AMOUNTS', {}).get(ticker.upper())
 
         # Determine Risk Parameters (Ticker-specific or Fallback to Instance Globals)
+        enable_risk = t_settings.get('enable_risk_management', True)
         risk_pct = t_settings.get('risk_per_trade', self.risk_per_trade)
-        stop_mult = t_settings.get('atr_stop_multiplier', self.atr_stop_multiplier)
+        stop_mult = t_settings.get('atr_stop_multiplier', 2.0)
 
         # Determine Sell Mode for cleaner logging
         sell_mode = t_settings.get('sell_mode', 'indicator')
 
+        # Determine Stop Distance based on Exit Strategy (sell_mode)
+        if sell_mode in ['percentage', 'hybrid_pct']:
+            sl_pct = float(t_settings.get('regular_stop_loss_pct', 0.05))
+            stop_distance = entry_price * sl_pct
+        else:
+            # Default to ATR for sltp, hybrid, or indicator modes
+            stop_distance = atr * stop_mult
+
         if custom_amount is not None:
             # Fixed Amount Sizing
             notional = float(custom_amount)
-            stop_distance = atr * stop_mult
             
             # Context-aware logging
             log_msg = f"[risk] {ticker}: Allocating ${notional:.2f}"
             if sell_mode in ['sltp', 'hybrid']:
                 log_msg += f" (SL Mult: {stop_mult})"
+            elif sell_mode in ['percentage', 'hybrid_pct']:
+                log_msg += f" (SL PCT: {sl_pct*100:.1f}%)"
             print(log_msg)
+        elif not enable_risk:
+            # Risk Management Disabled: Allocate entire capital basis without % risk logic
+            notional = float(capital_basis)
+            print(f"[risk] Risk Management Disabled for {ticker}. Allocating full basis: ${notional:.2f}")
         else:
             # Risk-based position sizing based on initial capital allocated
-            stop_distance = atr * stop_mult
             risk_amount_target = capital_basis * risk_pct
             shares = risk_amount_target / stop_distance if stop_distance > 0 else 0
             notional = shares * entry_price
@@ -153,10 +174,12 @@ class RiskManager:
             print(f"[risk] Using % risk sizing for {ticker}: Risking ${risk_amount_target:.2f} ({risk_pct*100}%)")
             
             # Cap position size to max portfolio concentration
-            max_notional = capital_basis * self.max_position_pct
-            if notional > max_notional:
-                notional = max_notional
-                print(f"[risk] Capping trade size to max concentration: ${notional:.2f}")
+            bot_max_pos = t_settings.get('max_position_pct', self.max_position_pct)
+            if bot_max_pos is not None:
+                max_notional = capital_basis * bot_max_pos
+                if notional > max_notional:
+                    notional = max_notional
+                    print(f"[risk] Capping trade size to max concentration: ${notional:.2f}")
         
         # 2. Buying Power Check (CRITICAL FIX)
         if available_cash is not None:
@@ -169,15 +192,28 @@ class RiskManager:
         shares = notional / entry_price
         risk_amount = shares * stop_distance
 
-        # Calculate stop and target prices
-        tp_mult = t_settings.get('take_profit_multiplier', getattr(get_user_config(), 'ATR_TAKE_PROFIT_MULTIPLIER', 4.0))
+        # Calculate stop and target prices ONLY for AI Autopilot fallback usage
+        precision = 6 if entry_price < 1.0 else 2
+        stop_loss = None
+        take_profit = None
         
-        if side == 'long':
-            stop_loss = round(entry_price - stop_distance, 2)
-            take_profit = round(entry_price + (atr * tp_mult), 2)
-        else:
-            stop_loss = round(entry_price + stop_distance, 2)
-            take_profit = round(entry_price - (atr * tp_mult), 2)
+        if t_settings.get('ai_autopilot', False):
+            if sell_mode in ['percentage', 'hybrid_pct']:
+                tp_pct = float(t_settings.get('regular_take_profit_pct', 0.10))
+                if side == 'long':
+                    stop_loss = round(entry_price * (1 - sl_pct), precision)
+                    take_profit = round(entry_price * (1 + tp_pct), precision)
+                else:
+                    stop_loss = round(entry_price * (1 + sl_pct), precision)
+                    take_profit = round(entry_price * (1 - tp_pct), precision)
+            else:
+                tp_mult = t_settings.get('take_profit_multiplier', 4.0)
+                if side == 'long':
+                    stop_loss = round(entry_price - stop_distance, precision)
+                    take_profit = round(entry_price + (atr * tp_mult), precision)
+                else:
+                    stop_loss = round(entry_price + stop_distance, precision)
+                    take_profit = round(entry_price - (atr * tp_mult), precision)
 
         return {
             'shares': round(shares, 6),
@@ -186,42 +222,9 @@ class RiskManager:
             'take_profit': take_profit,
             'risk_amount': round(risk_amount, 2),
             'stop_distance': round(stop_distance, 2),
-            'risk_reward_ratio': round(tp_mult / stop_mult, 2),
         }
 
-    def calculate_trailing_stop(self, current_price: float, atr: float, current_stop: float, side: str = 'long', ticker: str = None) -> float:
-        """
-        Calculates the trailing stop. Only moves in the favorable direction.
 
-        For longs: new_stop = max(current_stop, price - ATR * multiplier)
-        For shorts: new_stop = min(current_stop, price + ATR * multiplier)
-        """
-        t_settings = getattr(get_user_config(), 'TICKER_SETTINGS', {}).get(ticker.upper(), {}) if ticker else {}
-        trail_mult = t_settings.get('atr_trail_multiplier', getattr(get_user_config(), 'ATR_TRAIL_MULTIPLIER', 3.0))
-        trail_distance = atr * trail_mult
-
-        if side == 'long':
-            new_stop = current_price - trail_distance
-            return round(max(current_stop, new_stop), 2)
-        else:
-            new_stop = current_price + trail_distance
-            return round(min(current_stop, new_stop), 2)
-
-    def should_exit(self, current_price: float, stop_loss: float, take_profit: float, side: str = 'long') -> dict:
-        """
-        Checks if a position should be exited based on stop-loss or take-profit.
-        """
-        if side == 'long':
-            if current_price <= stop_loss:
-                return {'exit': True, 'reason': f'Stop-loss hit at ${stop_loss:.2f}', 'type': 'STOP_LOSS'}
-            if current_price >= take_profit:
-                return {'exit': True, 'reason': f'Take-profit hit at ${take_profit:.2f}', 'type': 'TAKE_PROFIT'}
-        elif side == 'short':
-            if current_price >= stop_loss:
-                return {'exit': True, 'reason': f'Stop-loss hit at ${stop_loss:.2f}', 'type': 'STOP_LOSS'}
-            if current_price <= take_profit:
-                return {'exit': True, 'reason': f'Take-profit hit at ${take_profit:.2f}', 'type': 'TAKE_PROFIT'}
-        return {'exit': False, 'reason': '', 'type': ''}
 
     def get_risk_status(self, account_equity: float, ticker: str = None) -> dict:
         """Returns current risk status for the dashboard, factoring in ticker overrides."""
@@ -233,16 +236,13 @@ class RiskManager:
         
         max_dd = t_settings.get('max_daily_drawdown', self.max_daily_drawdown)
         risk_pct = t_settings.get('risk_per_trade', self.risk_per_trade)
-        stop_mult = t_settings.get('atr_stop_multiplier', self.atr_stop_multiplier)
-        trail_mult = t_settings.get('atr_trail_multiplier', get_user_config().ATR_TRAIL_MULTIPLIER)
+        max_pos = t_settings.get('max_position_pct', self.max_position_pct)
 
         return {
             'trading_halted': self.trading_halted,
             'halt_reason': self.halt_reason,
             'daily_drawdown_pct': round(drawdown_pct * 100, 2),
-            'max_drawdown_limit': max_dd * 100,
-            'risk_per_trade': risk_pct * 100,
-            'atr_stop_multiplier': stop_mult,
-            'atr_trail_multiplier': trail_mult,
-            'max_position_pct': self.max_position_pct * 100,
+            'max_drawdown_limit': (max_dd * 100) if max_dd is not None else 'Off',
+            'risk_per_trade': (risk_pct * 100) if risk_pct is not None else 'Off',
+            'max_position_pct': (max_pos * 100) if max_pos is not None else 'Off',
         }

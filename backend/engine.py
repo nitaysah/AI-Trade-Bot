@@ -314,10 +314,11 @@ class UserEngine:
                             continue
 
                         # --- Bot Loss Limit (Drawdown Limit on Allocated Bot Capital) ---
+                        enable_risk = t_settings.get('enable_risk_management', True)
                         allocated_capital = float(t_settings.get('amount', 0.0))
                         loss_limit_pct = float(t_settings.get('max_daily_drawdown', 0.0))
                         
-                        if is_active and allocated_capital > 0 and loss_limit_pct > 0:
+                        if is_active and enable_risk and allocated_capital > 0 and loss_limit_pct > 0:
                             realized_pl = float(t_settings.get('realized_pl', 0.0))
                             
                             # Find if there is an active position for this ticker
@@ -736,6 +737,12 @@ class UserEngine:
                                         entry_price = float(pos_info.get('avg_price', result['price_raw']))
                                         current_price = result['price_raw']
                                         
+                                        # Read exit strategy parameters
+                                        sl_pct    = t_settings.get('regular_stop_loss_pct', 0.05)
+                                        tp_pct    = t_settings.get('regular_take_profit_pct', 0.10)
+                                        trail_pct = t_settings.get('regular_trailing_pct', 0.03)
+                                        precision = 6 if entry_price < 1.0 else 2  # Crypto precision fix
+                                        
                                         if t_settings.get('ai_autopilot', False):
                                             stop_loss = result['position_sizing'].get('stop_loss') or self.last_trailing_stops.get(ticker)
                                             take_profit = result['position_sizing'].get('take_profit')
@@ -755,39 +762,112 @@ class UserEngine:
                                                         result['action'] = 'SELL'
                                                         result['reason'] = f'AI Take Profit Hit (${current_price:.2f} >= ${take_profit:.2f})'
                                         else:
-                                            stop_mult = t_settings.get('atr_stop_multiplier', self.config.get('ATR_STOP_MULTIPLIER', 2.0))
-                                            trail_mult = t_settings.get('atr_trail_multiplier', self.config.get('ATR_TRAIL_MULTIPLIER', 3.0))
-                                            tp_mult = t_settings.get('take_profit_multiplier', self.config.get('ATR_TAKE_PROFIT_MULTIPLIER', 4.0))
-                                            
-                                            base_stop_loss = entry_price - (result['atr'] * stop_mult)
-                                            take_profit = entry_price + (result['atr'] * tp_mult)
-                                            
-                                            if ticker not in self.last_trailing_stops:
-                                                self.last_trailing_stops[ticker] = base_stop_loss
-                                            
-                                            trail_distance = result['atr'] * trail_mult
-                                            candidate_stop = current_price - trail_distance
-                                            if candidate_stop > self.last_trailing_stops[ticker]:
-                                                self.last_trailing_stops[ticker] = round(candidate_stop, 2)
-                                            
-                                            stop_loss = max(base_stop_loss, self.last_trailing_stops[ticker])
-                                            
-                                            if sell_mode == 'sltp' and result['action'] == 'SELL':
-                                                result['action'] = 'HOLD'
-                                                result['reason'] = 'Sell Signal Ignored (Fixed SL/TP Mode)'
+                                            if sell_mode in ['percentage', 'hybrid_pct']:
+                                                # ── NEW: Percentage-based exit ──────────────────────────────
+                                                base_stop = round(entry_price * (1 - sl_pct), precision)
+                                                take_profit = round(entry_price * (1 + tp_pct), precision)
                                                 
-                                            if sell_mode in ['sltp', 'hybrid']:
+                                                if ticker not in self.last_trailing_stops:
+                                                    self.last_trailing_stops[ticker] = base_stop
+                                                
+                                                if t_settings.get('enable_pct_trail', True):
+                                                    # Ratchet trailing stop upward (only ever tightens, never loosens)
+                                                    candidate = round(current_price * (1 - trail_pct), precision)
+                                                    if candidate > self.last_trailing_stops[ticker]:
+                                                        self.last_trailing_stops[ticker] = candidate
+                                                
+                                                stop_loss = self.last_trailing_stops[ticker]
+                                                
+                                                # In percentage mode: silence indicator SELL signals, rely on % levels
+                                                if sell_mode == 'percentage' and result['action'] == 'SELL':
+                                                    result['action'] = 'HOLD'
+                                                    result['reason'] = 'Sell Signal Ignored (Percentage SL/TP Mode)'
+                                                
                                                 if current_price <= stop_loss:
                                                     result['action'] = 'SELL'
-                                                    result['reason'] = f'Stop Loss Hit (${current_price:.2f} <= ${stop_loss:.2f})'
+                                                    result['reason'] = f'Percentage Stop Loss Hit (${current_price:.{precision}f} <= ${stop_loss:.{precision}f}, Trail {trail_pct*100:.1f}%)'
                                                 elif current_price >= take_profit:
                                                     result['action'] = 'SELL'
-                                                    result['reason'] = f'Take Profit Hit (${current_price:.2f} >= ${take_profit:.2f})'
+                                                    result['reason'] = f'Percentage Take Profit Hit (${current_price:.{precision}f} >= ${take_profit:.{precision}f}, TP {tp_pct*100:.1f}%)'
+                                        
+                                            elif sell_mode in ['pivot_points', 'hybrid_pivot']:
+                                                # ── NEW: Pivot Point exit ───────────────────────────────────
+                                                try:
+                                                    import yfinance as yf
+                                                    hist = await asyncio.to_thread(
+                                                        lambda: yf.download(ticker, period="2d", interval="1d", progress=False)
+                                                    )
+                                                    if len(hist) >= 2:
+                                                        prev_h = float(hist.iloc[-2]['High'])
+                                                        prev_l = float(hist.iloc[-2]['Low'])
+                                                        prev_c = float(hist.iloc[-2]['Close'])
+                                                    else:
+                                                        prev_h = prev_l = prev_c = current_price
+                                                except Exception as piv_err:
+                                                    print(f"[engine-{self.uid}] Pivot fetch failed for {ticker}: {piv_err}")
+                                                    prev_h = prev_l = prev_c = current_price
+                                                
+                                                P  = (prev_h + prev_l + prev_c) / 3.0
+                                                R1 = round(2 * P - prev_l, precision)
+                                                R2 = round(P + (prev_h - prev_l), precision)
+                                                S1 = round(2 * P - prev_h, precision)
+                                                S2 = round(P - (prev_h - prev_l), precision)
+                                                
+                                                # In pivot mode: silence indicator SELL signals, rely on pivot levels
+                                                if sell_mode == 'pivot_points' and result['action'] == 'SELL':
+                                                    result['action'] = 'HOLD'
+                                                    result['reason'] = 'Sell Signal Ignored (Pivot Points Mode)'
+                                                
+                                                if current_price <= S1:
+                                                    result['action'] = 'SELL'
+                                                    result['reason'] = f'Pivot Stop Loss Hit (${current_price:.{precision}f} <= S1 ${S1:.{precision}f})'
+                                                elif current_price <= S2:
+                                                    result['action'] = 'SELL'
+                                                    result['reason'] = f'Pivot Stop Loss Hit (${current_price:.{precision}f} <= S2 ${S2:.{precision}f})'
+                                                elif current_price >= R1:
+                                                    result['action'] = 'SELL'
+                                                    result['reason'] = f'Pivot Take Profit Hit (${current_price:.{precision}f} >= R1 ${R1:.{precision}f})'
+                                                elif current_price >= R2:
+                                                    result['action'] = 'SELL'
+                                                    result['reason'] = f'Pivot Take Profit Hit (${current_price:.{precision}f} >= R2 ${R2:.{precision}f})'
+                                        
+                                            else:
+                                                # ── EXISTING: ATR-based logic (unchanged) ───────────────────
+                                                stop_mult = t_settings.get('atr_stop_multiplier', 2.0)
+                                                trail_mult = t_settings.get('atr_trail_multiplier', 3.0)
+                                                tp_mult = t_settings.get('take_profit_multiplier', 4.0)
+                                                
+                                                base_stop_loss = entry_price - (result['atr'] * stop_mult)
+                                                take_profit = entry_price + (result['atr'] * tp_mult)
+                                                
+                                                if ticker not in self.last_trailing_stops:
+                                                    self.last_trailing_stops[ticker] = base_stop_loss
+                                                
+                                                if t_settings.get('enable_atr_trail', True):
+                                                    trail_distance = result['atr'] * trail_mult
+                                                    candidate_stop = current_price - trail_distance
+                                                    if candidate_stop > self.last_trailing_stops[ticker]:
+                                                        self.last_trailing_stops[ticker] = round(candidate_stop, precision)
+                                                
+                                                stop_loss = max(base_stop_loss, self.last_trailing_stops[ticker])
+                                                
+                                                if sell_mode == 'sltp' and result['action'] == 'SELL':
+                                                    result['action'] = 'HOLD'
+                                                    result['reason'] = 'Sell Signal Ignored (Fixed SL/TP Mode)'
+                                                    
+                                                if sell_mode in ['sltp', 'hybrid']:
+                                                    if current_price <= stop_loss:
+                                                        result['action'] = 'SELL'
+                                                        result['reason'] = f'Stop Loss Hit (${current_price:.{precision}f} <= ${stop_loss:.{precision}f})'
+                                                    elif current_price >= take_profit:
+                                                        result['action'] = 'SELL'
+                                                        result['reason'] = f'Take Profit Hit (${current_price:.{precision}f} >= ${take_profit:.{precision}f})'
 
                                 # Buy Execution
                                 if result['action'] == 'BUY' and not is_market_closed_skip:
                                     if is_options_enabled:
-                                        max_pos = self.config.get('MAX_OPEN_POSITIONS', 5)
+                                        enable_risk = t_settings.get('enable_risk_management', True)
+                                        max_pos = getattr(self.config, 'MAX_OPEN_POSITIONS', 5) if enable_risk else 999999
                                         if portfolio_count >= max_pos and not has_this_pos:
                                             result['action'] = 'HOLD'
                                             result['reason'] = f"Max positions reached ({portfolio_count}/{max_pos})."
@@ -878,7 +958,8 @@ class UserEngine:
                                     else:
                                         # Standard Stock/Crypto Buy execution
                                         sizing = result['position_sizing']
-                                        max_pos = self.config.get('MAX_OPEN_POSITIONS', 5)
+                                        enable_risk = t_settings.get('enable_risk_management', True)
+                                        max_pos = getattr(self.config, 'MAX_OPEN_POSITIONS', 5) if enable_risk else 999999
                                         if portfolio_count >= max_pos and not has_this_pos:
                                             result['action'] = 'HOLD'
                                             result['reason'] = f"Max positions reached ({portfolio_count}/{max_pos})."
@@ -899,6 +980,8 @@ class UserEngine:
                                                 trade_executed = True
                                                 portfolio_count += 1
                                                 
+                                                # Reset trailing stop so new strategy starts fresh from entry price
+                                                self.last_trailing_stops.pop(ticker, None)                                                
                                                 order_qty = order_result.get('qty')
                                                 if (order_qty is None or float(order_qty) == 0) and result['price_raw'] > 0:
                                                     order_qty = sizing['notional'] / result['price_raw']
@@ -952,7 +1035,8 @@ class UserEngine:
                                                 result['reason'] = f"Option sell failed: {order_result.get('error')}"
                                         else:
                                             # No option position, bearish signal -> BUY PUT option!
-                                            max_pos = self.config.get('MAX_OPEN_POSITIONS', 5)
+                                            enable_risk = t_settings.get('enable_risk_management', True)
+                                            max_pos = getattr(self.config, 'MAX_OPEN_POSITIONS', 5) if enable_risk else 999999
                                             if portfolio_count >= max_pos:
                                                 result['action'] = 'HOLD'
                                                 result['reason'] = f"Max positions reached ({portfolio_count}/{max_pos})."

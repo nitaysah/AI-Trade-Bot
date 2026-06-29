@@ -4,12 +4,12 @@
 // ═══════════════════════════════════════════════════
 
 // 6. Production API Configuration (Auto-switch between Local and Cloud)
-const CLOUD_URL = 'https://207-211-184-22.sslip.io';
-const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+var CLOUD_URL = 'https://207-211-184-22.sslip.io';
+var API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
     ? 'http://localhost:8000'
     : CLOUD_URL;
-const REFRESH_INTERVAL = 60000; // 60 seconds (1 minute)
-const LAST_VIEWED_TICKER_KEY = 'lastViewedTicker';
+var REFRESH_INTERVAL = 60000; // 60 seconds (1 minute)
+var LAST_VIEWED_TICKER_KEY = 'lastViewedTicker';
 
 function normalizeTicker(ticker) {
     const normalized = (ticker || '').toString().trim().toUpperCase();
@@ -1508,7 +1508,7 @@ document.addEventListener('click', e => {
 
 // Indicator Config Mapping
 
-const INDICATOR_TOOLTIPS = {
+var INDICATOR_TOOLTIPS = {
     "RSI": "Relative Strength Index (RSI) is a momentum oscillator. Purpose: Identifies overbought (>70) or oversold (<30) conditions.",
     "MACD": "Moving Average Convergence Divergence (MACD) shows the relationship between two moving averages. Purpose: Detects changes in trend momentum.",
     "EMA Cross": "Exponential Moving Average (EMA) places greater weight on recent prices. Purpose: Reacts faster to price changes to catch trends early.",
@@ -1522,7 +1522,7 @@ const INDICATOR_TOOLTIPS = {
     "Strategy Confidence": "Strategy Confidence combines multiple indicator signals into a single probability score. Purpose: Measures the overall conviction of a bullish or bearish trend."
 };
 
-const INDICATOR_CONFIG_MAP = {
+var INDICATOR_CONFIG_MAP = {
     'RSI': ['RSI_PERIOD', 'RSI_OVERBOUGHT', 'RSI_OVERSOLD'],
     'MACD': ['MACD_FAST', 'MACD_SLOW', 'MACD_SIGNAL'],
     'EMA Cross': ['EMA_FAST', 'EMA_SLOW'],
@@ -1540,7 +1540,7 @@ const INDICATOR_CONFIG_MAP = {
 };
 
 // Industry Defaults for indicators based on config.py
-const INDICATOR_DEFAULTS = {
+var INDICATOR_DEFAULTS = {
     'BOTBULLS1_WT_CHANNEL': 10,
     'BOTBULLS1_WT_AVERAGE': 21,
     'BOTBULLS1_MFI_CONFIRM': 30,
@@ -1673,7 +1673,7 @@ async function loadOllamaModels() {
     }
 }
 
-const AI_INDICATOR_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+var AI_INDICATOR_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 let _aiIndicatorFetchId = 0; // prevents stale response rendering
 
 function getAICache(key) {
@@ -2555,7 +2555,7 @@ let latestPendingOrders = [];
 let currentScanPage = 1;
 let currentTradePage = 1;
 let currentPendingPage = 1;
-const LOG_PAGE_SIZE = 20;
+var LOG_PAGE_SIZE = 20;
 
 function setLogTab(tab) {
     currentLogTab = tab;

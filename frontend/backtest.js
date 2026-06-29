@@ -1,4 +1,17 @@
 
+function getIndicatorOverrides() {
+    try {
+        const prefs = localStorage.getItem('globalIndicatorPrefs');
+        if (prefs) {
+            return JSON.parse(prefs);
+        }
+    } catch (e) {
+        console.error('Failed to parse indicator prefs:', e);
+    }
+    return {};
+}
+
+
 function isCrypto(ticker) {
     if (!ticker) return false;
     const t = ticker.toUpperCase();
@@ -21,8 +34,8 @@ function formatAssetPrice(val, isCrypto) {
 // BACKTEST CENTER LOGIC v2.0
 // ──────────────────────────────────────────────
 
-const CLOUD_URL = 'https://207-211-184-22.sslip.io';
-const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
+var CLOUD_URL = 'https://207-211-184-22.sslip.io';
+var API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
     ? 'http://localhost:8000' 
     : CLOUD_URL;
 let allBtTrades = [];
@@ -30,7 +43,6 @@ let btPage = 1;
 const btPageSize = 10;
 window.lastBacktestData = null;
 window.lastBacktestRun = null;
-let _pendingDeployMode = 'override';
 
 // ── Backtest Chart State ─────────────────────────────────────────────────
 let btChart = null;            // LightweightCharts chart instance
@@ -111,173 +123,36 @@ async function loadBacktestOllamaModels() {
 // 1. Initialization
 document.addEventListener('DOMContentLoaded', () => {
     // Attach listeners to indicator checkboxes for dynamic slider
-    document.querySelectorAll('.bt-indicator-check').forEach(cb => {
+    document.querySelectorAll('.strategy-indicator-check').forEach(cb => {
         cb.addEventListener('change', syncBacktestSliderRange);
     });
 
     // Sync timeframe select change to days input value dynamically
-    const btTfSelect = document.getElementById('btTimeframe');
     const btDaysInput = document.getElementById('btDays');
-    if (btTfSelect && btDaysInput) {
-        const updateDaysVal = () => {
-            const tf = btTfSelect.value;
+    const btTfRegular = document.getElementById('strategyTimeframe_regular');
+    const btTfOptions = document.getElementById('strategyTimeframe_options');
+    if (btDaysInput) {
+        const updateDaysVal = (e) => {
+            const tf = e ? e.target.value : (currentBtMode === 'regular' ? btTfRegular?.value : btTfOptions?.value);
+            if (!tf) return;
             if (tf === '1Min') btDaysInput.value = 7;
-            else if (['5Min', '15Min', '30Min'].includes(tf)) btDaysInput.value = 60;
+            else if (['5Min', '10Min', '15Min', '30Min'].includes(tf)) btDaysInput.value = 60;
             else if (tf === '1Hour') btDaysInput.value = 365;
             else if (tf === '4Hour') btDaysInput.value = 730;
             else if (tf === '1Day') btDaysInput.value = 1825;
         };
-        btTfSelect.addEventListener('change', updateDaysVal);
-        // Trigger initially so it matches the default selected dropdown value
+        btTfRegular?.addEventListener('change', updateDaysVal);
+        btTfOptions?.addEventListener('change', updateDaysVal);
         updateDaysVal();
     }
 
-    // Setup AI Autopilot Toggle handlers
-    window.handleBacktestAutopilotToggle = function (enabled) {
-        const section = document.getElementById('btAiAutopilotSection');
-        const exitCard = document.getElementById('btExitStrategyCard');
-        const thresholds = document.getElementById('btThresholdsCard');
-        const optionsCard = document.getElementById('btOptionsCard');
-        
-        if (enabled) {
-            section?.classList.remove('hidden');
-            if (exitCard) {
-                exitCard.style.opacity = '0.5';
-                exitCard.style.pointerEvents = 'none';
-            }
-            document.querySelectorAll('.indicator-card').forEach(card => {
-                card.style.opacity = '0.5';
-                card.style.pointerEvents = 'none';
-            });
-            if (thresholds) {
-                thresholds.style.opacity = '0.5';
-                thresholds.style.pointerEvents = 'none';
-            }
-            if (optionsCard) {
-                optionsCard.style.opacity = '0.5';
-                optionsCard.style.pointerEvents = 'none';
-            }
-        } else {
-            section?.classList.add('hidden');
-            const isOptionsOn = document.getElementById('btOptionsToggle')?.checked || false;
-            if (!isOptionsOn) {
-                if (exitCard) {
-                    exitCard.style.opacity = '1';
-                    exitCard.style.pointerEvents = 'auto';
-                }
-            }
-            document.querySelectorAll('.indicator-card').forEach(card => {
-                card.style.opacity = '1';
-                card.style.pointerEvents = 'auto';
-            });
-            if (thresholds) {
-                thresholds.style.opacity = '1';
-                thresholds.style.pointerEvents = 'auto';
-            }
-            if (optionsCard) {
-                optionsCard.style.opacity = '1';
-                optionsCard.style.pointerEvents = 'auto';
-            }
-        }
-    };
-
-    // Setup Options Trading Toggle handlers
-    
-    window.handleOptimizeToggle = function(enabled) {
-        const section = document.getElementById('btOptimizeSection');
-        const indicatorCards = document.querySelectorAll('.indicator-card');
-        const thresholdsCard = document.getElementById('btThresholdsCard');
-        if (enabled) {
-            section?.classList.remove('hidden');
-            // Dim thresholds since optimizer takes over thresholds and exit multipliers
-            if (thresholdsCard) { thresholdsCard.style.opacity = '0.5'; thresholdsCard.style.pointerEvents = 'none'; }
-        } else {
-            section?.classList.add('hidden');
-            if (thresholdsCard) { thresholdsCard.style.opacity = '1'; thresholdsCard.style.pointerEvents = 'auto'; }
-        }
-    };
-
-    window.handleBacktestOptionsToggle = function (enabled) {
-        const section = document.getElementById('btOptionsSection');
-        const exitCard = document.getElementById('btExitStrategyCard');
-        const riskCard = document.getElementById('btRiskCard');
-        const autopilotCard = document.getElementById('btAiAutopilotCard');
-        const extHoursSelect = document.getElementById('btExtHours');
-        
-        if (enabled) {
-            section?.classList.remove('hidden');
-            if (exitCard) {
-                exitCard.style.opacity = '0.5';
-                exitCard.style.pointerEvents = 'none';
-            }
-            if (riskCard) {
-                riskCard.style.opacity = '0.5';
-                riskCard.style.pointerEvents = 'none';
-            }
-            if (autopilotCard) {
-                autopilotCard.style.opacity = '0.5';
-                autopilotCard.style.pointerEvents = 'none';
-            }
-            if (extHoursSelect) {
-                extHoursSelect.value = 'false';
-                extHoursSelect.disabled = true;
-                extHoursSelect.style.opacity = '0.5';
-            }
-        } else {
-            section?.classList.add('hidden');
-            const isAiOn = document.getElementById('btAiAutopilotToggle')?.checked || false;
-            if (!isAiOn) {
-                if (exitCard) {
-                    exitCard.style.opacity = '1';
-                    exitCard.style.pointerEvents = 'auto';
-                }
-                if (riskCard) {
-                    riskCard.style.opacity = '1';
-                    riskCard.style.pointerEvents = 'auto';
-                }
-            }
-            if (autopilotCard) {
-                autopilotCard.style.opacity = '1';
-                autopilotCard.style.pointerEvents = 'auto';
-            }
-            if (extHoursSelect) {
-                extHoursSelect.disabled = false;
-                extHoursSelect.style.opacity = '1';
-            }
-        }
-    };
-
-    window.updateBacktestSmartReentryFields = function () {
-        const reentryEnabled = document.getElementById('btOptionsSmartReentry')?.checked || false;
-        const fieldsDiv = document.getElementById('btSmartReentryFields');
-        if (fieldsDiv) {
-            if (reentryEnabled) {
-                fieldsDiv.classList.remove('hidden');
-                const type = document.getElementById('btOptionsSmartReentryType')?.value || 'RSI';
-                if (type === 'RSI') {
-                    document.getElementById('btOptionsRsiCallContainer')?.classList.remove('hidden');
-                    document.getElementById('btOptionsRsiPutContainer')?.classList.remove('hidden');
-                    document.getElementById('btOptionsVwapCallContainer')?.classList.add('hidden');
-                    document.getElementById('btOptionsVwapPutContainer')?.classList.add('hidden');
-                } else {
-                    document.getElementById('btOptionsRsiCallContainer')?.classList.add('hidden');
-                    document.getElementById('btOptionsRsiPutContainer')?.classList.add('hidden');
-                    document.getElementById('btOptionsVwapCallContainer')?.classList.remove('hidden');
-                    document.getElementById('btOptionsVwapPutContainer')?.classList.remove('hidden');
-                }
-            } else {
-                fieldsDiv.classList.add('hidden');
-            }
-        }
-    };
-
     // Initialize/Sync strategy settings display on load
     setTimeout(() => {
-        const isAiOnLoad = document.getElementById('btAiAutopilotToggle')?.checked || false;
-        const isOptionsOnLoad = document.getElementById('btOptionsToggle')?.checked || false;
-        window.handleBacktestAutopilotToggle(isAiOnLoad);
-        window.handleBacktestOptionsToggle(isOptionsOnLoad);
-        window.updateBacktestSmartReentryFields();
+        window.toggleBtMode(currentBtMode);
+        window.updateBtRegularEntryFields?.();
+        window.updateBtRegularExitFields?.();
+        window.updateBtOptionsEntryFields?.();
+        window.updateBtOptionsExitFields?.();
     }, 50);
 
     // Setup Ticker Search Dropdown
@@ -433,14 +308,67 @@ window.logoutCommander = async () => {
     window.location.href = "index.html";
 };
 
+let currentBtMode = 'regular';
+
+window.toggleBtMode = function(mode) {
+    if (mode === 'automate_grid' || mode === 'automate_ai') return;
+    
+    currentBtMode = mode;
+    
+    // Update active UI cards
+    document.querySelectorAll('.bt-mode-card').forEach(card => {
+        card.classList.remove('border-indigo-500', 'bg-indigo-50', 'active');
+        card.classList.add('border-white/60', 'bg-white/40');
+        
+        // Reset the circle
+        const circle = card.querySelector('.w-4.h-4.rounded-full');
+        if (circle) {
+            circle.className = 'w-4 h-4 rounded-full border-2 border-indigo-200';
+            circle.innerHTML = '';
+        }
+    });
+    
+    const activeCard = document.getElementById(`btModeCard_${mode}`);
+    if (activeCard) {
+        activeCard.classList.remove('border-white/60', 'bg-white/40');
+        activeCard.classList.add('border-indigo-500', 'bg-indigo-50', 'active');
+        
+        // Set the active circle
+        const circle = activeCard.querySelector('.w-4.h-4.rounded-full');
+        if (circle) {
+            circle.className = 'w-4 h-4 rounded-full bg-indigo-500 shadow-inner flex items-center justify-center';
+            circle.innerHTML = '<div class="w-1.5 h-1.5 bg-white rounded-full"></div>';
+        }
+    }
+
+    // Toggle boxes
+    document.getElementById('btRegularTradingBox')?.classList.toggle('hidden', mode !== 'regular');
+    document.getElementById('btOptionsTradingBox')?.classList.toggle('hidden', mode !== 'options');
+    
+    // Enforce regular hours for options trading
+    const extHoursSelect = document.getElementById('btExtHours');
+    if (extHoursSelect) {
+        if (mode === 'options') {
+            extHoursSelect.value = 'false';
+            extHoursSelect.disabled = true;
+            extHoursSelect.classList.add('opacity-50', 'cursor-not-allowed');
+        } else {
+            extHoursSelect.disabled = false;
+            extHoursSelect.classList.remove('opacity-50', 'cursor-not-allowed');
+        }
+    }
+}
+
 // 2. Strategy Execution
 async function runBacktest() {
     const ticker = document.getElementById('btTicker').value.toUpperCase();
-    const timeframe = document.getElementById('btTimeframe').value;
     const days = document.getElementById('btDays').value;
-    const capital = document.getElementById('btCapital').value;
-    const threshold = document.getElementById('btThreshold').value;
-    const sellThreshold = document.getElementById('btSellThreshold').value;
+    const timeframe = currentBtMode === 'regular'
+        ? document.getElementById('strategyTimeframe_regular').value
+        : document.getElementById('strategyTimeframe_options').value;
+    const capital = currentBtMode === 'regular'
+        ? document.getElementById('strategyCapital_regular').value
+        : document.getElementById('strategyOptionsTradeAmount').value;
 
     // Validate requested days based on timeframe limits (Yahoo Finance constraints)
     let maxDays = 1825;
@@ -462,30 +390,25 @@ async function runBacktest() {
     }
 
     const extHoursVal = document.getElementById('btExtHours') ? (document.getElementById('btExtHours').value === 'true') : true;
+    const closeBeforeExpiry = 0;
 
-    const aiAutopilot = document.getElementById('btAiAutopilotToggle')?.checked || false;
-    const aiInterval = parseInt(document.getElementById('btAiInterval')?.value || '10');
-    const aiModel = document.getElementById('btAiModel')?.value || 'llama-3.3-70b-versatile';
+    const optionsEnabled = (currentBtMode === 'options');
 
-    const enableCooldown = document.getElementById('btEnableCooldown')?.checked ?? true;
-    let cooldownVal = document.getElementById('btCooldownMinutes')?.value || '0';
+    const cooldownMode = optionsEnabled ? 'options' : 'regular';
+    const enableCooldown = document.getElementById(`strategyEnableCooldown_${cooldownMode}`)?.checked ?? true;
+    let cooldownVal = document.getElementById(`strategyCooldownMinutes_${cooldownMode}`)?.value || 'default';
     let cooldownMinutes = null;
     if (cooldownVal === 'custom') {
-        cooldownMinutes = parseInt(document.getElementById('btCooldownCustomMinutes')?.value || '60');
+        cooldownMinutes = parseInt(document.getElementById(`strategyCooldownCustomMinutes_${cooldownMode}`)?.value || '60');
     } else if (cooldownVal !== 'default') {
         cooldownMinutes = parseInt(cooldownVal);
     }
 
-    // Options properties
-    const optionsEnabled = document.getElementById('btOptionsToggle')?.checked || false;
-    const optimizeEnabled = document.getElementById('btOptimizeToggle')?.checked || false;
-    const oosSplit = parseFloat(document.getElementById('btOosSplit')?.value || '30');
-
-    // Collect checked indicators
-    const indicators = Array.from(document.querySelectorAll('.bt-indicator-check:checked'))
+    const selectedIndicatorClass = optionsEnabled ? '.bt-indicator-check-options' : '.bt-indicator-check-regular';
+    const indicators = Array.from(document.querySelectorAll(`${selectedIndicatorClass}:checked`))
         .map(cb => cb.value);
 
-    if (!optionsEnabled && !aiAutopilot && indicators.length === 0) {
+    if (!optionsEnabled && indicators.length === 0) {
         alert("Please select at least one indicator for the strategy matrix.");
         return;
     }
@@ -504,40 +427,36 @@ async function runBacktest() {
         let response;
 
         if (optionsEnabled) {
-            const tradeAmount = parseFloat(document.getElementById('btOptionsTradeAmount').value || '100');
-            const expiryDays = parseInt(document.getElementById('btOptionsExpiryDays').value || '7');
-            const strikeType = document.getElementById('btOptionsStrikeType').value;
-            const optionsType = document.getElementById('btOptionsType').value;
-            const exitStrategy = document.getElementById('btOptionsExitStrategy').value;
-            const stopLossPct = parseFloat(document.getElementById('btOptionsStopLossPct').value || '50') / 100.0;
-            const takeProfitPct = parseFloat(document.getElementById('btOptionsTakeProfitPct').value || '100') / 100.0;
-            const r = parseFloat(document.getElementById('btOptionsRiskFreeRate').value || '5.0') / 100.0;
-            const enableSignalReset = document.getElementById('btOptionsSignalReset').checked;
-            const enableSmartReentry = document.getElementById('btOptionsSmartReentry').checked;
-            const smartReentryType = document.getElementById('btOptionsSmartReentryType').value;
-            const smartReentryRsiCallMax = parseInt(document.getElementById('btOptionsRsiCallMax').value || '70');
-            const smartReentryRsiPutMin = parseInt(document.getElementById('btOptionsRsiPutMin').value || '30');
-            const smartReentryVwapCallMaxPct = parseFloat(document.getElementById('btOptionsVwapCallMaxPct').value || '0.5');
-            const smartReentryVwapPutMaxPct = parseFloat(document.getElementById('btOptionsVwapPutMaxPct').value || '0.5');
+            const tradeAmount = parseFloat(document.getElementById('strategyCapital_options')?.value || '1000');
+            
+            const optionsType = document.getElementById('strategyOptionsOptionType')?.value || 'both';
+            const expiryDays = parseInt(document.getElementById('strategyOptionsExpiryDays')?.value || '3');
+            const strikeType = document.getElementById('strategyOptionsStrikeType')?.value || 'ATM';
+            const exitStrategy = document.getElementById('strategySellMode_options')?.value || 'indicator';
+            const stopLossPct = parseFloat(document.getElementById('strategyOptionsSlPct')?.value || '50') / 100.0;
+            const takeProfitPct = parseFloat(document.getElementById('strategyOptionsTpPct')?.value || '100') / 100.0;
+            const trailPct = parseFloat(document.getElementById('strategyOptionsTrailPct')?.value || '3') / 100.0;
+            const atrStopMult = parseFloat(document.getElementById('strategyAtrStopMult_options')?.value || '2');
+            const atrTpMult = parseFloat(document.getElementById('strategyAtrTpMult_options')?.value || '4');
+            const atrTrailMult = parseFloat(document.getElementById('strategyAtrTrailMult_options')?.value || '3');
+            const buyMode = document.getElementById('strategyBuyMode_options')?.value || 'indicator';
+            const customBuyPrice = parseFloat(document.getElementById('strategyCustomBuyPrice_options')?.value || '0');
+            const enableRisk = document.getElementById('btEnableRisk_options')?.checked ?? true;
+            const riskPerTrade = enableRisk ? (parseFloat(document.getElementById('btRiskPerTrade_options')?.value || '2.0') / 100.0) : 1.0;
+            const maxPositionPct = enableRisk ? (parseFloat(document.getElementById('btMaxPositionPct_options')?.value || '100.0') / 100.0) : 1.0;
+            const r = parseFloat(document.getElementById('strategyOptionsRiskFreeRate')?.value || '5.0') / 100.0;
 
             window.lastBacktestRun = {
                 is_options: true,
-                ticker, timeframe, days: parseInt(days), capital: parseFloat(capital),
+                ticker, timeframe: timeframe, days: parseInt(days), capital: parseFloat(capital),
                 trade_amount: tradeAmount, expiry_days: expiryDays, strike_type: strikeType,
                 options_type: optionsType,
                 stop_loss_pct: stopLossPct, take_profit_pct: takeProfitPct,
                 exit_strategy: exitStrategy, close_before_expiry_hours: closeBeforeExpiry,
-                threshold: parseInt(threshold), sell_threshold: parseInt(sellThreshold),
                 indicators, ext_hours: extHoursVal, r, results: null,
-                enable_signal_reset: enableSignalReset,
-                enable_smart_reentry: enableSmartReentry,
-                smart_reentry_type: smartReentryType,
-                smart_reentry_rsi_call_max: smartReentryRsiCallMax,
-                smart_reentry_rsi_put_min: smartReentryRsiPutMin,
-                smart_reentry_vwap_call_max_dist_pct: smartReentryVwapCallMaxPct,
-                smart_reentry_vwap_put_max_dist_pct: smartReentryVwapPutMaxPct,
                 enable_cooldown: enableCooldown,
-                cooldown_minutes: cooldownMinutes
+                cooldown_minutes: cooldownMinutes,
+                    indicator_overrides: getIndicatorOverrides()
             };
 
             console.log(`[backtest] Starting Options request to: ${API_BASE}/api/options/backtest`);
@@ -546,72 +465,67 @@ async function runBacktest() {
                 headers: headers,
                 body: JSON.stringify({
                     ticker,
-                    timeframe,
+                    timeframe: timeframe,
                     days: parseInt(days),
                     capital: parseFloat(capital),
+                    threshold: parseInt(document.getElementById('strategyBuyThreshold_options')?.value || '0'),
+                    sell_threshold: parseInt(document.getElementById('strategySellThreshold_options')?.value || '1'),
                     trade_amount: tradeAmount,
                     expiry_days: expiryDays,
                     strike_type: strikeType,
                     options_type: optionsType,
                     stop_loss_pct: stopLossPct,
                     take_profit_pct: takeProfitPct,
+                    regular_trailing_pct: trailPct,
+                    atr_stop_multiplier: atrStopMult,
+                    atr_take_profit_multiplier: atrTpMult,
+                    atr_trail_multiplier: atrTrailMult,
+                    buy_mode: buyMode,
+                    custom_buy_price: customBuyPrice,
+                    sell_mode: exitStrategy,
+                    risk_per_trade: riskPerTrade,
+                    max_pos_pct: maxPositionPct,
                     exit_strategy: exitStrategy,
                     close_before_expiry_hours: closeBeforeExpiry,
-                    threshold: parseInt(threshold),
-                    sell_threshold: parseInt(sellThreshold),
                     indicators: indicators,
                     ext_hours: extHoursVal,
                     r,
-                    enable_signal_reset: enableSignalReset,
-                    enable_smart_reentry: enableSmartReentry,
-                    smart_reentry_type: smartReentryType,
-                    smart_reentry_rsi_call_max: smartReentryRsiCallMax,
-                    smart_reentry_rsi_put_min: smartReentryRsiPutMin,
-                    smart_reentry_vwap_call_max_dist_pct: smartReentryVwapCallMaxPct,
-                    smart_reentry_vwap_put_max_dist_pct: smartReentryVwapPutMaxPct,
                     enable_cooldown: enableCooldown,
-                    cooldown_minutes: cooldownMinutes
+                    cooldown_minutes: cooldownMinutes,
+                    indicator_overrides: getIndicatorOverrides()
                 })
             });
+
         } else {
             // Gather exit strategy and risk controls for stock
-            const sellMode = document.getElementById('btSellMode').value;
-            const riskPerTrade = parseFloat(document.getElementById('btRiskPerTrade').value) / 100.0;
-            const maxPositionPct = parseFloat(document.getElementById('btMaxPositionPct').value) / 100.0;
-            const atrStopMult = parseFloat(document.getElementById('btAtrStopMult').value);
-            const atrTrailMult = parseFloat(document.getElementById('btAtrTrailMult').value);
-            const atrTpMult = parseFloat(document.getElementById('btAtrTpMult').value);
+            const sellMode = document.getElementById('strategySellMode_regular')?.value || 'indicator';
+            const enableRisk = document.getElementById('btEnableRisk_regular')?.checked ?? true;
+            const riskPerTrade = enableRisk ? (parseFloat(document.getElementById('btRiskPerTrade')?.value || '2.0') / 100.0) : 1.0;
+            const maxPositionPct = enableRisk ? (parseFloat(document.getElementById('btMaxPositionPct')?.value || '100.0') / 100.0) : 1.0;
+            const atrStopMult = parseFloat(document.getElementById('strategyAtrStopMult')?.value || '2');
+            const atrTrailMult = parseFloat(document.getElementById('strategyAtrTrailMult')?.value || '3');
+            const atrTpMult = parseFloat(document.getElementById('strategyAtrTpMult')?.value || '4');
+            const regularSlPct = parseFloat(document.getElementById('strategyRegularSlPct')?.value || '5') / 100.0;
+            const regularTpPct = parseFloat(document.getElementById('strategyRegularTpPct')?.value || '10') / 100.0;
+            const regularTrailPct = parseFloat(document.getElementById('strategyRegularTrailPct')?.value || '3') / 100.0;
+            const buyMode = document.getElementById('strategyBuyMode_regular')?.value || 'indicator';
+            const customBuyPrice = parseFloat(document.getElementById('strategyCustomBuyPrice_regular')?.value || '0');
 
             window.lastBacktestRun = {
                 is_options: false,
                 ticker, timeframe, days: parseInt(days), capital: parseFloat(capital),
-                threshold: parseInt(threshold), sell_threshold: parseInt(sellThreshold),
-                indicators: aiAutopilot ? [] : indicators, ext_hours: extHoursVal,
+                indicators, ext_hours: extHoursVal,
+                buy_mode: buyMode, custom_buy_price: customBuyPrice,
                 sell_mode: sellMode, risk_per_trade: riskPerTrade,
                 max_position_pct: maxPositionPct, atr_stop_multiplier: atrStopMult,
                 atr_trail_multiplier: atrTrailMult, atr_take_profit_multiplier: atrTpMult,
-                ai_autopilot: aiAutopilot, ai_interval: aiInterval, ai_model: aiModel,
+                regular_stop_loss_pct: regularSlPct, regular_take_profit_pct: regularTpPct, regular_trailing_pct: regularTrailPct,
                 enable_cooldown: enableCooldown, cooldown_minutes: cooldownMinutes,
+                    indicator_overrides: getIndicatorOverrides(),
                 results: null
             };
 
-            
-            if (optimizeEnabled) {
-                console.log(`[backtest] Starting Optimizer request to: ${API_BASE}/api/backtest/optimize`);
-                response = await fetch(`${API_BASE}/api/backtest/optimize`, {
-                    method: 'POST',
-                    headers: headers,
-                    body: JSON.stringify({
-                        ticker, timeframe, days: parseInt(days), capital: parseFloat(capital),
-                        oos_split_pct: oosSplit,
-                        indicators: aiAutopilot ? [] : indicators, ext_hours: extHoursVal, sell_mode: sellMode,
-                        risk_per_trade: riskPerTrade, max_position_pct: maxPositionPct,
-                        enable_cooldown: enableCooldown, cooldown_minutes: cooldownMinutes
-                    })
-                });
-            } else {
-                console.log(`[backtest] Starting Stock request to: ${API_BASE}/api/backtest`);
-
+            console.log(`[backtest] Starting Stock request to: ${API_BASE}/api/backtest`);
             response = await fetch(`${API_BASE}/api/backtest`, {
                 method: 'POST',
                 headers: headers,
@@ -620,27 +534,29 @@ async function runBacktest() {
                     timeframe,
                     days: parseInt(days),
                     capital: parseFloat(capital),
-                    threshold: parseInt(threshold),
-                    sell_threshold: parseInt(sellThreshold),
-                    indicators: aiAutopilot ? [] : indicators,
+                    threshold: parseInt(document.getElementById('strategyBuyThreshold_regular')?.value || '0'),
+                    sell_threshold: parseInt(document.getElementById('strategySellThreshold_regular')?.value || '0'),
+                    indicators,
                     ext_hours: extHoursVal,
+                    buy_mode: buyMode,
+                    custom_buy_price: customBuyPrice,
                     sell_mode: sellMode,
                     risk_per_trade: riskPerTrade,
                     max_position_pct: maxPositionPct,
                     atr_stop_multiplier: atrStopMult,
                     atr_trail_multiplier: atrTrailMult,
-                    take_profit_multiplier: atrTpMult,
-                    ai_autopilot: aiAutopilot,
-                    ai_interval: aiInterval,
-                    ai_model: aiModel,
+                    atr_take_profit_multiplier: atrTpMult,
+                    regular_stop_loss_pct: regularSlPct,
+                    regular_take_profit_pct: regularTpPct,
+                    regular_trailing_pct: regularTrailPct,
                     enable_cooldown: enableCooldown,
-                    cooldown_minutes: cooldownMinutes
+                    cooldown_minutes: cooldownMinutes,
+                    indicator_overrides: getIndicatorOverrides()
                 })
             });
         }
-    }
 
-    if (!response.ok) {
+        if (!response.ok) {
             throw new Error(`HTTP Error: ${response.status}`);
         }
 
@@ -662,7 +578,6 @@ async function runBacktest() {
             }
             displayResults(resToDisplay);
             if (window.lastBacktestRun && resToDisplay && resToDisplay.summary) {
-                showDeployButton(resToDisplay.summary);
             }
         } else {
             const errMsg = data.message || data.error || "Unknown error";
@@ -913,14 +828,6 @@ function resetBacktestUI() {
     document.getElementById('btSettingsContainer').classList.remove('hidden');
     document.getElementById('runBtBtn').disabled = false;
     document.getElementById('btLoading').classList.add('hidden');
-
-    document.getElementById('backtest-deploy-section')?.classList.add('hidden');
-    const deployBtn = document.getElementById('btn-deploy-to-bot');
-    if (deployBtn) {
-        deployBtn.textContent = '🚀 Deploy as Live Bot';
-        deployBtn.disabled = false;
-        deployBtn.className = "w-full py-3.5 rounded-xl font-black text-sm tracking-wider uppercase transition-all duration-300 shadow-lg text-center bg-indigo-600 text-white hover:bg-indigo-500";
-    }
     window.lastBacktestRun = null;
 }
 
@@ -1281,15 +1188,24 @@ function _btWireTradeRowClicks() {
 
 function syncBacktestSliderRange() {
     // Called when indicators are toggled — update the labels for both B and S
-    updateSignalLabels();
+    updateSignalLabels(typeof currentBtMode !== 'undefined' ? currentBtMode : 'regular');
 }
 
-function updateSignalLabels() {
-    const checkedCount = document.querySelectorAll('.bt-indicator-check:checked').length;
-    const buyInput = document.getElementById('btThreshold');
-    const sellInput = document.getElementById('btSellThreshold');
-    const buyLabel = document.getElementById('btBuyLabel');
-    const sellLabel = document.getElementById('btSellLabel');
+function updateSignalLabels(mode) {
+    mode = mode || 'regular';
+    const containerId = mode === 'regular' ? 'indicatorChecksContainer_bt_regular' : 'indicatorChecksContainer_bt_options';
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    
+    const checkClass = mode === 'regular' ? '.bt-indicator-check-regular' : '.bt-indicator-check-options';
+    const checkedCount = container.querySelectorAll(`${checkClass}:checked`).length;
+
+    const buyInput = document.getElementById(`strategyBuyThreshold_${mode}`);
+    const sellInput = document.getElementById(`strategySellThreshold_${mode}`);
+    const buyLabel = document.getElementById(`strategyBuyLabel_${mode}`);
+    const sellLabel = document.getElementById(`strategySellLabel_${mode}`);
+
+    if (!buyInput || !sellInput || !buyLabel || !sellLabel) return;
 
     if (checkedCount === 0) {
         buyInput.max = 0;
@@ -1336,11 +1252,14 @@ function updateSignalLabels() {
     sellLabel.className = `text-[0.6rem] font-black px-4 py-1.5 rounded-full ${sellColor} shadow-sm uppercase tracking-wider transition-all duration-300`;
 }
 
-function adjustSignalThreshold(type, delta) {
-    const checkedCount = document.querySelectorAll('.bt-indicator-check:checked').length;
+function adjustSignalThreshold(mode, type, delta) {
+    const containerId = mode === 'regular' ? 'indicatorChecksContainer_bt_regular' : 'indicatorChecksContainer_bt_options';
+    const checkClass = mode === 'regular' ? '.bt-indicator-check-regular' : '.bt-indicator-check-options';
+    const checkedCount = document.getElementById(containerId).querySelectorAll(`${checkClass}:checked`).length;
+    
     if (checkedCount === 0) return;
 
-    const input = type === 'buy' ? document.getElementById('btThreshold') : document.getElementById('btSellThreshold');
+    const input = type === 'buy' ? document.getElementById(`strategyBuyThreshold_${mode}`) : document.getElementById(`strategySellThreshold_${mode}`);
     let val = parseInt(input.value) + delta;
     val = Math.max(0, Math.min(val, checkedCount));
     input.value = val;
@@ -1397,7 +1316,7 @@ async function bulkDownloadTicker() {
 // Indicator Settings Logic
 // ──────────────────────────────────────────────
 
-const INDICATOR_TOOLTIPS = {
+var INDICATOR_TOOLTIPS = {
     "RSI": "Relative Strength Index (RSI) is a momentum oscillator. Purpose: Identifies overbought (>70) or oversold (<30) conditions.",
     "MACD": "Moving Average Convergence Divergence (MACD) shows the relationship between two moving averages. Purpose: Detects changes in trend momentum.",
     "EMA Cross": "Exponential Moving Average (EMA) places greater weight on recent prices. Purpose: Reacts faster to price changes to catch trends early.",
@@ -1414,7 +1333,7 @@ const INDICATOR_TOOLTIPS = {
     "BotBulls3": "Heikin-Ashi noise filter + ATR-based trailing stop. Generates buy/sell alerts only on confirmed momentum flips — removing false signals from choppy markets."
 };
 
-const INDICATOR_CONFIG_MAP = {
+var INDICATOR_CONFIG_MAP = {
     'RSI': ['RSI_PERIOD', 'RSI_OVERBOUGHT', 'RSI_OVERSOLD'],
     'MACD': ['MACD_FAST', 'MACD_SLOW', 'MACD_SIGNAL'],
     'EMA Cross': ['EMA_FAST', 'EMA_SLOW'],
@@ -1432,7 +1351,7 @@ const INDICATOR_CONFIG_MAP = {
 };
 
 // Industry Defaults for indicators based on config.py
-const INDICATOR_DEFAULTS = {
+var INDICATOR_DEFAULTS = {
     'BOTBULLS1_WT_CHANNEL': 10,
     'BOTBULLS1_WT_AVERAGE': 21,
     'BOTBULLS1_MFI_CONFIRM': 30,
@@ -1467,10 +1386,10 @@ const INDICATOR_DEFAULTS = {
     'SENTIMENT_BEARISH_PERCENTAGE': 30
 };
 
-let currentEditingIndicator = null;
+let btCurrentEditingIndicator = null;
 
 function openIndicatorSettings(indicatorName) {
-    currentEditingIndicator = indicatorName;
+    btCurrentEditingIndicator = indicatorName;
     const configKeys = INDICATOR_CONFIG_MAP[indicatorName] || [];
     const container = document.getElementById('indicatorModalContent');
     const title = document.getElementById('indicatorModalTitle');
@@ -1520,11 +1439,11 @@ function openIndicatorSettings(indicatorName) {
 
 function closeIndicatorSettings() {
     document.getElementById('indicatorSettingsModal').classList.add('hidden');
-    currentEditingIndicator = null;
+    btCurrentEditingIndicator = null;
 }
 
 function resetIndicatorSettingsToDefaults() {
-    if (!currentEditingIndicator) return;
+    if (!btCurrentEditingIndicator) return;
     const inputs = document.querySelectorAll('#indicatorModalContent input');
     inputs.forEach(input => {
         input.value = input.placeholder; // Revert to system default (visible value)
@@ -1566,7 +1485,7 @@ async function saveIndicatorSettings() {
         });
 
         if (response.ok) {
-            console.log(`[settings] Updated settings for ${currentEditingIndicator}`);
+            console.log(`[settings] Updated settings for ${btCurrentEditingIndicator}`);
             if (!window.lastBacktestData) {
                 window.lastBacktestData = { indicator_parameters: {}, indicator_overrides: {} };
             }
@@ -1645,242 +1564,6 @@ function checkCryptoOptionStatus(ticker) {
     }
 }
 window.checkCryptoOptionStatus = checkCryptoOptionStatus;
-
-
-// ── Strategy Deployment Logic ─────────────────────────────────────────────
-
-function showDeployButton(summary) {
-    const section = document.getElementById('backtest-deploy-section');
-    const btn = document.getElementById('btn-deploy-to-bot');
-    const warning = document.getElementById('backtest-pnl-warning');
-    if (!section || !btn) return;
-
-    section.classList.remove('hidden');
-    const pnl = summary.total_pl || 0;
-    const winRate = summary.win_rate_pct || 0;
-
-    // Reset classes and state
-    btn.disabled = false;
-    btn.textContent = '🚀 Deploy as Live Bot';
-    btn.classList.remove('bg-emerald-500', 'bg-amber-500', 'bg-rose-500',
-                          'text-white', 'hover:bg-emerald-400',
-                          'hover:bg-amber-400', 'hover:bg-rose-400', 'animate-pulse');
-
-    if (pnl > 0 && winRate >= 55) {
-        btn.classList.add('bg-emerald-500', 'text-white', 'hover:bg-emerald-400', 'animate-pulse');
-        warning.classList.add('hidden');
-    } else if (pnl > 0) {
-        btn.classList.add('bg-amber-500', 'text-white', 'hover:bg-amber-400');
-        warning.classList.add('hidden');
-    } else {
-        btn.classList.add('bg-rose-500', 'text-white', 'hover:bg-rose-400');
-        warning.classList.remove('hidden');
-    }
-}
-
-async function openDeployModal(isIncubator = false) {
-    window._deployIsIncubator = isIncubator;
-    const run = window.lastBacktestRun;
-    if (!run || !run.results) return;
-
-    // Check if bot already exists for this ticker
-    const tradelist = window.lastBacktestData?.tradelist || [];
-    const botExists = tradelist.includes(run.ticker);
-
-    if (botExists) {
-        // Show conflict modal first
-        document.getElementById('conflictModalSubtitle').textContent =
-            `A bot for ${run.ticker} is already active. How would you like to proceed?`;
-        document.getElementById('deployConflictModal').classList.remove('hidden');
-        return;
-    }
-
-    // No conflict — go straight to confirm modal
-    _pendingDeployMode = 'override';
-    _showDeployConfirmModal();
-}
-
-function resolveConflict(mode) {
-    _pendingDeployMode = mode; // 'override' or 'liquidate'
-    document.getElementById('deployConflictModal').classList.add('hidden');
-    _showDeployConfirmModal();
-}
-
-function _showDeployConfirmModal() {
-    const run = window.lastBacktestRun;
-    const s = run.results.summary;
-    const isOptions = run.is_options;
-
-    // Detect asset type for display
-    const isCrypto = run.ticker.includes('USD') ||
-        ['BTC','ETH','SOL','LTC','DOGE'].some(c => run.ticker.startsWith(c));
-    const modeLabel = isOptions ? 'Options Trading' : (isCrypto ? 'Crypto' : 'Stock Trading');
-
-    const params = document.getElementById('deployModalParams');
-    params.innerHTML = `
-        <div class="flex justify-between py-1 border-b border-slate-50">
-          <span class="opacity-50">Ticker</span>
-          <strong>${run.ticker}</strong>
-        </div>
-        <div class="flex justify-between py-1 border-b border-slate-50">
-          <span class="opacity-50">Mode</span>
-          <strong>${modeLabel}</strong>
-        </div>
-        <div class="flex justify-between py-1 border-b border-slate-50">
-          <span class="opacity-50">Timeframe</span>
-          <strong>${run.timeframe}</strong>
-        </div>
-        <div class="flex justify-between py-1 border-b border-slate-50">
-          <span class="opacity-50">Indicators</span>
-          <strong class="max-w-[200px] text-right truncate" title="${run.indicators.join(', ') || 'None'}">${run.indicators.join(', ') || 'None'}</strong>
-        </div>
-        ${isOptions ? `
-        <div class="flex justify-between py-1 border-b border-slate-50">
-          <span class="opacity-50">Strike</span>
-          <strong>${run.strike_type}</strong>
-        </div>
-        <div class="flex justify-between py-1 border-b border-slate-50">
-          <span class="opacity-50">Expiry</span>
-          <strong>${run.expiry_days} days</strong>
-        </div>
-        <div class="flex justify-between py-1 border-b border-slate-50">
-          <span class="opacity-50">Exit Strategy</span>
-          <strong>${run.exit_strategy}</strong>
-        </div>
-        <div class="flex justify-between py-1 border-b border-slate-50">
-          <span class="opacity-50">Stop Loss</span>
-          <strong>${(run.stop_loss_pct * 100).toFixed(0)}% of premium</strong>
-        </div>
-        <div class="flex justify-between py-1 border-b border-slate-50">
-          <span class="opacity-50">Take Profit</span>
-          <strong>${(run.take_profit_pct * 100).toFixed(0)}% of premium</strong>
-        </div>
-        ` : `
-        <div class="flex justify-between py-1 border-b border-slate-50">
-          <span class="opacity-50">Capital</span>
-          <strong>$${run.capital}</strong>
-        </div>
-        <div class="flex justify-between py-1 border-b border-slate-50">
-          <span class="opacity-50">Exit Mode</span>
-          <strong>${run.sell_mode || 'indicator'}</strong>
-        </div>
-        `}
-        ${_pendingDeployMode === 'liquidate' ? `
-        <div class="mt-2 p-2 bg-rose-50 rounded-lg text-rose-700 text-[0.6rem] font-bold">
-          ⚠️ Will liquidate existing position before deploying
-        </div>
-        ` : ''}
-    `;
-
-    // Performance
-    const perf = document.getElementById('deployModalPerf');
-    const pnlSign = s.total_pl >= 0 ? '+' : '';
-    perf.innerHTML = `
-        <div class="flex justify-between py-1 border-b border-slate-50">
-          <span>${s.total_pl >= 0 ? '✅' : '❌'} Total PnL</span>
-          <strong class="${s.total_pl >= 0 ? 'text-emerald-600' : 'text-rose-600'}">
-            ${pnlSign}$${s.total_pl.toFixed(2)}
-          </strong>
-        </div>
-        <div class="flex justify-between py-1 border-b border-slate-50">
-          <span>${s.win_rate_pct >= 50 ? '✅' : '⚠️'} Win Rate</span>
-          <strong>${s.win_rate_pct.toFixed(1)}%</strong>
-        </div>
-        <div class="flex justify-between py-1 border-b border-slate-50">
-          <span>📊 Total Trades</span>
-          <strong>${s.total_trades}</strong>
-        </div>
-    `;
-
-    const warning = document.getElementById('deployModalWarning');
-    if (s.total_pl < 0) {
-        warning.classList.remove('hidden');
-    } else {
-        warning.classList.add('hidden');
-    }
-
-    document.getElementById('deployConfirmModal').classList.remove('hidden');
-}
-
-async function deployStrategyAsBot() {
-    const run = window.lastBacktestRun;
-    if (!run) return;
-
-    const btn = document.getElementById('btn-confirm-deploy');
-    btn.disabled = true;
-    btn.textContent = 'Deploying...';
-
-    try {
-        const headers = await getAuthHeaders();
-        const payload = {
-            ...run,
-            deploy_mode: _pendingDeployMode,   // 'override' | 'liquidate'
-            is_incubator: window._deployIsIncubator || false,
-            indicator_overrides: window.lastBacktestData?.indicator_overrides || {},
-            backtest_roi_pct: run.results?.summary?.roi_pct,
-            backtest_win_rate: run.results?.summary?.win_rate_pct,
-        };
-        delete payload.results;
-
-        const response = await fetch(`${API_BASE}/api/backtest/deploy`, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(payload)
-        });
-        const data = await response.json();
-
-        if (data.status === 'success') {
-            document.getElementById('deployConfirmModal').classList.add('hidden');
-            const deployBtn = document.getElementById('btn-deploy-to-bot');
-            if (deployBtn) {
-                deployBtn.textContent = '✅ Deployed';
-                deployBtn.disabled = true;
-                deployBtn.classList.remove('animate-pulse');
-                deployBtn.className = "w-full py-3.5 rounded-xl font-black text-sm tracking-wider uppercase transition-all duration-300 shadow-lg text-center bg-slate-200 text-slate-500 cursor-not-allowed";
-            }
-            showDeployToast(run.ticker);
-        } else {
-            alert(`Deploy failed: ${data.message || 'Unknown error'}`);
-        }
-    } catch (err) {
-        alert(`Deploy error: ${err.message}`);
-    } finally {
-        btn.disabled = false;
-        btn.textContent = '✅ Confirm & Deploy';
-    }
-}
-
-function showDeployToast(ticker) {
-    document.getElementById('deployToast')?.remove();
-
-    const toast = document.createElement('div');
-    toast.id = 'deployToast';
-    toast.className = `fixed bottom-6 right-6 z-[99999] flex items-center gap-3 
-        bg-emerald-600 text-white px-5 py-4 rounded-2xl shadow-2xl 
-        text-sm font-black transition-all duration-500 max-w-xs`;
-    toast.innerHTML = `
-        <span class="text-xl">✅</span>
-        <div>
-            <div>Bot deployed for ${ticker}!</div>
-            <a href="bots.html?highlight=${ticker}"
-               class="text-emerald-200 underline text-xs font-bold mt-0.5 block">
-                View Bot Card →
-            </a>
-        </div>
-    `;
-    document.body.appendChild(toast);
-    setTimeout(() => {
-        if (toast.parentNode) {
-            toast.remove();
-        }
-    }, 6000);
-}
-
-window.showDeployButton = showDeployButton;
-window.openDeployModal = openDeployModal;
-window.resolveConflict = resolveConflict;
-window.deployStrategyAsBot = deployStrategyAsBot;
-window.showDeployToast = showDeployToast;
 
 
 // ── Monte Carlo Simulation Functions ─────────────────────────────────────
@@ -2045,3 +1728,90 @@ function _renderMonteCarloFanChart(fanCurves, originalCurve) {
         }
     });
 }
+
+window.updateBtRegularEntryFields = function() {
+    const mode = document.getElementById('strategyBuyMode_regular')?.value || 'indicator';
+    document.getElementById('strategyBuyFields_regular')?.classList.toggle('hidden', mode !== 'indicator');
+    document.getElementById('strategyCustomBuyFields_regular')?.classList.toggle('hidden', mode === 'indicator');
+};
+
+window.updateBtRegularExitFields = function() {
+    const mode = document.getElementById('strategySellMode_regular')?.value || 'indicator';
+    const showATR    = ['sltp', 'hybrid'].includes(mode);
+    const showPct    = ['percentage', 'hybrid_pct'].includes(mode);
+    const showPivot  = ['pivot_points', 'hybrid_pivot'].includes(mode);
+    const showHighLow = ['high_low', 'hybrid_high_low'].includes(mode);
+    
+    document.getElementById('exitFieldsIndicator')?.classList.toggle('hidden', !['indicator', 'hybrid', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low'].includes(mode));
+    document.getElementById('exitFieldsATR')?.classList.toggle('hidden', !showATR);
+    document.getElementById('exitFieldsPct')?.classList.toggle('hidden', !showPct);
+    document.getElementById('exitFieldsPivot')?.classList.toggle('hidden', !showPivot);
+    document.getElementById('exitFieldsHighLow')?.classList.toggle('hidden', !showHighLow);
+};
+
+window.adjustBtThreshold = function(type, delta) {
+    window.adjustStrategyThreshold('regular', type, delta);
+};
+
+window.updateBtOptionsEntryFields = function() {
+    const mode = document.getElementById('strategyBuyMode_options')?.value || 'indicator';
+    document.getElementById('strategyBuyFields_options')?.classList.toggle('hidden', mode !== 'indicator');
+    document.getElementById('strategyCustomBuyFields_options')?.classList.toggle('hidden', mode === 'indicator');
+};
+
+window.updateBtOptionsExitFields = function() {
+    const mode = document.getElementById('strategySellMode_options')?.value || 'indicator';
+    const showATR     = ['sltp', 'hybrid'].includes(mode);
+    const showPct     = ['percentage', 'hybrid_pct'].includes(mode);
+    const showPivot   = ['pivot_points', 'hybrid_pivot'].includes(mode);
+    const showHighLow = ['high_low', 'hybrid_high_low'].includes(mode);
+    
+    document.getElementById('exitFieldsIndicator_options')?.classList.toggle('hidden', !['indicator', 'hybrid', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low'].includes(mode));
+    document.getElementById('exitFieldsATR_options')?.classList.toggle('hidden', !showATR);
+    document.getElementById('exitFieldsPct_options')?.classList.toggle('hidden', !showPct);
+    document.getElementById('exitFieldsPivot_options')?.classList.toggle('hidden', !showPivot);
+    document.getElementById('exitFieldsHighLow_options')?.classList.toggle('hidden', !showHighLow);
+};
+
+window.adjustBtOptionsThreshold = function(type, delta) {
+    window.adjustStrategyThreshold('options', type, delta);
+};
+
+window.updateBtRegularSignalLabels = function() {
+    updateSignalLabels('regular');
+};
+window.updateBtOptionsSignalLabels = function() {
+    updateSignalLabels('options');
+};
+window.updateStrategySignalLabels = function(mode) {
+    updateSignalLabels(mode);
+};
+window.updateRegularEntryFields = window.updateBtRegularEntryFields;
+window.updateRegularExitFields = window.updateBtRegularExitFields;
+window.updateOptionsEntryFields = window.updateBtOptionsEntryFields;
+window.updateOptionsExitFields = window.updateBtOptionsExitFields;
+
+window.adjustStrategyThreshold = function(mode, type, delta) {
+    const containerId = mode === 'regular' ? 'indicatorChecksContainer_bt_regular' : 'indicatorChecksContainer_bt_options';
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    
+    const checkClass = mode === 'regular' ? '.bt-indicator-check-regular' : '.bt-indicator-check-options';
+    const checkedCount = container.querySelectorAll(`${checkClass}:checked`).length;
+    
+    if (checkedCount === 0) return;
+
+    const input = document.getElementById(`strategy${type === 'buy' ? 'Buy' : 'Sell'}Threshold_${mode}`);
+    if (!input) return;
+
+    let val = parseInt(input.value) + delta;
+    val = Math.max(0, Math.min(val, checkedCount));
+    input.value = val;
+
+    // Update labels
+    updateSignalLabels(mode);
+};
+window.toggleModeActive = function(mode) {
+    if (mode === 'options') return window.toggleBtMode('options');
+    return window.toggleBtMode('regular');
+};

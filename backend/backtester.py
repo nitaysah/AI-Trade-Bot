@@ -8,7 +8,7 @@ import config as global_config
 from user_config import get_user_config
 
 class Backtester:
-    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=0.02, max_pos_pct=0.25, ext_hours=True, sell_mode="indicator", atr_stop_multiplier=2.0, atr_trail_multiplier=3.0, atr_take_profit_multiplier=4.0, ai_autopilot=False, ai_interval=10, ai_model="llama-3.3-70b-versatile", enable_cooldown=True, cooldown_minutes=None, cancel_event=None):
+    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=0.02, max_pos_pct=0.25, ext_hours=True, buy_mode="indicator", custom_buy_price=0.0, sell_mode="indicator", atr_stop_multiplier=2.0, atr_trail_multiplier=3.0, atr_take_profit_multiplier=4.0, ai_autopilot=False, ai_interval=10, ai_model="llama-3.3-70b-versatile", enable_cooldown=True, cooldown_minutes=None, regular_stop_loss_pct=0.05, regular_take_profit_pct=0.10, regular_trailing_pct=0.03, cancel_event=None):
         self.ticker = ticker
         self.timeframe = timeframe
         self.start_date = start_date
@@ -20,6 +20,8 @@ class Backtester:
         self.risk_per_trade = risk_per_trade
         self.max_pos_pct = max_pos_pct
         self.ext_hours = ext_hours
+        self.buy_mode = buy_mode
+        self.custom_buy_price = custom_buy_price
         self.sell_mode = sell_mode
         self.atr_stop_multiplier = atr_stop_multiplier
         self.atr_trail_multiplier = atr_trail_multiplier
@@ -29,6 +31,9 @@ class Backtester:
         self.ai_model = ai_model
         self.enable_cooldown = enable_cooldown
         self.cooldown_minutes = cooldown_minutes
+        self.regular_stop_loss_pct = regular_stop_loss_pct
+        self.regular_take_profit_pct = regular_take_profit_pct
+        self.regular_trailing_pct = regular_trailing_pct
         self.cancel_event = cancel_event
         self._last_ai_decision = None
         self.last_exit_time = None
@@ -127,25 +132,72 @@ class Backtester:
             
             # Check for SL / TP if in position
             if self.position:
-                # Standard / AI Autopilot hard stop/target checks (guarded by sell_mode)
+                current_price = current_bar['Close']
+                precision = 6 if current_price < 1.0 else 2
+
+                # ── ATR / AI-based hard stops (existing modes) ──────────────────
                 if self.sell_mode in ["sltp", "hybrid", "trend_rider", "ai_autopilot"]:
                     if current_bar['Low'] <= self.position['stop_loss']:
-                        self._exit_trade(current_bar, timestamp, f"Stop Loss Hit (${self.position['stop_loss']:.2f})", exit_price_override=self.position['stop_loss'])
-                        self._last_ai_decision = None  # Reset AI decision after exit
+                        self._exit_trade(current_bar, timestamp, f"Stop Loss Hit (${self.position['stop_loss']:.{precision}f})", exit_price_override=self.position['stop_loss'])
+                        self._last_ai_decision = None
                         continue
                     elif current_bar['High'] >= self.position['take_profit']:
-                        self._exit_trade(current_bar, timestamp, f"Take Profit Hit (${self.position['take_profit']:.2f})", exit_price_override=self.position['take_profit'])
-                        self._last_ai_decision = None  # Reset AI decision after exit
+                        self._exit_trade(current_bar, timestamp, f"Take Profit Hit (${self.position['take_profit']:.{precision}f})", exit_price_override=self.position['take_profit'])
+                        self._last_ai_decision = None
                         continue
-                
-                # Dynamic Trailing Stop movement for standard hybrid/sltp modes
+
+                # ── NEW: Percentage-based hard stops ────────────────────────────
+                elif self.sell_mode in ['percentage', 'hybrid_pct']:
+                    # Ratchet trailing stop upward
+                    candidate = round(current_price * (1 - self.regular_trailing_pct), precision)
+                    if candidate > self.position['stop_loss']:
+                        self.position['stop_loss'] = candidate
+                    
+                    if current_bar['Low'] <= self.position['stop_loss']:
+                        self._exit_trade(current_bar, timestamp, f"Percentage Stop Loss Hit ({self.regular_stop_loss_pct*100:.1f}% SL / {self.regular_trailing_pct*100:.1f}% Trail)", exit_price_override=self.position['stop_loss'])
+                        continue
+                    elif current_bar['High'] >= self.position['take_profit']:
+                        self._exit_trade(current_bar, timestamp, f"Percentage Take Profit Hit ({self.regular_take_profit_pct*100:.1f}% TP)", exit_price_override=self.position['take_profit'])
+                        continue
+
+                # ── NEW: Pivot Point exits ───────────────────────────────────────
+                elif self.sell_mode in ['pivot_points', 'hybrid_pivot']:
+                    if i > 0:  # Need at least 1 prior bar
+                        prev_bar_data = self.df.iloc[i - 1]
+                        prev_h = float(prev_bar_data.get('High', current_price))
+                        prev_l = float(prev_bar_data.get('Low', current_price))
+                        prev_c = float(prev_bar_data.get('Close', current_price))
+                        P  = (prev_h + prev_l + prev_c) / 3.0
+                        R1 = round(2 * P - prev_l, precision)
+                        S1 = round(2 * P - prev_h, precision)
+                        if current_bar['Low'] <= S1:
+                            self._exit_trade(current_bar, timestamp, f"Pivot Stop Loss Hit (S1=${S1:.{precision}f})", exit_price_override=S1)
+                            continue
+                        elif current_bar['High'] >= R1:
+                            self._exit_trade(current_bar, timestamp, f"Pivot Take Profit Hit (R1=${R1:.{precision}f})", exit_price_override=R1)
+                            continue
+
+                # ── NEW: Daily High/Low Breakout ─────────────────────────────────
+                elif self.sell_mode in ['high_low', 'hybrid_high_low']:
+                    if i > 0:
+                        prev_bar_data = self.df.iloc[i - 1]
+                        prev_h = float(prev_bar_data.get('High', current_price))
+                        prev_l = float(prev_bar_data.get('Low', current_price))
+                        if current_price < prev_l:
+                            self._exit_trade(current_bar, timestamp, f"Prior Low Breakout (Low=${prev_l:.{precision}f})", exit_price_override=current_price)
+                            continue
+                        elif current_price > prev_h:
+                            self._exit_trade(current_bar, timestamp, f"Prior High Breakout (High=${prev_h:.{precision}f})", exit_price_override=current_price)
+                            continue
+
+                # ── ATR trailing stop movement (existing) ───────────────────────
                 if self.sell_mode in ["sltp", "hybrid", "trend_rider"]:
                     atr = current_bar['ATR']
                     trail_distance = atr * self.atr_trail_multiplier
                     if self.position.get('qty', 0) > 0:
                         new_stop = current_price - trail_distance
                         if new_stop > self.position['stop_loss']:
-                            self.position['stop_loss'] = round(new_stop, 2)
+                            self.position['stop_loss'] = round(new_stop, precision)
 
             action = "HOLD"
             reason = "Neutral"
@@ -237,12 +289,18 @@ class Backtester:
                         reason = "Trend Rider Exit: Trend Broken (Death Cross or < SMA 200)"
 
                 else:
-                    if analysis['bullish_count'] >= self.threshold:
-                        action = "BUY"
-                        names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
-                        reason = f"{analysis['bullish_count']} signals ({', '.join(names)})"
-                    elif analysis['bearish_count'] >= self.sell_threshold:
-                        if self.sell_mode in ["indicator", "hybrid"]:
+                    if self.buy_mode == 'custom_price':
+                        if current_price > 0 and current_price <= self.custom_buy_price:
+                            action = "BUY"
+                            reason = f"Custom Price Entry: Price {current_price} <= {self.custom_buy_price}"
+                    else:
+                        if analysis['bullish_count'] >= self.threshold:
+                            action = "BUY"
+                            names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
+                            reason = f"{analysis['bullish_count']} signals ({', '.join(names)})"
+                            
+                    if action != "BUY" and analysis['bearish_count'] >= self.sell_threshold:
+                        if self.sell_mode in ["indicator", "hybrid", "hybrid_pct", "hybrid_pivot", "hybrid_high_low"]:
                             action = "SELL"
                             names = [k for k, v in filtered_signals.items() if v['signal'] == 'BEARISH']
                             reason = f"Dynamic Sell: {analysis['bearish_count']} signals ({', '.join(names)})"
@@ -298,10 +356,11 @@ class Backtester:
         
         # Fallbacks if AI didn't provide stop/target
         atr = bar.get('ATR', price * 0.02)
+        precision = 6 if price < 1.0 else 2  # Crypto precision fix
         if not stop_loss:
-            stop_loss = round(price - atr * self.atr_stop_multiplier, 2)
+            stop_loss = round(price - atr * self.atr_stop_multiplier, precision)
         if not take_profit:
-            take_profit = round(price + atr * self.atr_take_profit_multiplier, 2)
+            take_profit = round(price + atr * self.atr_take_profit_multiplier, precision)
             
         self.position = {
             'qty': qty,
@@ -316,9 +375,13 @@ class Backtester:
     def _enter_trade(self, bar, timestamp, reason):
         price = bar['Close']
         atr = bar['ATR']
+        if atr <= 0:
+            atr = price * 0.01  # Fallback: treat 1% of price as synthetic ATR
+
         risk_amount = self.equity * self.risk_per_trade
         stop_dist = atr * self.atr_stop_multiplier
-        if stop_dist == 0: return
+        if stop_dist <= 0:
+            stop_dist = price * 0.01
 
         qty = risk_amount / stop_dist
         max_notional = self.equity * self.max_pos_pct
@@ -331,8 +394,14 @@ class Backtester:
             qty *= 0.5
             reason += " (Volatility Protection Active)"
 
-        stop_loss = round(price - stop_dist, 2)
-        take_profit = round(price + (atr * self.atr_take_profit_multiplier), 2)
+        precision = 6 if price < 1.0 else 2
+
+        if self.sell_mode in ['percentage', 'hybrid_pct']:
+            stop_loss = round(price * (1 - self.regular_stop_loss_pct), precision)
+            take_profit = round(price * (1 + self.regular_take_profit_pct), precision)
+        else:
+            stop_loss = round(price - stop_dist, precision)
+            take_profit = round(price + (atr * self.atr_take_profit_multiplier), precision)
 
         self.position = {
             'qty': qty,

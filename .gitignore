@@ -89,3 +89,9 @@ format_*.py
 get_*.py
 *.csv
 tsla_sweep_log.txt
+
+# Backups, Patches, & Scratch
+*.bak*
+*.patch
+diff.txt
+/*.py

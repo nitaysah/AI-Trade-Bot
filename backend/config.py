@@ -49,7 +49,6 @@ SCAN_INTERVAL_SECONDS = 60
 # ──────────────────────────────────────────────
 # Bot Safety Controls
 # ──────────────────────────────────────────────
-MAX_OPEN_POSITIONS = 5          # Max simultaneous positions across all bots
 TRADE_COOLDOWN_SECONDS = 300    # Wait N seconds after a trade before re-evaluating same ticker
 MARKET_HOURS_ONLY = True        # If True, stocks only trade during market hours (9:30-16:00 ET)
 
@@ -142,9 +141,6 @@ SENTIMENT_BEARISH_PERCENTAGE = 30
 # Risk Management
 # ──────────────────────────────────────────────
 DEFAULT_TRADE_AMOUNT = 100.0  # Default notional amount per trade in USD
-RISK_PER_TRADE = 0.02
-MAX_DAILY_DRAWDOWN = 0.05
-MAX_POSITION_PCT = 1.0
 ATR_STOP_MULTIPLIER = 2.0
 ATR_TRAIL_MULTIPLIER = 3.0
 ATR_TAKE_PROFIT_MULTIPLIER = 4.0
@@ -158,7 +154,6 @@ OPTIONS_EXPIRY_DAYS = 7             # Expiry target for selected contracts
 OPTIONS_STRIKE_TYPE = "ATM"          # "ATM" | "ITM" | "OTM"
 OPTIONS_DELTA_TARGET = 0.50          # Target delta for contract selection
 OPTIONS_EXIT_STRATEGY = "hybrid"     # "premium_pct" | "pivot_points" | "high_low" | "hybrid"
-OPTIONS_STOP_LOSS_PCT = 0.50         # Exit trade if premium decays by 50%
 OPTIONS_TAKE_PROFIT_PCT = 1.00       # Take profit when premium reaches +100%
 OPTIONS_CLOSE_BEFORE_EXPIRY_HOURS = 2.0  # Safe exit buffer before expiration
 

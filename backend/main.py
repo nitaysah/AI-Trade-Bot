@@ -174,6 +174,32 @@ def _get_cached_chart_analysis(ticker: str, timeframe: str, eng: UserEngine, for
     return analysis, False, 0.0
 
 
+
+def _get_prior_day_ohlc(price_history):
+    from datetime import datetime
+    import pytz
+    if not price_history: return None
+    ny_tz = pytz.timezone('America/New_York')
+    days = {}
+    for candle in price_history:
+        dt = datetime.fromtimestamp(candle['time'], ny_tz)
+        date_str = dt.strftime('%Y-%m-%d')
+        if date_str not in days: days[date_str] = []
+        days[date_str].append(candle)
+    sorted_days = sorted(days.keys())
+    if len(sorted_days) < 2: return None
+    prior_date = sorted_days[-2]
+    prior_candles = days[prior_date]
+    high = max((c['high'] for c in prior_candles if c.get('high') is not None), default=None)
+    low = min((c['low'] for c in prior_candles if c.get('low') is not None), default=None)
+    close = None
+    for c in reversed(prior_candles):
+        if c.get('close') is not None:
+            close = c['close']
+            break
+    if high is None or low is None or close is None: return None
+    return {"high": high, "low": low, "close": close, "date": prior_date}
+
 def _technical_scan_from_analysis(ticker: str, timeframe: str, analysis: dict, use_bot_settings: bool = False):
     if not analysis:
         return None
@@ -186,7 +212,9 @@ def _technical_scan_from_analysis(ticker: str, timeframe: str, analysis: dict, u
         use_bot_settings=use_bot_settings
     )
     price = analysis.get("price", 0.0)
+    prior_day = _get_prior_day_ohlc(analysis.get("price_history", []))
     return {
+        "prior_day_ohlc": prior_day,
         "time": get_now().isoformat(),
         "ticker": _normalize_quote_symbol(ticker),
         "timeframe": timeframe,
@@ -655,6 +683,67 @@ async def get_macro_events():
         print(f"Error fetching macro events: {e}")
         return {"status": "error", "message": str(e), "indicators": {}, "calendar": []}
 
+
+def _build_indicator_forecast(settings, scan_data, mode="entry", is_long=True, is_option=False, options_type="both", eng=None):
+    if not scan_data: return ""
+    signals = scan_data.get('signals', {})
+    
+    # active_signals filter only those with enabled=True (set by trader.py)
+    active_signals = {k: v for k, v in signals.items() if v.get('enabled', False)}
+    
+    if not active_signals:
+        return ""
+        
+    parts = []
+    
+    buy_threshold = settings.get('min_buy_signals', getattr(eng.config, 'MIN_BULLISH_SIGNALS', 1)) if eng else 1
+    sell_threshold = settings.get('min_sell_signals', getattr(eng.config, 'MIN_BEARISH_SIGNALS', 1)) if eng else 1
+    
+    if mode == "entry":
+        target = "BULLISH"
+        if is_option and options_type == "puts_only":
+            target = "BEARISH"
+            
+        current_count = 0
+        for name, data in active_signals.items():
+            sig = data.get('signal', 'NEUTRAL')
+            if sig == target or (target == "BULLISH" and sig == "BEARISH" and is_option and options_type == "both"):
+                current_count += data.get('weight', 1)
+                
+        rem = max(0, buy_threshold - current_count)
+        parts.append(f"[{target} TARGET: {buy_threshold} | REMAINING: {rem}]")
+        
+        for name, data in active_signals.items():
+            sig = data.get('signal', 'NEUTRAL')
+            reason = data.get('reason', '')
+            if sig == target:
+                icon = "🔴" if sig == "BEARISH" else "✅"
+                parts.append(f"{icon} {name} {sig} ({reason})")
+            elif target == "BULLISH" and sig == "BEARISH" and is_option and options_type == "both":
+                parts.append(f"🔴 {name} BEARISH ({reason})")
+            else:
+                parts.append(f"⏳ {name} {sig} ({reason})")
+    else:
+        target = "BEARISH" if is_long else "BULLISH"
+        current_count = 0
+        for name, data in active_signals.items():
+            if data.get('signal') == target:
+                current_count += data.get('weight', 1)
+                
+        rem = max(0, sell_threshold - current_count)
+        parts.append(f"[{target} EXIT TARGET: {sell_threshold} | REMAINING: {rem}]")
+        
+        for name, data in active_signals.items():
+            sig = data.get('signal', 'NEUTRAL')
+            reason = data.get('reason', '')
+            if sig == target:
+                icon = "🔴" if sig == "BEARISH" else "✅"
+                parts.append(f"{icon} {name} {sig} ({reason})")
+            else:
+                parts.append(f"⏳ {name} {sig} ({reason})")
+                
+    return " | ".join(parts)
+
 @app.get("/api/dashboard")
 async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None, timeframe: str = None, source: str = "dashboard", eng: UserEngine = Depends(get_user_engine)):
     """
@@ -711,7 +800,12 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
     
     # Check cache first for primary ticker scan
     primary_scan = None
-    prefer_bot_for_primary = is_active_bot and source == "bots"
+    prefer_bot_for_primary = is_active_bot
+    if prefer_bot_for_primary:
+        bot_tf = eng.config.TICKER_SETTINGS.get(primary_ticker, {}).get('timeframe')
+        if bot_tf:
+            timeframe = bot_tf
+    
     cached_scan = eng._pick_scan(primary_ticker, timeframe, prefer_bot=prefer_bot_for_primary)
     if cached_scan:
         primary_scan = {**cached_scan, 'cached': True}
@@ -883,8 +977,13 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                 is_long = qty > 0
                 atr = underlying_scan.get('atr', 0)
                 
-                if strat in ('indicator', 'hybrid'):
-                    targets.append({"label": "Tech", "val": float('-inf') if is_long else float('inf'), "type": "cond", "desc": "Reversal to BEARISH" if is_long else "Reversal to BULLISH"})
+                if strat in ('indicator', 'hybrid', 'hybrid_pct', 'hybrid_pivot'):
+                    sell_threshold = settings.get('sell_threshold', getattr(eng.config, 'SELL_THRESHOLD', 1))
+                    buy_threshold = settings.get('buy_threshold', getattr(eng.config, 'BUY_THRESHOLD', 1))
+                    desc_dynamic = _build_indicator_forecast(settings, underlying_scan, mode="exit", is_long=is_long, is_option=is_option, options_type=settings.get("options_type", "both"), eng=eng)
+                    if not desc_dynamic:
+                        desc_dynamic = f"≥ {sell_threshold} BEARISH Signals" if is_long else f"≥ {buy_threshold} BULLISH Signals"
+                    targets.append({"label": "Indicator", "val": float('-inf') if is_long else float('inf'), "type": "cond", "desc": desc_dynamic})
                 
                 if strat in ('sltp', 'hybrid') and atr > 0 and avg_price > 0:
                     sl_mult = settings.get('atr_stop_multiplier', getattr(eng.config, 'ATR_STOP_MULTIPLIER', 2.0))
@@ -894,13 +993,48 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                     trailing = eng.last_trailing_stops.get(symbol)
                     if isinstance(trailing, dict):
                         trailing = trailing.get("trailing_stop_price")
-                    if isinstance(trailing, (int, float)):
+                    if settings.get('enable_atr_trail', True) and isinstance(trailing, (int, float)):
                         sl_price = trailing
                         
                     tp_price = avg_price + (atr * tp_mult) if is_long else avg_price - (atr * tp_mult)
                     
-                    targets.append({"label": "SL", "val": sl_price, "type": "price"})
-                    targets.append({"label": "TP", "val": tp_price, "type": "price"})
+                    targets.append({"label": "ATR SL", "val": sl_price, "type": "price"})
+                    targets.append({"label": "ATR TP", "val": tp_price, "type": "price"})
+                    
+                if strat in ('percentage', 'hybrid_pct') and avg_price > 0:
+                    sl_pct = settings.get('regular_stop_loss_pct', 0.05)
+                    tp_pct = settings.get('regular_take_profit_pct', 0.10)
+                    sl_price = avg_price * (1 - sl_pct) if is_long else avg_price * (1 + sl_pct)
+                    
+                    trailing = eng.last_trailing_stops.get(symbol)
+                    if isinstance(trailing, dict):
+                        trailing = trailing.get("trailing_stop_price")
+                    if settings.get('enable_pct_trail', True) and isinstance(trailing, (int, float)):
+                        sl_price = trailing
+                        
+                    tp_price = avg_price * (1 + tp_pct) if is_long else avg_price * (1 - tp_pct)
+                    
+                    targets.append({"label": "Pct SL", "val": sl_price, "type": "price"})
+                    targets.append({"label": "Pct TP", "val": tp_price, "type": "price"})
+                    
+                if strat in ('pivot_points', 'hybrid_pivot'):
+                    last_day = underlying_scan.get('prior_day_ohlc')
+                    if not last_day:
+                        hist = underlying_scan.get('price_history', [])
+                        last_day = hist[-1] if len(hist) > 0 else {}
+                    if last_day:
+                        h = last_day.get('high')
+                        l = last_day.get('low')
+                        c = last_day.get('close')
+                        if h is not None and l is not None and c is not None:
+                            p_val = (h + l + c) / 3
+                            r1 = (2 * p_val) - l
+                            s1 = (2 * p_val) - h
+                            
+                            target_price = r1 if is_long else s1
+                            sl_target = s1 if is_long else r1
+                            targets.append({"label": "Pivot TP", "val": target_price, "type": "price"})
+                            targets.append({"label": "Pivot SL", "val": sl_target, "type": "price"})
             
             # --- OPTIONS ---
             else:
@@ -915,10 +1049,12 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                     targets.append({"label": "Prem SL", "val": sl_price, "type": "price"})
                     targets.append({"label": "Prem TP", "val": tp_price, "type": "price"})
                     
-                if strat in ('pivot_points', 'hybrid'):
-                    hist = underlying_scan.get('price_history', [])
-                    if len(hist) > 0:
-                        last_day = hist[-1]
+                if strat in ('pivot_points', 'hybrid_pivot'):
+                    last_day = underlying_scan.get('prior_day_ohlc')
+                    if not last_day:
+                        hist = underlying_scan.get('price_history', [])
+                        last_day = hist[-1] if len(hist) > 0 else {}
+                    if last_day:
                         h = last_day.get('high')
                         l = last_day.get('low')
                         c = last_day.get('close')
@@ -933,10 +1069,13 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                             targets.append({"label": "Pivot SL", "val": sl_target, "type": "underlying_price"})
                             
                 if strat in ('high_low', 'hybrid'):
-                    hist = underlying_scan.get('price_history', [])
-                    if len(hist) > 0:
-                        dh = hist[-1].get('high')
-                        dl = hist[-1].get('low')
+                    last_day = underlying_scan.get('prior_day_ohlc')
+                    if not last_day:
+                        hist = underlying_scan.get('price_history', [])
+                        last_day = hist[-1] if len(hist) > 0 else {}
+                    if last_day:
+                        dh = last_day.get('high')
+                        dl = last_day.get('low')
                         if dh is not None and dl is not None:
                             target_price = dh if is_call else dl
                             sl_target = dl if is_call else dh
@@ -944,7 +1083,10 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                             targets.append({"label": "H/L SL", "val": sl_target, "type": "underlying_price"})
 
                 if strat in ('indicator', 'hybrid'):
-                    targets.append({"label": "Tech", "val": float('-inf') if is_call else float('inf'), "type": "cond", "desc": "Reversal to BEARISH" if is_call else "Reversal to BULLISH"})
+                    sell_threshold = strategy_overrides.get('options_sell_threshold') or eng.config.active_parameters.get('options_sell_threshold', 1)
+                    buy_threshold = strategy_overrides.get('options_buy_threshold') or eng.config.active_parameters.get('options_buy_threshold', 1)
+                    desc = f"≥ {sell_threshold} BEARISH Signals" if is_call else f"≥ {buy_threshold} BULLISH Signals"
+                    targets.append({"label": "Indicator", "val": float('-inf') if is_call else float('inf'), "type": "cond", "desc": desc})
             
             if not targets:
                 p['exit_forecast'] = f"Strategy: {strat.upper()} (No targets found)"
@@ -1003,6 +1145,15 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
             p['exit_forecast'] = "Forecast Error"
 
     # Build the final payload
+    bot_scans_dict = {}
+    for t in eng.config.TRADELIST:
+        scan = eng._pick_scan(t, timeframe, prefer_bot=True) or eng._pick_scan(t, eng.config.TICKER_SETTINGS.get(t, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME), prefer_bot=True, ignore_freshness=True) or {}
+        ui_scan = _inject_price(_format_scan_for_ui(scan, use_global_settings=False), t)
+        t_settings = eng.config.TICKER_SETTINGS.get(t, {})
+        is_opt = t_settings.get('is_option', False)
+        ui_scan['entry_forecast'] = _build_indicator_forecast(t_settings, scan, mode="entry", is_long=True, is_option=is_opt, options_type=t_settings.get("options_type", "both"), eng=eng)
+        bot_scans_dict[t] = ui_scan
+        
     payload = {
         "simulation": account.get('simulation', True),
         "has_keys": bool(eng.config.ALPACA_API_KEY),
@@ -1029,14 +1180,7 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
             t: _price_only_scan(t)
             for t in eng.config.WATCHLIST
         },
-        "botScans": {
-            t: _inject_price(_format_scan_for_ui(
-                eng._pick_scan(t, timeframe, prefer_bot=True) or 
-                eng._pick_scan(t, eng.config.TICKER_SETTINGS.get(t, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME), prefer_bot=True, ignore_freshness=True) or {},
-                use_global_settings=False
-            ), t)
-            for t in eng.config.TRADELIST
-        },
+        "botScans": bot_scans_dict,
 
         # Strategy Signals (primary ticker)
         "primaryTicker": primary_ticker,
@@ -1314,6 +1458,12 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
     global_backtest_cancel.clear()
     from user_config import active_evaluation_context, active_ticker_context
     active_evaluation_context.set("backtest")
+    # Apply indicator overrides for this backtest run
+    eng.config.contexts.get("backtest", {}).get("parameters", {}).clear()
+    eng.config.contexts.get("backtest", {}).get("toggles", {}).clear()
+    for k, v in data.get("indicator_overrides", {}).items():
+        eng.config.set(k, v)
+
     ticker = data.get("ticker", "AAPL").upper()
     active_ticker_context.set(ticker)
     
@@ -1337,6 +1487,10 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
     atr_trail_multiplier = float(data.get("atr_trail_multiplier", 3.0))
     atr_take_profit_multiplier = float(data.get("atr_take_profit_multiplier", 4.0))
     
+    regular_stop_loss_pct = float(data.get("regular_stop_loss_pct", 0.05))
+    regular_take_profit_pct = float(data.get("regular_take_profit_pct", 0.10))
+    regular_trailing_pct = float(data.get("regular_trailing_pct", 0.03))
+    
     ai_autopilot = data.get("ai_autopilot", False) or (sell_mode == "ai_autopilot")
     ai_interval = int(data.get("ai_interval", 10))
     ai_model = data.get("ai_model", "llama-3.3-70b-versatile")
@@ -1358,6 +1512,11 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
         atr_stop_multiplier=atr_stop_multiplier,
         atr_trail_multiplier=atr_trail_multiplier,
         atr_take_profit_multiplier=atr_take_profit_multiplier,
+        regular_stop_loss_pct=regular_stop_loss_pct,
+        regular_take_profit_pct=regular_take_profit_pct,
+        regular_trailing_pct=regular_trailing_pct,
+        buy_mode=data.get("buy_mode", "indicator"),
+        custom_buy_price=float(data.get("custom_buy_price", 0.0)),
         ai_autopilot=ai_autopilot,
         ai_interval=ai_interval,
         ai_model=ai_model,
@@ -1383,6 +1542,12 @@ async def run_optimization_endpoint(data: dict, eng: UserEngine = Depends(get_us
     global_backtest_cancel.clear()
     from user_config import active_evaluation_context, active_ticker_context
     active_evaluation_context.set("backtest")
+    # Apply indicator overrides for this backtest run
+    eng.config.contexts.get("backtest", {}).get("parameters", {}).clear()
+    eng.config.contexts.get("backtest", {}).get("toggles", {}).clear()
+    for k, v in data.get("indicator_overrides", {}).items():
+        eng.config.set(k, v)
+
     ticker = data.get("ticker", "AAPL").upper()
     active_ticker_context.set(ticker)
     
@@ -1412,6 +1577,11 @@ async def run_optimization_endpoint(data: dict, eng: UserEngine = Depends(get_us
         "ai_autopilot": False, # Disable AI autopilot during massive grid search to save Groq limits
         "enable_cooldown": bool(data.get("enable_cooldown", True)),
         "cooldown_minutes": int(data["cooldown_minutes"]) if data.get("cooldown_minutes") is not None else None,
+        "buy_mode": data.get("buy_mode", "indicator"),
+        "custom_buy_price": float(data.get("custom_buy_price", 0.0)),
+        "regular_stop_loss_pct": float(data.get("regular_stop_loss_pct", 0.05)),
+        "regular_take_profit_pct": float(data.get("regular_take_profit_pct", 0.10)),
+        "regular_trailing_pct": float(data.get("regular_trailing_pct", 0.03)),
     }
     
     from optimizer import run_optimization
@@ -1431,6 +1601,12 @@ async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_en
     global_backtest_cancel.clear()
     from user_config import active_evaluation_context, active_ticker_context
     active_evaluation_context.set("backtest")
+    # Apply indicator overrides for this backtest run
+    eng.config.contexts.get("backtest", {}).get("parameters", {}).clear()
+    eng.config.contexts.get("backtest", {}).get("toggles", {}).clear()
+    for k, v in data.get("indicator_overrides", {}).items():
+        eng.config.set(k, v)
+
     ticker = data.get("ticker", "AAPL").upper()
     active_ticker_context.set(ticker)
     
@@ -1494,8 +1670,20 @@ async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_en
         smart_reentry_vwap_call_max_dist_pct=smart_reentry_vwap_call_max_dist_pct,
         smart_reentry_vwap_put_max_dist_pct=smart_reentry_vwap_put_max_dist_pct,
         enable_cooldown=bool(data.get("enable_cooldown", True)),
-        cooldown_minutes=int(data["cooldown_minutes"]) if data.get("cooldown_minutes") is not None else 0
+        cooldown_minutes=int(data["cooldown_minutes"]) if data.get("cooldown_minutes") is not None else 0,
+        buy_mode=data.get("buy_mode", "indicator"),
+        custom_buy_price=float(data.get("custom_buy_price", 0.0)),
+        sell_mode=data.get("sell_mode", data.get("exit_strategy", "indicator")),
+        atr_stop_multiplier=float(data.get("atr_stop_multiplier", 2.0)),
+        atr_trail_multiplier=float(data.get("atr_trail_multiplier", 3.0)),
+        atr_take_profit_multiplier=float(data.get("atr_take_profit_multiplier", 4.0)),
+        regular_stop_loss_pct=float(data.get("stop_loss_pct", stop_loss_pct)),
+        regular_take_profit_pct=float(data.get("take_profit_pct", take_profit_pct)),
+        regular_trailing_pct=float(data.get("regular_trailing_pct", 0.03)),
+        risk_per_trade=float(data.get("risk_per_trade", 1.0)),
+        max_pos_pct=float(data.get("max_pos_pct", 1.0))
     )
+
     
     try:
         results = await asyncio.to_thread(opt_bt.run)
@@ -1569,7 +1757,6 @@ async def deploy_backtest_as_bot(data: dict, eng: UserEngine = Depends(get_user_
         "sell_threshold": data.get("sell_threshold"),
         "indicators": data.get("indicators", []),
         "add_to_watchlist": True,
-        "is_incubator": data.get("is_incubator", False),
     }
 
     if is_options:
@@ -1740,9 +1927,11 @@ async def update_risk_settings(settings: dict, context: str = "dashboard", eng: 
     token = active_evaluation_context.set(context)
     try:
         for key, value in settings.items():
-            if key in ['MAX_DAILY_DRAWDOWN', 'RISK_PER_TRADE', 'MAX_POSITION_PCT']:
+            if key in ['MAX_DAILY_DRAWDOWN', 'RISK_PER_TRADE', 'MAX_POSITION_PCT', 'GLOBAL_HARD_STOP_PCT']:
                 if isinstance(value, (int, float)) and value > 1:
                     value = value / 100.0
+            elif value is None:
+                value = None # Explicit pass for null values
             eng.config.set(key, value)
     finally:
         active_evaluation_context.reset(token)
@@ -1951,18 +2140,16 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
     if symbol not in eng.config.TICKER_SETTINGS:
         eng.config.TICKER_SETTINGS[symbol] = {}
         
-    if "capital" in data:
+    if "capital" in data and data["capital"] is not None:
         eng.config.TICKER_SETTINGS[symbol]["amount"] = float(data["capital"])
         
-    if "threshold" in data:
+    if "threshold" in data and data["threshold"] is not None:
         eng.config.TICKER_SETTINGS[symbol]["min_buy_signals"] = int(data["threshold"])
-    if "sell_threshold" in data:
+    if "sell_threshold" in data and data["sell_threshold"] is not None:
         eng.config.TICKER_SETTINGS[symbol]["min_sell_signals"] = int(data["sell_threshold"])
     
     if "timeframe" in data:
         eng.config.TICKER_SETTINGS[symbol]["timeframe"] = data["timeframe"]
-    if "is_incubator" in data:
-        eng.config.TICKER_SETTINGS[symbol]["is_incubator"] = data["is_incubator"]
         
     if "sell_mode" in data:
         eng.config.TICKER_SETTINGS[symbol]["sell_mode"] = data["sell_mode"]
@@ -1974,7 +2161,11 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
 
     for rk in ["risk_per_trade", "max_daily_drawdown", "max_position_pct", "atr_stop_multiplier", "atr_trail_multiplier", "take_profit_multiplier"]:
         if rk in data:
-            eng.config.TICKER_SETTINGS[symbol][rk] = float(data[rk])
+            if data[rk] is not None:
+                eng.config.TICKER_SETTINGS[symbol][rk] = float(data[rk])
+            else:
+                if rk in eng.config.TICKER_SETTINGS[symbol]:
+                    del eng.config.TICKER_SETTINGS[symbol][rk]
 
     if "cooldown_minutes" in data:
         if data["cooldown_minutes"] is None or data["cooldown_minutes"] == "default":
@@ -1990,15 +2181,15 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         eng.config.TICKER_SETTINGS[symbol]["options_type"] = data["options_type"]
     if "options_trade_amount" in data:
         eng.config.TICKER_SETTINGS[symbol]["options_trade_amount"] = float(data["options_trade_amount"])
-    if "options_expiry_days" in data:
+    if "options_expiry_days" in data and data["options_expiry_days"] is not None:
         eng.config.TICKER_SETTINGS[symbol]["options_expiry_days"] = int(data["options_expiry_days"])
     if "options_strike_type" in data:
         eng.config.TICKER_SETTINGS[symbol]["options_strike_type"] = data["options_strike_type"]
     if "options_exit_strategy" in data:
         eng.config.TICKER_SETTINGS[symbol]["options_exit_strategy"] = data["options_exit_strategy"]
-    if "options_stop_loss_pct" in data:
+    if "options_stop_loss_pct" in data and data["options_stop_loss_pct"] is not None:
         eng.config.TICKER_SETTINGS[symbol]["options_stop_loss_pct"] = float(data["options_stop_loss_pct"])
-    if "options_take_profit_pct" in data:
+    if "options_take_profit_pct" in data and data["options_take_profit_pct"] is not None:
         eng.config.TICKER_SETTINGS[symbol]["options_take_profit_pct"] = float(data["options_take_profit_pct"])
 
     if "ai_autopilot" in data:
@@ -2237,7 +2428,9 @@ def _format_scan_for_ui(scan: dict, use_global_settings: bool = False) -> dict:
 
     for name, data in raw_signals.items():
         toggle_key = SIGNAL_TO_TOGGLE.get(name, '')
-        if name == 'Botbulls4 News AI':
+        if 'enabled' in data:
+            enabled = data['enabled']
+        elif name == 'Botbulls4 News AI':
             enabled = getattr(uc, 'ENABLE_AI_SENTIMENT', True)
         elif allowed_indicators is not None:
             enabled = name in allowed_indicators
@@ -2246,13 +2439,22 @@ def _format_scan_for_ui(scan: dict, use_global_settings: bool = False) -> dict:
             
         all_signals[name] = {**data, 'enabled': enabled, 'toggle_key': toggle_key if name != 'Botbulls4 News AI' else 'ENABLE_AI_SENTIMENT'}
 
-    bullish = sum(s.get('weight', 1) for s in all_signals.values() if s.get('signal') == 'BULLISH' and s.get('enabled'))
-    bearish = sum(s.get('weight', 1) for s in all_signals.values() if s.get('signal') == 'BEARISH' and s.get('enabled'))
-    active_count = sum(1 for s in all_signals.values() if s.get('enabled'))
+    bullish = scan.get('bullish_count')
+    if bullish is None:
+        bullish = sum(s.get('weight', 1) for s in all_signals.values() if s.get('signal') == 'BULLISH' and s.get('enabled'))
+
+    bearish = scan.get('bearish_count')
+    if bearish is None:
+        bearish = sum(s.get('weight', 1) for s in all_signals.values() if s.get('signal') == 'BEARISH' and s.get('enabled'))
+
+    active_count = scan.get('total_signals')
+    if active_count is None:
+        active_count = sum(1 for s in all_signals.values() if s.get('enabled'))
 
     return {
         "ticker": scan.get("ticker", ""),
         "price": scan.get("price", ""),
+        "price_raw": scan.get("price_raw", 0.0),
         "action": scan.get("action", "HOLD"),
         "reason": scan.get("reason", ""),
         "sentiment_score": scan.get("sentiment_score", 0),
@@ -2281,6 +2483,7 @@ def _format_scan_for_ui(scan: dict, use_global_settings: bool = False) -> dict:
         "regime": scan.get("regime"),
         "position_size_usd": scan.get("position_size_usd"),
         "position_size_pct": scan.get("position_size_pct"),
+        "prior_day_ohlc": scan.get("prior_day_ohlc"),
     }
 
 @app.get("/api/debug-doge")

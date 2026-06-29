@@ -200,6 +200,14 @@ class WebullBroker:
                 # Skip trade client and account verification entirely
                 self.simulation_mode = True  # no real trading through this broker
                 print("[webull] Data-only mode: market data client ready. Trading disabled.")
+                
+                # Perform a dummy request to trigger token validation & MFA BEFORE saving to Firestore
+                try:
+                    print("[webull] Validating market data token...")
+                    self.get_latest_prices(["SPY"])
+                except Exception as e:
+                    print(f"[webull] Warning during token validation: {e}")
+                    
                 try:
                     sync_token_to_firestore()
                 except Exception as e:
