@@ -300,19 +300,31 @@
                 <!-- 2. ACTIVE TRADING BOTS -->
                 <div class="panel-glass relative">
                     <div class="panel-top-bar bg-gradient-to-r from-emerald-400 to-teal-400"></div>
-                    <div class="flex justify-between items-center mb-3">
-                        <h2 class="text-[0.95rem] sm:text-lg font-bold text-indigo-900">Active Trading Bots</h2>
-                        <div class="flex bg-indigo-50/50 p-1 rounded-xl border border-indigo-100">
+                    <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-3">
+                        <div class="flex items-center justify-between sm:justify-start gap-2 w-full sm:w-auto">
+                            <h2 class="text-[0.82rem] sm:text-lg font-bold text-indigo-900 whitespace-nowrap">Active Trading Bots</h2>
+                            <button id="botArrangeToggle" onclick="toggleBotArrangeMode()"
+                                class="h-7 px-2 sm:px-2.5 flex items-center justify-center gap-1 sm:gap-1.5 rounded-md border border-emerald-200/70 bg-white/60 text-emerald-600 hover:bg-emerald-50 transition-all disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                                title="Arrange bot cards">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none"
+                                    viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M8 7h12M8 12h12M8 17h12M4 7h.01M4 12h.01M4 17h.01" />
+                                </svg>
+                                <span id="botArrangeToggleLabel" class="text-[0.52rem] sm:text-[0.58rem] font-black uppercase tracking-wider">Arrange</span>
+                            </button>
+                        </div>
+                        <div class="flex bg-indigo-50/50 p-1 rounded-xl border border-indigo-100 w-full sm:w-auto">
                             <button id="tabBotsAll" onclick="setBotTab('all')"
-                                class="px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all bg-white text-indigo-600 shadow-sm border border-indigo-100">
+                                class="flex-1 sm:flex-none px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all bg-white text-indigo-600 shadow-sm border border-indigo-100">
                                 All
                             </button>
                             <button id="tabBotsStocks" onclick="setBotTab('stocks')"
-                                class="px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600">
+                                class="flex-1 sm:flex-none px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600">
                                 Stocks
                             </button>
                             <button id="tabBotsCrypto" onclick="setBotTab('crypto')"
-                                class="px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600">
+                                class="flex-1 sm:flex-none px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600">
                                 Crypto
                             </button>
                         </div>
@@ -415,6 +427,7 @@
                     </div>
                 </div>
             </div>
+        </div>
     </main>
 
     <!-- ═══════════════ FOOTER ═══════════════ -->
@@ -431,7 +444,6 @@
             </p>
         </div>
     </footer>
-    </div>
 
     <!-- Alpaca Connection Modal -->
     <div id="alpacaModal"
@@ -673,58 +685,96 @@
                 </div>
 
                 <div id="regularTradingBox" class="mt-4 space-y-6 animate-in fade-in duration-300">
-                    <!-- Top Row: Trade Allocation, Timeframe, Market Session (3-col) -->
-                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                        <div class="space-y-2">
-                            <label
-                                class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Trade
-                                Allocation ($)</label>
-                            <input type="number" id="strategyCapital"
-                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl px-2 sm:px-4 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
-                                value="1000">
-                        </div>
-                        <div class="space-y-2">
-                            <label
-                                class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Trading
-                                Timeframe</label>
-                            <div class="relative">
-                                <select id="strategyTimeframe_regular"
-                                    onchange="if(window.fetchLiveAtrForPreview && window.currentStrategySymbol) window.fetchLiveAtrForPreview(window.currentStrategySymbol, this.value)"
-                                    class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none cursor-pointer appearance-none transition-all">
-                                    <option value="1Min">1 Minute (Scalp)</option>
-                                    <option value="5Min" selected>5 Minutes (Intraday)</option>
-                                    <option value="15Min">15 Minutes (Active)</option>
-                                    <option value="30Min">30 Minutes (Active)</option>
-                                    <option value="1Hour">1 Hour (Swing)</option>
-                                    <option value="4Hour">4 Hour (Macro)</option>
-                                    <option value="1Day">1 Day (Long Term)</option>
-                                </select>
-                                <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500" fill="none"
-                                        viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                            d="M19 9l-7 7-7-7" />
-                                    </svg>
+                    <!-- Allocation + Schedule Rows -->
+                    <div class="space-y-4">
+                        <div
+                            class="rounded-2xl border border-white/40 bg-white/20 backdrop-blur-md p-3 sm:p-4 space-y-3">
+                            <div class="flex items-center gap-3">
+                                <div class="h-5 w-1.5 bg-gradient-to-b from-emerald-400 to-green-500 rounded-full"></div>
+                                <div class="text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Trade
+                                    Allocation</div>
+                            </div>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div class="space-y-2">
+                                    <label
+                                        class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Sizing
+                                        Method</label>
+                                    <div class="relative">
+                                        <select id="strategyAllocationMode_regular"
+                                            onchange="if(window.updateAllocationModeUI) window.updateAllocationModeUI('regular')"
+                                            class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none cursor-pointer appearance-none transition-all">
+                                            <option value="fixed" selected>Fixed Per Trade</option>
+                                            <option value="compound">Compound This Amount</option>
+                                        </select>
+                                        <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500"
+                                                fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                                    d="M19 9l-7 7-7-7" />
+                                            </svg>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="space-y-2">
+                                    <label id="strategyCapitalLabel_regular"
+                                        class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Amount
+                                        Per Trade ($)</label>
+                                    <input type="number" id="strategyCapital"
+                                        class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl px-2 sm:px-4 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
+                                        value="1000">
+                                    <div id="strategyCompoundAmountHint_regular"
+                                        class="hidden text-[0.62rem] sm:text-[0.68rem] font-bold leading-snug text-slate-500"></div>
                                 </div>
                             </div>
                         </div>
-                        <div class="space-y-2">
-                            <label
-                                class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Market
-                                Session</label>
-                            <div class="relative">
-                                <select id="strategyMarketSession_regular"
-                                    class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none cursor-pointer appearance-none transition-all">
-                                    <option value="Regular" selected>Regular Hours</option>
-                                    <option value="Extended">Extended Hours</option>
-                                </select>
-                                <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500" fill="none"
-                                        viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                            d="M19 9l-7 7-7-7" />
-                                    </svg>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div class="space-y-2">
+                                <label
+                                    class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Trading
+                                    Timeframe</label>
+                                <div class="relative">
+                                    <select id="strategyTimeframe_regular"
+                                        onchange="if(window.fetchLiveAtrForPreview && window.currentStrategySymbol) window.fetchLiveAtrForPreview(window.currentStrategySymbol, this.value)"
+                                        class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none cursor-pointer appearance-none transition-all">
+                                        <option value="1Min">1 Minute (Scalp)</option>
+                                        <option value="5Min" selected>5 Minutes (Intraday)</option>
+                                        <option value="15Min">15 Minutes (Active)</option>
+                                        <option value="30Min">30 Minutes (Active)</option>
+                                        <option value="1Hour">1 Hour (Swing)</option>
+                                        <option value="4Hour">4 Hour (Macro)</option>
+                                        <option value="1Day">1 Day (Long Term)</option>
+                                    </select>
+                                    <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                                d="M19 9l-7 7-7-7" />
+                                        </svg>
+                                    </div>
                                 </div>
+                            </div>
+                            <div class="space-y-2">
+                                <label
+                                    class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Market
+                                    Session</label>
+                                <div class="relative">
+                                    <select id="strategyMarketSession_regular"
+                                        onchange="if(window.updateMarketSessionNotice) window.updateMarketSessionNotice(); if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'both')"
+                                        class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none cursor-pointer appearance-none transition-all">
+                                        <option value="Regular" selected>Regular Hours</option>
+                                        <option value="Extended">Extended Hours</option>
+                                        <option value="24h">24 hr</option>
+                                    </select>
+                                    <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                                d="M19 9l-7 7-7-7" />
+                                        </svg>
+                                    </div>
+                                </div>
+                                <div id="strategyMarketSessionNotice_regular"
+                                    class="hidden text-[0.62rem] sm:text-[0.68rem] font-bold leading-snug text-slate-500"></div>
                             </div>
                         </div>
                     </div>
@@ -1430,6 +1480,22 @@
                             </option>
                             <option value="custom_price">Custom Price &#x2014; Buys when price crosses below target
                             </option>
+                            <option value="atr">ATR / Volatility &#x2014; Buys on ATR pullback confirmation</option>
+                            <option value="hybrid_atr">Hybrid (Indicator + ATR) &#x2014; Signals + ATR pullback
+                                levels</option>
+                            <option value="percentage">Percentage &#x2014; Buys on fixed % pullback</option>
+                            <option value="hybrid_pct">Hybrid (Indicator + Percentage) &#x2014; Signals + % pullback
+                            </option>
+                            <option value="pivot_points">Pivot Points &#x2014; Buys on pivot / support reclaim</option>
+                            <option value="hybrid_pivot">Hybrid (Indicator + Pivots) &#x2014; Signals + pivot levels
+                            </option>
+                            <option value="high_low">Daily High/Low &#x2014; Buys on prior high breakout</option>
+                            <option value="hybrid_high_low">Hybrid (Indicator + High/Low) &#x2014; Signals + H/L breakout
+                            </option>
+                            <option value="swing_points">Swing Points &#x2014; Buys on confirmed swing bounce/breakout
+                            </option>
+                            <option value="hybrid_swing">Hybrid (Indicator + Swing) &#x2014; Signals + Swing levels
+                            </option>
                         </select>
                         <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500" fill="none"
@@ -1453,7 +1519,7 @@
                                     class="w-7 h-7 flex items-center justify-center bg-white/30 text-emerald-700 rounded-lg border border-white/40 hover:bg-emerald-500/20 transition-all active:scale-90 text-sm font-black shadow-sm">&#x2212;</button>
                                 <input type="number" id="strategyBuyThreshold_regular" min="0" max="10" value="4"
                                     class="w-12 h-9 text-center text-lg font-black text-emerald-700 bg-white/40 border border-emerald-500/20 rounded-xl outline-none focus:bg-white/70 focus:border-emerald-500/50 transition-all shadow-sm"
-                                    oninput="updateStrategySignalLabels('regular')">
+                                    oninput="updateStrategySignalLabels('regular'); if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'entry')">
                                 <button onclick="adjustStrategyThreshold('regular', 'buy', 1)"
                                     class="w-7 h-7 flex items-center justify-center bg-white/30 text-emerald-700 rounded-lg border border-white/40 hover:bg-emerald-500/20 transition-all active:scale-90 text-sm font-black shadow-sm">+</button>
                             </div>
@@ -1475,11 +1541,115 @@
                                 <span
                                     class="absolute left-3 top-1/2 -translate-y-1/2 text-emerald-600 font-bold">$</span>
                                 <input type="number" step="0.01" id="strategyCustomBuyPrice_regular" placeholder="0.00"
+                                    oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'entry')"
                                     class="w-full h-9 pl-7 pr-3 text-sm font-black text-emerald-700 bg-white/40 border border-emerald-500/20 rounded-xl outline-none focus:bg-white/70 focus:border-emerald-500/50 transition-all shadow-sm">
                             </div>
                             <div class="text-[0.6rem] text-indigo-500/80 italic text-center mt-1">Bot will buy when
                                 price drops to this level.</div>
                         </div>
+                    </div>
+
+                    <div id="strategyEntryAtrFields_regular"
+                        class="hidden bg-sky-500/10 backdrop-blur-md p-4 rounded-2xl border border-sky-500/20 space-y-3 shadow-sm">
+                        <div class="flex items-center gap-1.5">
+                            <span
+                                class="flex items-center justify-center w-6 h-6 rounded-lg bg-sky-500 text-white text-[0.6rem] font-black shadow-sm">A</span>
+                            <span class="text-[0.55rem] font-black text-indigo-900 uppercase tracking-widest">ATR
+                                Entry</span>
+                        </div>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <div class="space-y-1">
+                                <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">ATR
+                                    Entry Multiplier</label>
+                                <input type="number" step="0.1" min="0.1" id="strategyEntryAtrMult_regular" value="2"
+                                    oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'entry')"
+                                    class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-sky-400/80 outline-none transition-all">
+                            </div>
+                            <div class="space-y-1">
+                                <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Entry
+                                    Style</label>
+                                <select id="strategyEntryAtrStyle_regular"
+                                    onchange="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'entry')"
+                                    class="w-full h-10 bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 text-[0.65rem] font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-sky-400/80 outline-none transition-all">
+                                    <option value="pullback_reclaim">Pullback / Reclaim</option>
+                                    <option value="breakout_momentum">Breakout / Momentum</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="strategyEntryPctFields_regular"
+                        class="hidden bg-fuchsia-500/10 backdrop-blur-md p-4 rounded-2xl border border-fuchsia-500/20 space-y-3 shadow-sm">
+                        <div class="flex items-center gap-1.5">
+                            <span
+                                class="flex items-center justify-center w-6 h-6 rounded-lg bg-fuchsia-500 text-white text-[0.6rem] font-black shadow-sm">P</span>
+                            <span class="text-[0.55rem] font-black text-indigo-900 uppercase tracking-widest">Percentage
+                                Entry</span>
+                        </div>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <div class="space-y-1">
+                                <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Pullback
+                                    %</label>
+                                <input type="number" step="0.1" min="0.1" id="strategyEntryPctMove_regular" value="5"
+                                    oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'entry')"
+                                    class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-fuchsia-400/80 outline-none transition-all">
+                            </div>
+                            <div class="space-y-1">
+                                <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Entry
+                                    Style</label>
+                                <select id="strategyEntryPctStyle_regular"
+                                    onchange="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'entry')"
+                                    class="w-full h-10 bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 text-[0.65rem] font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-fuchsia-400/80 outline-none transition-all">
+                                    <option value="dip_reclaim">Dip / Reclaim</option>
+                                    <option value="breakout_momentum">Breakout / Momentum</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="strategySwingEntrySettings_regular"
+                        class="hidden bg-cyan-500/10 backdrop-blur-md p-4 rounded-2xl border border-cyan-500/20 space-y-3 shadow-sm">
+                        <div class="flex items-center gap-1.5">
+                            <span
+                                class="flex items-center justify-center w-6 h-6 rounded-lg bg-cyan-500 text-white text-[0.6rem] font-black shadow-sm">S</span>
+                            <span class="text-[0.55rem] font-black text-indigo-900 uppercase tracking-widest">Swing
+                                Entry</span>
+                        </div>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <div class="space-y-1">
+                                <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Entry
+                                    Sub-Mode</label>
+                                <select id="strategySwingEntryMode_regular"
+                                    onchange="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'entry'); if(window.fetchLiveAtrForPreview && window.currentStrategySymbol) window.fetchLiveAtrForPreview(window.currentStrategySymbol)"
+                                    class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-cyan-400/80 outline-none transition-all">
+                                    <option value="bounce_retest" selected>Bounce / Retest</option>
+                                    <option value="breakout_retest">Breakout / Retest</option>
+                                </select>
+                            </div>
+                            <div class="space-y-1">
+                                <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Lookback</label>
+                            <select id="strategySwingEntryLookback_regular"
+                                onchange="window.updateSwingLookbackFields && window.updateSwingLookbackFields('regular', 'entry'); if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'entry'); if(window.fetchLiveAtrForPreview && window.currentStrategySymbol) window.fetchLiveAtrForPreview(window.currentStrategySymbol)"
+                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-cyan-400/80 outline-none transition-all">
+                                    <option value="5D">5D</option>
+                                    <option value="20D" selected>20D</option>
+                                    <option value="60D">60D</option>
+                                    <option value="120D">120D</option>
+                                    <option value="custom">Custom</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div id="strategySwingEntryLookbackCustomWrap_regular" class="hidden">
+                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest mb-1">Custom
+                                Days</label>
+                        <input type="number" min="1" max="365" id="strategySwingEntryLookbackCustom_regular" value="20"
+                            oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'entry')"
+                            class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-cyan-400/80 outline-none transition-all">
+                        </div>
+                    </div>
+
+                    <div id="livePreviewEntryBox_regular"
+                        class="mt-2 p-2 bg-slate-50/50 rounded-lg border border-slate-200 text-[0.65rem] text-slate-700 font-medium hidden">
                     </div>
                 </div>
 
@@ -1494,6 +1664,8 @@
                         <select id="strategySellMode_regular" onchange="updateRegularExitFields()"
                             class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none cursor-pointer appearance-none transition-all">
                             <option value="indicator">Indicator &#x2014; Sells when Bearish Signals hit Sell Threshold
+                            </option>
+                            <option value="custom_sltp">Custom SL/TP &#x2014; Exits at user-defined stop-loss &amp; take-profit prices
                             </option>
                             <option value="sltp">ATR / Volatility &#x2014; Stop-Loss &amp; Take-Profit based on ATR
                             </option>
@@ -1510,6 +1682,9 @@
                             </option>
                             <option value="hybrid_high_low">Hybrid (Indicator + High/Low) &#x2014; Signals + H/L
                                 breakout</option>
+                            <option value="swing_points">Swing Points &#x2014; Exits at structural support/resistance
+                            </option>
+                            <option value="hybrid_swing">Hybrid (Indicator + Swing) &#x2014; Signals + Swing levels</option>
                         </select>
                         <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500" fill="none"
@@ -1543,20 +1718,37 @@
                                 Signals</span>
                         </div>
                     </div>
+                    <!-- Custom SL/TP sub-fields -->
+                    <div id="exitFieldsCustom_regular" class="hidden grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2 pt-1">
+                        <div class="space-y-1">
+                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Stop
+                                Loss Price</label>
+                            <input type="number" step="0.01" id="strategyCustomStopLossPrice_regular" placeholder="0.00"
+                                oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'exit')"
+                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-rose-400/80 outline-none transition-all">
+                        </div>
+                        <div class="space-y-1">
+                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Take
+                                Profit Price</label>
+                            <input type="number" step="0.01" id="strategyCustomTakeProfitPrice_regular" placeholder="0.00"
+                                oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'exit')"
+                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-emerald-400/80 outline-none transition-all">
+                        </div>
+                    </div>
                     <!-- ATR sub-fields -->
                     <div id="exitFieldsATR" class="hidden grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2 pt-1">
                         <div class="space-y-1">
                             <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">ATR
                                 Stop Multiplier</label>
                             <input type="number" step="1" id="strategyAtrStopMult" value="2"
-                                oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular')"
+                                oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'exit')"
                                 class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 outline-none transition-all">
                         </div>
                         <div class="space-y-1">
                             <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">ATR
                                 Take Profit Multiplier</label>
                             <input type="number" step="1" id="strategyAtrTpMult" value="4"
-                                oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular')"
+                                oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'exit')"
                                 class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 outline-none transition-all">
                         </div>
                         <div class="space-y-1">
@@ -1567,13 +1759,13 @@
                                 <label class="flex items-center gap-1.5 cursor-pointer">
                                     <input type="checkbox" id="strategyEnableAtrTrail" checked
                                         class="accent-indigo-500 w-3 h-3"
-                                        onchange="document.getElementById('strategyAtrTrailMult').disabled=!this.checked;document.getElementById('strategyAtrTrailMult').classList.toggle('opacity-50',!this.checked); if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular');">
+                                        onchange="document.getElementById('strategyAtrTrailMult').disabled=!this.checked;document.getElementById('strategyAtrTrailMult').classList.toggle('opacity-50',!this.checked); if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'exit');">
                                     <span
                                         class="text-[0.55rem] font-black text-indigo-900 uppercase tracking-widest">Trail</span>
                                 </label>
                             </div>
                             <input type="number" step="1" id="strategyAtrTrailMult" value="3"
-                                oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular')"
+                                oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'exit')"
                                 class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 outline-none transition-all">
                         </div>
 
@@ -1584,14 +1776,14 @@
                             <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Stop
                                 Loss %</label>
                             <input type="number" step="1" id="strategyRegularSlPct" value="5"
-                                oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular')"
+                                oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'exit')"
                                 class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 outline-none transition-all">
                         </div>
                         <div class="space-y-1">
                             <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Take
                                 Profit %</label>
                             <input type="number" step="1" id="strategyRegularTpPct" value="10"
-                                oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular')"
+                                oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'exit')"
                                 class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 outline-none transition-all">
                         </div>
                         <div class="space-y-1">
@@ -1602,21 +1794,50 @@
                                 <label class="flex items-center gap-1.5 cursor-pointer">
                                     <input type="checkbox" id="strategyEnablePctTrail" checked
                                         class="accent-indigo-500 w-3 h-3"
-                                        onchange="document.getElementById('strategyRegularTrailPct').disabled=!this.checked;document.getElementById('strategyRegularTrailPct').classList.toggle('opacity-50',!this.checked); if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular');">
+                                        onchange="document.getElementById('strategyRegularTrailPct').disabled=!this.checked;document.getElementById('strategyRegularTrailPct').classList.toggle('opacity-50',!this.checked); if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'exit');">
                                     <span
                                         class="text-[0.55rem] font-black text-indigo-900 uppercase tracking-widest">Trail</span>
                                 </label>
                             </div>
                             <input type="number" step="1" id="strategyRegularTrailPct" value="3"
-                                oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular')"
+                                oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'exit')"
                                 class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 outline-none transition-all">
                         </div>
 
                     </div>
 
-                    <div id="livePreviewBox_regular"
-                        class="mt-2 p-2 bg-slate-50/50 rounded-lg border border-slate-200 text-[0.65rem] text-slate-700 font-medium hidden">
+                    <div id="strategySwingExitSettings_regular"
+                        class="hidden bg-cyan-500/10 backdrop-blur-md p-4 rounded-2xl border border-cyan-500/20 space-y-3 shadow-sm">
+                        <div class="flex items-center gap-1.5">
+                            <span
+                                class="flex items-center justify-center w-6 h-6 rounded-lg bg-cyan-500 text-white text-[0.6rem] font-black shadow-sm">S</span>
+                            <span class="text-[0.55rem] font-black text-indigo-900 uppercase tracking-widest">Swing
+                                Exit</span>
+                        </div>
+                        <div class="space-y-1">
+                        <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Lookback</label>
+                        <select id="strategySwingExitLookback_regular"
+                                onchange="window.updateSwingLookbackFields && window.updateSwingLookbackFields('regular', 'exit'); if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'exit')"
+                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-cyan-400/80 outline-none transition-all">
+                                <option value="5D">5D</option>
+                                <option value="20D" selected>20D</option>
+                                <option value="60D">60D</option>
+                                <option value="120D">120D</option>
+                                <option value="custom">Custom</option>
+                            </select>
+                        </div>
+                        <div id="strategySwingExitLookbackCustomWrap_regular" class="hidden">
+                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest mb-1">Custom
+                                Days</label>
+                            <input type="number" min="1" max="365" id="strategySwingExitLookbackCustom_regular" value="20"
+                                oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'exit')"
+                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-cyan-400/80 outline-none transition-all">
+                        </div>
                     </div>
+
+                <div id="livePreviewExitBox_regular"
+                        class="mt-2 p-2 bg-slate-50/50 rounded-lg border border-slate-200 text-[0.65rem] text-slate-700 font-medium hidden">
+                </div>
                 </div>
 
                 <!-- Re-Entry Cooldown Option -->
@@ -1776,56 +1997,93 @@
             </div>
 
             <div id="optionsTradingBox" class="mt-4 space-y-6 hidden animate-in fade-in duration-300">
-                <!-- Top Row: Trade Allocation, Timeframe, Market Session (3-col) -->
-                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    <div class="space-y-2">
-                        <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Trade
-                            Allocation ($)</label>
-                        <input type="number" id="strategyOptionsTradeAmount" value="1000" min="1"
-                            class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl px-2 sm:px-4 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 outline-none transition-all">
-                    </div>
-                    <div class="space-y-2">
-                        <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Trading
-                            Timeframe</label>
-                        <div class="relative">
-                            <select id="strategyTimeframe_options"
-                                onchange="if(window.fetchLiveAtrForPreview && window.currentStrategySymbol) window.fetchLiveAtrForPreview(window.currentStrategySymbol, this.value)"
-                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 outline-none cursor-pointer appearance-none transition-all">
-                                <option value="1Min">1 Minute (Scalp)</option>
-                                <option value="5Min" selected>5 Minutes (Intraday)</option>
-                                <option value="15Min">15 Minutes (Active)</option>
-                                <option value="30Min">30 Minutes (Active)</option>
-                                <option value="1Hour">1 Hour (Swing)</option>
-                                <option value="4Hour">4 Hour (Macro)</option>
-                                <option value="1Day">1 Day (Long Term)</option>
-                            </select>
-                            <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500" fill="none"
-                                    viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                        d="M19 9l-7 7-7-7" />
-                                </svg>
+                <!-- Allocation + Schedule Rows -->
+                <div class="space-y-4">
+                    <div
+                        class="rounded-2xl border border-white/40 bg-white/20 backdrop-blur-md p-3 sm:p-4 space-y-3">
+                        <div class="flex items-center gap-3">
+                            <div class="h-5 w-1.5 bg-gradient-to-b from-emerald-400 to-green-500 rounded-full"></div>
+                            <div class="text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Trade
+                                Allocation</div>
+                        </div>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div class="space-y-2">
+                                <label
+                                    class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Sizing
+                                    Method</label>
+                                <div class="relative">
+                                    <select id="strategyAllocationMode_options"
+                                        onchange="if(window.updateAllocationModeUI) window.updateAllocationModeUI('options')"
+                                        class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 outline-none cursor-pointer appearance-none transition-all">
+                                        <option value="fixed" selected>Fixed Per Trade</option>
+                                        <option value="compound">Compound This Amount</option>
+                                    </select>
+                                    <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                                d="M19 9l-7 7-7-7" />
+                                        </svg>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="space-y-2">
+                                <label id="strategyCapitalLabel_options"
+                                    class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Amount
+                                    Per Trade ($)</label>
+                                <input type="number" id="strategyOptionsTradeAmount" value="1000" min="1"
+                                    class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl px-2 sm:px-4 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 outline-none transition-all">
+                                <div id="strategyCompoundAmountHint_options"
+                                    class="hidden text-[0.62rem] sm:text-[0.68rem] font-bold leading-snug text-slate-500"></div>
                             </div>
                         </div>
                     </div>
-                    <div class="space-y-2">
-                        <label
-                            class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Market
-                            Session</label>
-                        <div class="relative">
-                            <select id="strategyMarketSession_options"
-                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 outline-none cursor-pointer appearance-none transition-all">
-                                <option value="Regular" selected>Regular Hours</option>
-                            </select>
-                            <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500" fill="none"
-                                    viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                        d="M19 9l-7 7-7-7" />
-                                </svg>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div class="space-y-2">
+                            <label
+                                class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Trading
+                                Timeframe</label>
+                            <div class="relative">
+                                <select id="strategyTimeframe_options"
+                                    onchange="if(window.fetchLiveAtrForPreview && window.currentStrategySymbol) window.fetchLiveAtrForPreview(window.currentStrategySymbol, this.value)"
+                                    class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 outline-none cursor-pointer appearance-none transition-all">
+                                    <option value="1Min">1 Minute (Scalp)</option>
+                                    <option value="5Min" selected>5 Minutes (Intraday)</option>
+                                    <option value="15Min">15 Minutes (Active)</option>
+                                    <option value="30Min">30 Minutes (Active)</option>
+                                    <option value="1Hour">1 Hour (Swing)</option>
+                                    <option value="4Hour">4 Hour (Macro)</option>
+                                    <option value="1Day">1 Day (Long Term)</option>
+                                </select>
+                                <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500" fill="none"
+                                        viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                            d="M19 9l-7 7-7-7" />
+                                    </svg>
+                                </div>
                             </div>
                         </div>
-                        <p class="text-[0.5rem] text-indigo-500 mt-1 pl-1">Options strictly trade regular hours</p>
+                        <div class="space-y-2">
+                            <label
+                                class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Market
+                                Session</label>
+                            <div class="relative">
+                                <select id="strategyMarketSession_options"
+                                    onchange="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'both')"
+                                    class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 outline-none cursor-pointer appearance-none transition-all">
+                                    <option value="Regular" selected>Regular Hours</option>
+                                </select>
+                                <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500" fill="none"
+                                        viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                            d="M19 9l-7 7-7-7" />
+                                    </svg>
+                                </div>
+                            </div>
+                            <p class="text-[0.5rem] text-indigo-500 mt-1 pl-1">Options strictly trade regular hours</p>
+                        </div>
                     </div>
                 </div>
 
@@ -2518,6 +2776,22 @@
                         <option value="indicator">Indicator &#x2014; Buys when Bullish Signals hit Buy Threshold
                         </option>
                         <option value="custom_price">Custom Price &#x2014; Buys when price crosses below target</option>
+                        <option value="atr">ATR / Volatility &#x2014; Buys on ATR pullback confirmation</option>
+                        <option value="hybrid_atr">Hybrid (Indicator + ATR) &#x2014; Signals + ATR pullback levels
+                        </option>
+                        <option value="percentage">Percentage &#x2014; Buys on fixed % pullback</option>
+                        <option value="hybrid_pct">Hybrid (Indicator + Percentage) &#x2014; Signals + % pullback
+                        </option>
+                        <option value="pivot_points">Pivot Points &#x2014; Buys on pivot / support reclaim</option>
+                        <option value="hybrid_pivot">Hybrid (Indicator + Pivots) &#x2014; Signals + pivot levels
+                        </option>
+                        <option value="high_low">Daily High/Low &#x2014; Buys on prior high breakout</option>
+                        <option value="hybrid_high_low">Hybrid (Indicator + High/Low) &#x2014; Signals + H/L breakout
+                        </option>
+                        <option value="swing_points">Swing Points &#x2014; Buys on confirmed swing bounce/breakout
+                        </option>
+                        <option value="hybrid_swing">Hybrid (Indicator + Swing) &#x2014; Signals + Swing levels
+                        </option>
                     </select>
                     <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500" fill="none"
@@ -2541,7 +2815,7 @@
                                 class="w-7 h-7 flex items-center justify-center bg-white/30 text-emerald-700 rounded-lg border border-white/40 hover:bg-emerald-500/20 transition-all active:scale-90 text-sm font-black shadow-sm">&#x2212;</button>
                             <input type="number" id="strategyBuyThreshold_options" min="0" max="10" value="4"
                                 class="w-12 h-9 text-center text-lg font-black text-emerald-700 bg-white/40 border border-emerald-500/20 rounded-xl outline-none focus:bg-white/70 focus:border-emerald-500/50 transition-all shadow-sm"
-                                oninput="updateStrategySignalLabels('options')">
+                                oninput="updateStrategySignalLabels('options'); if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry')">
                             <button onclick="adjustStrategyThreshold('options', 'buy', 1)"
                                 class="w-7 h-7 flex items-center justify-center bg-white/30 text-emerald-700 rounded-lg border border-white/40 hover:bg-emerald-500/20 transition-all active:scale-90 text-sm font-black shadow-sm">+</button>
                         </div>
@@ -2556,9 +2830,113 @@
                         <div class="relative w-full max-w-[200px] mt-1">
                             <span class="absolute left-3 top-1/2 -translate-y-1/2 text-emerald-600 font-bold">$</span>
                             <input type="number" step="0.01" id="strategyCustomBuyPrice_options" placeholder="0.00"
+                                oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry')"
                                 class="w-full h-9 pl-7 pr-3 text-sm font-black text-emerald-700 bg-white/40 border border-emerald-500/20 rounded-xl outline-none focus:bg-white/70 transition-all shadow-sm">
                         </div>
                     </div>
+                </div>
+
+                <div id="strategyEntryAtrFields_options"
+                    class="hidden bg-sky-500/10 backdrop-blur-md p-4 rounded-2xl border border-sky-500/20 space-y-3 shadow-sm">
+                    <div class="flex items-center gap-1.5">
+                        <span
+                            class="flex items-center justify-center w-6 h-6 rounded-lg bg-sky-500 text-white text-[0.6rem] font-black shadow-sm">A</span>
+                        <span class="text-[0.55rem] font-black text-indigo-900 uppercase tracking-widest">ATR
+                            Entry</span>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div class="space-y-1">
+                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">ATR
+                                Entry Multiplier</label>
+                            <input type="number" step="0.1" min="0.1" id="strategyEntryAtrMult_options" value="2"
+                                oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry')"
+                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-sky-400/80 outline-none transition-all">
+                        </div>
+                        <div class="space-y-1">
+                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Entry
+                                Style</label>
+                            <select id="strategyEntryAtrStyle_options"
+                                onchange="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry')"
+                                class="w-full h-10 bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 text-[0.65rem] font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-sky-400/80 outline-none transition-all">
+                                <option value="pullback_reclaim">Pullback / Reclaim</option>
+                                <option value="breakout_momentum">Breakout / Momentum</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="strategyEntryPctFields_options"
+                    class="hidden bg-fuchsia-500/10 backdrop-blur-md p-4 rounded-2xl border border-fuchsia-500/20 space-y-3 shadow-sm">
+                    <div class="flex items-center gap-1.5">
+                        <span
+                            class="flex items-center justify-center w-6 h-6 rounded-lg bg-fuchsia-500 text-white text-[0.6rem] font-black shadow-sm">P</span>
+                        <span class="text-[0.55rem] font-black text-indigo-900 uppercase tracking-widest">Percentage
+                            Entry</span>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div class="space-y-1">
+                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Pullback
+                                %</label>
+                            <input type="number" step="0.1" min="0.1" id="strategyEntryPctMove_options" value="5"
+                                oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry')"
+                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-fuchsia-400/80 outline-none transition-all">
+                        </div>
+                        <div class="space-y-1">
+                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Entry
+                                Style</label>
+                            <select id="strategyEntryPctStyle_options"
+                                onchange="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry')"
+                                class="w-full h-10 bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 text-[0.65rem] font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-fuchsia-400/80 outline-none transition-all">
+                                <option value="dip_reclaim">Dip / Reclaim</option>
+                                <option value="breakout_momentum">Breakout / Momentum</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="strategySwingEntrySettings_options"
+                    class="hidden bg-cyan-500/10 backdrop-blur-md p-4 rounded-2xl border border-cyan-500/20 space-y-3 shadow-sm">
+                    <div class="flex items-center gap-1.5">
+                        <span
+                            class="flex items-center justify-center w-6 h-6 rounded-lg bg-cyan-500 text-white text-[0.6rem] font-black shadow-sm">S</span>
+                        <span class="text-[0.55rem] font-black text-indigo-900 uppercase tracking-widest">Swing
+                            Entry</span>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div class="space-y-1">
+                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Entry
+                                Sub-Mode</label>
+                            <select id="strategySwingEntryMode_options"
+                                onchange="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry'); if(window.fetchLiveAtrForPreview && window.currentStrategySymbol) window.fetchLiveAtrForPreview(window.currentStrategySymbol)"
+                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-cyan-400/80 outline-none transition-all">
+                                <option value="bounce_retest" selected>Bounce / Retest</option>
+                                <option value="breakout_retest">Breakout / Retest</option>
+                            </select>
+                        </div>
+                        <div class="space-y-1">
+                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Lookback</label>
+                        <select id="strategySwingEntryLookback_options"
+                            onchange="window.updateSwingLookbackFields && window.updateSwingLookbackFields('options', 'entry'); if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry'); if(window.fetchLiveAtrForPreview && window.currentStrategySymbol) window.fetchLiveAtrForPreview(window.currentStrategySymbol)"
+                            class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-cyan-400/80 outline-none transition-all">
+                                <option value="5D">5D</option>
+                                <option value="20D" selected>20D</option>
+                                <option value="60D">60D</option>
+                                <option value="120D">120D</option>
+                                <option value="custom">Custom</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="strategySwingEntryLookbackCustomWrap_options" class="hidden">
+                        <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest mb-1">Custom
+                            Days</label>
+                        <input type="number" min="1" max="365" id="strategySwingEntryLookbackCustom_options" value="20"
+                            oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry')"
+                            class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-cyan-400/80 outline-none transition-all">
+                    </div>
+                </div>
+
+                <div id="livePreviewEntryBox_options"
+                    class="mt-2 p-2 bg-slate-50/50 rounded-lg border border-slate-200 text-[0.65rem] text-slate-700 font-medium hidden">
                 </div>
             </div>
 
@@ -2574,6 +2952,7 @@
                         class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 outline-none cursor-pointer appearance-none transition-all">
                         <option value="indicator">Indicator &#x2014; Sells when Bearish Signals hit Sell Threshold
                         </option>
+                        <option value="custom_sltp">Custom SL/TP &#x2014; Exits at user-defined stop-loss &amp; take-profit prices</option>
                         <option value="sltp">ATR / Volatility &#x2014; Stop-Loss &amp; Take-Profit based on ATR</option>
                         <option value="hybrid">Hybrid (Indicator + ATR) &#x2014; Whichever triggers first</option>
                         <option value="percentage">Percentage &#x2014; Fixed % Stop-Loss, Take-Profit &amp; Trailing
@@ -2586,6 +2965,9 @@
                         <option value="high_low">Daily High/Low &#x2014; Exits at prior day high/low breakout</option>
                         <option value="hybrid_high_low">Hybrid (Indicator + High/Low) &#x2014; Signals + H/L breakout
                         </option>
+                        <option value="swing_points">Swing Points &#x2014; Exits at structural support/resistance
+                        </option>
+                        <option value="hybrid_swing">Hybrid (Indicator + Swing) &#x2014; Signals + Swing levels</option>
                     </select>
                     <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500" fill="none"
@@ -2619,20 +3001,37 @@
                             Signals</span>
                     </div>
                 </div>
+                <!-- Custom SL/TP sub-fields (options) -->
+                <div id="exitFieldsCustom_options" class="hidden grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2 pt-1">
+                    <div class="space-y-1">
+                        <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Stop
+                            Loss Premium</label>
+                        <input type="number" step="0.01" id="strategyCustomStopLossPrice_options" placeholder="0.00"
+                            oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'exit')"
+                            class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 outline-none transition-all">
+                    </div>
+                    <div class="space-y-1">
+                        <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Take
+                            Profit Premium</label>
+                        <input type="number" step="0.01" id="strategyCustomTakeProfitPrice_options" placeholder="0.00"
+                            oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'exit')"
+                            class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 outline-none transition-all">
+                    </div>
+                </div>
                 <!-- ATR sub-fields (options) -->
                 <div id="exitFieldsATR_options" class="hidden grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2 pt-1">
                     <div class="space-y-1">
                         <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">ATR Stop
                             Multiplier</label>
                         <input type="number" step="1" id="strategyAtrStopMult_options" value="2"
-                            oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options')"
+                            oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'exit')"
                             class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 outline-none transition-all">
                     </div>
                     <div class="space-y-1">
                         <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">ATR Take
                             Profit Multiplier</label>
                         <input type="number" step="1" id="strategyAtrTpMult_options" value="4"
-                            oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options')"
+                            oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'exit')"
                             class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 outline-none transition-all">
                     </div>
                     <div class="space-y-1">
@@ -2642,13 +3041,13 @@
                             <label class="flex items-center gap-1.5 cursor-pointer">
                                 <input type="checkbox" id="strategyEnableAtrTrail_options" checked
                                     class="accent-indigo-500 w-3 h-3"
-                                    onchange="document.getElementById('strategyAtrTrailMult_options').disabled=!this.checked;document.getElementById('strategyAtrTrailMult_options').classList.toggle('opacity-50',!this.checked); if(window.updateLivePreview_bots) window.updateLivePreview_bots('options');">
+                                    onchange="document.getElementById('strategyAtrTrailMult_options').disabled=!this.checked;document.getElementById('strategyAtrTrailMult_options').classList.toggle('opacity-50',!this.checked); if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'exit');">
                                 <span
                                     class="text-[0.55rem] font-black text-indigo-900 uppercase tracking-widest">Trail</span>
                             </label>
                         </div>
                         <input type="number" step="1" id="strategyAtrTrailMult_options" value="3"
-                            oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options')"
+                            oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'exit')"
                             class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 outline-none transition-all">
                     </div>
 
@@ -2659,14 +3058,14 @@
                         <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Stop
                             Loss %</label>
                         <input type="number" step="1" id="strategyOptionsSlPct" value="10"
-                            oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options')"
+                            oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'exit')"
                             class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 outline-none transition-all">
                     </div>
                     <div class="space-y-1">
                         <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Take
                             Profit %</label>
                         <input type="number" step="1" id="strategyOptionsTpPct" value="20"
-                            oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options')"
+                            oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'exit')"
                             class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 outline-none transition-all">
                     </div>
                     <div class="space-y-1">
@@ -2677,19 +3076,48 @@
                             <label class="flex items-center gap-1.5 cursor-pointer">
                                 <input type="checkbox" id="strategyEnablePctTrail_options" checked
                                     class="accent-indigo-500 w-3 h-3"
-                                    onchange="document.getElementById('strategyOptionsTrailPct').disabled=!this.checked;document.getElementById('strategyOptionsTrailPct').classList.toggle('opacity-50',!this.checked); if(window.updateLivePreview_bots) window.updateLivePreview_bots('options');">
+                                    onchange="document.getElementById('strategyOptionsTrailPct').disabled=!this.checked;document.getElementById('strategyOptionsTrailPct').classList.toggle('opacity-50',!this.checked); if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'exit');">
                                 <span
                                     class="text-[0.55rem] font-black text-indigo-900 uppercase tracking-widest">Trail</span>
                             </label>
                         </div>
                         <input type="number" step="1" id="strategyOptionsTrailPct" value="10"
-                            oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options')"
+                            oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'exit')"
                             class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 outline-none transition-all">
                     </div>
 
                 </div>
 
-                <div id="livePreviewBox_options"
+                <div id="strategySwingExitSettings_options"
+                    class="hidden bg-cyan-500/10 backdrop-blur-md p-4 rounded-2xl border border-cyan-500/20 space-y-3 shadow-sm">
+                    <div class="flex items-center gap-1.5">
+                        <span
+                            class="flex items-center justify-center w-6 h-6 rounded-lg bg-cyan-500 text-white text-[0.6rem] font-black shadow-sm">S</span>
+                        <span class="text-[0.55rem] font-black text-indigo-900 uppercase tracking-widest">Swing
+                            Exit</span>
+                    </div>
+                    <div class="space-y-1">
+                        <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Lookback</label>
+                        <select id="strategySwingExitLookback_options"
+                            onchange="window.updateSwingLookbackFields && window.updateSwingLookbackFields('options', 'exit'); if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'exit')"
+                            class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-cyan-400/80 outline-none transition-all">
+                            <option value="5D">5D</option>
+                            <option value="20D" selected>20D</option>
+                            <option value="60D">60D</option>
+                            <option value="120D">120D</option>
+                            <option value="custom">Custom</option>
+                        </select>
+                    </div>
+                    <div id="strategySwingExitLookbackCustomWrap_options" class="hidden">
+                        <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest mb-1">Custom
+                            Days</label>
+                        <input type="number" min="1" max="365" id="strategySwingExitLookbackCustom_options" value="20"
+                            oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'exit')"
+                            class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-cyan-400/80 outline-none transition-all">
+                    </div>
+                </div>
+
+                <div id="livePreviewExitBox_options"
                     class="mt-2 p-2 bg-slate-50/50 rounded-lg border border-slate-200 text-[0.65rem] text-slate-700 font-medium hidden">
                 </div>
 
@@ -2904,7 +3332,6 @@
     </div>
     </div>
 
-    </div>
     <!-- Indicator Settings Modal -->
     <div id="indicatorSettingsModal"
         class="fixed inset-0 bg-purple-950/15 backdrop-blur-md z-[200] hidden flex items-center justify-center p-4">

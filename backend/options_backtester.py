@@ -4,6 +4,7 @@ import math
 import datetime
 from data_manager import get_historical_data
 from indicators import calculate_indicators_for_df, _generate_signals
+from swing_strategy import build_entry_signal
 from options_pricing import black_scholes, calculate_historical_volatility
 
 class OptionsBacktester:
@@ -49,7 +50,14 @@ class OptionsBacktester:
         regular_take_profit_pct: float = 0.10,
         regular_trailing_pct: float = 0.03,
         risk_per_trade: float = 1.0,
-        max_pos_pct: float = 1.0
+        max_pos_pct: float = 1.0,
+        entry_atr_multiplier: float = None,
+        entry_pct_move: float = None,
+        entry_atr_style: str = "pullback_reclaim",
+        entry_pct_style: str = "dip_reclaim",
+        swing_entry_mode: str = "bounce_retest",
+        swing_entry_lookback_days: int = 20,
+        market_session: str = "Regular"
     ):
         self.ticker = ticker
         self.timeframe = timeframe
@@ -94,6 +102,13 @@ class OptionsBacktester:
         self.regular_stop_loss_pct = regular_stop_loss_pct or stop_loss_pct
         self.regular_take_profit_pct = regular_take_profit_pct or take_profit_pct
         self.regular_trailing_pct = regular_trailing_pct
+        self.entry_atr_multiplier = entry_atr_multiplier or atr_stop_multiplier
+        self.entry_pct_move = entry_pct_move or max(1.0, (regular_stop_loss_pct or stop_loss_pct) * 100.0)
+        self.entry_atr_style = entry_atr_style or "pullback_reclaim"
+        self.entry_pct_style = entry_pct_style or "dip_reclaim"
+        self.swing_entry_mode = swing_entry_mode or "bounce_retest"
+        self.swing_entry_lookback_days = swing_entry_lookback_days or 20
+        self.market_session = market_session or "Regular"
         # Risk sizing
         self.risk_per_trade = risk_per_trade
         self.max_pos_pct = max_pos_pct
@@ -251,6 +266,20 @@ class OptionsBacktester:
         self.df = full_df.loc[self.start_date:self.end_date]
         if self.df.empty:
             return {"error": "No data available in requested range after filtering."}
+
+        price_history_records = []
+        for ts, row in self.df.iterrows():
+            try:
+                price_history_records.append({
+                    "time": int(ts.timestamp()) if hasattr(ts, "timestamp") else ts,
+                    "open": float(row.get("Open", row.get("open", row.get("Close", 0.0)))),
+                    "high": float(row.get("High", row.get("high", row.get("Close", 0.0)))),
+                    "low": float(row.get("Low", row.get("low", row.get("Close", 0.0)))),
+                    "close": float(row.get("Close", row.get("close", 0.0))),
+                    "volume": float(row.get("Volume", row.get("volume", 0.0))),
+                })
+            except Exception:
+                continue
 
         # 5. Simulate bar-by-bar options trading
         self._today_high = None
@@ -502,18 +531,79 @@ class OptionsBacktester:
                             elif action == "SELL" and dist_pct > self.smart_reentry_vwap_put_max_dist_pct:
                                 action = "HOLD"
 
-                # Handle custom price entry mode: override indicator signals
-                if self.buy_mode == 'custom_price':
-                    if self.custom_buy_price > 0 and current_price <= self.custom_buy_price:
-                        if self.options_type in ["both", "calls_only"]:
+                entry_mode = self.buy_mode
+                price_action_modes = ['custom_price', 'atr', 'hybrid_atr', 'percentage', 'hybrid_pct', 'pivot_points', 'hybrid_pivot', 'high_low', 'hybrid_high_low', 'swing_points', 'hybrid_swing']
+                if entry_mode in price_action_modes:
+                    action = "HOLD"
+                    entry_signal = build_entry_signal(
+                        price_history_records[: i + 1],
+                        current_price=current_price,
+                        entry_mode=entry_mode,
+                        lookback_days=self.swing_entry_lookback_days,
+                        market_session=self.market_session,
+                        is_crypto=is_crypto_underlying,
+                        atr=current_bar.get('ATR', current_price * 0.01),
+                        custom_buy_price=self.custom_buy_price,
+                        entry_atr_mult=self.entry_atr_multiplier,
+                        entry_pct_move=self.entry_pct_move,
+                        entry_atr_style=self.entry_atr_style,
+                        entry_pct_style=self.entry_pct_style,
+                        swing_entry_mode=self.swing_entry_mode,
+                    )
+                    signal_action = entry_signal.get("action", "HOLD")
+                    entry_executed = False
+                    if signal_action == "BUY" and self.options_type in ["both", "calls_only"]:
+                        self._enter_option_trade(
+                            option_type="CALL",
+                            underlying_price=current_price,
+                            vol=current_vol,
+                            timestamp=timestamp,
+                            reason=entry_signal.get("reason", f"Entry trigger: {entry_mode}")
+                        )
+                        entry_executed = True
+                    elif signal_action == "SELL" and self.options_type in ["both", "puts_only"]:
+                        self._enter_option_trade(
+                            option_type="PUT",
+                            underlying_price=current_price,
+                            vol=current_vol,
+                            timestamp=timestamp,
+                            reason=entry_signal.get("reason", f"Entry trigger: {entry_mode}")
+                        )
+                        entry_executed = True
+
+                    if entry_executed:
+                        continue
+
+                    if entry_mode.startswith("hybrid_"):
+                        if action == "BUY" and self.options_type in ["both", "calls_only"]:
                             self._enter_option_trade(
                                 option_type="CALL",
                                 underlying_price=current_price,
                                 vol=current_vol,
                                 timestamp=timestamp,
-                                reason=f"Custom Price Entry: Underlying {current_price:.2f} <= {self.custom_buy_price:.2f}"
+                                reason=f"Bullish signals crossover ({bullish_count} Bullish)"
                             )
-                    continue  # Skip indicator-based logic when in custom_price mode
+                            continue
+                        elif action == "SELL" and self.options_type in ["both", "puts_only"]:
+                            self._enter_option_trade(
+                                option_type="PUT",
+                                underlying_price=current_price,
+                                vol=current_vol,
+                                timestamp=timestamp,
+                                reason=f"Bearish signals crossover ({bearish_count} Bearish)"
+                            )
+                            continue
+                    elif entry_mode == 'custom_price':
+                        if self.custom_buy_price > 0 and current_price <= self.custom_buy_price:
+                            if self.options_type in ["both", "calls_only"]:
+                                self._enter_option_trade(
+                                    option_type="CALL",
+                                    underlying_price=current_price,
+                                    vol=current_vol,
+                                    timestamp=timestamp,
+                                    reason=f"Custom Price Entry: Underlying {current_price:.2f} <= {self.custom_buy_price:.2f}"
+                                )
+                        continue  # Skip indicator-based logic when in custom_price mode
 
                 if action == "BUY" and self.options_type in ["both", "calls_only"]:
                     # Enter CALL

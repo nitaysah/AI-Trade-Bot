@@ -14,6 +14,7 @@ import pytz
 from indicators import get_full_analysis
 from ai_indicator import get_ai_sentiment
 from risk_manager import RiskManager
+from swing_strategy import detect_swing_entry, build_entry_signal
 import config as global_config
 from user_config import get_user_config
 
@@ -55,7 +56,29 @@ def get_now():
     return datetime.now(tz)
 
 
-def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai_sentiment_confidence=0.0, use_bot_settings=False):
+def _get_threshold_setting(settings, keys, default_value):
+    for key in keys:
+        value = (settings or {}).get(key)
+        if value is None or value == "":
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    try:
+        return int(default_value)
+    except (TypeError, ValueError):
+        return 1
+
+
+def get_confluence_decision(
+    ticker,
+    analysis_results,
+    ai_sentiment_score=0.0,
+    ai_sentiment_confidence=0.0,
+    use_bot_settings=False,
+    options_type="both",
+):
     """
     Pure decision logic based on technical and AI signals.
     Respects global ENABLE_ toggles for technical indicators.
@@ -155,17 +178,102 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
             'premium': True
         }
 
-    min_buy = t_settings.get('min_buy_signals', uc.MIN_BULLISH_SIGNALS)
-    min_sell = t_settings.get('min_sell_signals', uc.MIN_BEARISH_SIGNALS)
+    min_buy = _get_threshold_setting(t_settings, ('min_buy_signals', 'threshold', 'buy_threshold'), uc.MIN_BULLISH_SIGNALS)
+    min_sell = _get_threshold_setting(t_settings, ('min_sell_signals', 'sell_threshold'), uc.MIN_BEARISH_SIGNALS)
     buy_mode = t_settings.get('buy_mode', 'indicator')
     custom_buy_price = t_settings.get('custom_buy_price', 0.0)
+    swing_entry_mode = t_settings.get('swing_entry_mode', 'bounce_retest')
+    swing_entry_lookback_days = int(t_settings.get('swing_entry_lookback_days', t_settings.get('swing_lookback_days', 20)) or 20)
+    entry_atr_mult = float(t_settings.get('entry_atr_multiplier', t_settings.get('atr_stop_multiplier', 2.0)) or 2.0)
+    entry_pct_move = float(t_settings.get('entry_pct_move', max(1.0, float(t_settings.get('regular_stop_loss_pct', 0.05)) * 100.0)) or 1.0)
+    entry_atr_style = t_settings.get('entry_atr_style', 'pullback_reclaim')
+    entry_pct_style = t_settings.get('entry_pct_style', 'dip_reclaim')
+    market_session = t_settings.get('market_session', 'Regular')
+    is_crypto = any(str(ticker).upper().endswith(base) for base in ["USD", "USDT", "USDC"]) or ticker.upper() in ["BTC", "ETH", "XRP", "DOGE", "LTC", "ADA", "SOL"]
     current_price = analysis_results.get('price', 0.0)
+    entry_mode = buy_mode
 
     action = "HOLD"
     reason = "Neutral"
+
+    # Evaluate Swing Points entry first so the dedicated strategy family stays deterministic.
+    if buy_mode in ('swing_points', 'hybrid_swing'):
+        swing_decision = detect_swing_entry(
+            analysis_results.get('price_history', []),
+            current_price=current_price,
+            entry_mode=swing_entry_mode,
+            lookback_days=swing_entry_lookback_days,
+            market_session=market_session,
+            is_crypto=is_crypto,
+        )
+        swing_action = swing_decision.get('action', 'HOLD')
+        swing_reason = swing_decision.get('reason', 'Swing Points: no setup')
+        if swing_action != 'HOLD':
+            action = swing_action
+            reason = swing_reason
+        elif buy_mode == 'swing_points':
+            action = 'HOLD'
+            reason = swing_reason
+        elif buy_mode == 'hybrid_swing':
+            if bullish_count >= min_buy and bearish_count >= min_sell:
+                if bullish_count > bearish_count:
+                    action = "BUY"
+                    bullish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BULLISH' and v.get('enabled')]
+                    reason = f"BUY Triggered (Conflict Resolved): {bullish_count}B > {bearish_count}S. Signals: {', '.join(bullish_names)}"
+                elif bearish_count > bullish_count:
+                    action = "SELL"
+                    bearish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BEARISH' and v.get('enabled')]
+                    reason = f"SELL Triggered (Conflict Resolved): {bearish_count}S > {bullish_count}B. Signals: {', '.join(bearish_names)}"
+            elif bullish_count >= min_buy:
+                action = "BUY"
+                bullish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BULLISH' and v.get('enabled')]
+                reason = f"BUY Triggered: {bullish_count} bullish signals ({', '.join(bullish_names)})"
+            elif bearish_count >= min_sell:
+                action = "SELL"
+                bearish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BEARISH' and v.get('enabled')]
+                reason = f"SELL Triggered: {bearish_count} bearish signals ({', '.join(bearish_names)})"
+
+    price_action_modes = ('custom_price', 'atr', 'hybrid_atr', 'percentage', 'hybrid_pct', 'pivot_points', 'hybrid_pivot', 'high_low', 'hybrid_high_low')
+    if action == 'HOLD' and buy_mode in price_action_modes:
+        entry_signal = build_entry_signal(
+            analysis_results.get('price_history', []),
+            current_price=current_price,
+            entry_mode=buy_mode,
+            lookback_days=swing_entry_lookback_days,
+            market_session=market_session,
+            is_crypto=is_crypto,
+            atr=analysis_results.get('atr', 0.0),
+            custom_buy_price=custom_buy_price,
+            entry_atr_mult=entry_atr_mult,
+            entry_pct_move=entry_pct_move,
+            entry_atr_style=entry_atr_style,
+            entry_pct_style=entry_pct_style,
+        )
+        if entry_signal.get('action', 'HOLD') != 'HOLD':
+            action = entry_signal['action']
+            reason = entry_signal.get('reason', reason)
+        elif buy_mode.startswith('hybrid_'):
+            # Hybrid families fall back to indicator confluence when the price-action trigger is not active.
+            if bullish_count >= min_buy and bearish_count >= min_sell:
+                if bullish_count > bearish_count:
+                    action = "BUY"
+                    bullish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BULLISH' and v.get('enabled')]
+                    reason = f"BUY Triggered (Conflict Resolved): {bullish_count}B > {bearish_count}S. Signals: {', '.join(bullish_names)}"
+                elif bearish_count > bullish_count:
+                    action = "SELL"
+                    bearish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BEARISH' and v.get('enabled')]
+                    reason = f"SELL Triggered (Conflict Resolved): {bearish_count}S > {bullish_count}B. Signals: {', '.join(bearish_names)}"
+            elif bullish_count >= min_buy:
+                action = "BUY"
+                bullish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BULLISH' and v.get('enabled')]
+                reason = f"BUY Triggered: {bullish_count} bullish signals ({', '.join(bullish_names)})"
+            elif bearish_count >= min_sell:
+                action = "SELL"
+                bearish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BEARISH' and v.get('enabled')]
+                reason = f"SELL Triggered: {bearish_count} bearish signals ({', '.join(bearish_names)})"
     
     # Evaluate Custom Price Entry Strategy
-    if buy_mode == 'custom_price':
+    if action == 'HOLD' and buy_mode == 'custom_price':
         # Ignore indicators for buy signals, only use price drop
         if current_price > 0 and current_price <= custom_buy_price:
             action = "BUY"
@@ -178,7 +286,7 @@ def get_confluence_decision(ticker, analysis_results, ai_sentiment_score=0.0, ai
             reason = f"SELL Triggered: {bearish_count} bearish signals ({', '.join(bearish_names)})"
     
     # Evaluate Standard Indicator Entry Strategy
-    else:
+    elif action == 'HOLD' and buy_mode not in ('swing_points', 'hybrid_swing', 'custom_price', 'atr', 'hybrid_atr', 'percentage', 'hybrid_pct', 'pivot_points', 'hybrid_pivot', 'high_low', 'hybrid_high_low'):
         if bullish_count >= min_buy and bearish_count >= min_sell:
             # Both thresholds met: pick the stronger one
             if bullish_count > bearish_count:
@@ -219,8 +327,8 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
     Combines technical signals + AI sentiment + risk management.
     """
     uc = get_user_config()
+    ticker_settings = getattr(uc, 'TICKER_SETTINGS', {}).get(ticker, {})
     if timeframe is None:
-        ticker_settings = getattr(uc, 'TICKER_SETTINGS', {}).get(ticker, {})
         timeframe = ticker_settings.get('timeframe', uc.DEFAULT_TIMEFRAME)
 
     # --- Check Evaluation Cache ---
@@ -298,7 +406,8 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         analysis, 
         ai_data['score'], 
         ai_data['confidence'],
-        use_bot_settings=use_bot_settings
+        use_bot_settings=use_bot_settings,
+        options_type=ticker_settings.get('options_type', 'both') if ticker_settings else 'both'
     )
     action = decision['action']
     reason = decision['reason']

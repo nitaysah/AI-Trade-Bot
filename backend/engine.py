@@ -5,6 +5,7 @@ import time
 
 from broker_factory import create_broker
 from trader import evaluate_trade
+from swing_strategy import build_swing_exit
 from firebase_admin import firestore
 import config as global_config
 from user_config import UserConfig, set_user_config
@@ -27,6 +28,136 @@ def parse_timeframe_to_seconds(timeframe: str) -> int:
         
     return 300 # Default fallback (5 mins)
 
+
+def _safe_float(value, fallback: float = 0.0) -> float:
+    try:
+        if hasattr(value, "iloc"):
+            value = value.iloc[0]
+        return float(value)
+    except Exception:
+        return fallback
+
+
+def _price_history_days(price_history):
+    if not price_history:
+        return []
+
+    ny_tz = pytz.timezone("America/New_York")
+    days = {}
+    for candle in price_history:
+        try:
+            ts = candle.get("time")
+            if ts is None:
+                continue
+            dt = datetime.fromtimestamp(float(ts), ny_tz)
+            key = dt.strftime("%Y-%m-%d")
+            days.setdefault(key, []).append(candle)
+        except Exception:
+            continue
+
+    return [(day, days[day]) for day in sorted(days)]
+
+
+def _ohlc_from_candles(candles):
+    highs = [_safe_float(c.get("high"), None) for c in candles]
+    lows = [_safe_float(c.get("low"), None) for c in candles]
+    highs = [v for v in highs if v is not None]
+    lows = [v for v in lows if v is not None]
+    close = None
+    for candle in reversed(candles):
+        close = _safe_float(candle.get("close"), None)
+        if close is not None:
+            break
+    if not highs or not lows or close is None:
+        return None
+    return {"high": max(highs), "low": min(lows), "close": close}
+
+
+def _prior_day_ohlc_from_history(price_history):
+    days = _price_history_days(price_history)
+    if len(days) < 2:
+        return None
+    return _ohlc_from_candles(days[-2][1])
+
+
+def _current_day_range_from_history(price_history):
+    days = _price_history_days(price_history)
+    if not days:
+        return None
+    ohlc = _ohlc_from_candles(days[-1][1])
+    if not ohlc:
+        return None
+    return {"high": ohlc["high"], "low": ohlc["low"]}
+
+FIXED_LEVEL_EXIT_MODES = {
+    "custom_sltp",
+    "sltp",
+    "hybrid",
+    "percentage",
+    "hybrid_pct",
+    "pivot_points",
+    "hybrid_pivot",
+    "high_low",
+    "hybrid_high_low",
+    "swing_points",
+    "hybrid_swing",
+}
+
+HYBRID_EXIT_MODES = {
+    "hybrid",
+    "hybrid_pct",
+    "hybrid_pivot",
+    "hybrid_high_low",
+    "hybrid_swing",
+}
+
+
+def _is_crypto_symbol(symbol: str) -> bool:
+    clean = str(symbol or "").upper().replace("/", "")
+    return clean.endswith(("USD", "USDT", "USDC")) or clean in {"BTC", "ETH", "XRP", "DOGE", "LTC", "ADA", "SOL"}
+
+
+def _next_above(levels, current_price, fallback_step):
+    valid = sorted([float(v) for v in levels if v is not None and float(v) > current_price])
+    if valid:
+        return valid[0]
+    step = abs(float(fallback_step or 0.0))
+    return current_price + step if step > 0 else None
+
+
+def _nearest_below(levels, current_price):
+    valid = sorted([float(v) for v in levels if v is not None and float(v) < current_price], reverse=True)
+    return valid[0] if valid else None
+
+
+def _dynamic_pivot_levels(prev_h, prev_l, prev_c, current_price):
+    day_range = max(float(prev_h) - float(prev_l), 0.0)
+    if day_range <= 0:
+        return None
+    p_val = (float(prev_h) + float(prev_l) + float(prev_c)) / 3.0
+    r1 = (2 * p_val) - float(prev_l)
+    s1 = (2 * p_val) - float(prev_h)
+    r2 = p_val + day_range
+    s2 = p_val - day_range
+    r3 = float(prev_h) + 2 * (p_val - float(prev_l))
+    s3 = float(prev_l) - 2 * (float(prev_h) - p_val)
+    tp = _next_above([r1, r2, r3, r3 + day_range], current_price, day_range)
+    sl = _nearest_below([r3, r2, r1, p_val, s1, s2, s3], current_price)
+    return {"tp": tp, "sl": sl, "p": p_val, "r1": r1, "r2": r2, "r3": r3, "s1": s1, "s2": s2, "s3": s3}
+
+
+def _dynamic_high_low_levels(prev_h, prev_l, current_price):
+    day_range = max(float(prev_h) - float(prev_l), 0.0)
+    if day_range <= 0:
+        return None
+    if current_price >= float(prev_h):
+        tp = _next_above([float(prev_h) + day_range, float(prev_h) + (2 * day_range)], current_price, day_range)
+        sl = float(prev_h)
+    else:
+        tp = float(prev_h)
+        sl = float(prev_l)
+    return {"tp": tp, "sl": sl}
+
 class UserEngine:
     def __init__(self, uid: str, db):
         self.uid = uid
@@ -43,6 +174,7 @@ class UserEngine:
         self.bot_scans_by_tf = {}
         self.last_scan_timestamps = {}
         self.signal_locked_direction = {}
+        self.exit_order_state = {}
         
         self.bot_running = False
         self.task = None
@@ -234,6 +366,246 @@ class UserEngine:
             return False
         return True
 
+    def _find_position(self, positions, ticker_norm: str):
+        ticker_norm = ticker_norm.upper().replace("/", "")
+        for p in positions or []:
+            if p.get('symbol', '').replace("/", "").upper() == ticker_norm:
+                return p
+        return None
+
+    def _exit_level_change_threshold(self, price: float) -> float:
+        try:
+            return max(0.01, abs(float(price)) * 0.0005)
+        except Exception:
+            return 0.01
+
+    def _allocation_amount(self, t_settings: dict, mode: str = 'regular') -> float:
+        if mode == 'options':
+            allocation_mode = str(t_settings.get('options_allocation_mode', t_settings.get('allocation_mode', 'fixed')) or 'fixed').lower()
+            base_key = 'options_trade_amount'
+            compound_key = 'options_compound_amount'
+        else:
+            allocation_mode = str(t_settings.get('allocation_mode', 'fixed') or 'fixed').lower()
+            base_key = 'amount'
+            compound_key = 'compound_amount'
+
+        if allocation_mode == 'compound':
+            amount = _safe_float(t_settings.get(compound_key), 0.0)
+            if amount <= 0:
+                amount = _safe_float(t_settings.get(base_key), 0.0)
+            return max(0.0, amount)
+        return max(0.0, _safe_float(t_settings.get(base_key), 0.0))
+
+    def _apply_compound_pl(self, t_settings: dict, pl: float, mode: str = 'regular'):
+        if mode == 'options':
+            allocation_mode = str(t_settings.get('options_allocation_mode', t_settings.get('allocation_mode', 'fixed')) or 'fixed').lower()
+            base_key = 'options_trade_amount'
+            compound_key = 'options_compound_amount'
+        else:
+            allocation_mode = str(t_settings.get('allocation_mode', 'fixed') or 'fixed').lower()
+            base_key = 'amount'
+            compound_key = 'compound_amount'
+
+        if allocation_mode != 'compound':
+            return None
+        current = _safe_float(t_settings.get(compound_key), 0.0)
+        if current <= 0:
+            current = _safe_float(t_settings.get(base_key), 0.0)
+        next_amount = max(1.0, round(current + _safe_float(pl, 0.0), 2))
+        t_settings[compound_key] = next_amount
+        return next_amount
+
+    def _build_exit_protection_targets(self, ticker: str, result: dict, pos_info: dict, t_settings: dict):
+        sell_mode = t_settings.get('sell_mode', 'indicator')
+        if sell_mode not in FIXED_LEVEL_EXIT_MODES:
+            return None
+
+        ticker_norm = ticker.upper().replace("/", "")
+        is_crypto = _is_crypto_symbol(ticker_norm)
+        entry_price = _safe_float(pos_info.get('avg_price'), _safe_float(result.get('price_raw'), 0.0))
+        current_price = _safe_float(result.get('price_raw'), _safe_float(pos_info.get('current_price'), 0.0))
+        qty = abs(_safe_float(pos_info.get('qty'), 0.0))
+        precision = 6 if entry_price < 1.0 or is_crypto else 2
+        tp = sl = None
+        source = sell_mode
+
+        if qty <= 0 or entry_price <= 0:
+            return None
+
+        if sell_mode == 'custom_sltp':
+            sl = _safe_float(t_settings.get('custom_stop_loss_price'), 0.0)
+            tp = _safe_float(t_settings.get('custom_take_profit_price'), 0.0)
+
+        elif sell_mode in ('percentage', 'hybrid_pct'):
+            sl_pct = float(t_settings.get('regular_stop_loss_pct', 0.05))
+            tp_pct = float(t_settings.get('regular_take_profit_pct', 0.10))
+            trail_pct = float(t_settings.get('regular_trailing_pct', 0.03))
+            base_stop = round(entry_price * (1 - sl_pct), precision)
+            if ticker not in self.last_trailing_stops:
+                self.last_trailing_stops[ticker] = base_stop
+            if t_settings.get('enable_pct_trail', True) and current_price > 0:
+                candidate = round(current_price * (1 - trail_pct), precision)
+                if candidate > self.last_trailing_stops[ticker]:
+                    self.last_trailing_stops[ticker] = candidate
+            sl = self.last_trailing_stops[ticker]
+            tp = round(entry_price * (1 + tp_pct), precision)
+
+        elif sell_mode in ('sltp', 'hybrid'):
+            atr = _safe_float(result.get('atr'), 0.0)
+            if atr <= 0:
+                return None
+            stop_mult = float(t_settings.get('atr_stop_multiplier', 2.0))
+            trail_mult = float(t_settings.get('atr_trail_multiplier', 3.0))
+            tp_mult = float(t_settings.get('take_profit_multiplier', 4.0))
+            base_stop = entry_price - (atr * stop_mult)
+            if ticker not in self.last_trailing_stops:
+                self.last_trailing_stops[ticker] = base_stop
+            if t_settings.get('enable_atr_trail', True) and current_price > 0:
+                candidate = current_price - (atr * trail_mult)
+                if candidate > self.last_trailing_stops[ticker]:
+                    self.last_trailing_stops[ticker] = round(candidate, precision)
+            sl = round(max(base_stop, self.last_trailing_stops[ticker]), precision)
+            tp = round(entry_price + (atr * tp_mult), precision)
+
+        elif sell_mode in ('pivot_points', 'hybrid_pivot'):
+            prior_day = _prior_day_ohlc_from_history(result.get('price_history', []))
+            if not prior_day:
+                return None
+            prev_h = prior_day['high']
+            prev_l = prior_day['low']
+            prev_c = prior_day['close']
+            pivot_levels = _dynamic_pivot_levels(prev_h, prev_l, prev_c, current_price)
+            if not pivot_levels:
+                return None
+            tp = round(pivot_levels['tp'], precision)
+            sl = round(pivot_levels['sl'], precision)
+
+        elif sell_mode in ('high_low', 'hybrid_high_low'):
+            prior_day = _prior_day_ohlc_from_history(result.get('price_history', []))
+            if not prior_day:
+                return None
+            hl_levels = _dynamic_high_low_levels(prior_day['high'], prior_day['low'], current_price)
+            if not hl_levels:
+                return None
+            tp = round(hl_levels['tp'], precision)
+            sl = round(hl_levels['sl'], precision)
+
+        elif sell_mode in ('swing_points', 'hybrid_swing'):
+            swing_exit = build_swing_exit(
+                result.get('price_history', []),
+                current_price=current_price,
+                is_long=True,
+                lookback_days=int(t_settings.get('swing_exit_lookback_days', t_settings.get('swing_lookback_days', 20)) or 20),
+                market_session=t_settings.get('market_session', 'Regular'),
+                is_crypto=is_crypto,
+            )
+            tp = swing_exit.get('take_profit')
+            sl = swing_exit.get('stop_loss')
+
+        if tp is None or sl is None:
+            return None
+
+        tp = round(float(tp), precision)
+        sl = round(float(sl), precision)
+        if tp <= 0 or sl <= 0 or tp <= sl:
+            return None
+
+        return {
+            'symbol': ticker_norm,
+            'qty': qty,
+            'take_profit': tp,
+            'stop_loss': sl,
+            'strategy': source,
+            'asset_class': 'crypto' if is_crypto else 'stock',
+            'protection_type': 'watcher' if is_crypto else 'broker_oco',
+            'current_price': current_price,
+        }
+
+    def _sync_exit_protection(self, ticker: str, result: dict, pos_info: dict, t_settings: dict, force: bool = False):
+        ticker_norm = ticker.upper().replace("/", "")
+        sell_mode = t_settings.get('sell_mode', 'indicator')
+        if not pos_info or _safe_float(pos_info.get('qty'), 0.0) <= 0:
+            return None
+
+        if sell_mode not in FIXED_LEVEL_EXIT_MODES:
+            cancel_res = self.broker.cancel_exit_orders(ticker_norm)
+            if cancel_res.get('cancelled', 0) > 0:
+                print(f"[exit-protect] {ticker_norm} cancelled stale OCO because exit mode is {sell_mode}")
+            return None
+
+        targets = self._build_exit_protection_targets(ticker, result, pos_info, t_settings)
+        if not targets:
+            return None
+
+        if targets['protection_type'] != 'broker_oco':
+            return {'status': 'watching', **targets}
+
+        if t_settings.get('exit_protection_enabled', True) is False:
+            return None
+
+        market_session = str(t_settings.get('market_session', 'Regular')).lower()
+        if market_session not in ('regular', 'regular-hours', 'regular_hours'):
+            print(f"[exit-protect] {ticker_norm} skipped OCO: extended-hours OCO unsupported")
+            return None
+
+        current_price = targets.get('current_price') or 0.0
+        if current_price > 0 and (current_price >= targets['take_profit'] or current_price <= targets['stop_loss']):
+            return None
+
+        existing = self.broker.get_exit_order_levels(ticker_norm)
+        old_tp = existing.get('take_profit')
+        old_sl = existing.get('stop_loss')
+        has_orders = bool(existing.get('orders'))
+        new_tp = targets['take_profit']
+        new_sl = targets['stop_loss']
+
+        if old_sl is not None and not bool(t_settings.get('allow_exit_stop_loosen', False)):
+            threshold = self._exit_level_change_threshold(old_sl)
+            if new_sl < old_sl - threshold:
+                new_sl = old_sl
+
+        should_place = not has_orders or old_tp is None or old_sl is None
+        if not should_place:
+            tp_changed = abs(new_tp - old_tp) >= self._exit_level_change_threshold(old_tp)
+            sl_changed = abs(new_sl - old_sl) >= self._exit_level_change_threshold(old_sl)
+            should_place = tp_changed or sl_changed
+
+        if not should_place:
+            return {'status': 'active', **targets, 'take_profit': old_tp, 'stop_loss': old_sl}
+
+        state = self.exit_order_state.get(ticker_norm, {})
+        now_ts = time.time()
+        if has_orders and not force and now_ts - state.get('updated_at', 0) < 15:
+            return {'status': 'debounced', **targets}
+
+        if has_orders:
+            order_res = self.broker.replace_equity_oco_exit(ticker_norm, targets['qty'], new_tp, new_sl)
+            action = 'replaced'
+        else:
+            order_res = self.broker.place_equity_oco_exit(ticker_norm, targets['qty'], new_tp, new_sl)
+            action = 'placed'
+
+        if order_res.get('success'):
+            self.exit_order_state[ticker_norm] = {
+                'updated_at': now_ts,
+                'take_profit': new_tp,
+                'stop_loss': new_sl,
+                'strategy': sell_mode,
+            }
+            print(f"[exit-protect] {ticker_norm} OCO {action} TP={new_tp} SL={new_sl} qty={targets['qty']:.6f}")
+            return {'status': action, **targets, 'take_profit': new_tp, 'stop_loss': new_sl, 'order': order_res}
+
+        print(f"[exit-protect] {ticker_norm} OCO {action} failed: {order_res.get('error')}")
+        return {'status': 'error', **targets, 'error': order_res.get('error')}
+
+    def _cancel_exit_protection(self, ticker: str, reason: str = ""):
+        ticker_norm = ticker.upper().replace("/", "")
+        res = self.broker.cancel_exit_orders(ticker_norm)
+        if res.get('cancelled', 0) > 0:
+            detail = f" ({reason})" if reason else ""
+            print(f"[exit-protect] {ticker_norm} cancelled OCO{detail}")
+        return res
+
     async def _warm_timeframe_scans(self, timeframe: str, primary_ticker: str = None, limit: int = 4):
         set_user_config(self.config)
         if not self.config.WATCHLIST: return
@@ -315,7 +687,7 @@ class UserEngine:
 
                         # --- Bot Loss Limit (Drawdown Limit on Allocated Bot Capital) ---
                         enable_risk = t_settings.get('enable_risk_management', True)
-                        allocated_capital = float(t_settings.get('amount', 0.0))
+                        allocated_capital = self._allocation_amount(t_settings, 'options' if t_settings.get('options_trading') else 'regular') or float(t_settings.get('amount', 0.0))
                         loss_limit_pct = float(t_settings.get('max_daily_drawdown', 0.0))
                         
                         if is_active and enable_risk and allocated_capital > 0 and loss_limit_pct > 0:
@@ -334,7 +706,11 @@ class UserEngine:
                                 # Liquidate active position if any
                                 if pos_info:
                                     print(f"[engine-{self.uid}] Liquidating active position in {ticker} due to loss limit breach...")
-                                    close_res = self.broker.close_position(ticker)
+                                    close_res = self.broker.close_position(
+                                        ticker,
+                                        market_session=t_settings.get('market_session', 'Regular'),
+                                        current_price=pos_info.get('current_price') if pos_info else None
+                                    )
                                     if close_res.get('success'):
                                         realized_pl += unrealized_pl
                                         total_bot_pl = realized_pl
@@ -422,7 +798,9 @@ class UserEngine:
                                 if pos_pct <= 0:
                                     pos_pct = 0.10
                                     
-                                notional_size = min(equity * pos_pct, avail_cash)
+                                configured_allocation = self._allocation_amount(t_settings, 'regular')
+                                notional_size = configured_allocation if configured_allocation > 0 else equity * pos_pct
+                                notional_size = min(notional_size, avail_cash)
                                 
                                 position_sizing = {
                                     "qty": notional_size / price_raw if price_raw > 0 else 0,
@@ -482,7 +860,14 @@ class UserEngine:
                             trade_executed = False
 
                             if is_active:
-                                is_market_closed_skip = not is_crypto and self.config.get('MARKET_HOURS_ONLY', True) and not self.is_market_open()
+                                market_session = str(t_settings.get('market_session', 'Regular')).strip().lower()
+                                session_allows_outside_rth = market_session in {'extended', '24h', 'crypto24', 'all'}
+                                is_market_closed_skip = (
+                                    not is_crypto
+                                    and not session_allows_outside_rth
+                                    and self.config.get('MARKET_HOURS_ONLY', True)
+                                    and not self.is_market_open()
+                                )
                                 if is_market_closed_skip:
                                     result['reason'] = "Market Closed. Trade execution skipped."
                                     if result['action'] in ['BUY', 'SELL']:
@@ -499,7 +884,7 @@ class UserEngine:
                                 opt_exit_strategy = t_settings.get('options_exit_strategy', getattr(self.config, 'OPTIONS_EXIT_STRATEGY', 'hybrid'))
                                 opt_expiry_days = t_settings.get('options_expiry_days', getattr(self.config, 'OPTIONS_EXPIRY_DAYS', 7))
                                 opt_strike_type = t_settings.get('options_strike_type', getattr(self.config, 'OPTIONS_STRIKE_TYPE', 'ATM'))
-                                opt_trade_amount = t_settings.get('options_trade_amount', getattr(self.config, 'OPTIONS_TRADE_AMOUNT', 100.0))
+                                opt_trade_amount = self._allocation_amount(t_settings, 'options') or float(getattr(self.config, 'OPTIONS_TRADE_AMOUNT', 100.0))
                                 
                                 pos_info = None
                                 has_this_pos = False
@@ -615,6 +1000,10 @@ class UserEngine:
                                         
                                         exit_triggered = False
                                         exit_reason = ""
+                                        swing_exit_lookback_days = int(t_settings.get('swing_exit_lookback_days', t_settings.get('swing_lookback_days', 20)) or 20)
+                                        swing_session = t_settings.get('market_session', 'Regular')
+                                        is_crypto_underlying = any(str(ticker_norm).endswith(base) for base in ["USD", "USDT", "USDC"]) or ticker.upper() in ["BTC", "ETH", "XRP", "DOGE", "LTC", "ADA", "SOL"]
+                                        current_price = result['price_raw']
                                         
                                         # 1. Premium-based check
                                         opt_curr = float(pos_info['current_price'])
@@ -630,23 +1019,28 @@ class UserEngine:
                                             elif opt_curr >= opt_avg * (1 + take_profit_pct):
                                                 exit_triggered = True
                                                 exit_reason = f"Option Premium TP Hit (${opt_curr:.2f} >= ${opt_avg*(1+take_profit_pct):.2f})"
+
+                                        # Strategy A2: Custom premium SL/TP triggers
+                                        if not exit_triggered and opt_exit_strategy == 'custom_sltp':
+                                            custom_sl = _safe_float(t_settings.get('custom_stop_loss_price'), 0.0)
+                                            custom_tp = _safe_float(t_settings.get('custom_take_profit_price'), 0.0)
+                                            if custom_sl > 0 and opt_curr <= custom_sl:
+                                                exit_triggered = True
+                                                exit_reason = f"Option Custom SL Hit (${opt_curr:.2f} <= ${custom_sl:.2f})"
+                                            elif custom_tp > 0 and opt_curr >= custom_tp:
+                                                exit_triggered = True
+                                                exit_reason = f"Option Custom TP Hit (${opt_curr:.2f} >= ${custom_tp:.2f})"
                                                 
-                                        # Fetch daily data for pivot & range exits
-                                        if not exit_triggered and opt_exit_strategy in ['pivot_points', 'high_low', 'hybrid']:
-                                            import yfinance as yf
-                                            try:
-                                                hist = yf.download(ticker, period="2d", interval="1d", progress=False)
-                                                if len(hist) >= 2:
-                                                    prev_h = float(hist.iloc[-2]['High'])
-                                                    prev_l = float(hist.iloc[-2]['Low'])
-                                                    prev_c = float(hist.iloc[-2]['Close'])
-                                                else:
-                                                    prev_h = prev_l = prev_c = result['price_raw']
-                                            except Exception:
+                                        # Reuse the already-fetched OHLCV candles for pivot & range exits.
+                                        if not exit_triggered and opt_exit_strategy in ['pivot_points', 'high_low', 'hybrid', 'hybrid_high_low']:
+                                            prior_day = _prior_day_ohlc_from_history(result.get('price_history', []))
+                                            if prior_day:
+                                                prev_h = prior_day['high']
+                                                prev_l = prior_day['low']
+                                                prev_c = prior_day['close']
+                                            else:
                                                 prev_h = prev_l = prev_c = result['price_raw']
-                                                
-                                            current_price = result['price_raw']
-                                            
+
                                             # Strategy B: Pivot points
                                             if opt_exit_strategy in ['pivot_points', 'hybrid']:
                                                 P = (prev_h + prev_l + prev_c) / 3.0
@@ -677,12 +1071,12 @@ class UserEngine:
                                                         exit_reason = f"Pivot SL Hit (Underlying {current_price:.2f} >= R1 {R1:.2f})"
                                                         
                                             # Strategy C: Daily High/Low ranges
-                                            if not exit_triggered and opt_exit_strategy in ['high_low', 'hybrid']:
-                                                try:
-                                                    today_hist = yf.download(ticker, period="1d", interval="5m", progress=False)
-                                                    today_high = float(today_hist['High'].max())
-                                                    today_low = float(today_hist['Low'].min())
-                                                except Exception:
+                                            if not exit_triggered and opt_exit_strategy in ['high_low', 'hybrid', 'hybrid_high_low']:
+                                                today_range = _current_day_range_from_history(result.get('price_history', []))
+                                                if today_range:
+                                                    today_high = today_range['high']
+                                                    today_low = today_range['low']
+                                                else:
                                                     today_high = today_low = current_price
                                                     
                                                 if opt_type == 'CALL':
@@ -705,6 +1099,34 @@ class UserEngine:
                                                     elif current_price >= prev_h:
                                                         exit_triggered = True
                                                         exit_reason = f"Prev Day High Breakdown (Underlying {current_price:.2f} >= Prev High {prev_h:.2f})"
+
+                                        # Strategy C2: Swing points exits
+                                        if not exit_triggered and opt_exit_strategy in ['swing_points', 'hybrid_swing']:
+                                            swing_exit = build_swing_exit(
+                                                result.get('price_history', []),
+                                                current_price=result.get('price_raw', current_price),
+                                                is_long=(opt_type == 'CALL'),
+                                                lookback_days=swing_exit_lookback_days,
+                                                market_session=swing_session,
+                                                is_crypto=is_crypto_underlying,
+                                            )
+                                            tp = swing_exit.get('take_profit')
+                                            sl = swing_exit.get('stop_loss')
+                                            if tp is not None and sl is not None:
+                                                if opt_type == 'CALL':
+                                                    if current_price >= tp:
+                                                        exit_triggered = True
+                                                        exit_reason = f"Swing TP Hit (Underlying {current_price:.2f} >= Resistance {tp:.2f})"
+                                                    elif current_price <= sl:
+                                                        exit_triggered = True
+                                                        exit_reason = f"Swing SL Hit (Underlying {current_price:.2f} <= Support {sl:.2f})"
+                                                else:
+                                                    if current_price <= tp:
+                                                        exit_triggered = True
+                                                        exit_reason = f"Swing TP Hit (Underlying {current_price:.2f} <= Support {tp:.2f})"
+                                                    elif current_price >= sl:
+                                                        exit_triggered = True
+                                                        exit_reason = f"Swing SL Hit (Underlying {current_price:.2f} >= Resistance {sl:.2f})"
                                                         
                                         # Strategy D: Expiration Safeguard
                                         if not exit_triggered and parsed_occ:
@@ -717,7 +1139,7 @@ class UserEngine:
                                                     exit_reason = f"Expiration Safeguard (2 hours before close on expiration day)"
                                                     
                                         # Technical Indicator exit
-                                        if not exit_triggered and opt_exit_strategy in ['indicator', 'hybrid']:
+                                        if not exit_triggered and opt_exit_strategy in ['indicator', 'hybrid', 'hybrid_high_low', 'hybrid_swing']:
                                             if opt_type == 'CALL' and result['action'] == 'SELL':
                                                 exit_triggered = True
                                                 exit_reason = f"Technical Signal reversal to BEARISH"
@@ -762,7 +1184,20 @@ class UserEngine:
                                                         result['action'] = 'SELL'
                                                         result['reason'] = f'AI Take Profit Hit (${current_price:.2f} >= ${take_profit:.2f})'
                                         else:
-                                            if sell_mode in ['percentage', 'hybrid_pct']:
+                                            if sell_mode == 'custom_sltp':
+                                                custom_sl = _safe_float(t_settings.get('custom_stop_loss_price'), 0.0)
+                                                custom_tp = _safe_float(t_settings.get('custom_take_profit_price'), 0.0)
+                                                if result['action'] == 'SELL':
+                                                    result['action'] = 'HOLD'
+                                                    result['reason'] = 'Sell Signal Ignored (Custom SL/TP Mode)'
+                                                if custom_sl > 0 and current_price <= custom_sl:
+                                                    result['action'] = 'SELL'
+                                                    result['reason'] = f'Custom Stop Loss Hit (${current_price:.{precision}f} <= ${custom_sl:.{precision}f})'
+                                                elif custom_tp > 0 and current_price >= custom_tp:
+                                                    result['action'] = 'SELL'
+                                                    result['reason'] = f'Custom Take Profit Hit (${current_price:.{precision}f} >= ${custom_tp:.{precision}f})'
+
+                                            elif sell_mode in ['percentage', 'hybrid_pct']:
                                                 # ── NEW: Percentage-based exit ──────────────────────────────
                                                 base_stop = round(entry_price * (1 - sl_pct), precision)
                                                 take_profit = round(entry_price * (1 + tp_pct), precision)
@@ -791,20 +1226,13 @@ class UserEngine:
                                                     result['reason'] = f'Percentage Take Profit Hit (${current_price:.{precision}f} >= ${take_profit:.{precision}f}, TP {tp_pct*100:.1f}%)'
                                         
                                             elif sell_mode in ['pivot_points', 'hybrid_pivot']:
-                                                # ── NEW: Pivot Point exit ───────────────────────────────────
-                                                try:
-                                                    import yfinance as yf
-                                                    hist = await asyncio.to_thread(
-                                                        lambda: yf.download(ticker, period="2d", interval="1d", progress=False)
-                                                    )
-                                                    if len(hist) >= 2:
-                                                        prev_h = float(hist.iloc[-2]['High'])
-                                                        prev_l = float(hist.iloc[-2]['Low'])
-                                                        prev_c = float(hist.iloc[-2]['Close'])
-                                                    else:
-                                                        prev_h = prev_l = prev_c = current_price
-                                                except Exception as piv_err:
-                                                    print(f"[engine-{self.uid}] Pivot fetch failed for {ticker}: {piv_err}")
+                                                # Pivot point exit from the scan's OHLCV history.
+                                                prior_day = _prior_day_ohlc_from_history(result.get('price_history', []))
+                                                if prior_day:
+                                                    prev_h = prior_day['high']
+                                                    prev_l = prior_day['low']
+                                                    prev_c = prior_day['close']
+                                                else:
                                                     prev_h = prev_l = prev_c = current_price
                                                 
                                                 P  = (prev_h + prev_l + prev_c) / 3.0
@@ -812,25 +1240,71 @@ class UserEngine:
                                                 R2 = round(P + (prev_h - prev_l), precision)
                                                 S1 = round(2 * P - prev_h, precision)
                                                 S2 = round(P - (prev_h - prev_l), precision)
+                                                dynamic_pivots = _dynamic_pivot_levels(prev_h, prev_l, prev_c, current_price)
+                                                pivot_tp = round(dynamic_pivots['tp'], precision) if dynamic_pivots else R1
+                                                pivot_sl = round(dynamic_pivots['sl'], precision) if dynamic_pivots else S1
                                                 
                                                 # In pivot mode: silence indicator SELL signals, rely on pivot levels
                                                 if sell_mode == 'pivot_points' and result['action'] == 'SELL':
                                                     result['action'] = 'HOLD'
                                                     result['reason'] = 'Sell Signal Ignored (Pivot Points Mode)'
                                                 
-                                                if current_price <= S1:
-                                                    result['action'] = 'SELL'
-                                                    result['reason'] = f'Pivot Stop Loss Hit (${current_price:.{precision}f} <= S1 ${S1:.{precision}f})'
-                                                elif current_price <= S2:
+                                                if current_price <= S2:
                                                     result['action'] = 'SELL'
                                                     result['reason'] = f'Pivot Stop Loss Hit (${current_price:.{precision}f} <= S2 ${S2:.{precision}f})'
-                                                elif current_price >= R1:
+                                                elif current_price <= pivot_sl:
                                                     result['action'] = 'SELL'
-                                                    result['reason'] = f'Pivot Take Profit Hit (${current_price:.{precision}f} >= R1 ${R1:.{precision}f})'
-                                                elif current_price >= R2:
+                                                    result['reason'] = f'Pivot Stop Loss Hit (${current_price:.{precision}f} <= ${pivot_sl:.{precision}f})'
+                                                elif current_price >= pivot_tp:
                                                     result['action'] = 'SELL'
-                                                    result['reason'] = f'Pivot Take Profit Hit (${current_price:.{precision}f} >= R2 ${R2:.{precision}f})'
-                                        
+                                                    result['reason'] = f'Pivot Take Profit Hit (${current_price:.{precision}f} >= ${pivot_tp:.{precision}f})'
+
+                                            elif sell_mode in ['high_low', 'hybrid_high_low']:
+                                                prior_day = _prior_day_ohlc_from_history(result.get('price_history', []))
+                                                if prior_day:
+                                                    prev_h = round(prior_day['high'], precision)
+                                                    prev_l = round(prior_day['low'], precision)
+                                                else:
+                                                    prev_h = prev_l = current_price
+
+                                                if sell_mode == 'high_low' and result['action'] == 'SELL':
+                                                    result['action'] = 'HOLD'
+                                                    result['reason'] = 'Sell Signal Ignored (High/Low Mode)'
+
+                                                dynamic_hl = _dynamic_high_low_levels(prev_h, prev_l, current_price)
+                                                hl_tp = round(dynamic_hl['tp'], precision) if dynamic_hl else prev_h
+                                                hl_sl = round(dynamic_hl['sl'], precision) if dynamic_hl else prev_l
+
+                                                if current_price >= hl_tp:
+                                                    result['action'] = 'SELL'
+                                                    result['reason'] = f'High/Low Take Profit Hit (${current_price:.{precision}f} >= ${hl_tp:.{precision}f})'
+                                                elif current_price <= hl_sl:
+                                                    result['action'] = 'SELL'
+                                                    result['reason'] = f'High/Low Stop Loss Hit (${current_price:.{precision}f} <= ${hl_sl:.{precision}f})'
+
+                                            elif sell_mode in ['swing_points', 'hybrid_swing']:
+                                                swing_exit = build_swing_exit(
+                                                    result.get('price_history', []),
+                                                    current_price=current_price,
+                                                    is_long=True,
+                                                    lookback_days=int(t_settings.get('swing_exit_lookback_days', t_settings.get('swing_lookback_days', 20)) or 20),
+                                                    market_session=t_settings.get('market_session', 'Regular'),
+                                                    is_crypto=is_crypto,
+                                                )
+                                                tp = swing_exit.get('take_profit')
+                                                sl = swing_exit.get('stop_loss')
+                                                if sell_mode == 'swing_points' and result['action'] == 'SELL':
+                                                    result['action'] = 'HOLD'
+                                                    result['reason'] = 'Sell Signal Ignored (Swing Points Mode)'
+
+                                                if tp is not None and sl is not None:
+                                                    if current_price >= tp:
+                                                        result['action'] = 'SELL'
+                                                        result['reason'] = f'Swing Take Profit Hit (${current_price:.{precision}f} >= ${tp:.{precision}f})'
+                                                    elif current_price <= sl:
+                                                        result['action'] = 'SELL'
+                                                        result['reason'] = f'Swing Stop Loss Hit (${current_price:.{precision}f} <= ${sl:.{precision}f})'
+
                                             else:
                                                 # ── EXISTING: ATR-based logic (unchanged) ───────────────────
                                                 stop_mult = t_settings.get('atr_stop_multiplier', 2.0)
@@ -862,6 +1336,14 @@ class UserEngine:
                                                     elif current_price >= take_profit:
                                                         result['action'] = 'SELL'
                                                         result['reason'] = f'Take Profit Hit (${current_price:.{precision}f} >= ${take_profit:.{precision}f})'
+
+                                if has_this_pos and pos_info and not is_options_enabled and not is_market_closed_skip:
+                                    if result['action'] == 'SELL':
+                                        self._cancel_exit_protection(ticker, result.get('reason', 'sell signal'))
+                                    elif result['action'] == 'HOLD':
+                                        protection = self._sync_exit_protection(ticker, result, pos_info, t_settings)
+                                        if protection:
+                                            result['exit_protection'] = protection
 
                                 # Buy Execution
                                 if result['action'] == 'BUY' and not is_market_closed_skip:
@@ -972,7 +1454,9 @@ class UserEngine:
                                         elif sizing['notional'] > 0:
                                             order_result = self.broker.place_order(
                                                 symbol=ticker, notional=sizing['notional'], side='buy',
-                                                stop_loss=sizing['stop_loss'], take_profit=sizing['take_profit']
+                                                stop_loss=sizing['stop_loss'], take_profit=sizing['take_profit'],
+                                                market_session=t_settings.get('market_session', 'Regular'),
+                                                current_price=result.get('price_raw')
                                             )
                                             if order_result.get('success'):
                                                 result['order'] = order_result
@@ -992,13 +1476,28 @@ class UserEngine:
                                                 result['reason'] = f"✅ BOUGHT {result['qty']:.6f} shares at {result['price']}: {result['reason']}"
                                                 self.last_trade_timestamps[ticker] = self.get_now()
                                                 await self._increment_trade_count(ticker)
+                                                try:
+                                                    fresh_positions = self.broker.get_positions()
+                                                    fresh_pos = self._find_position(fresh_positions, ticker_norm)
+                                                    if fresh_pos:
+                                                        protection = self._sync_exit_protection(ticker, result, fresh_pos, t_settings, force=True)
+                                                        if protection:
+                                                            result['exit_protection'] = protection
+                                                    else:
+                                                        print(f"[exit-protect] {ticker_norm} buy accepted; OCO will be placed after position fill is visible")
+                                                except Exception as protect_err:
+                                                    print(f"[exit-protect] {ticker_norm} post-buy protection error: {protect_err}")
                                                 
                                 # Sell Execution (or PUT option entry)
                                 elif result['action'] == 'SELL' and not is_market_closed_skip:
                                     if is_options_enabled:
                                         if has_this_pos:
                                             # Close active option position
-                                            order_result = self.broker.close_position(pos_info['symbol'])
+                                            order_result = self.broker.close_position(
+                                                pos_info['symbol'],
+                                                market_session=t_settings.get('market_session', 'Regular'),
+                                                current_price=result.get('price_raw')
+                                            )
                                             if order_result.get('success'):
                                                 result['order'] = order_result
                                                 result['order_id'] = order_result.get('order_id')
@@ -1024,6 +1523,7 @@ class UserEngine:
                                                 # Accumulate realized P/L
                                                 current_realized = t_settings.get('realized_pl', 0.0)
                                                 t_settings['realized_pl'] = round(current_realized + pl, 2)
+                                                self._apply_compound_pl(t_settings, pl, 'options')
                                                 await self.save_settings()
 
                                                 enable_signal_reset = t_settings.get('enable_signal_reset', getattr(self.config, 'ENABLE_SIGNAL_RESET', False))
@@ -1124,7 +1624,11 @@ class UserEngine:
                                         # Standard Stock/Crypto Sell execution
                                         if has_this_pos:
                                             pos_info = next((p for p in all_positions if p['symbol'].replace("/", "").upper() == ticker_norm), None)
-                                            order_result = self.broker.close_position(ticker)
+                                            order_result = self.broker.close_position(
+                                                ticker,
+                                                market_session=t_settings.get('market_session', 'Regular'),
+                                                current_price=result.get('price_raw')
+                                            )
                                             if order_result.get('success'):
                                                 result['order'] = order_result
                                                 result['order_id'] = order_result.get('order_id')
@@ -1155,6 +1659,7 @@ class UserEngine:
                                                     # Accumulate realized P/L for the bot
                                                     current_realized = t_settings.get('realized_pl', 0.0)
                                                     t_settings['realized_pl'] = round(current_realized + pl, 2)
+                                                    self._apply_compound_pl(t_settings, pl, 'regular')
                                                     await self.save_settings()
                                                 else:
                                                     result['reason'] = f"✅ SOLD at {result['price']}: {result['reason']}"

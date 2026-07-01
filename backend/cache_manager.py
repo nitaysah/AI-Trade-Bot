@@ -56,6 +56,14 @@ class TTLCacheStore:
             self._store.move_to_end(key)
             return entry.value, time.time() - entry.created_at
 
+    def peek_with_age(self, key: Hashable):
+        with self._lock:
+            entry = self._store.get(key)
+            if not entry:
+                return None, None
+            self._store.move_to_end(key)
+            return entry.value, time.time() - entry.created_at
+
     def set(self, key: Hashable, value: Any) -> None:
         with self._lock:
             self._store[key] = CacheEntry(value=value, created_at=time.time())

@@ -129,8 +129,14 @@ class RiskManager:
         t_settings = getattr(get_user_config(), 'TICKER_SETTINGS', {}).get(ticker.upper(), {}) if ticker else {}
         risk_amount = 0.0
         
-        # Use ticker-specific amount if provided, otherwise check legacy TICKER_AMOUNTS
-        custom_amount = t_settings.get('amount')
+        # Use ticker-specific amount if provided, otherwise check legacy TICKER_AMOUNTS.
+        allocation_mode = str(t_settings.get('allocation_mode', 'fixed') or 'fixed').lower()
+        if allocation_mode == 'compound':
+            custom_amount = t_settings.get('compound_amount')
+            if custom_amount is None:
+                custom_amount = t_settings.get('amount')
+        else:
+            custom_amount = t_settings.get('amount')
         if custom_amount is None:
             custom_amount = getattr(get_user_config(), 'TICKER_AMOUNTS', {}).get(ticker.upper())
 
@@ -155,7 +161,8 @@ class RiskManager:
             notional = float(custom_amount)
             
             # Context-aware logging
-            log_msg = f"[risk] {ticker}: Allocating ${notional:.2f}"
+            mode_label = "compound" if allocation_mode == 'compound' else "fixed"
+            log_msg = f"[risk] {ticker}: Allocating ${notional:.2f} ({mode_label})"
             if sell_mode in ['sltp', 'hybrid']:
                 log_msg += f" (SL Mult: {stop_mult})"
             elif sell_mode in ['percentage', 'hybrid_pct']:

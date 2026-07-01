@@ -13,8 +13,15 @@ import config
 
 try:
     from alpaca.trading.client import TradingClient
-    from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest, GetPortfolioHistoryRequest
-    from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
+    from alpaca.trading.requests import (
+        MarketOrderRequest,
+        LimitOrderRequest,
+        GetOrdersRequest,
+        GetPortfolioHistoryRequest,
+        TakeProfitRequest,
+        StopLossRequest,
+    )
+    from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce, QueryOrderStatus
     ALPACA_AVAILABLE = True
 except ImportError:
     ALPACA_AVAILABLE = False
@@ -55,6 +62,15 @@ class AlpacaBroker:
             
             print(f"[broker] Attempting connection (Paper={paper})...")
             self.client = TradingClient(api_key, secret_key, paper=paper)
+            
+            # Patch the underlying requests.Session to always have a timeout
+            if hasattr(self.client, "_session") and hasattr(self.client._session, "request"):
+                original_request = self.client._session.request
+                def request_with_timeout(*args, **kwargs):
+                    kwargs.setdefault('timeout', 10.0)
+                    return original_request(*args, **kwargs)
+                self.client._session.request = request_with_timeout
+
             # Test connection
             account = self.client.get_account()
             self.simulation_mode = False
@@ -114,7 +130,7 @@ class AlpacaBroker:
     def check_tradable(self, symbol: str) -> dict:
         """Checks if an asset exists and is tradable in Alpaca."""
         if self.simulation_mode:
-            return {'success': True, 'tradable': True, 'symbol': symbol}
+            return {'success': True, 'tradable': True, 'symbol': symbol, 'overnight_tradable': True}
         try:
             request_symbol = symbol.upper().replace("/", "")
             is_crypto = any(request_symbol.endswith(base) for base in ["USD", "USDT", "USDC"])
@@ -129,10 +145,28 @@ class AlpacaBroker:
             for sym in formats_to_try:
                 try:
                     asset = self.client.get_asset(sym)
+                    overnight_tradable = bool(getattr(asset, 'overnight_tradable', False))
+                    asset_class = getattr(asset, 'asset_class', '')
+                    asset_class = getattr(asset_class, 'value', asset_class)
                     if asset.tradable:
-                        return {'success': True, 'tradable': True, 'symbol': sym}
+                        return {
+                            'success': True,
+                            'tradable': True,
+                            'symbol': sym,
+                            'asset_class': str(asset_class),
+                            'exchange': str(getattr(asset, 'exchange', '') or ''),
+                            'overnight_tradable': overnight_tradable,
+                            'fractionable': bool(getattr(asset, 'fractionable', False)),
+                        }
                     else:
-                        return {'success': True, 'tradable': False, 'symbol': sym, 'error': f"Asset {sym} is not tradable."}
+                        return {
+                            'success': True,
+                            'tradable': False,
+                            'symbol': sym,
+                            'asset_class': str(asset_class),
+                            'overnight_tradable': overnight_tradable,
+                            'error': f"Asset {sym} is not tradable."
+                        }
                 except Exception as e:
                     if "not found" in str(e).lower():
                         continue
@@ -141,6 +175,72 @@ class AlpacaBroker:
             return {'success': False, 'error': f"Asset {symbol} not found in Alpaca."}
         except Exception as e:
             return {'success': False, 'error': str(e)}
+
+    def check_market_session_allowed(self, symbol: str, market_session: str = "Regular") -> dict:
+        """Validates whether a symbol can use the requested bot market session."""
+        session = str(market_session or "Regular").strip().lower()
+        request_symbol = symbol.upper().replace("/", "")
+        is_crypto = any(request_symbol.endswith(base) for base in ["USD", "USDT", "USDC"])
+
+        if is_crypto:
+            return {
+                'success': True,
+                'allowed': True,
+                'symbol': symbol,
+                'market_session': '24h',
+                'message': 'Crypto uses 24 hr trading.'
+            }
+
+        if self.simulation_mode and session in {'24h', 'crypto24'}:
+            return {
+                'success': False,
+                'allowed': False,
+                'symbol': symbol,
+                'market_session': '24h',
+                'message': f'Connect Alpaca to verify whether {symbol.upper()} is overnight_tradable for 24 hr stock trading.'
+            }
+
+        tradable = self.check_tradable(symbol)
+        if not tradable.get('success') or not tradable.get('tradable'):
+            return {
+                'success': False,
+                'allowed': False,
+                'symbol': symbol,
+                'market_session': market_session,
+                'message': tradable.get('error', f'{symbol} is not tradable in Alpaca.')
+            }
+
+        if session in {'24h', 'crypto24'}:
+            allowed = bool(tradable.get('overnight_tradable'))
+            return {
+                'success': True,
+                'allowed': allowed,
+                'symbol': tradable.get('symbol', symbol),
+                'market_session': '24h',
+                'overnight_tradable': allowed,
+                'message': (
+                    f"{symbol.upper()} is eligible for Alpaca 24/5 trading. Bot will use limit orders."
+                    if allowed else
+                    f"{symbol.upper()} is not marked overnight_tradable by Alpaca, so 24 hr stock trading is not available."
+                )
+            }
+
+        if session == 'extended':
+            return {
+                'success': True,
+                'allowed': True,
+                'symbol': tradable.get('symbol', symbol),
+                'market_session': 'Extended',
+                'message': 'Extended-hours stock orders will use limit orders with extended_hours enabled.'
+            }
+
+        return {
+            'success': True,
+            'allowed': True,
+            'symbol': tradable.get('symbol', symbol),
+            'market_session': 'Regular',
+            'message': 'Regular-hours stock trading.'
+        }
 
     def _round_price(self, symbol: str, price) -> float:
         try:
@@ -435,6 +535,121 @@ class AlpacaBroker:
             print(f"[broker] Error getting open orders: {e}")
             return []
 
+    def _bot_exit_prefix(self, symbol: str) -> str:
+        return f"bot-exit-{symbol.upper().replace('/', '')}-"
+
+    def get_exit_orders(self, symbol: str) -> list:
+        """Returns open bot-managed exit orders for a symbol."""
+        if self.simulation_mode:
+            return []
+
+        try:
+            symbol_norm = symbol.upper().replace("/", "")
+            req = GetOrdersRequest(status=QueryOrderStatus.OPEN)
+            orders = self.client.get_orders(filter=req)
+            exit_orders = []
+            prefix = self._bot_exit_prefix(symbol_norm)
+            for o in orders:
+                order_symbol = str(o.symbol).upper().replace("/", "")
+                if order_symbol != symbol_norm:
+                    continue
+                client_id = str(getattr(o, "client_order_id", "") or "")
+                if client_id.startswith(prefix):
+                    exit_orders.append(o)
+            return exit_orders
+        except Exception as e:
+            print(f"[broker] Error getting bot exit orders for {symbol}: {e}")
+            return []
+
+    def get_exit_order_levels(self, symbol: str) -> dict:
+        """Summarizes bot-managed TP/SL levels for a symbol from open orders."""
+        levels = {"take_profit": None, "stop_loss": None, "orders": []}
+        for o in self.get_exit_orders(symbol):
+            levels["orders"].append(str(getattr(o, "id", "")))
+            candidates = [o] + list(getattr(o, "legs", None) or [])
+            for candidate in candidates:
+                limit_price = getattr(candidate, "limit_price", None)
+                stop_price = getattr(candidate, "stop_price", None)
+                try:
+                    if limit_price is not None:
+                        levels["take_profit"] = float(limit_price)
+                except Exception:
+                    pass
+                try:
+                    if stop_price is not None:
+                        levels["stop_loss"] = float(stop_price)
+                except Exception:
+                    pass
+        return levels
+
+    def cancel_exit_orders(self, symbol: str) -> dict:
+        """Cancels bot-managed exit orders for a symbol."""
+        if self.simulation_mode:
+            return {'success': True, 'cancelled': 0}
+
+        cancelled = 0
+        errors = []
+        for o in self.get_exit_orders(symbol):
+            try:
+                self.client.cancel_order_by_id(str(o.id))
+                cancelled += 1
+                print(f"[broker] Cancelled bot exit order for {symbol} (ID: {o.id})")
+            except Exception as e:
+                errors.append(str(e))
+                print(f"[broker] Failed cancelling bot exit order for {symbol}: {e}")
+        return {'success': not errors, 'cancelled': cancelled, 'errors': errors}
+
+    def place_equity_oco_exit(self, symbol: str, qty: float, take_profit: float, stop_loss: float) -> dict:
+        """Places a broker-side OCO sell exit for a regular stock/ETF position."""
+        if self.simulation_mode:
+            return {'success': True, 'simulated': True, 'symbol': symbol, 'qty': qty, 'take_profit': take_profit, 'stop_loss': stop_loss}
+
+        try:
+            symbol_norm = symbol.upper().replace("/", "")
+            qty_val = round(float(qty), 6)
+            tp_val = self._round_price(symbol_norm, take_profit)
+            sl_val = self._round_price(symbol_norm, stop_loss)
+            if qty_val <= 0 or tp_val <= 0 or sl_val <= 0:
+                return {'success': False, 'error': 'Invalid OCO qty/TP/SL.'}
+            if tp_val <= sl_val:
+                return {'success': False, 'error': f'Invalid OCO levels: TP {tp_val} must be above SL {sl_val}.'}
+
+            import time
+            client_order_id = f"{self._bot_exit_prefix(symbol_norm)}{int(time.time() * 1000)}"
+            order_data = LimitOrderRequest(
+                symbol=symbol_norm,
+                qty=qty_val,
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.DAY,
+                order_class=OrderClass.OCO,
+                limit_price=tp_val,
+                take_profit=TakeProfitRequest(limit_price=tp_val),
+                stop_loss=StopLossRequest(stop_price=sl_val),
+                client_order_id=client_order_id,
+            )
+            order = self.client.submit_order(order_data=order_data)
+            print(f"[broker] Placed OCO exit for {symbol_norm}: qty={qty_val} TP={tp_val} SL={sl_val}")
+            return {
+                'success': True,
+                'order_id': str(order.id),
+                'client_order_id': client_order_id,
+                'symbol': symbol_norm,
+                'qty': qty_val,
+                'take_profit': tp_val,
+                'stop_loss': sl_val,
+                'status': str(order.status),
+            }
+        except Exception as e:
+            print(f"[broker] OCO exit order error for {symbol}: {e}")
+            return {'success': False, 'error': str(e)}
+
+    def replace_equity_oco_exit(self, symbol: str, qty: float, take_profit: float, stop_loss: float) -> dict:
+        """Cancel bot-managed exit orders and place a fresh OCO with updated levels."""
+        cancel_res = self.cancel_exit_orders(symbol)
+        if not cancel_res.get('success'):
+            return {'success': False, 'error': '; '.join(cancel_res.get('errors', [])) or 'Failed to cancel old exit orders'}
+        return self.place_equity_oco_exit(symbol, qty, take_profit, stop_loss)
+
     def cancel_order_by_id(self, order_id: str) -> dict:
         """Cancels a specific working order by its ID."""
         if self.simulation_mode:
@@ -474,7 +689,8 @@ class AlpacaBroker:
             return {'success': False, 'error': str(e)}
 
     def place_order(self, symbol: str, notional: float, side: str = 'buy',
-                    stop_loss: float = 0, take_profit: float = 0) -> dict:
+                    stop_loss: float = 0, take_profit: float = 0,
+                    market_session: str = "Regular", current_price: float = None) -> dict:
         """
         Places a notional (dollar-based) market order for fractional shares.
         """
@@ -487,6 +703,8 @@ class AlpacaBroker:
             # Crypto logic: Must use GTC and slash-format symbol
             request_symbol = symbol.upper().replace("/", "")
             is_crypto = any(request_symbol.endswith(base) for base in ["USD", "USDT", "USDC"])
+            session = str(market_session or "Regular").strip().lower()
+            use_extended_equity = (not is_crypto) and session in {"extended", "24h", "crypto24"}
             
             # Crypto market orders often fill instantly when using IOC (Immediate Or Cancel)
             tif = TimeInForce.IOC if is_crypto else TimeInForce.DAY
@@ -496,13 +714,31 @@ class AlpacaBroker:
                     if request_symbol.endswith(base):
                         request_symbol = request_symbol.replace(base, f"/{base}")
                         break
-            
-            order_data = MarketOrderRequest(
-                symbol=request_symbol,
-                notional=round(notional, 2),
-                side=order_side,
-                time_in_force=tif
-            )
+
+            if use_extended_equity:
+                ref_price = float(current_price or 0)
+                if ref_price <= 0:
+                    return {'success': False, 'error': 'Extended-hours stock orders require a current price for limit order placement.'}
+                limit_price = ref_price * (1.003 if order_side == OrderSide.BUY else 0.9991)
+                limit_price = self._round_price(request_symbol, limit_price)
+                qty = round(float(notional) / float(limit_price), 6)
+                if qty <= 0:
+                    return {'success': False, 'error': 'Calculated extended-hours order quantity was zero.'}
+                order_data = LimitOrderRequest(
+                    symbol=request_symbol,
+                    qty=qty,
+                    side=order_side,
+                    time_in_force=TimeInForce.DAY,
+                    limit_price=limit_price,
+                    extended_hours=True
+                )
+            else:
+                order_data = MarketOrderRequest(
+                    symbol=request_symbol,
+                    notional=round(notional, 2),
+                    side=order_side,
+                    time_in_force=tif
+                )
             order = self.client.submit_order(order_data=order_data)
             
             # Estimate fee (Crypto is ~0.1%, Stocks are $0 in Alpaca usually)
@@ -518,12 +754,15 @@ class AlpacaBroker:
                 'total_cost': round(notional + fee, 2),
                 'fees': fee,
                 'status': str(order.status),
+                'order_type': 'limit' if use_extended_equity else 'market',
+                'limit_price': limit_price if use_extended_equity else 0.0,
+                'extended_hours': use_extended_equity,
             }
         except Exception as e:
             print(f"[broker] Order error: {e}")
             return {'success': False, 'error': str(e)}
 
-    def close_position(self, symbol: str) -> dict:
+    def close_position(self, symbol: str, market_session: str = "Regular", current_price: float = None) -> dict:
         """Closes an entire position for a given symbol."""
         if self.simulation_mode:
             if symbol in self.sim_positions:
@@ -575,6 +814,9 @@ class AlpacaBroker:
             # 1. Format crypto symbol if needed (e.g. BTCUSD -> BTC/USD)
             request_symbol = symbol.upper().replace("/", "")
             is_crypto = any(request_symbol.endswith(base) for base in ["USD", "USDT", "USDC"])
+            is_option_symbol = len(request_symbol) >= 15 and request_symbol[-9:-8] in {"C", "P"}
+            session = str(market_session or "Regular").strip().lower()
+            use_extended_equity = (not is_crypto) and (not is_option_symbol) and session in {"extended", "24h", "crypto24"}
             
             formats_to_try = [request_symbol] # Try no-slash first
             if is_crypto:
@@ -582,6 +824,37 @@ class AlpacaBroker:
                     if request_symbol.endswith(base):
                         formats_to_try.append(request_symbol.replace(base, f"/{base}")) # Add slashed version
                         break
+
+            if use_extended_equity:
+                ref_price = float(current_price or 0)
+                if ref_price <= 0:
+                    return {'success': False, 'error': 'Extended-hours stock exits require a current price for limit order placement.'}
+                pos = next((p for p in self.get_positions() if p.get('symbol', '').replace("/", "").upper() == request_symbol), None)
+                if not pos:
+                    return {'success': False, 'error': f'No position in {symbol}'}
+                qty = abs(float(pos.get('qty', 0)))
+                if qty <= 0:
+                    return {'success': False, 'error': f'No sellable quantity in {symbol}'}
+                limit_price = self._round_price(request_symbol, ref_price * 0.9991)
+                order_data = LimitOrderRequest(
+                    symbol=request_symbol,
+                    qty=qty,
+                    side=OrderSide.SELL,
+                    time_in_force=TimeInForce.DAY,
+                    limit_price=limit_price,
+                    extended_hours=True
+                )
+                order = self.client.submit_order(order_data=order_data)
+                print(f"[broker] Submitted extended-hours limit close for {request_symbol} @ {limit_price}")
+                return {
+                    'success': True,
+                    'symbol': request_symbol,
+                    'qty': qty,
+                    'order_id': str(order.id),
+                    'order_type': 'limit',
+                    'limit_price': limit_price,
+                    'extended_hours': True,
+                }
             
             # 2. Attempt to close using available formats
             last_err = "Unknown"

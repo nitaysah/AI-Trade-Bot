@@ -10,6 +10,7 @@ var API_BASE = window.location.hostname === 'localhost' || window.location.hostn
     : CLOUD_URL;
 var REFRESH_INTERVAL = 60000; // 60 seconds (1 minute)
 var LAST_VIEWED_TICKER_KEY = 'lastViewedTicker';
+var DASHBOARD_CHART_CONTEXT_KEY = 'dashboardChartContext';
 
 function normalizeTicker(ticker) {
     const normalized = (ticker || '').toString().trim().toUpperCase();
@@ -35,6 +36,27 @@ function rememberSelectedTicker(ticker) {
         console.warn('[prefs] Could not save last viewed ticker:', e);
     }
     return normalized;
+}
+
+function readDashboardChartContext() {
+    try {
+        const raw = sessionStorage.getItem(DASHBOARD_CHART_CONTEXT_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (e) {
+        console.warn('[prefs] Could not read dashboard chart context:', e);
+        return null;
+    }
+}
+
+function getChartSourceForTicker(ticker) {
+    const normalized = normalizeTicker(ticker);
+    const context = readDashboardChartContext();
+    if (context && normalizeTicker(context.ticker) === normalized && context.source) {
+        return context.source;
+    }
+    return 'dashboard';
 }
 
 function updateActiveTickerDisplay(ticker) {
@@ -1274,7 +1296,8 @@ async function loadTickerChartFast(ticker, options = {}) {
     const requestId = ++chartRequestSerial;
     try {
         const headers = await getAuthHeaders();
-        const url = `${API_BASE}/api/chart/${encodeURIComponent(requestedTicker)}?timeframe=${encodeURIComponent(currentBackendTf)}&force=${force ? 'true' : 'false'}&source=dashboard`;
+        const chartSource = getChartSourceForTicker(requestedTicker);
+        const url = `${API_BASE}/api/chart/${encodeURIComponent(requestedTicker)}?timeframe=${encodeURIComponent(currentBackendTf)}&force=${force ? 'true' : 'false'}&source=${encodeURIComponent(chartSource)}`;
         const response = await fetch(url, { headers });
         if (!response.ok) {
             console.error(`[chart] HTTP Error: ${response.status} - ${await response.text()}`);
@@ -1615,6 +1638,57 @@ function setGlobalIndicatorPref(indicatorName, enabled) {
                 }).catch(e => console.error('Error saving setting:', e));
             });
         }
+    }
+}
+
+async function resetConfluenceIndicatorsToDefaults() {
+    const signals = window._lastSignals || {};
+    const configKeys = Array.from(new Set(Object.values(INDICATOR_CONFIG_MAP).flat()));
+    const updates = {};
+
+    Object.keys(signals).forEach(name => {
+        const toggleKey = signals[name]?.toggle_key;
+        if (toggleKey) updates[toggleKey] = false;
+    });
+
+    configKeys.forEach(key => {
+        updates[key] = "";
+    });
+
+    try {
+        localStorage.setItem(GLOBAL_INDICATOR_PREFS_KEY, JSON.stringify({}));
+        localStorage.setItem('visibleIndicators', JSON.stringify(_defaultVisibleIndicators));
+
+        _visibleIndicators = { ..._defaultVisibleIndicators };
+        Object.entries(_visibleIndicators).forEach(([key, enabled]) => {
+            const btn = document.getElementById(`ind_btn_${key}`);
+            if (btn) {
+                btn.classList.toggle('ind-btn-active', enabled);
+                btn.classList.toggle('ind-btn-inactive', !enabled);
+            }
+        });
+
+        recomputeConfluence();
+    } catch (e) {
+        console.warn('[confluence] Local reset prep failed:', e);
+    }
+
+    try {
+        const headers = await getAuthHeaders();
+        await fetch(`${API_BASE}/api/settings/indicators?context=dashboard`, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify(updates)
+        });
+
+        clearTimeout(window._indicatorToggleDebounce);
+        window._indicatorToggleDebounce = setTimeout(() => {
+            fetchDashboard('fast');
+            loadSelectedTickerChart({ force: true, renderCached: false });
+            window._indicatorToggleDebounce = null;
+        }, 250);
+    } catch (e) {
+        console.error('[confluence] Reset failed:', e);
     }
 }
 

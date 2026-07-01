@@ -3,12 +3,13 @@ import numpy as np
 from datetime import datetime
 from data_manager import get_historical_data
 from indicators import calculate_indicators_for_df, _generate_signals
+from swing_strategy import build_entry_signal
 from trader import get_confluence_decision
 import config as global_config
 from user_config import get_user_config
 
 class Backtester:
-    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=0.02, max_pos_pct=0.25, ext_hours=True, buy_mode="indicator", custom_buy_price=0.0, sell_mode="indicator", atr_stop_multiplier=2.0, atr_trail_multiplier=3.0, atr_take_profit_multiplier=4.0, ai_autopilot=False, ai_interval=10, ai_model="llama-3.3-70b-versatile", enable_cooldown=True, cooldown_minutes=None, regular_stop_loss_pct=0.05, regular_take_profit_pct=0.10, regular_trailing_pct=0.03, cancel_event=None):
+    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=0.02, max_pos_pct=0.25, ext_hours=True, buy_mode="indicator", custom_buy_price=0.0, sell_mode="indicator", atr_stop_multiplier=2.0, atr_trail_multiplier=3.0, atr_take_profit_multiplier=4.0, ai_autopilot=False, ai_interval=10, ai_model="llama-3.3-70b-versatile", enable_cooldown=True, cooldown_minutes=None, regular_stop_loss_pct=0.05, regular_take_profit_pct=0.10, regular_trailing_pct=0.03, cancel_event=None, entry_atr_multiplier=None, entry_pct_move=None, entry_atr_style="pullback_reclaim", entry_pct_style="dip_reclaim", swing_entry_mode="bounce_retest", swing_entry_lookback_days=20, market_session="Regular"):
         self.ticker = ticker
         self.timeframe = timeframe
         self.start_date = start_date
@@ -26,6 +27,13 @@ class Backtester:
         self.atr_stop_multiplier = atr_stop_multiplier
         self.atr_trail_multiplier = atr_trail_multiplier
         self.atr_take_profit_multiplier = atr_take_profit_multiplier
+        self.entry_atr_multiplier = entry_atr_multiplier or atr_stop_multiplier
+        self.entry_pct_move = entry_pct_move or max(1.0, regular_stop_loss_pct * 100.0)
+        self.entry_atr_style = entry_atr_style or "pullback_reclaim"
+        self.entry_pct_style = entry_pct_style or "dip_reclaim"
+        self.swing_entry_mode = swing_entry_mode or "bounce_retest"
+        self.swing_entry_lookback_days = swing_entry_lookback_days or 20
+        self.market_session = market_session or "Regular"
         self.ai_autopilot = ai_autopilot or (sell_mode == "ai_autopilot")
         self.ai_interval = ai_interval
         self.ai_model = ai_model
@@ -113,7 +121,21 @@ class Backtester:
         
         if self.df.empty:
             return {"error": "No data available in the requested range after filtering."}
-        
+
+        price_history_records = []
+        for ts, row in self.df.iterrows():
+            try:
+                price_history_records.append({
+                    "time": int(ts.timestamp()) if hasattr(ts, "timestamp") else ts,
+                    "open": float(row.get("Open", row.get("open", row.get("Close", 0.0)))),
+                    "high": float(row.get("High", row.get("high", row.get("Close", 0.0)))),
+                    "low": float(row.get("Low", row.get("low", row.get("Close", 0.0)))),
+                    "close": float(row.get("Close", row.get("close", 0.0))),
+                    "volume": float(row.get("Volume", row.get("volume", 0.0))),
+                })
+            except Exception:
+                continue
+
         # 4. Simulate bar-by-bar
         for i in range(len(self.df)):
             if self.cancel_event and self.cancel_event.is_set():
@@ -289,21 +311,59 @@ class Backtester:
                         reason = "Trend Rider Exit: Trend Broken (Death Cross or < SMA 200)"
 
                 else:
-                    if self.buy_mode == 'custom_price':
-                        if current_price > 0 and current_price <= self.custom_buy_price:
-                            action = "BUY"
-                            reason = f"Custom Price Entry: Price {current_price} <= {self.custom_buy_price}"
-                    else:
-                        if analysis['bullish_count'] >= self.threshold:
-                            action = "BUY"
-                            names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
-                            reason = f"{analysis['bullish_count']} signals ({', '.join(names)})"
-                            
-                    if action != "BUY" and analysis['bearish_count'] >= self.sell_threshold:
-                        if self.sell_mode in ["indicator", "hybrid", "hybrid_pct", "hybrid_pivot", "hybrid_high_low"]:
-                            action = "SELL"
-                            names = [k for k, v in filtered_signals.items() if v['signal'] == 'BEARISH']
-                            reason = f"Dynamic Sell: {analysis['bearish_count']} signals ({', '.join(names)})"
+                    entry_mode = self.buy_mode
+                    price_action_modes = ['custom_price', 'atr', 'hybrid_atr', 'percentage', 'hybrid_pct', 'pivot_points', 'hybrid_pivot', 'high_low', 'hybrid_high_low', 'swing_points', 'hybrid_swing']
+                    if entry_mode in price_action_modes:
+                        action = "HOLD"
+                        entry_signal = build_entry_signal(
+                            price_history_records[: i + 1],
+                            current_price=current_price,
+                            entry_mode=entry_mode,
+                            lookback_days=self.swing_entry_lookback_days,
+                            market_session=self.market_session,
+                            is_crypto=self.is_crypto,
+                            atr=current_bar.get('ATR', current_price * 0.01),
+                            custom_buy_price=self.custom_buy_price,
+                            entry_atr_mult=self.entry_atr_multiplier,
+                            entry_pct_move=self.entry_pct_move,
+                            entry_atr_style=self.entry_atr_style,
+                            entry_pct_style=self.entry_pct_style,
+                            swing_entry_mode=self.swing_entry_mode,
+                        )
+                        signal_action = entry_signal.get("action", "HOLD")
+                        if signal_action != "HOLD":
+                            action = signal_action
+                            reason = entry_signal.get("reason", reason)
+                        elif entry_mode.startswith("hybrid_"):
+                            if analysis['bullish_count'] >= self.threshold:
+                                action = "BUY"
+                                names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
+                                reason = f"{analysis['bullish_count']} signals ({', '.join(names)})"
+                            elif analysis['bearish_count'] >= self.sell_threshold:
+                                action = "SELL"
+                                names = [k for k, v in filtered_signals.items() if v['signal'] == 'BEARISH']
+                                reason = f"{analysis['bearish_count']} signals ({', '.join(names)})"
+                        elif entry_mode == 'custom_price':
+                            if analysis['bearish_count'] >= self.sell_threshold:
+                                action = "SELL"
+                                names = [k for k, v in filtered_signals.items() if v['signal'] == 'BEARISH']
+                                reason = f"Dynamic Sell: {analysis['bearish_count']} signals ({', '.join(names)})"
+                    if action == 'HOLD' and entry_mode not in price_action_modes:
+                        if self.buy_mode == 'custom_price':
+                            if current_price > 0 and current_price <= self.custom_buy_price:
+                                action = "BUY"
+                                reason = f"Custom Price Entry: Price {current_price} <= {self.custom_buy_price}"
+                        else:
+                            if analysis['bullish_count'] >= self.threshold:
+                                action = "BUY"
+                                names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
+                                reason = f"{analysis['bullish_count']} signals ({', '.join(names)})"
+                                
+                        if action != "BUY" and analysis['bearish_count'] >= self.sell_threshold:
+                            if self.sell_mode in ["indicator", "hybrid", "hybrid_pct", "hybrid_pivot", "hybrid_high_low"]:
+                                action = "SELL"
+                                names = [k for k, v in filtered_signals.items() if v['signal'] == 'BEARISH']
+                                reason = f"Dynamic Sell: {analysis['bearish_count']} signals ({', '.join(names)})"
 
                 if action == 'BUY' and not self.position:
                     if self.enable_cooldown and self.last_exit_time:

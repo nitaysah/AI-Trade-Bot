@@ -34,6 +34,7 @@ from trader import evaluate_trade, get_risk_manager, clear_evaluation_cache, get
 from indicators import get_full_analysis
 from data_manager import get_historical_data
 from engine import UserManager, UserEngine
+from swing_strategy import build_swing_exit, detect_swing_entry, format_swing_preview, build_entry_signal, format_entry_preview
 import config as global_config
 from user_config import set_user_config, get_user_config
 from ai_indicator import get_ai_indicator, clear_ai_cache
@@ -200,6 +201,74 @@ def _get_prior_day_ohlc(price_history):
     if high is None or low is None or close is None: return None
     return {"high": high, "low": low, "close": close, "date": prior_date}
 
+
+def _next_level_above(levels, current_price, fallback_step):
+    valid = sorted([float(v) for v in levels if v is not None and float(v) > current_price])
+    if valid:
+        return valid[0]
+    step = abs(float(fallback_step or 0.0))
+    return current_price + step if step > 0 else None
+
+
+def _nearest_level_below(levels, current_price):
+    valid = sorted([float(v) for v in levels if v is not None and float(v) < current_price], reverse=True)
+    return valid[0] if valid else None
+
+
+def _dynamic_pivot_exit_levels(prev_h, prev_l, prev_c, current_price):
+    day_range = max(float(prev_h) - float(prev_l), 0.0)
+    if day_range <= 0:
+        return None
+    p_val = (float(prev_h) + float(prev_l) + float(prev_c)) / 3.0
+    r1 = (2 * p_val) - float(prev_l)
+    s1 = (2 * p_val) - float(prev_h)
+    r2 = p_val + day_range
+    s2 = p_val - day_range
+    r3 = float(prev_h) + 2 * (p_val - float(prev_l))
+    s3 = float(prev_l) - 2 * (float(prev_h) - p_val)
+    tp = _next_level_above([r1, r2, r3, r3 + day_range], current_price, day_range)
+    sl = _nearest_level_below([r3, r2, r1, p_val, s1, s2, s3], current_price)
+    return {"tp": tp, "sl": sl}
+
+
+def _dynamic_high_low_exit_levels(prev_h, prev_l, current_price):
+    day_range = max(float(prev_h) - float(prev_l), 0.0)
+    if day_range <= 0:
+        return None
+    if current_price >= float(prev_h):
+        tp = _next_level_above([float(prev_h) + day_range, float(prev_h) + (2 * day_range)], current_price, day_range)
+        sl = float(prev_h)
+    else:
+        tp = float(prev_h)
+        sl = float(prev_l)
+    return {"tp": tp, "sl": sl}
+
+
+def _format_exit_protection_status(eng: UserEngine, symbol: str, is_option: bool, is_crypto: bool):
+    if is_option:
+        return {"label": "Exit Protection", "status": "Watching underlying", "active": False}
+    if is_crypto:
+        return {"label": "Exit Protection", "status": "Watching TP/SL", "active": False}
+
+    try:
+        levels = eng.broker.get_exit_order_levels(symbol)
+    except Exception as exc:
+        print(f"[dashboard] Exit protection status unavailable for {symbol}: {exc}")
+        return {"label": "Exit Protection", "status": "Unknown", "active": False}
+
+    tp = levels.get("take_profit")
+    sl = levels.get("stop_loss")
+    if tp is not None and sl is not None and levels.get("orders"):
+        return {
+            "label": "Exit Protection",
+            "status": f"OCO active | TP ${float(tp):.2f} | SL ${float(sl):.2f}",
+            "active": True,
+            "take_profit": float(tp),
+            "stop_loss": float(sl),
+        }
+    return {"label": "Exit Protection", "status": "No OCO order yet", "active": False}
+
+
 def _technical_scan_from_analysis(ticker: str, timeframe: str, analysis: dict, use_bot_settings: bool = False):
     if not analysis:
         return None
@@ -243,6 +312,31 @@ def _normalize_quote_symbol(symbol: str) -> str:
     return str(symbol or "").upper().replace("/", "").strip()
 
 
+def _is_crypto_symbol(symbol: str) -> bool:
+    clean = _normalize_quote_symbol(symbol)
+    return clean.endswith(("USD", "USDT", "USDC")) or clean in {"BTC", "ETH", "XRP", "DOGE", "LTC", "ADA", "SOL"}
+
+
+def _normalize_market_session_for_symbol(symbol: str, session: str = None) -> str:
+    session_text = str(session or "").strip()
+    if _is_crypto_symbol(symbol):
+        return "24h"
+    if session_text.lower() in {"", "default"}:
+        return "Regular"
+    if session_text.lower() == "crypto24":
+        return "24h"
+    return session_text
+
+
+def _validate_market_session_for_symbol(symbol: str, market_session: str, eng: UserEngine) -> dict:
+    session = _normalize_market_session_for_symbol(symbol, market_session)
+    check = eng.broker.check_market_session_allowed(symbol, session)
+    if not check.get("success") or not check.get("allowed"):
+        message = check.get("message") or check.get("error") or f"{symbol} is not eligible for {session} trading."
+        raise HTTPException(status_code=400, detail=message)
+    return {**check, "market_session": session}
+
+
 def _format_quote_price(symbol: str, price) -> str:
     try:
         price_float = float(price)
@@ -265,19 +359,29 @@ def _format_quote_price(symbol: str, price) -> str:
     return res
 
 
-def _get_cached_latest_prices(eng: UserEngine, tickers: list, max_age: int = 3) -> dict:
+def _get_stale_latest_prices(eng: UserEngine, tickers: list, max_age: int = 300) -> dict:
+    clean_tickers = list(dict.fromkeys(_normalize_quote_symbol(t) for t in tickers if _normalize_quote_symbol(t)))
+    result = {}
+    for ticker in clean_tickers:
+        cache_key = stable_cache_key(eng.uid, ticker, "quote", 1)
+        cached, age = _quote_cache.peek_with_age(cache_key)
+        if cached is not None and age is not None and age < max_age:
+            result[ticker] = cached
+    return result
+
+
+def _get_cached_latest_prices(eng: UserEngine, tickers: list, max_age: int = 3, stale_max_age: int = 300) -> dict:
     clean_tickers = list(dict.fromkeys(_normalize_quote_symbol(t) for t in tickers if _normalize_quote_symbol(t)))
     if not clean_tickers:
         return {}
 
     result = {}
-    now_ts = time.time()
     misses = []
 
     for ticker in clean_tickers:
         cache_key = stable_cache_key(eng.uid, ticker, "quote", 1)
-        cached, age = _quote_cache.get_with_age(cache_key, max_age)
-        if cached is not None:
+        cached, age = _quote_cache.peek_with_age(cache_key)
+        if cached is not None and age is not None and age < max_age:
             result[ticker] = cached
         else:
             misses.append(ticker)
@@ -300,7 +404,14 @@ def _get_cached_latest_prices(eng: UserEngine, tickers: list, max_age: int = 3) 
                     _quote_cache.set(cache_key, price)
                     result[_normalize_quote_symbol(ticker)] = price
             except Exception as e:
-                print(f"[dashboard] Live quote fetch failed: {e}")
+                print(f"[dashboard] Live quote fetch failed for {misses}: {type(e).__name__}: {e!r}")
+
+        for ticker in misses:
+            if ticker not in result:
+                cache_key = stable_cache_key(eng.uid, ticker, "quote", 1)
+                cached, age = _quote_cache.peek_with_age(cache_key)
+                if cached is not None and age is not None and age < stale_max_age:
+                    result[ticker] = cached
 
     return result
 
@@ -684,6 +795,64 @@ async def get_macro_events():
         return {"status": "error", "message": str(e), "indicators": {}, "calendar": []}
 
 
+def _get_threshold_setting(settings, keys, default_value):
+    for key in keys:
+        value = (settings or {}).get(key)
+        if value is None or value == "":
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    try:
+        return int(default_value)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _normalize_signal_threshold(value, selected_count, default_value):
+    try:
+        threshold = int(value)
+    except (TypeError, ValueError):
+        threshold = 0
+
+    try:
+        default_threshold = int(default_value)
+    except (TypeError, ValueError):
+        default_threshold = 1
+
+    if threshold <= 0:
+        threshold = min(default_threshold, selected_count) if selected_count > 0 else default_threshold
+
+    if selected_count > 0:
+        return max(1, min(threshold, selected_count))
+    return max(1, threshold)
+
+
+def _normalize_bot_signal_thresholds(settings, eng):
+    indicators = settings.get("indicators")
+    if not isinstance(indicators, list):
+        return False
+
+    before = (settings.get("min_buy_signals"), settings.get("min_sell_signals"))
+    selected_count = len(indicators)
+    buy_default = getattr(eng.config, "MIN_BULLISH_SIGNALS", getattr(get_user_config(), "MIN_BULLISH_SIGNALS", 1))
+    sell_default = getattr(eng.config, "MIN_BEARISH_SIGNALS", getattr(get_user_config(), "MIN_BEARISH_SIGNALS", 1))
+    settings["min_buy_signals"] = _normalize_signal_threshold(settings.get("min_buy_signals"), selected_count, buy_default)
+    settings["min_sell_signals"] = _normalize_signal_threshold(settings.get("min_sell_signals"), selected_count, sell_default)
+    return before != (settings.get("min_buy_signals"), settings.get("min_sell_signals"))
+
+
+async def _repair_bot_signal_thresholds_if_needed(eng):
+    repaired = False
+    for settings in eng.config.TICKER_SETTINGS.values():
+        if _normalize_bot_signal_thresholds(settings, eng):
+            repaired = True
+    if repaired:
+        await eng.save_settings()
+        print("[settings] Repaired zero/invalid bot signal thresholds")
+
+
 def _build_indicator_forecast(settings, scan_data, mode="entry", is_long=True, is_option=False, options_type="both", eng=None):
     if not scan_data: return ""
     signals = scan_data.get('signals', {})
@@ -696,8 +865,12 @@ def _build_indicator_forecast(settings, scan_data, mode="entry", is_long=True, i
         
     parts = []
     
-    buy_threshold = settings.get('min_buy_signals', getattr(eng.config, 'MIN_BULLISH_SIGNALS', 1)) if eng else 1
-    sell_threshold = settings.get('min_sell_signals', getattr(eng.config, 'MIN_BEARISH_SIGNALS', 1)) if eng else 1
+    cfg = getattr(eng, "config", None)
+    user_cfg = get_user_config()
+    buy_default = getattr(cfg, 'MIN_BULLISH_SIGNALS', getattr(user_cfg, 'MIN_BULLISH_SIGNALS', 1))
+    sell_default = getattr(cfg, 'MIN_BEARISH_SIGNALS', getattr(user_cfg, 'MIN_BEARISH_SIGNALS', 1))
+    buy_threshold = _get_threshold_setting(settings, ('min_buy_signals', 'threshold', 'buy_threshold'), buy_default)
+    sell_threshold = _get_threshold_setting(settings, ('min_sell_signals', 'sell_threshold'), sell_default)
     
     if mode == "entry":
         target = "BULLISH"
@@ -743,6 +916,322 @@ def _build_indicator_forecast(settings, scan_data, mode="entry", is_long=True, i
                 parts.append(f"⏳ {name} {sig} ({reason})")
                 
     return " | ".join(parts)
+
+
+def _build_swing_forecast(settings, scan_data, mode="entry", is_long=True, is_option=False, options_type="both", eng=None):
+    if not scan_data:
+        return ""
+
+    price_history = scan_data.get("price_history", [])
+    current_price = scan_data.get("price_raw") or scan_data.get("price") or 0.0
+    try:
+        current_price = float(str(current_price).replace("$", "").replace(",", ""))
+    except Exception:
+        current_price = 0.0
+
+    market_session = settings.get("market_session", "Regular")
+    is_crypto = any(str(scan_data.get("ticker", "")).upper().endswith(base) for base in ["USD", "USDT", "USDC"]) or str(scan_data.get("ticker", "")).upper() in ["BTC", "ETH", "XRP", "DOGE", "LTC", "ADA", "SOL"]
+
+    if mode == "entry":
+        lookback_days = int(
+            settings.get(
+                "swing_entry_lookback_days",
+                settings.get("swing_lookback_days", 20),
+            ) or 20
+        )
+        entry_mode = settings.get("swing_entry_mode", "bounce_retest")
+        swing_decision = detect_swing_entry(
+            price_history,
+            current_price=current_price,
+            entry_mode=entry_mode,
+            lookback_days=lookback_days,
+            market_session=market_session,
+            is_crypto=is_crypto,
+        )
+        ctx = swing_decision.get("context", {})
+        support = ctx.get("nearest_support")
+        resistance = ctx.get("nearest_resistance")
+        parts = [
+            f"🔮 Live Preview: {scan_data.get('ticker', 'Example')} (Entry Swing) | Price: ${current_price:.2f}",
+            f"[SWING ENTRY: {entry_mode.upper()} | LOOKBACK: {lookback_days}D]",
+            f"Support: ${support['price']:.2f}" if support else "Support: N/A",
+            f"Resistance: ${resistance['price']:.2f}" if resistance else "Resistance: N/A",
+            swing_decision.get("reason", "Swing Points: waiting"),
+        ]
+        if is_option:
+            parts.insert(1, f"Options: {options_type.upper()}")
+        return " | ".join(parts)
+
+    lookback_days = int(
+        settings.get(
+            "swing_exit_lookback_days",
+            settings.get("swing_lookback_days", 20),
+        ) or 20
+    )
+    swing_exit = build_swing_exit(
+        price_history,
+        current_price=current_price,
+        is_long=is_long,
+        lookback_days=lookback_days,
+        market_session=market_session,
+        is_crypto=is_crypto,
+    )
+    symbol = scan_data.get("ticker", "")
+    return format_swing_preview(
+        symbol=symbol,
+        swing_exit=swing_exit,
+        current_price=current_price,
+        is_long=is_long,
+        is_option=is_option,
+    )
+
+
+def _entry_forecast_float(value, default=0.0):
+    try:
+        return float(str(value).replace("$", "").replace(",", ""))
+    except (TypeError, ValueError):
+        return default
+
+
+def _entry_forecast_money(value):
+    value = _entry_forecast_float(value, None)
+    return "N/A" if value is None else f"${value:.2f}"
+
+
+def _entry_card_prior_day(scan_data, entry_signal):
+    prior = (scan_data or {}).get("prior_day_ohlc")
+    if prior:
+        return prior
+
+    ctx = (entry_signal or {}).get("context") or {}
+    candles = ctx.get("candles") or []
+    return _get_prior_day_ohlc(candles)
+
+
+def _entry_strategy_label(buy_mode):
+    labels = {
+        "indicator": "Indicator",
+        "custom_price": "Custom Price",
+        "atr": "ATR",
+        "hybrid_atr": "Hybrid ATR",
+        "percentage": "Percentage",
+        "hybrid_pct": "Hybrid Percentage",
+        "pivot_points": "Pivot Points",
+        "hybrid_pivot": "Hybrid Pivot",
+        "high_low": "Prior Day High/Low",
+        "hybrid_high_low": "Hybrid High/Low",
+        "swing_points": "Swing Points",
+        "hybrid_swing": "Hybrid (Indicator + Swing)",
+    }
+    return labels.get(buy_mode or "indicator", str(buy_mode or "indicator").replace("_", " ").title())
+
+
+def _exit_strategy_label(sell_mode):
+    labels = {
+        "indicator": "Indicator",
+        "custom_sltp": "Custom SL/TP",
+        "sltp": "ATR Stop / Take Profit",
+        "hybrid": "Hybrid",
+        "percentage": "Percentage",
+        "hybrid_pct": "Hybrid Percentage",
+        "pivot_points": "Pivot Points",
+        "hybrid_pivot": "Hybrid Pivot",
+        "high_low": "Prior Day High/Low",
+        "hybrid_high_low": "Hybrid High/Low",
+        "swing_points": "Swing Points",
+        "hybrid_swing": "Hybrid (Indicator + Swing)",
+        "premium_pct": "Premium Percentage",
+    }
+    return labels.get(sell_mode or "indicator", str(sell_mode or "indicator").replace("_", " ").title())
+
+
+def _format_entry_card_forecast(settings, scan_data, entry_signal, current_price, buy_mode, is_option=False, options_type="both"):
+    ctx = (entry_signal or {}).get("context") or {}
+    reason = (entry_signal or {}).get("reason") or "Entry strategy: waiting for confirmation"
+    action = (entry_signal or {}).get("action", "HOLD")
+    status = "Ready" if action in ("BUY", "SELL") else "Waiting"
+    mode = buy_mode or "indicator"
+    parts = [f"[Entry Strategy] {_entry_strategy_label(mode)}"]
+
+    if is_option:
+        parts.append(f"[Options] {str(options_type or 'both').upper()}")
+
+    if mode == "custom_price":
+        target = settings.get("custom_buy_price", (entry_signal or {}).get("trigger_price"))
+        parts.extend([
+            f"[Custom Entry] {_entry_forecast_money(target)}",
+            f"[Status] {status}",
+            reason,
+        ])
+        return " | ".join(parts)
+
+    if mode in ("atr", "hybrid_atr"):
+        atr_val = _entry_forecast_float(scan_data.get("atr"), 0.0)
+        if atr_val <= 0:
+            atr_val = _entry_forecast_float(ctx.get("average_range"), 0.0)
+        mult = _entry_forecast_float(settings.get("entry_atr_multiplier", settings.get("atr_stop_multiplier", 2.0)), 2.0)
+        style = settings.get("entry_atr_style", "pullback_reclaim")
+        prev_close = current_price
+        candles = ctx.get("candles") or []
+        if len(candles) >= 2:
+            prev_close = _entry_forecast_float(candles[-2].get("close"), current_price)
+        offset = max(atr_val * max(mult, 0.1), current_price * 0.001)
+        level = prev_close + offset if style == "breakout_momentum" else prev_close - offset
+        label = "ATR Buy Above" if style == "breakout_momentum" else "ATR Buy Below"
+        style_label = "Breakout / Momentum" if style == "breakout_momentum" else "Pullback / Reclaim"
+        if mode == "hybrid_atr":
+            parts.append("[Hybrid] ATR setup or indicator buy threshold")
+        parts.extend([
+            f"[{label}] {_entry_forecast_money(level)}",
+            f"[Style] {style_label}",
+            f"[ATR] x{mult:.1f}",
+            reason,
+        ])
+        return " | ".join(parts)
+
+    if mode in ("percentage", "hybrid_pct"):
+        pct = _entry_forecast_float(settings.get("entry_pct_move", max(1.0, _entry_forecast_float(settings.get("regular_stop_loss_pct"), 0.05) * 100.0)), 1.0)
+        style = settings.get("entry_pct_style", "dip_reclaim")
+        prev_close = current_price
+        candles = ctx.get("candles") or []
+        if len(candles) >= 2:
+            prev_close = _entry_forecast_float(candles[-2].get("close"), current_price)
+        level = prev_close * (1.0 + (pct / 100.0)) if style == "breakout_momentum" else prev_close * (1.0 - (pct / 100.0))
+        label = "PCT Buy Above" if style == "breakout_momentum" else "PCT Buy Below"
+        style_label = "Breakout / Momentum" if style == "breakout_momentum" else "Dip / Reclaim"
+        if mode == "hybrid_pct":
+            parts.append("[Hybrid] Percentage setup or indicator buy threshold")
+        parts.extend([
+            f"[{label}] {_entry_forecast_money(level)}",
+            f"[Style] {style_label}",
+            f"[Move] {pct:.1f}%",
+            reason,
+        ])
+        return " | ".join(parts)
+
+    if mode in ("pivot_points", "hybrid_pivot"):
+        prior = _entry_card_prior_day(scan_data, entry_signal)
+        if mode == "hybrid_pivot":
+            parts.append("[Hybrid] Pivot setup or indicator buy threshold")
+        if prior:
+            high = _entry_forecast_float(prior.get("high"))
+            low = _entry_forecast_float(prior.get("low"))
+            close = _entry_forecast_float(prior.get("close"))
+            pivot = (high + low + close) / 3.0
+            r1 = (2 * pivot) - low
+            s1 = (2 * pivot) - high
+            parts.extend([
+                f"[Pivot] {_entry_forecast_money(pivot)}",
+                f"[Buy Support S1] {_entry_forecast_money(s1)}",
+                f"[Breakout R1] {_entry_forecast_money(r1)}",
+                reason,
+            ])
+        else:
+            parts.extend(["[Pivot Entry] Awaiting prior day data", reason])
+        return " | ".join(parts)
+
+    if mode in ("high_low", "hybrid_high_low"):
+        prior = _entry_card_prior_day(scan_data, entry_signal)
+        if mode == "hybrid_high_low":
+            parts.append("[Hybrid] High/Low setup or indicator buy threshold")
+        if prior:
+            parts.extend([
+                f"[Buy Breakout] Prior High {_entry_forecast_money(prior.get('high'))}",
+                f"[Buy Breakdown Guard] Prior Low {_entry_forecast_money(prior.get('low'))}",
+                reason,
+            ])
+        else:
+            parts.extend(["[High/Low Entry] Awaiting prior day data", reason])
+        return " | ".join(parts)
+
+    if mode in ("swing_points", "hybrid_swing"):
+        support = ctx.get("nearest_support")
+        resistance = ctx.get("nearest_resistance")
+        entry_mode = settings.get("swing_entry_mode", "bounce_retest").replace("_", " ").title()
+        lookback = settings.get("swing_entry_lookback_days", settings.get("swing_lookback_days", 20))
+        if mode == "hybrid_swing":
+            parts.append("[Hybrid] Swing setup or indicator buy threshold")
+        parts.append(f"[Swing Entry] {entry_mode} | {lookback}D")
+        parts.append(f"[Support] {_entry_forecast_money(support.get('price'))}" if support else "[Support] N/A")
+        parts.append(f"[Resistance] {_entry_forecast_money(resistance.get('price'))}" if resistance else "[Resistance] N/A")
+        parts.append(reason)
+        return " | ".join(parts)
+
+    return reason
+
+
+def _build_entry_forecast(settings, scan_data, is_option=False, options_type="both", eng=None, for_card=False):
+    if not scan_data:
+        return ""
+
+    price_history = scan_data.get("price_history", [])
+    current_price = scan_data.get("price_raw") or scan_data.get("price") or 0.0
+    try:
+        current_price = float(str(current_price).replace("$", "").replace(",", ""))
+    except Exception:
+        current_price = 0.0
+
+    buy_mode = settings.get("buy_mode", "indicator")
+    if buy_mode == "indicator":
+        indicator_forecast = _build_indicator_forecast(
+            settings,
+            scan_data,
+            mode="entry",
+            is_long=True,
+            is_option=is_option,
+            options_type=options_type,
+            eng=eng,
+        )
+        if for_card:
+            parts = [f"[Entry Strategy] {_entry_strategy_label(buy_mode)}"]
+            if is_option:
+                parts.append(f"[Options] {str(options_type or 'both').upper()}")
+            if indicator_forecast:
+                parts.append(indicator_forecast)
+            return " | ".join(parts)
+        return indicator_forecast
+
+    lookback_days = int(
+        settings.get(
+            "swing_entry_lookback_days",
+            settings.get("swing_lookback_days", 20),
+        ) or 20
+    )
+    market_session = settings.get("market_session", "Regular")
+    is_crypto = any(str(scan_data.get("ticker", "")).upper().endswith(base) for base in ["USD", "USDT", "USDC"]) or str(scan_data.get("ticker", "")).upper() in ["BTC", "ETH", "XRP", "DOGE", "LTC", "ADA", "SOL"]
+    entry_signal = build_entry_signal(
+        price_history,
+        current_price=current_price,
+        entry_mode=buy_mode,
+        lookback_days=lookback_days,
+        market_session=market_session,
+        is_crypto=is_crypto,
+        atr=scan_data.get("atr", 0.0),
+        custom_buy_price=settings.get("custom_buy_price", 0.0),
+        entry_atr_mult=float(settings.get("entry_atr_multiplier", settings.get("atr_stop_multiplier", 2.0)) or 2.0),
+        entry_pct_move=float(settings.get("entry_pct_move", max(1.0, float(settings.get("regular_stop_loss_pct", 0.05)) * 100.0)) or 1.0),
+        entry_atr_style=settings.get("entry_atr_style", "pullback_reclaim"),
+        entry_pct_style=settings.get("entry_pct_style", "dip_reclaim"),
+        swing_entry_mode=settings.get("swing_entry_mode", "bounce_retest"),
+    )
+    if for_card:
+        return _format_entry_card_forecast(
+            settings,
+            scan_data,
+            entry_signal,
+            current_price,
+            buy_mode,
+            is_option=is_option,
+            options_type=options_type,
+        )
+
+    return format_entry_preview(
+        symbol=scan_data.get("ticker", "Example"),
+        entry_signal=entry_signal,
+        current_price=current_price,
+        entry_mode=buy_mode,
+        is_option=is_option,
+    )
 
 @app.get("/api/dashboard")
 async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None, timeframe: str = None, source: str = "dashboard", eng: UserEngine = Depends(get_user_engine)):
@@ -800,7 +1289,7 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
     
     # Check cache first for primary ticker scan
     primary_scan = None
-    prefer_bot_for_primary = is_active_bot
+    prefer_bot_for_primary = is_active_bot and ctx == "bots"
     if prefer_bot_for_primary:
         bot_tf = eng.config.TICKER_SETTINGS.get(primary_ticker, {}).get('timeframe')
         if bot_tf:
@@ -856,6 +1345,8 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
             "is_custom": False
         }
 
+    await _repair_bot_signal_thresholds_if_needed(eng)
+
     # Format the primary scan cleanly
     formatted_primary = _format_scan_for_ui(primary_scan, use_global_settings=(not prefer_bot_for_primary))
     
@@ -892,17 +1383,23 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
     slow_tickers = [t for t in eng.config.WATCHLIST if t not in fast_tickers]
     
     quote_start = time.perf_counter()
+    stale_fast_prices = _get_stale_latest_prices(eng, fast_tickers, 300)
+    stale_slow_prices = _get_stale_latest_prices(eng, slow_tickers, 900)
+    quote_timeout = 1.25 if mode == "fast" else 3.0
     try:
         fast_prices, slow_prices = await asyncio.wait_for(
             asyncio.gather(
-                asyncio.to_thread(_get_cached_latest_prices, eng, fast_tickers, 3),
-                asyncio.to_thread(_get_cached_latest_prices, eng, slow_tickers, 60)
+                asyncio.to_thread(_get_cached_latest_prices, eng, fast_tickers, 3, 300),
+                asyncio.to_thread(_get_cached_latest_prices, eng, slow_tickers, 60, 900)
             ),
-            timeout=3.0
+            timeout=quote_timeout
         )
+    except asyncio.TimeoutError:
+        print(f"[dashboard] Quote API timeout after {quote_timeout:.2f}s; using cached prices")
+        fast_prices, slow_prices = stale_fast_prices, stale_slow_prices
     except Exception as e:
-        print(f"[dashboard] Quote API error: {e}")
-        fast_prices, slow_prices = {}, {}
+        print(f"[dashboard] Quote API error: {type(e).__name__}: {e!r}")
+        fast_prices, slow_prices = stale_fast_prices, stale_slow_prices
     latest_prices = {**slow_prices, **fast_prices}
     quote_ms = (time.perf_counter() - quote_start) * 1000
 
@@ -945,6 +1442,8 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
             # Parse OCC options:
             parsed_occ = parse_occ_symbol(symbol)
             is_option = (parsed_occ is not None) or p.get('is_option', False) or (asset_class == 'option') or (len(symbol) >= 15)
+            is_crypto_position = any(str(symbol).upper().replace("/", "").endswith(base) for base in ["USD", "USDT", "USDC"])
+            p['exit_protection'] = _format_exit_protection_status(eng, symbol, is_option, is_crypto_position)
             
             if parsed_occ:
                 underlying = parsed_occ['underlying']
@@ -958,7 +1457,7 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
             
             settings = eng.config.TICKER_SETTINGS.get(underlying, {})
             if is_option:
-                strat = toggle_overrides.get('options_exit_strategy') or eng.config.active_toggles.get('options_exit_strategy', 'hybrid')
+                strat = settings.get('options_exit_strategy') or toggle_overrides.get('options_exit_strategy') or eng.config.active_toggles.get('options_exit_strategy', 'hybrid')
             else:
                 strat = settings.get('sell_mode') or toggle_overrides.get('exit_strategy') or eng.config.active_toggles.get('exit_strategy', 'hybrid')
                 
@@ -971,19 +1470,42 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
             current_price = float(p.get('current_price', 0))
             
             targets = []
+            exit_strategy_prefix = f"[Exit Strategy] {_exit_strategy_label(strat)}"
             
             # --- STOCK / CRYPTO ---
             if not is_option:
                 is_long = qty > 0
                 atr = underlying_scan.get('atr', 0)
                 
-                if strat in ('indicator', 'hybrid', 'hybrid_pct', 'hybrid_pivot'):
+                if strat in ('indicator', 'hybrid', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'):
                     sell_threshold = settings.get('sell_threshold', getattr(eng.config, 'SELL_THRESHOLD', 1))
                     buy_threshold = settings.get('buy_threshold', getattr(eng.config, 'BUY_THRESHOLD', 1))
                     desc_dynamic = _build_indicator_forecast(settings, underlying_scan, mode="exit", is_long=is_long, is_option=is_option, options_type=settings.get("options_type", "both"), eng=eng)
                     if not desc_dynamic:
                         desc_dynamic = f"≥ {sell_threshold} BEARISH Signals" if is_long else f"≥ {buy_threshold} BULLISH Signals"
                     targets.append({"label": "Indicator", "val": float('-inf') if is_long else float('inf'), "type": "cond", "desc": desc_dynamic})
+
+                if strat in ('swing_points', 'hybrid_swing'):
+                    swing_desc = _build_swing_forecast(settings, underlying_scan, mode="exit", is_long=(is_long if not is_option else is_call), is_option=is_option, options_type=settings.get("options_type", "both"), eng=eng)
+                    swing_exit = build_swing_exit(
+                        underlying_scan.get('price_history', []),
+                        current_price=underlying_scan.get('price_raw', 0.0),
+                        is_long=(is_long if not is_option else is_call),
+                        lookback_days=int(settings.get('swing_exit_lookback_days', settings.get('swing_lookback_days', 20)) or 20),
+                        market_session=settings.get('market_session', 'Regular'),
+                        is_crypto=any(str(underlying).upper().endswith(base) for base in ["USD", "USDT", "USDC"]) or str(underlying).upper() in ["BTC", "ETH", "XRP", "DOGE", "LTC", "ADA", "SOL"],
+                    )
+                    if swing_exit.get("take_profit") is not None and swing_exit.get("stop_loss") is not None:
+                        targets.append({"label": "Swing TP", "val": swing_exit["take_profit"], "type": "price", "desc": swing_desc})
+                        targets.append({"label": "Swing SL", "val": swing_exit["stop_loss"], "type": "price", "desc": swing_desc})
+
+                if strat == 'custom_sltp':
+                    custom_sl = _entry_forecast_float(settings.get('custom_stop_loss_price'), 0.0)
+                    custom_tp = _entry_forecast_float(settings.get('custom_take_profit_price'), 0.0)
+                    if custom_sl > 0:
+                        targets.append({"label": "Custom SL", "val": custom_sl, "type": "price"})
+                    if custom_tp > 0:
+                        targets.append({"label": "Custom TP", "val": custom_tp, "type": "price"})
                 
                 if strat in ('sltp', 'hybrid') and atr > 0 and avg_price > 0:
                     sl_mult = settings.get('atr_stop_multiplier', getattr(eng.config, 'ATR_STOP_MULTIPLIER', 2.0))
@@ -1027,14 +1549,24 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                         l = last_day.get('low')
                         c = last_day.get('close')
                         if h is not None and l is not None and c is not None:
-                            p_val = (h + l + c) / 3
-                            r1 = (2 * p_val) - l
-                            s1 = (2 * p_val) - h
-                            
-                            target_price = r1 if is_long else s1
-                            sl_target = s1 if is_long else r1
-                            targets.append({"label": "Pivot TP", "val": target_price, "type": "price"})
-                            targets.append({"label": "Pivot SL", "val": sl_target, "type": "price"})
+                            pivot_levels = _dynamic_pivot_exit_levels(h, l, c, current_price)
+                            if pivot_levels:
+                                targets.append({"label": "Pivot TP", "val": pivot_levels["tp"], "type": "price"})
+                                targets.append({"label": "Pivot SL", "val": pivot_levels["sl"], "type": "price"})
+
+                if strat in ('high_low', 'hybrid_high_low'):
+                    last_day = underlying_scan.get('prior_day_ohlc')
+                    if not last_day:
+                        hist = underlying_scan.get('price_history', [])
+                        last_day = hist[-1] if len(hist) > 0 else {}
+                    if last_day:
+                        dh = last_day.get('high')
+                        dl = last_day.get('low')
+                        if dh is not None and dl is not None:
+                            hl_levels = _dynamic_high_low_exit_levels(dh, dl, current_price)
+                            if hl_levels:
+                                targets.append({"label": "H/L TP", "val": hl_levels["tp"], "type": "price"})
+                                targets.append({"label": "H/L SL", "val": hl_levels["sl"], "type": "price"})
             
             # --- OPTIONS ---
             else:
@@ -1048,6 +1580,14 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                     tp_price = avg_price * (1.0 + (tp_pct / 100.0))
                     targets.append({"label": "Prem SL", "val": sl_price, "type": "price"})
                     targets.append({"label": "Prem TP", "val": tp_price, "type": "price"})
+
+                if strat == 'custom_sltp':
+                    custom_sl = _entry_forecast_float(settings.get('custom_stop_loss_price'), 0.0)
+                    custom_tp = _entry_forecast_float(settings.get('custom_take_profit_price'), 0.0)
+                    if custom_sl > 0:
+                        targets.append({"label": "Custom SL", "val": custom_sl, "type": "price"})
+                    if custom_tp > 0:
+                        targets.append({"label": "Custom TP", "val": custom_tp, "type": "price"})
                     
                 if strat in ('pivot_points', 'hybrid_pivot'):
                     last_day = underlying_scan.get('prior_day_ohlc')
@@ -1068,7 +1608,7 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                             targets.append({"label": "Pivot TP", "val": target_price, "type": "underlying_price"})
                             targets.append({"label": "Pivot SL", "val": sl_target, "type": "underlying_price"})
                             
-                if strat in ('high_low', 'hybrid'):
+                if strat in ('high_low', 'hybrid_high_low'):
                     last_day = underlying_scan.get('prior_day_ohlc')
                     if not last_day:
                         hist = underlying_scan.get('price_history', [])
@@ -1082,14 +1622,28 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                             targets.append({"label": "H/L TP", "val": target_price, "type": "underlying_price"})
                             targets.append({"label": "H/L SL", "val": sl_target, "type": "underlying_price"})
 
-                if strat in ('indicator', 'hybrid'):
+                if strat in ('indicator', 'hybrid', 'hybrid_swing'):
                     sell_threshold = strategy_overrides.get('options_sell_threshold') or eng.config.active_parameters.get('options_sell_threshold', 1)
                     buy_threshold = strategy_overrides.get('options_buy_threshold') or eng.config.active_parameters.get('options_buy_threshold', 1)
                     desc = f"≥ {sell_threshold} BEARISH Signals" if is_call else f"≥ {buy_threshold} BULLISH Signals"
                     targets.append({"label": "Indicator", "val": float('-inf') if is_call else float('inf'), "type": "cond", "desc": desc})
+
+                if strat in ('swing_points', 'hybrid_swing'):
+                    swing_desc = _build_swing_forecast(settings, underlying_scan, mode="exit", is_long=is_call, is_option=is_option, options_type=settings.get("options_type", "both"), eng=eng)
+                    swing_exit = build_swing_exit(
+                        underlying_scan.get('price_history', []),
+                        current_price=underlying_scan.get('price_raw', 0.0),
+                        is_long=is_call,
+                        lookback_days=int(settings.get('swing_exit_lookback_days', settings.get('swing_lookback_days', 20)) or 20),
+                        market_session=settings.get('market_session', 'Regular'),
+                        is_crypto=any(str(underlying).upper().endswith(base) for base in ["USD", "USDT", "USDC"]) or str(underlying).upper() in ["BTC", "ETH", "XRP", "DOGE", "LTC", "ADA", "SOL"],
+                    )
+                    if swing_exit.get("take_profit") is not None and swing_exit.get("stop_loss") is not None:
+                        targets.append({"label": "Swing TP", "val": swing_exit["take_profit"], "type": "underlying_price", "desc": swing_desc})
+                        targets.append({"label": "Swing SL", "val": swing_exit["stop_loss"], "type": "underlying_price", "desc": swing_desc})
             
             if not targets:
-                p['exit_forecast'] = f"Strategy: {strat.upper()} (No targets found)"
+                p['exit_forecast'] = f"{exit_strategy_prefix} | No targets found"
                 continue
                 
             min_pct_dist = float('inf')
@@ -1123,7 +1677,7 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                 elif len(s.split('.')[1]) == 1: s += '0'
                 return s
 
-            final_strs = []
+            final_strs = [exit_strategy_prefix]
             for t in targets:
                 is_closest = (t == closest_target and strat == 'hybrid' and closest_target is not None)
                 prefix = "★ " if is_closest else ""
@@ -1137,6 +1691,19 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                     final_strs.append(f"{prefix}[U-{t['label']}] ${fmt_val(t['val'])}{suffix}")
 
             p['exit_forecast'] = " | ".join(final_strs)
+
+            if is_crypto_position:
+                tp_target = next((t for t in targets if t.get('type') == 'price' and 'TP' in str(t.get('label', '')).upper()), None)
+                sl_target = next((t for t in targets if t.get('type') == 'price' and 'SL' in str(t.get('label', '')).upper()), None)
+                if tp_target and sl_target:
+                    p['exit_protection'] = {
+                        "label": "Exit Protection",
+                        "status": f"Watcher active | TP ${fmt_val(tp_target['val'])} | SL ${fmt_val(sl_target['val'])}",
+                        "active": True,
+                        "take_profit": float(tp_target['val']),
+                        "stop_loss": float(sl_target['val']),
+                        "protection_type": "watcher",
+                    }
             
         except Exception as e:
             import traceback
@@ -1150,8 +1717,15 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
         scan = eng._pick_scan(t, timeframe, prefer_bot=True) or eng._pick_scan(t, eng.config.TICKER_SETTINGS.get(t, {}).get('timeframe', eng.config.DEFAULT_TIMEFRAME), prefer_bot=True, ignore_freshness=True) or {}
         ui_scan = _inject_price(_format_scan_for_ui(scan, use_global_settings=False), t)
         t_settings = eng.config.TICKER_SETTINGS.get(t, {})
-        is_opt = t_settings.get('is_option', False)
-        ui_scan['entry_forecast'] = _build_indicator_forecast(t_settings, scan, mode="entry", is_long=True, is_option=is_opt, options_type=t_settings.get("options_type", "both"), eng=eng)
+        is_opt = t_settings.get('options_trading', t_settings.get('is_option', False))
+        ui_scan['entry_forecast'] = _build_entry_forecast(
+            t_settings,
+            scan,
+            is_option=is_opt,
+            options_type=t_settings.get("options_type", "both"),
+            eng=eng,
+            for_card=True,
+        )
         bot_scans_dict[t] = ui_scan
         
     payload = {
@@ -1265,6 +1839,33 @@ async def get_chart_data(
 
     scan = _technical_scan_from_analysis(ticker, timeframe, analysis, use_bot_settings=prefer_bot)
     formatted_scan = _format_scan_for_ui(scan, use_global_settings=(not prefer_bot))
+    settings = eng.config.TICKER_SETTINGS.get(ticker, {}) if prefer_bot else {}
+    is_opt = settings.get('options_trading', False)
+    formatted_scan["entry_forecast"] = _build_entry_forecast(
+        settings,
+        scan,
+        is_option=is_opt,
+        options_type=settings.get("options_type", "both"),
+        eng=eng,
+    ) if settings else ""
+    formatted_scan["swing_entry_forecast"] = _build_swing_forecast(
+        settings,
+        scan,
+        mode="entry",
+        is_long=True,
+        is_option=is_opt,
+        options_type=settings.get("options_type", "both"),
+        eng=eng,
+    ) if settings else ""
+    formatted_scan["swing_exit_forecast"] = _build_swing_forecast(
+        settings,
+        scan,
+        mode="exit",
+        is_long=True,
+        is_option=is_opt,
+        options_type=settings.get("options_type", "both"),
+        eng=eng,
+    ) if settings else ""
     
     # --- TEMPORARY LOGGING FOR DEBUGGING ---
     print(f"[perf] /api/chart {ticker} {timeframe}: {(time.perf_counter() - started) * 1000:.1f}ms cached={cached}")
@@ -1490,6 +2091,12 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
     regular_stop_loss_pct = float(data.get("regular_stop_loss_pct", 0.05))
     regular_take_profit_pct = float(data.get("regular_take_profit_pct", 0.10))
     regular_trailing_pct = float(data.get("regular_trailing_pct", 0.03))
+    entry_atr_multiplier = data.get("entry_atr_multiplier")
+    if entry_atr_multiplier is None:
+        entry_atr_multiplier = data.get("atr_stop_multiplier", 2.0)
+    entry_pct_move = data.get("entry_pct_move")
+    if entry_pct_move is None:
+        entry_pct_move = max(1.0, regular_stop_loss_pct * 100.0)
     
     ai_autopilot = data.get("ai_autopilot", False) or (sell_mode == "ai_autopilot")
     ai_interval = int(data.get("ai_interval", 10))
@@ -1517,6 +2124,13 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
         regular_trailing_pct=regular_trailing_pct,
         buy_mode=data.get("buy_mode", "indicator"),
         custom_buy_price=float(data.get("custom_buy_price", 0.0)),
+        entry_atr_multiplier=float(entry_atr_multiplier),
+        entry_pct_move=float(entry_pct_move),
+        entry_atr_style=data.get("entry_atr_style", "pullback_reclaim"),
+        entry_pct_style=data.get("entry_pct_style", "dip_reclaim"),
+        swing_entry_mode=data.get("swing_entry_mode", "bounce_retest"),
+        swing_entry_lookback_days=int(data.get("swing_entry_lookback_days", data.get("swing_lookback_days", 20)) or 20),
+        market_session=data.get("market_session", "Regular"),
         ai_autopilot=ai_autopilot,
         ai_interval=ai_interval,
         ai_model=ai_model,
@@ -1579,6 +2193,13 @@ async def run_optimization_endpoint(data: dict, eng: UserEngine = Depends(get_us
         "cooldown_minutes": int(data["cooldown_minutes"]) if data.get("cooldown_minutes") is not None else None,
         "buy_mode": data.get("buy_mode", "indicator"),
         "custom_buy_price": float(data.get("custom_buy_price", 0.0)),
+        "entry_atr_multiplier": float(data.get("entry_atr_multiplier", data.get("atr_stop_multiplier", 2.0))),
+        "entry_pct_move": float(data.get("entry_pct_move", max(1.0, float(data.get("regular_stop_loss_pct", 0.05)) * 100.0))),
+        "entry_atr_style": data.get("entry_atr_style", "pullback_reclaim"),
+        "entry_pct_style": data.get("entry_pct_style", "dip_reclaim"),
+        "swing_entry_mode": data.get("swing_entry_mode", "bounce_retest"),
+        "swing_entry_lookback_days": int(data.get("swing_entry_lookback_days", data.get("swing_lookback_days", 20)) or 20),
+        "market_session": data.get("market_session", "Regular"),
         "regular_stop_loss_pct": float(data.get("regular_stop_loss_pct", 0.05)),
         "regular_take_profit_pct": float(data.get("regular_take_profit_pct", 0.10)),
         "regular_trailing_pct": float(data.get("regular_trailing_pct", 0.03)),
@@ -1637,6 +2258,12 @@ async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_en
     smart_reentry_rsi_put_min = int(data.get("smart_reentry_rsi_put_min", 30))
     smart_reentry_vwap_call_max_dist_pct = float(data.get("smart_reentry_vwap_call_max_dist_pct", 0.5))
     smart_reentry_vwap_put_max_dist_pct = float(data.get("smart_reentry_vwap_put_max_dist_pct", 0.5))
+    entry_atr_multiplier = data.get("entry_atr_multiplier")
+    if entry_atr_multiplier is None:
+        entry_atr_multiplier = data.get("atr_stop_multiplier", 2.0)
+    entry_pct_move = data.get("entry_pct_move")
+    if entry_pct_move is None:
+        entry_pct_move = max(1.0, float(data.get("stop_loss_pct", stop_loss_pct)) * 100.0)
     
     end_date = get_now()
     start_date = end_date - timedelta(days=days)
@@ -1673,6 +2300,13 @@ async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_en
         cooldown_minutes=int(data["cooldown_minutes"]) if data.get("cooldown_minutes") is not None else 0,
         buy_mode=data.get("buy_mode", "indicator"),
         custom_buy_price=float(data.get("custom_buy_price", 0.0)),
+        entry_atr_multiplier=float(entry_atr_multiplier),
+        entry_pct_move=float(entry_pct_move),
+        entry_atr_style=data.get("entry_atr_style", "pullback_reclaim"),
+        entry_pct_style=data.get("entry_pct_style", "dip_reclaim"),
+        swing_entry_mode=data.get("swing_entry_mode", "bounce_retest"),
+        swing_entry_lookback_days=int(data.get("swing_entry_lookback_days", data.get("swing_lookback_days", 20)) or 20),
+        market_session=data.get("market_session", "Regular"),
         sell_mode=data.get("sell_mode", data.get("exit_strategy", "indicator")),
         atr_stop_multiplier=float(data.get("atr_stop_multiplier", 2.0)),
         atr_trail_multiplier=float(data.get("atr_trail_multiplier", 3.0)),
@@ -1757,6 +2391,18 @@ async def deploy_backtest_as_bot(data: dict, eng: UserEngine = Depends(get_user_
         "sell_threshold": data.get("sell_threshold"),
         "indicators": data.get("indicators", []),
         "add_to_watchlist": True,
+        "buy_mode": data.get("buy_mode"),
+        "custom_buy_price": data.get("custom_buy_price"),
+        "market_session": data.get("market_session"),
+        "swing_entry_mode": data.get("swing_entry_mode"),
+        "swing_entry_lookback_days": data.get("swing_entry_lookback_days"),
+        "swing_entry_lookback_mode": data.get("swing_entry_lookback_mode"),
+        "entry_atr_multiplier": data.get("entry_atr_multiplier"),
+        "entry_pct_move": data.get("entry_pct_move"),
+        "entry_atr_style": data.get("entry_atr_style"),
+        "entry_pct_style": data.get("entry_pct_style"),
+        "swing_exit_lookback_days": data.get("swing_exit_lookback_days"),
+        "swing_exit_lookback_mode": data.get("swing_exit_lookback_mode"),
     }
 
     if is_options:
@@ -1805,7 +2451,7 @@ async def deploy_backtest_as_bot(data: dict, eng: UserEngine = Depends(get_user_
             
         # Robust sync fix: Ensure symbol is strictly in the tradelist memory
         if symbol not in eng.config.TRADELIST:
-            eng.config.TRADELIST.append(symbol)
+            eng.config.TRADELIST.insert(0, symbol)
             
         await eng.save_settings()
         res["settings"] = eng.config.TICKER_SETTINGS[symbol]
@@ -2045,11 +2691,15 @@ async def add_to_tradelist(data: dict, eng: UserEngine = Depends(get_user_engine
     timeframe = data.get("timeframe", eng.config.DEFAULT_TIMEFRAME)
     
     if ticker and ticker not in eng.config.TRADELIST:
-        eng.config.TRADELIST.append(ticker)
+        eng.config.TRADELIST.insert(0, ticker)
         
         if ticker not in eng.config.TICKER_SETTINGS:
             eng.config.TICKER_SETTINGS[ticker] = {}
         eng.config.TICKER_SETTINGS[ticker]['timeframe'] = timeframe
+        eng.config.TICKER_SETTINGS[ticker]['market_session'] = _normalize_market_session_for_symbol(
+            ticker,
+            eng.config.TICKER_SETTINGS[ticker].get('market_session')
+        )
         print(f"[settings] Activated {ticker} on locked {timeframe} timeframe")
 
         await eng.save_settings()
@@ -2058,6 +2708,24 @@ async def add_to_tradelist(data: dict, eng: UserEngine = Depends(get_user_engine
         if eng.force_scan_trigger:
             eng.force_scan_trigger.set()
     return {"status": "success", "tradelist": eng.config.TRADELIST, "watchlist": eng.config.WATCHLIST}
+
+
+@app.get("/api/assets/session_eligibility/{symbol}")
+def get_asset_session_eligibility(symbol: str, market_session: str = Query("Regular"), eng: UserEngine = Depends(get_user_engine)):
+    """Return whether Alpaca allows the selected market session for this asset."""
+    symbol = symbol.upper().strip()
+    if not symbol:
+        return {"status": "error", "allowed": False, "message": "Symbol is required"}
+    session = _normalize_market_session_for_symbol(symbol, market_session)
+    check = eng.broker.check_market_session_allowed(symbol, session)
+    return {
+        "status": "success" if check.get("success") else "error",
+        "allowed": bool(check.get("allowed")),
+        "symbol": check.get("symbol", symbol),
+        "market_session": session,
+        "overnight_tradable": bool(check.get("overnight_tradable", False)),
+        "message": check.get("message") or check.get("error") or "",
+    }
 
 
 @app.get("/api/debug/history")
@@ -2136,6 +2804,7 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
             "status": "error", 
             "message": tradable_check.get("error", f"Ticker '{symbol}' doesn't allow trading in Alpaca or does not exist.")
         }
+    market_session_check = _validate_market_session_for_symbol(symbol, data.get("market_session", "Regular"), eng)
         
     if symbol not in eng.config.TICKER_SETTINGS:
         eng.config.TICKER_SETTINGS[symbol] = {}
@@ -2155,9 +2824,63 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         eng.config.TICKER_SETTINGS[symbol]["sell_mode"] = data["sell_mode"]
     else:
         eng.config.TICKER_SETTINGS[symbol]["sell_mode"] = "indicator"
+
+    passthrough_settings = [
+        "buy_mode",
+        "custom_buy_price",
+        "custom_stop_loss_price",
+        "custom_take_profit_price",
+        "allocation_mode",
+        "compound_amount",
+        "options_allocation_mode",
+        "options_compound_amount",
+        "market_session",
+        "entry_atr_multiplier",
+        "entry_pct_move",
+        "entry_atr_style",
+        "entry_pct_style",
+        "swing_entry_mode",
+        "swing_entry_lookback_days",
+        "swing_entry_lookback_mode",
+        "swing_exit_lookback_days",
+        "swing_exit_lookback_mode",
+        "enable_risk_management",
+        "enable_atr_trail",
+        "enable_pct_trail",
+        "regular_stop_loss_pct",
+        "regular_take_profit_pct",
+        "regular_trailing_pct",
+        "enable_cooldown",
+        "enable_signal_reset",
+        "enable_smart_reentry",
+        "smart_reentry_type",
+        "smart_reentry_rsi_call_max",
+        "smart_reentry_rsi_put_min",
+        "smart_reentry_vwap_call_max_dist_pct",
+        "smart_reentry_vwap_put_max_dist_pct",
+    ]
+    for key in passthrough_settings:
+        if key in data:
+            value = data[key]
+            if value is None or value == "default":
+                eng.config.TICKER_SETTINGS[symbol].pop(key, None)
+            else:
+                eng.config.TICKER_SETTINGS[symbol][key] = value
+    eng.config.TICKER_SETTINGS[symbol]["market_session"] = _normalize_market_session_for_symbol(
+        symbol,
+        eng.config.TICKER_SETTINGS[symbol].get("market_session")
+    )
+    eng.config.TICKER_SETTINGS[symbol]["market_session"] = market_session_check["market_session"]
+
+    allocation_mode = str(eng.config.TICKER_SETTINGS[symbol].get("allocation_mode", "fixed") or "fixed").lower()
+    if allocation_mode == "compound" and not eng.config.TICKER_SETTINGS[symbol].get("compound_amount"):
+        eng.config.TICKER_SETTINGS[symbol]["compound_amount"] = float(eng.config.TICKER_SETTINGS[symbol].get("amount", data.get("capital", 0)) or 0)
+    if allocation_mode != "compound":
+        eng.config.TICKER_SETTINGS[symbol].pop("compound_amount", None)
         
     if "indicators" in data and isinstance(data["indicators"], list):
         eng.config.TICKER_SETTINGS[symbol]["indicators"] = data["indicators"]
+    _normalize_bot_signal_thresholds(eng.config.TICKER_SETTINGS[symbol], eng)
 
     for rk in ["risk_per_trade", "max_daily_drawdown", "max_position_pct", "atr_stop_multiplier", "atr_trail_multiplier", "take_profit_multiplier"]:
         if rk in data:
@@ -2181,6 +2904,11 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         eng.config.TICKER_SETTINGS[symbol]["options_type"] = data["options_type"]
     if "options_trade_amount" in data:
         eng.config.TICKER_SETTINGS[symbol]["options_trade_amount"] = float(data["options_trade_amount"])
+    options_allocation_mode = str(eng.config.TICKER_SETTINGS[symbol].get("options_allocation_mode", eng.config.TICKER_SETTINGS[symbol].get("allocation_mode", "fixed")) or "fixed").lower()
+    if options_allocation_mode == "compound" and not eng.config.TICKER_SETTINGS[symbol].get("options_compound_amount"):
+        eng.config.TICKER_SETTINGS[symbol]["options_compound_amount"] = float(eng.config.TICKER_SETTINGS[symbol].get("options_trade_amount", data.get("options_trade_amount", 0)) or 0)
+    if options_allocation_mode != "compound":
+        eng.config.TICKER_SETTINGS[symbol].pop("options_compound_amount", None)
     if "options_expiry_days" in data and data["options_expiry_days"] is not None:
         eng.config.TICKER_SETTINGS[symbol]["options_expiry_days"] = int(data["options_expiry_days"])
     if "options_strike_type" in data:
@@ -2215,7 +2943,7 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         eng.config.WATCHLIST.remove(symbol)
         
     if symbol not in eng.config.TRADELIST:
-        eng.config.TRADELIST.append(symbol)
+        eng.config.TRADELIST.insert(0, symbol)
         print(f"[settings] Launched new bot for {symbol} with custom settings for {eng.uid}")
         
     await eng.save_settings()
@@ -2226,7 +2954,7 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
     # Warm up cache synchronously before returning so immediate dashboard refresh gets the price/data
     try:
         timeframe = data.get("timeframe") or eng.config.TICKER_SETTINGS.get(symbol, {}).get('timeframe') or eng.config.DEFAULT_TIMEFRAME
-        is_crypto = any(c in symbol for c in ["BTC", "ETH", "LTC", "SOL", "DOGE"]) or "USD" in symbol
+        is_crypto = _is_crypto_symbol(symbol)
         account = eng.broker.get_account_info()
         avail_cash = account.get('non_marginable_buying_power') or account['cash'] if is_crypto else account['cash']
         
@@ -2331,11 +3059,28 @@ async def update_ticker_settings(data: dict, eng: UserEngine = Depends(get_user_
     if ticker not in eng.config.TICKER_SETTINGS:
         eng.config.TICKER_SETTINGS[ticker] = {}
     previously_paused = eng.config.TICKER_SETTINGS.get(ticker, {}).get('paused', False)
+    requested_session = settings.get("market_session", eng.config.TICKER_SETTINGS[ticker].get("market_session", "Regular"))
+    market_session_check = _validate_market_session_for_symbol(ticker, requested_session, eng)
     for k, v in settings.items():
         if v is not None and v != "default":
             eng.config.TICKER_SETTINGS[ticker][k] = v
         elif k in eng.config.TICKER_SETTINGS[ticker]:
             del eng.config.TICKER_SETTINGS[ticker][k]
+    eng.config.TICKER_SETTINGS[ticker]["market_session"] = market_session_check["market_session"]
+
+    current_settings = eng.config.TICKER_SETTINGS[ticker]
+    allocation_mode = str(current_settings.get("allocation_mode", "fixed") or "fixed").lower()
+    if allocation_mode == "compound" and not current_settings.get("compound_amount"):
+        current_settings["compound_amount"] = float(current_settings.get("amount", 0) or 0)
+    if allocation_mode != "compound":
+        current_settings.pop("compound_amount", None)
+
+    options_allocation_mode = str(current_settings.get("options_allocation_mode", current_settings.get("allocation_mode", "fixed")) or "fixed").lower()
+    if options_allocation_mode == "compound" and not current_settings.get("options_compound_amount"):
+        current_settings["options_compound_amount"] = float(current_settings.get("options_trade_amount", current_settings.get("amount", 0)) or 0)
+    if options_allocation_mode != "compound":
+        current_settings.pop("options_compound_amount", None)
+    _normalize_bot_signal_thresholds(eng.config.TICKER_SETTINGS[ticker], eng)
 
     if settings.get('paused') is False:
         eng.config.TICKER_SETTINGS[ticker]['pause_reason'] = ""
@@ -2504,4 +3249,3 @@ async def get_debug_doge():
     from main import _lookup_quote_price, _format_quote_price, fmt_val
     scan = eng._pick_scan('DOGEUSD', '5Min', prefer_bot=True)
     return {"trade": p, "scan_targets": {"sl": scan.get("stop_loss"), "tp": scan.get("sell_target")}}
-
