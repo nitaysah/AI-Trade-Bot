@@ -3,14 +3,45 @@ name: Deploy to Firebase Hosting on merge
   push:
     branches:
       - main
+
+concurrency:
+  group: firebase-hosting-live-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build_and_deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
-      - uses: FirebaseExtended/action-hosting-deploy@v0
+
+      - uses: actions/setup-node@v4
         with:
-          repoToken: '${{ secrets.GITHUB_TOKEN }}'
-          firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_BOT_BULLS }}'
-          channelId: live
-          projectId: bot-bulls
+          node-version: 20
+
+      - name: Configure Firebase service account
+        env:
+          FIREBASE_SERVICE_ACCOUNT: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_BOT_BULLS }}'
+        run: |
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$RUNNER_TEMP/firebase-service-account.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/firebase-service-account.json" >> "$GITHUB_ENV"
+
+      - name: Deploy to Firebase Hosting
+        shell: bash
+        run: |
+          set +e
+          npx --yes firebase-tools@latest deploy --only hosting --project bot-bulls --non-interactive > firebase-deploy.log 2>&1
+          status=$?
+          cat firebase-deploy.log
+
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+
+          if grep -q "is the current active version" firebase-deploy.log; then
+            echo "::notice::Firebase reports this finalized version is already live; treating deploy as successful."
+            exit 0
+          fi
+
+          exit "$status"
