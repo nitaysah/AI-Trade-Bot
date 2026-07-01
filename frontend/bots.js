@@ -136,6 +136,9 @@ function formatRelativeTime(isoString) {
 // Render Active Bots List
 // ──────────────────────────────────────────────
 let currentBotTab = 'all';
+const OPTIONS_DEFAULT_SL_PCT = 10;
+const OPTIONS_DEFAULT_TP_PCT = 20;
+const OPTIONS_DEFAULT_TRAIL_PCT = 10;
 
 function isCrypto(ticker) {
     if (!ticker) return false;
@@ -1385,20 +1388,16 @@ function getDefaultSignalThreshold(type = 'buy') {
 }
 
 function normalizeSignalThreshold(value, checkedCount, type = 'buy') {
+    if (checkedCount <= 0) return 0;
+
     const defaultValue = getDefaultSignalThreshold(type);
     let normalized = parseInt(value, 10);
 
     if (!Number.isFinite(normalized) || normalized <= 0) {
-        normalized = checkedCount > 0 ? Math.min(defaultValue, checkedCount) : defaultValue;
+        normalized = Math.min(defaultValue, checkedCount);
     }
 
-    if (checkedCount > 0) {
-        normalized = Math.max(1, Math.min(normalized, checkedCount));
-    } else {
-        normalized = Math.max(1, normalized);
-    }
-
-    return normalized;
+    return Math.max(1, Math.min(normalized, checkedCount));
 }
 
 function getSwingLookbackDaysValue(mode = 'regular', kind = 'entry') {
@@ -1443,6 +1442,18 @@ function getSavedCompoundAmount(settings = {}, mode = 'regular') {
     return Number.isFinite(value) && value > 0 ? value : null;
 }
 
+function getStrategyExitNumber(mode, regularId, optionsId, fallback) {
+    const id = mode === 'options' ? optionsId : regularId;
+    const value = parseFloat(document.getElementById(id)?.value);
+    return Number.isFinite(value) ? value : fallback;
+}
+
+function getStrategyExitChecked(mode, regularId, optionsId, fallback = true) {
+    const id = mode === 'options' ? optionsId : regularId;
+    const el = document.getElementById(id);
+    return el ? el.checked : fallback;
+}
+
 window.updateAllocationModeUI = function (mode = 'regular', settings = null) {
     const allocationMode = getAllocationMode(mode);
     const label = document.getElementById(`strategyCapitalLabel_${mode}`);
@@ -1483,11 +1494,12 @@ function getStrategyModeSettings(mode = 'regular') {
         swing_exit_lookback_mode: document.getElementById(`strategySwingExitLookback_${mode}`)?.value || '20D',
         swing_exit_lookback_days: getSwingLookbackDaysValue(mode, 'exit'),
         enable_risk_management: document.getElementById(`strategyEnableRisk_${mode}`)?.checked || false,
-        enable_atr_trail: isRegular ? (document.getElementById('strategyEnableAtrTrail')?.checked || false) : undefined,
-        enable_pct_trail: isRegular ? (document.getElementById('strategyEnablePctTrail')?.checked || false) : undefined,
+        enable_atr_trail: getStrategyExitChecked(mode, 'strategyEnableAtrTrail', 'strategyEnableAtrTrail_options', true),
+        enable_pct_trail: getStrategyExitChecked(mode, 'strategyEnablePctTrail', 'strategyEnablePctTrail_options', true),
         regular_stop_loss_pct: isRegular ? parseFloat(document.getElementById('strategyRegularSlPct')?.value || 5) / 100.0 : undefined,
         regular_take_profit_pct: isRegular ? parseFloat(document.getElementById('strategyRegularTpPct')?.value || 10) / 100.0 : undefined,
         regular_trailing_pct: isRegular ? parseFloat(document.getElementById('strategyRegularTrailPct')?.value || 3) / 100.0 : undefined,
+        options_trailing_pct: mode === 'options' ? parseFloat(document.getElementById('strategyOptionsTrailPct')?.value || OPTIONS_DEFAULT_TRAIL_PCT) / 100.0 : undefined,
     };
 }
 
@@ -1523,10 +1535,10 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         if (document.getElementById('strategyAllocationMode_options')) document.getElementById('strategyAllocationMode_options').value = 'fixed';
         window.updateAllocationModeUI?.('regular');
         window.updateAllocationModeUI?.('options');
-        document.getElementById('strategyBuyThreshold_regular').value = INDICATOR_DEFAULTS['MIN_BULLISH_SIGNALS'] || 4;
-        document.getElementById('strategyBuyThreshold_options').value = INDICATOR_DEFAULTS['MIN_BULLISH_SIGNALS'] || 4;
-        document.getElementById('strategySellThreshold_regular').value = INDICATOR_DEFAULTS['MIN_BEARISH_SIGNALS'] || 4;
-        document.getElementById('strategySellThreshold_options').value = INDICATOR_DEFAULTS['MIN_BEARISH_SIGNALS'] || 4;
+        document.getElementById('strategyBuyThreshold_regular').value = 0;
+        document.getElementById('strategyBuyThreshold_options').value = 0;
+        document.getElementById('strategySellThreshold_regular').value = 0;
+        document.getElementById('strategySellThreshold_options').value = 0;
         document.getElementById('strategyTimeframe_regular').value = "1Hour";
         document.getElementById('strategyTimeframe_options').value = "5Min";
         if (document.getElementById('strategyBuyMode_regular')) document.getElementById('strategyBuyMode_regular').value = "indicator";
@@ -1572,8 +1584,8 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyOptionsExpiryDays').value = 3;
         document.getElementById('strategyOptionsStrikeType').value = "ATM";
         if (document.getElementById('strategySellMode_options')) document.getElementById('strategySellMode_options').value = "hybrid";
-        if (document.getElementById('strategyOptionsSlPct')) document.getElementById('strategyOptionsSlPct').value = 10;
-        if (document.getElementById('strategyOptionsTpPct')) document.getElementById('strategyOptionsTpPct').value = 20;
+        if (document.getElementById('strategyOptionsSlPct')) document.getElementById('strategyOptionsSlPct').value = OPTIONS_DEFAULT_SL_PCT;
+        if (document.getElementById('strategyOptionsTpPct')) document.getElementById('strategyOptionsTpPct').value = OPTIONS_DEFAULT_TP_PCT;
 
         // Reset Risk Overrides to defaults
         document.getElementById('strategyRiskPerTrade').value = '10';
@@ -1593,6 +1605,12 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyAtrTpMult').value = INDICATOR_DEFAULTS['ATR_TAKE_PROFIT_MULTIPLIER'] || 4;
         if (document.getElementById('strategyEnableAtrTrail')) document.getElementById('strategyEnableAtrTrail').checked = true;
         if (document.getElementById('strategyEnablePctTrail')) document.getElementById('strategyEnablePctTrail').checked = true;
+        if (document.getElementById('strategyAtrStopMult_options')) document.getElementById('strategyAtrStopMult_options').value = INDICATOR_DEFAULTS['ATR_STOP_MULTIPLIER'] || 2;
+        if (document.getElementById('strategyAtrTrailMult_options')) document.getElementById('strategyAtrTrailMult_options').value = INDICATOR_DEFAULTS['ATR_TRAIL_MULTIPLIER'] || 3;
+        if (document.getElementById('strategyAtrTpMult_options')) document.getElementById('strategyAtrTpMult_options').value = INDICATOR_DEFAULTS['ATR_TAKE_PROFIT_MULTIPLIER'] || 4;
+        if (document.getElementById('strategyEnableAtrTrail_options')) document.getElementById('strategyEnableAtrTrail_options').checked = true;
+        if (document.getElementById('strategyEnablePctTrail_options')) document.getElementById('strategyEnablePctTrail_options').checked = true;
+        if (document.getElementById('strategyOptionsTrailPct')) document.getElementById('strategyOptionsTrailPct').value = OPTIONS_DEFAULT_TRAIL_PCT;
         if (document.getElementById('strategyRegularSlPct')) document.getElementById('strategyRegularSlPct').value = 5;
         if (document.getElementById('strategyRegularTpPct')) document.getElementById('strategyRegularTpPct').value = 10;
         if (document.getElementById('strategyRegularTrailPct')) document.getElementById('strategyRegularTrailPct').value = 3;
@@ -1692,9 +1710,9 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyOptionsTradeAmount').value = settings.options_trade_amount !== undefined ? settings.options_trade_amount : 100;
         document.getElementById('strategyOptionsExpiryDays').value = settings.options_expiry_days !== undefined ? settings.options_expiry_days : 7;
         document.getElementById('strategyOptionsStrikeType').value = settings.options_strike_type || 'ATM';
-        if (document.getElementById('strategySellMode_options')) document.getElementById('strategySellMode_options').value = settings.sell_mode_options || settings.options_exit_strategy || 'hybrid';
-        if (document.getElementById('strategyOptionsSlPct')) document.getElementById('strategyOptionsSlPct').value = settings.options_stop_loss_pct !== undefined ? Math.round(settings.options_stop_loss_pct * 100) : 50;
-        if (document.getElementById('strategyOptionsTpPct')) document.getElementById('strategyOptionsTpPct').value = settings.options_take_profit_pct !== undefined ? Math.round(settings.options_take_profit_pct * 100) : 100;
+        if (document.getElementById('strategySellMode_options')) document.getElementById('strategySellMode_options').value = settings.sell_mode_options || settings.options_exit_strategy || settings.sell_mode || 'hybrid';
+        if (document.getElementById('strategyOptionsSlPct')) document.getElementById('strategyOptionsSlPct').value = settings.options_stop_loss_pct !== undefined ? Math.round(settings.options_stop_loss_pct * 100) : OPTIONS_DEFAULT_SL_PCT;
+        if (document.getElementById('strategyOptionsTpPct')) document.getElementById('strategyOptionsTpPct').value = settings.options_take_profit_pct !== undefined ? Math.round(settings.options_take_profit_pct * 100) : OPTIONS_DEFAULT_TP_PCT;
 
         // Load Smart Re-entry and Signal Reset
         ['regular', 'options'].forEach(m => {
@@ -1734,6 +1752,12 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyAtrTpMult').value = settings.take_profit_multiplier !== undefined ? settings.take_profit_multiplier : (INDICATOR_DEFAULTS['ATR_TAKE_PROFIT_MULTIPLIER'] || 4.0);
         if (document.getElementById('strategyEnableAtrTrail')) document.getElementById('strategyEnableAtrTrail').checked = settings.enable_atr_trail !== undefined ? settings.enable_atr_trail : true;
         if (document.getElementById('strategyEnablePctTrail')) document.getElementById('strategyEnablePctTrail').checked = settings.enable_pct_trail !== undefined ? settings.enable_pct_trail : true;
+        if (document.getElementById('strategyAtrStopMult_options')) document.getElementById('strategyAtrStopMult_options').value = settings.atr_stop_multiplier !== undefined ? settings.atr_stop_multiplier : (INDICATOR_DEFAULTS['ATR_STOP_MULTIPLIER'] || 2.0);
+        if (document.getElementById('strategyAtrTrailMult_options')) document.getElementById('strategyAtrTrailMult_options').value = settings.atr_trail_multiplier !== undefined ? settings.atr_trail_multiplier : (INDICATOR_DEFAULTS['ATR_TRAIL_MULTIPLIER'] || 3.0);
+        if (document.getElementById('strategyAtrTpMult_options')) document.getElementById('strategyAtrTpMult_options').value = settings.take_profit_multiplier !== undefined ? settings.take_profit_multiplier : (INDICATOR_DEFAULTS['ATR_TAKE_PROFIT_MULTIPLIER'] || 4.0);
+        if (document.getElementById('strategyEnableAtrTrail_options')) document.getElementById('strategyEnableAtrTrail_options').checked = settings.enable_atr_trail !== undefined ? settings.enable_atr_trail : true;
+        if (document.getElementById('strategyEnablePctTrail_options')) document.getElementById('strategyEnablePctTrail_options').checked = settings.enable_pct_trail !== undefined ? settings.enable_pct_trail : true;
+        if (document.getElementById('strategyOptionsTrailPct')) document.getElementById('strategyOptionsTrailPct').value = settings.options_trailing_pct !== undefined ? Math.round(settings.options_trailing_pct * 100) : OPTIONS_DEFAULT_TRAIL_PCT;
         if (document.getElementById('strategyRegularSlPct')) document.getElementById('strategyRegularSlPct').value = settings.regular_stop_loss_pct !== undefined ? Math.round(settings.regular_stop_loss_pct * 100) : 5;
         if (document.getElementById('strategyRegularTpPct')) document.getElementById('strategyRegularTpPct').value = settings.regular_take_profit_pct !== undefined ? Math.round(settings.regular_take_profit_pct * 100) : 10;
         if (document.getElementById('strategyRegularTrailPct')) document.getElementById('strategyRegularTrailPct').value = settings.regular_trailing_pct !== undefined ? Math.round(settings.regular_trailing_pct * 100) : 3;
@@ -1799,7 +1823,7 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
     });
     updateDefaultCooldownLabel();
 
-    updateStrategySignalLabels(window.activeTradingMode || 'regular');
+    ['regular', 'options'].forEach(mode => updateStrategySignalLabels(mode));
     if (typeof window.updateRegularExitFields === 'function') window.updateRegularExitFields();
     if (typeof window.updateRegularEntryFields === 'function') window.updateRegularEntryFields();
     if (typeof window.updateOptionsExitFields === 'function') window.updateOptionsExitFields();
@@ -1971,106 +1995,38 @@ function populateStrategyAiModelSelect() {
 
 window.handleStrategyAutopilotToggle = function (enabled) {
     const section = document.getElementById('strategyAiAutopilotSection');
-    const sellModeSelect = document.getElementById('strategySellMode');
-    const optionsCard = document.getElementById('strategyOptionsCard');
+    const strategyModeSelects = [
+        'strategyBuyMode_regular',
+        'strategySellMode_regular',
+        'strategyBuyMode_options',
+        'strategySellMode_options'
+    ].map(id => document.getElementById(id)).filter(Boolean);
 
     if (enabled) {
         populateStrategyAiModelSelect();
         section?.classList.remove('hidden');
-        if (sellModeSelect) {
-            sellModeSelect.disabled = true;
-            sellModeSelect.style.opacity = '0.5';
-        }
+        strategyModeSelects.forEach(select => {
+            select.disabled = true;
+            select.style.opacity = '0.5';
+        });
         // Dim and disable indicators
         document.querySelectorAll('.strategy-indicator-check').forEach(chk => {
             chk.disabled = true;
             chk.parentElement.style.opacity = '0.5';
             chk.parentElement.style.pointerEvents = 'none';
         });
-        if (optionsCard) {
-            optionsCard.style.opacity = '0.5';
-            optionsCard.style.pointerEvents = 'none';
-        }
     } else {
         section?.classList.add('hidden');
-        if (sellModeSelect) {
-            sellModeSelect.disabled = false;
-            sellModeSelect.style.opacity = '1';
-        }
+        strategyModeSelects.forEach(select => {
+            select.disabled = false;
+            select.style.opacity = '1';
+        });
         // Enable indicators
         document.querySelectorAll('.strategy-indicator-check').forEach(chk => {
             chk.disabled = false;
             chk.parentElement.style.opacity = '1';
             chk.parentElement.style.pointerEvents = 'auto';
         });
-        if (optionsCard) {
-            const symbol = currentStrategySymbol || '';
-            const isCrypto = symbol && (
-                symbol.toUpperCase().includes('USD') ||
-                symbol.toUpperCase().includes('USDT') ||
-                symbol.toUpperCase().includes('USDC') ||
-                ['BTC', 'ETH', 'LTC', 'SOL', 'DOGE', 'ADA', 'DOT', 'SHIB', 'AVAX'].some(c => symbol.toUpperCase().startsWith(c))
-            );
-            if (!isCrypto) {
-                optionsCard.style.opacity = '1';
-                optionsCard.style.pointerEvents = 'auto';
-            }
-        }
-    }
-};
-
-window.handleStrategyOptionsToggle = function (enabled) {
-    const section = document.getElementById('strategyOptionsSection');
-    const riskCard = document.getElementById('riskControlsContent')?.parentElement;
-    const autopilotCard = document.getElementById('strategyAiAutopilot')?.closest('.border');
-
-    if (enabled) {
-        section?.classList.remove('hidden');
-        if (riskCard) {
-            riskCard.style.opacity = '0.5';
-            riskCard.style.pointerEvents = 'none';
-        }
-        if (autopilotCard) {
-            autopilotCard.style.opacity = '0.5';
-            autopilotCard.style.pointerEvents = 'none';
-        }
-    } else {
-        section?.classList.add('hidden');
-        const isAiOn = document.getElementById('strategyAiAutopilot')?.checked || false;
-        if (!isAiOn) {
-            if (riskCard) {
-                riskCard.style.opacity = '1';
-                riskCard.style.pointerEvents = 'auto';
-            }
-        }
-        if (autopilotCard) {
-            autopilotCard.style.opacity = '1';
-            autopilotCard.style.pointerEvents = 'auto';
-        }
-    }
-};
-
-window.updateStrategySmartReentryFields = function () {
-    const reentryEnabled = document.getElementById('strategyOptionsSmartReentry')?.checked || false;
-    const fieldsDiv = document.getElementById('strategySmartReentryFields');
-    if (fieldsDiv) {
-        if (reentryEnabled) {
-            fieldsDiv.classList.remove('hidden');
-            const type = document.getElementById('strategyOptionsSmartReentryType')?.value || 'RSI';
-            if (type === 'RSI') {
-                document.getElementById('strategyOptionsRsiCallContainer')?.classList.remove('hidden');
-                document.getElementById('strategyOptionsRsiPutContainer')?.classList.remove('hidden');
-                document.getElementById('strategyOptionsVwapCallContainer')?.classList.add('hidden');
-                document.getElementById('strategyOptionsVwapPutContainer')?.classList.add('hidden');
-            } else {
-                document.getElementById('strategyOptionsRsiCallContainer')?.classList.add('hidden');
-                document.getElementById('strategyOptionsRsiPutContainer')?.classList.add('hidden');
-                document.getElementById('strategyOptionsVwapCallContainer')?.classList.remove('hidden');
-                document.getElementById('strategyOptionsVwapPutContainer')?.classList.remove('hidden');
-            }
-        } else {
-            fieldsDiv.classList.add('hidden');
-        }
     }
 };
 
@@ -2141,7 +2097,7 @@ async function saveTickerSettings() {
         add_to_watchlist: document.getElementById('strategyAddWatchlist')?.checked || false,
         settings: {
             ...getStrategyModeSettings(mode),
-            amount: parseFloat((mode === 'options' ? document.getElementById('strategyOptionsTradeAmount')?.value : document.getElementById('strategyCapital')?.value) || '') || null,
+            amount: mode === 'regular' ? (parseFloat(document.getElementById('strategyCapital')?.value || '') || null) : undefined,
             timeframe: document.getElementById(`strategyTimeframe_${mode}`).value || null,
             min_buy_signals: buyThresholdVal,
             min_sell_signals: sellThresholdVal,
@@ -2153,9 +2109,9 @@ async function saveTickerSettings() {
             risk_per_trade: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyRiskPerTrade' : 'strategyOptionsRiskPerTrade')?.value || 2.0) / 100.0 : null,
             max_daily_drawdown: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxDailyDrawdown' : 'strategyOptionsMaxDailyDrawdown')?.value || (mode === 'regular' ? 5.0 : 50.0)) / 100.0 : null,
             max_position_pct: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxPositionPct' : 'strategyOptionsMaxPositionPct')?.value || 100.0) / 100.0 : null,
-            atr_stop_multiplier: parseFloat(document.getElementById('strategyAtrStopMult')?.value || 2.0),
-            atr_trail_multiplier: parseFloat(document.getElementById('strategyAtrTrailMult')?.value || 3.0),
-            take_profit_multiplier: parseFloat(document.getElementById('strategyAtrTpMult')?.value || 4.0),
+            atr_stop_multiplier: getStrategyExitNumber(mode, 'strategyAtrStopMult', 'strategyAtrStopMult_options', 2.0),
+            atr_trail_multiplier: getStrategyExitNumber(mode, 'strategyAtrTrailMult', 'strategyAtrTrailMult_options', 3.0),
+            take_profit_multiplier: getStrategyExitNumber(mode, 'strategyAtrTpMult', 'strategyAtrTpMult_options', 4.0),
             enable_cooldown: document.getElementById(`strategyEnableCooldown_${mode}`)?.checked || false,
             cooldown_minutes: getCooldownMinutesValue(mode),
             options_trading: mode === 'options',
@@ -2164,8 +2120,9 @@ async function saveTickerSettings() {
             options_expiry_days: parseInt(document.getElementById('strategyOptionsExpiryDays')?.value || 7),
             options_strike_type: document.getElementById('strategyOptionsStrikeType')?.value || 'ATM',
             options_exit_strategy: document.getElementById('strategySellMode_options')?.value || 'hybrid',
-            options_stop_loss_pct: parseFloat(document.getElementById('strategyOptionsSlPct')?.value || 50) / 100.0,
-            options_take_profit_pct: parseFloat(document.getElementById('strategyOptionsTpPct')?.value || 100) / 100.0,
+            options_stop_loss_pct: parseFloat(document.getElementById('strategyOptionsSlPct')?.value || OPTIONS_DEFAULT_SL_PCT) / 100.0,
+            options_take_profit_pct: parseFloat(document.getElementById('strategyOptionsTpPct')?.value || OPTIONS_DEFAULT_TP_PCT) / 100.0,
+            options_trailing_pct: parseFloat(document.getElementById('strategyOptionsTrailPct')?.value || OPTIONS_DEFAULT_TRAIL_PCT) / 100.0,
             enable_signal_reset: document.getElementById(mode === 'regular' ? 'strategyRegularSignalReset' : 'strategyOptionsSignalReset')?.checked || false,
             enable_smart_reentry: document.getElementById(mode === 'regular' ? 'strategyRegularSmartReentry' : 'strategyOptionsSmartReentry')?.checked || false,
             smart_reentry_type: document.getElementById(mode === 'regular' ? 'strategyRegularSmartReentryType' : 'strategyOptionsSmartReentryType')?.value || 'RSI',
@@ -2670,9 +2627,9 @@ window.confirmAndDeployBot = async function () {
             risk_per_trade: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyRiskPerTrade' : 'strategyOptionsRiskPerTrade')?.value || 2.0) / 100.0 : null,
             max_daily_drawdown: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxDailyDrawdown' : 'strategyOptionsMaxDailyDrawdown')?.value || (mode === 'regular' ? 5.0 : 50.0)) / 100.0 : null,
             max_position_pct: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxPositionPct' : 'strategyOptionsMaxPositionPct')?.value || 100.0) / 100.0 : null,
-            atr_stop_multiplier: parseFloat(document.getElementById('strategyAtrStopMult')?.value || 2.0),
-            atr_trail_multiplier: parseFloat(document.getElementById('strategyAtrTrailMult')?.value || 3.0),
-            take_profit_multiplier: parseFloat(document.getElementById('strategyAtrTpMult')?.value || 4.0),
+            atr_stop_multiplier: getStrategyExitNumber(mode, 'strategyAtrStopMult', 'strategyAtrStopMult_options', 2.0),
+            atr_trail_multiplier: getStrategyExitNumber(mode, 'strategyAtrTrailMult', 'strategyAtrTrailMult_options', 3.0),
+            take_profit_multiplier: getStrategyExitNumber(mode, 'strategyAtrTpMult', 'strategyAtrTpMult_options', 4.0),
             enable_cooldown: document.getElementById(`strategyEnableCooldown_${mode}`)?.checked || false,
             cooldown_minutes: getCooldownMinutesValue(mode),
             options_trading: mode === 'options',
@@ -2681,8 +2638,9 @@ window.confirmAndDeployBot = async function () {
             options_expiry_days: parseInt(document.getElementById('strategyOptionsExpiryDays')?.value || 7),
             options_strike_type: document.getElementById('strategyOptionsStrikeType')?.value || 'ATM',
             options_exit_strategy: document.getElementById('strategySellMode_options')?.value || 'hybrid',
-            options_stop_loss_pct: parseFloat(document.getElementById('strategyOptionsSlPct')?.value || 50) / 100.0,
-            options_take_profit_pct: parseFloat(document.getElementById('strategyOptionsTpPct')?.value || 100) / 100.0,
+            options_stop_loss_pct: parseFloat(document.getElementById('strategyOptionsSlPct')?.value || OPTIONS_DEFAULT_SL_PCT) / 100.0,
+            options_take_profit_pct: parseFloat(document.getElementById('strategyOptionsTpPct')?.value || OPTIONS_DEFAULT_TP_PCT) / 100.0,
+            options_trailing_pct: parseFloat(document.getElementById('strategyOptionsTrailPct')?.value || OPTIONS_DEFAULT_TRAIL_PCT) / 100.0,
             enable_signal_reset: document.getElementById(mode === 'regular' ? 'strategyRegularSignalReset' : 'strategyOptionsSignalReset')?.checked || false,
             enable_smart_reentry: document.getElementById(mode === 'regular' ? 'strategyRegularSmartReentry' : 'strategyOptionsSmartReentry')?.checked || false,
             smart_reentry_type: document.getElementById(mode === 'regular' ? 'strategyRegularSmartReentryType' : 'strategyOptionsSmartReentryType')?.value || 'RSI',
@@ -4408,9 +4366,8 @@ function buildEntryPreviewHtml(mode, isOptions, symbol, simPrice, simAtr, priorD
         return '';
     }
 
-    const buyThreshold = document.getElementById(`strategyBuyThreshold_${mode}`)?.value || '4';
-    const sellThreshold = document.getElementById(`strategySellThreshold_${mode}`)?.value || '4';
-    return `${basePrefix}<br/>Buy Threshold: ${buyThreshold} &nbsp;|&nbsp; Sell Threshold: ${sellThreshold}<br/>${entryForecast || 'Awaiting indicator confluence...'}`;
+    const buyThreshold = document.getElementById(`strategyBuyThreshold_${mode}`)?.value || '0';
+    return `${basePrefix}<br/>Buy Threshold: ${buyThreshold}`;
 }
 
 window.updateLivePreview_bots = function (mode, scope = 'both') {
@@ -4573,9 +4530,9 @@ window.updateLivePreview_bots = function (mode, scope = 'both') {
 const oldOpenStrategyModalUnified = window.openStrategyModal;
 if(oldOpenStrategyModalUnified && !window._livePreviewPatchedUnified) {
     window._livePreviewPatchedUnified = true;
-    window.openStrategyModal = function(symbol, existingBot) {
+    window.openStrategyModal = function(symbol, ...args) {
         window.currentAtrPreviewData = { price: 100, atr: 2.0, symbol: symbol, isLive: false };
-        oldOpenStrategyModalUnified(symbol, existingBot);
+        oldOpenStrategyModalUnified(symbol, ...args);
         if (symbol) window.fetchLiveAtrForPreview(symbol);
         
         if (window.updateLivePreview_bots) {

@@ -334,6 +334,7 @@ class OptionsBacktester:
                 # Check exit triggers
                 exit_triggered = False
                 exit_reason = ""
+                configured_exit_modes = {self.exit_strategy, self.sell_mode}
                 
                 # Intraday Check
                 if self.intraday_only and timestamp.time() >= datetime.time(15, 55):
@@ -346,7 +347,7 @@ class OptionsBacktester:
                     exit_reason = f"Expiration Safeguard ({self.close_before_expiry_hours}h remaining)"
 
                 # Strategy A: Option Premium Percent-based TP/SL
-                elif self.exit_strategy in ["premium_pct", "hybrid"]:
+                elif configured_exit_modes.intersection({"premium_pct", "percentage", "hybrid", "hybrid_pct"}):
                     if opt_price <= self.position['entry_premium'] * (1 - self.stop_loss_pct):
                         exit_triggered = True
                         exit_reason = f"Premium Stop Loss Hit (-{self.stop_loss_pct*100:.1f}%)"
@@ -355,7 +356,7 @@ class OptionsBacktester:
                         exit_reason = f"Premium Take Profit Hit (+{self.take_profit_pct*100:.1f}%)"
 
                 # Strategy B: Dynamic Pivot Point Exit
-                if not exit_triggered and self.exit_strategy in ["pivot_points", "hybrid"]:
+                if not exit_triggered and configured_exit_modes.intersection({"pivot_points", "hybrid", "hybrid_pivot"}):
                     P = (prev_h + prev_l + prev_c) / 3.0
                     R1 = 2 * P - prev_l
                     S1 = 2 * P - prev_h
@@ -384,7 +385,7 @@ class OptionsBacktester:
                             exit_reason = f"Pivot Stop Loss Hit (Underlying High >= R1: {R1:.2f})"
 
                 # Strategy C: Daily High/Low ranges
-                if not exit_triggered and self.exit_strategy in ["high_low", "hybrid"]:
+                if not exit_triggered and configured_exit_modes.intersection({"high_low", "hybrid", "hybrid_high_low"}):
                     # Intraday Check
                     if opt_type == "CALL" and current_price < self._today_low:
                         exit_triggered = True
@@ -411,7 +412,7 @@ class OptionsBacktester:
                                 exit_reason = f"Prev Day High Breakdown (Underlying High >= {prev_h:.2f})"
 
                 # Strategy D: Indicator Reversal (Indicator/Hybrid modes)
-                if not exit_triggered and self.exit_strategy in ["indicator", "hybrid"]:
+                if not exit_triggered and configured_exit_modes.intersection({"indicator", "hybrid", "hybrid_pct", "hybrid_pivot", "hybrid_high_low", "hybrid_swing"}):
                     signals = _generate_signals(current_bar, prev_bar)
                     filtered_signals = {k: v for k, v in signals.items() if k in self.enabled_indicators}
                     bearish_count = sum(s.get('weight', 1) for s in filtered_signals.values() if s['signal'] == 'BEARISH')

@@ -26,10 +26,14 @@ def _to_et_dt(ts: Any) -> Optional[datetime]:
         if isinstance(ts, datetime):
             dt = ts
         else:
-            raw = float(ts)
-            if raw > 10**10:
-                raw = raw / 1000.0
-            dt = datetime.fromtimestamp(raw, tz=pytz.UTC)
+            ts_text = str(ts).strip()
+            try:
+                raw = float(ts_text)
+                if raw > 10**10:
+                    raw = raw / 1000.0
+                dt = datetime.fromtimestamp(raw, tz=pytz.UTC)
+            except (TypeError, ValueError):
+                dt = datetime.fromisoformat(ts_text.replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = pytz.UTC.localize(dt)
         return dt.astimezone(NY_TZ)

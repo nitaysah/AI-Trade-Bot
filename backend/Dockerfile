@@ -23,6 +23,9 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
+# Webull SDK metadata caps cryptography below patched versions on Python 3.13.
+# Dependencies are pinned in requirements.txt; install the SDK without re-resolving them.
+RUN pip install --no-cache-dir --no-deps webull-openapi-python-sdk==2.0.12
 
 # Copy the rest of the backend code into the container
 COPY . .

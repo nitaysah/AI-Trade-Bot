@@ -49,7 +49,18 @@ def _price_history_days(price_history):
             ts = candle.get("time")
             if ts is None:
                 continue
-            dt = datetime.fromtimestamp(float(ts), ny_tz)
+            if isinstance(ts, (int, float)):
+                dt = datetime.fromtimestamp(float(ts), ny_tz)
+            else:
+                ts_text = str(ts).strip()
+                try:
+                    dt = datetime.fromtimestamp(float(ts_text), ny_tz)
+                except (TypeError, ValueError):
+                    dt = datetime.fromisoformat(ts_text.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = ny_tz.localize(dt)
+                    else:
+                        dt = dt.astimezone(ny_tz)
             key = dt.strftime("%Y-%m-%d")
             days.setdefault(key, []).append(candle)
         except Exception:
@@ -881,7 +892,7 @@ class UserEngine:
                                 # Resolve options configurations from ticker settings with config fallback
                                 opt_stop_loss = t_settings.get('options_stop_loss_pct', getattr(self.config, 'OPTIONS_STOP_LOSS_PCT', 0.50))
                                 opt_take_profit = t_settings.get('options_take_profit_pct', getattr(self.config, 'OPTIONS_TAKE_PROFIT_PCT', 1.00))
-                                opt_exit_strategy = t_settings.get('options_exit_strategy', getattr(self.config, 'OPTIONS_EXIT_STRATEGY', 'hybrid'))
+                                opt_exit_strategy = t_settings.get('options_exit_strategy') or t_settings.get('sell_mode') or getattr(self.config, 'OPTIONS_EXIT_STRATEGY', 'hybrid')
                                 opt_expiry_days = t_settings.get('options_expiry_days', getattr(self.config, 'OPTIONS_EXPIRY_DAYS', 7))
                                 opt_strike_type = t_settings.get('options_strike_type', getattr(self.config, 'OPTIONS_STRIKE_TYPE', 'ATM'))
                                 opt_trade_amount = self._allocation_amount(t_settings, 'options') or float(getattr(self.config, 'OPTIONS_TRADE_AMOUNT', 100.0))
@@ -1010,15 +1021,52 @@ class UserEngine:
                                         opt_avg = float(pos_info['avg_price'])
                                         stop_loss_pct = opt_stop_loss
                                         take_profit_pct = opt_take_profit
+                                        option_trail_pct = _safe_float(t_settings.get('options_trailing_pct'), 0.10)
                                         
                                         # Strategy A: Premium percent triggers
-                                        if opt_exit_strategy in ['premium_pct', 'hybrid']:
-                                            if opt_curr <= opt_avg * (1 - stop_loss_pct):
+                                        if opt_exit_strategy in ['premium_pct', 'percentage', 'hybrid', 'hybrid_pct']:
+                                            base_stop = opt_avg * (1 - stop_loss_pct)
+                                            stop_loss_price = base_stop
+                                            trail_key = pos_info.get('symbol', ticker)
+                                            if t_settings.get('enable_pct_trail', True) and option_trail_pct > 0:
+                                                if trail_key not in self.last_trailing_stops:
+                                                    self.last_trailing_stops[trail_key] = base_stop
+                                                candidate = opt_curr * (1 - option_trail_pct)
+                                                if candidate > self.last_trailing_stops[trail_key]:
+                                                    self.last_trailing_stops[trail_key] = candidate
+                                                stop_loss_price = self.last_trailing_stops[trail_key]
+                                            if opt_curr <= stop_loss_price:
                                                 exit_triggered = True
-                                                exit_reason = f"Option Premium SL Hit (${opt_curr:.2f} <= ${opt_avg*(1-stop_loss_pct):.2f})"
+                                                exit_reason = f"Option Premium SL Hit (${opt_curr:.2f} <= ${stop_loss_price:.2f})"
                                             elif opt_curr >= opt_avg * (1 + take_profit_pct):
                                                 exit_triggered = True
                                                 exit_reason = f"Option Premium TP Hit (${opt_curr:.2f} >= ${opt_avg*(1+take_profit_pct):.2f})"
+
+                                        # Strategy A1: Underlying ATR trigger, anchored to the underlying entry when known.
+                                        if not exit_triggered and opt_exit_strategy == 'sltp':
+                                            atr_val = _safe_float(result.get('atr'), 0.0)
+                                            entry_underlying = _safe_float(t_settings.get('options_underlying_entry_price'), current_price)
+                                            stop_mult = _safe_float(t_settings.get('atr_stop_multiplier'), 2.0)
+                                            tp_mult = _safe_float(t_settings.get('take_profit_multiplier'), 4.0)
+                                            if atr_val > 0 and entry_underlying > 0:
+                                                if opt_type == 'CALL':
+                                                    atr_sl = entry_underlying - (atr_val * stop_mult)
+                                                    atr_tp = entry_underlying + (atr_val * tp_mult)
+                                                    if current_price <= atr_sl:
+                                                        exit_triggered = True
+                                                        exit_reason = f"Option ATR SL Hit (Underlying {current_price:.2f} <= {atr_sl:.2f})"
+                                                    elif current_price >= atr_tp:
+                                                        exit_triggered = True
+                                                        exit_reason = f"Option ATR TP Hit (Underlying {current_price:.2f} >= {atr_tp:.2f})"
+                                                else:
+                                                    atr_sl = entry_underlying + (atr_val * stop_mult)
+                                                    atr_tp = entry_underlying - (atr_val * tp_mult)
+                                                    if current_price >= atr_sl:
+                                                        exit_triggered = True
+                                                        exit_reason = f"Option ATR SL Hit (Underlying {current_price:.2f} >= {atr_sl:.2f})"
+                                                    elif current_price <= atr_tp:
+                                                        exit_triggered = True
+                                                        exit_reason = f"Option ATR TP Hit (Underlying {current_price:.2f} <= {atr_tp:.2f})"
 
                                         # Strategy A2: Custom premium SL/TP triggers
                                         if not exit_triggered and opt_exit_strategy == 'custom_sltp':
@@ -1032,7 +1080,7 @@ class UserEngine:
                                                 exit_reason = f"Option Custom TP Hit (${opt_curr:.2f} >= ${custom_tp:.2f})"
                                                 
                                         # Reuse the already-fetched OHLCV candles for pivot & range exits.
-                                        if not exit_triggered and opt_exit_strategy in ['pivot_points', 'high_low', 'hybrid', 'hybrid_high_low']:
+                                        if not exit_triggered and opt_exit_strategy in ['pivot_points', 'hybrid_pivot', 'high_low', 'hybrid', 'hybrid_high_low']:
                                             prior_day = _prior_day_ohlc_from_history(result.get('price_history', []))
                                             if prior_day:
                                                 prev_h = prior_day['high']
@@ -1042,7 +1090,7 @@ class UserEngine:
                                                 prev_h = prev_l = prev_c = result['price_raw']
 
                                             # Strategy B: Pivot points
-                                            if opt_exit_strategy in ['pivot_points', 'hybrid']:
+                                            if opt_exit_strategy in ['pivot_points', 'hybrid', 'hybrid_pivot']:
                                                 P = (prev_h + prev_l + prev_c) / 3.0
                                                 R1 = 2 * P - prev_l
                                                 S1 = 2 * P - prev_h
@@ -1139,7 +1187,7 @@ class UserEngine:
                                                     exit_reason = f"Expiration Safeguard (2 hours before close on expiration day)"
                                                     
                                         # Technical Indicator exit
-                                        if not exit_triggered and opt_exit_strategy in ['indicator', 'hybrid', 'hybrid_high_low', 'hybrid_swing']:
+                                        if not exit_triggered and opt_exit_strategy in ['indicator', 'hybrid', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing']:
                                             if opt_type == 'CALL' and result['action'] == 'SELL':
                                                 exit_triggered = True
                                                 exit_reason = f"Technical Signal reversal to BEARISH"
@@ -1427,8 +1475,11 @@ class UserEngine:
                                                             result['total_cost'] = qty * est_premium * 100.0
                                                             result['fees'] = 0.0
                                                             result['reason'] = f"✅ BOUGHT {qty} CALL contracts ({contract['symbol']}) at premium ${est_premium:.2f}: {result['reason']}"
+                                                            t_settings['options_underlying_entry_price'] = float(result.get('price_raw') or 0.0)
+                                                            t_settings['options_active_contract'] = contract['symbol']
                                                             self.last_trade_timestamps[ticker] = self.get_now()
                                                             await self._increment_trade_count(ticker)
+                                                            await self.save_settings()
                                                         else:
                                                             result['reason'] = f"Option buy failed: {order_result.get('error')}"
                                                     else:
@@ -1517,6 +1568,9 @@ class UserEngine:
                                                 result['pl_pct'] = round(pl_pct, 2)
                                                 
                                                 result['reason'] = f"✅ CLOSED option position ({pos_info['symbol']}) at premium ${pos_info['current_price']:.2f} (P/L: ${pl:+.2f}): {result['reason']}"
+                                                t_settings.pop('options_underlying_entry_price', None)
+                                                t_settings.pop('options_active_contract', None)
+                                                self.last_trailing_stops.pop(pos_info['symbol'], None)
                                                 self.last_trade_timestamps[ticker] = self.get_now()
                                                 await self._increment_trade_count(ticker)
                                                 
@@ -1610,8 +1664,11 @@ class UserEngine:
                                                                 result['total_cost'] = qty * est_premium * 100.0
                                                                 result['fees'] = 0.0
                                                                 result['reason'] = f"✅ BOUGHT {qty} PUT contracts ({contract['symbol']}) at premium ${est_premium:.2f}: {result['reason']}"
+                                                                t_settings['options_underlying_entry_price'] = float(result.get('price_raw') or 0.0)
+                                                                t_settings['options_active_contract'] = contract['symbol']
                                                                 self.last_trade_timestamps[ticker] = self.get_now()
                                                                 await self._increment_trade_count(ticker)
+                                                                await self.save_settings()
                                                             else:
                                                                 result['reason'] = f"Option buy failed: {order_result.get('error')}"
                                                         else:

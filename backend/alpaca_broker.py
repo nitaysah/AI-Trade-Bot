@@ -49,6 +49,13 @@ class AlpacaBroker:
         if config.ALPACA_API_KEY and not config.ALPACA_API_KEY.startswith("your_alpaca"):
             self.connect(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY, config.ALPACA_PAPER)
 
+    def _format_api_error(self, e: Exception) -> str:
+        name = type(e).__name__
+        text = str(e) or repr(e)
+        if "timed out" in text.lower() or "timeout" in name.lower():
+            return f"{name}: Alpaca request timed out"
+        return f"{name}: {text}"
+
     def connect(self, api_key: str, secret_key: str, paper: bool = True) -> bool:
         """Attempts to connect to Alpaca with provided keys."""
         if not ALPACA_AVAILABLE:
@@ -120,7 +127,7 @@ class AlpacaBroker:
                 'simulation': False
             }
         except Exception as e:
-            print(f"[broker] Error getting account info: {e}")
+            print(f"[broker] Account info unavailable: {self._format_api_error(e)}")
             return {
                 'equity': 0, 'cash': 0, 'buying_power': 0,
                 'daily_pl': 0, 'daily_pl_pct': 0, 'simulation': True,
@@ -323,7 +330,7 @@ class AlpacaBroker:
             print(f"[broker] Fetched {len(positions)} active positions from Alpaca")
             return positions
         except Exception as e:
-            print(f"[broker] Error getting positions: {e}")
+            print(f"[broker] Positions unavailable: {self._format_api_error(e)}")
             return []
 
     def _find_matching_trade(self, symbol: str, side: str, trade_log: list) -> dict:
@@ -481,9 +488,7 @@ class AlpacaBroker:
             print(f"[broker] Fetched {len(history_list)} historical orders from Alpaca")
             return history_list
         except Exception as e:
-            print(f"[broker] Error getting order history: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"[broker] Order history unavailable: {self._format_api_error(e)}")
             return []
 
     def get_open_orders(self, trade_log: list = None) -> list:
@@ -532,7 +537,7 @@ class AlpacaBroker:
             print(f"[broker] Fetched {len(open_list)} open orders from Alpaca")
             return open_list
         except Exception as e:
-            print(f"[broker] Error getting open orders: {e}")
+            print(f"[broker] Open orders unavailable: {self._format_api_error(e)}")
             return []
 
     def _bot_exit_prefix(self, symbol: str) -> str:

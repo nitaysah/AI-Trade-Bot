@@ -13,7 +13,7 @@ Production-grade trading engine with:
 from fastapi import FastAPI, Query, Header, HTTPException, Depends, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pydantic import BaseModel
 import asyncio
 import threading
@@ -139,6 +139,24 @@ def _chart_cache_ttl(timeframe: str) -> int:
     if tf in ("2HOUR", "4HOUR"):
         return 300
     return 900
+
+
+def _normalize_analysis_context(source: str = "dashboard") -> str:
+    return source if source in {"dashboard", "bots", "backtest"} else "dashboard"
+
+
+@contextmanager
+def _analysis_request_context(source: str = "dashboard", ticker: str = None, use_bot_settings: bool = False):
+    from user_config import active_evaluation_context, active_ticker_context
+
+    eval_token = active_evaluation_context.set(_normalize_analysis_context(source))
+    ticker_token = active_ticker_context.set(_normalize_quote_symbol(ticker)) if use_bot_settings and ticker else None
+    try:
+        yield
+    finally:
+        if ticker_token is not None:
+            active_ticker_context.reset(ticker_token)
+        active_evaluation_context.reset(eval_token)
 
 
 def _format_scan_price(price) -> str:
@@ -424,6 +442,43 @@ def _lookup_quote_price(latest_prices: dict, symbol: str):
     return None
 
 
+def _get_cached_quote_detail(eng: UserEngine, symbol: str, max_age: int = 10, stale_max_age: int = 300) -> dict:
+    clean = _normalize_quote_symbol(symbol)
+    cache_key = stable_cache_key(eng.uid, clean, "quote", 1)
+    cached, age = _quote_cache.peek_with_age(cache_key)
+    if cached is not None and age is not None and age < max_age:
+        return {"price": cached, "cache_age": age, "source": "cache", "stale": False}
+
+    providers = []
+    webull_provider = _get_webull_market_data_broker()
+    if webull_provider is not None:
+        providers.append(("webull", webull_provider))
+
+    broker_provider = (
+        eng.broker
+        if hasattr(eng.broker, "get_latest_prices") and getattr(eng.broker, "market_client", None)
+        else None
+    )
+    if broker_provider is not None and broker_provider is not webull_provider:
+        providers.append(("broker", broker_provider))
+
+    for source, provider in providers:
+        try:
+            fresh = provider.get_latest_prices([clean]) or {}
+            price = _lookup_quote_price(fresh, clean)
+            if price is not None:
+                _quote_cache.set(cache_key, price)
+                return {"price": price, "cache_age": 0.0, "source": source, "stale": False}
+        except Exception as e:
+            print(f"[dashboard] Live quote fetch failed for {clean} via {source}: {type(e).__name__}: {e!r}")
+
+    cached, age = _quote_cache.peek_with_age(cache_key)
+    if cached is not None and age is not None and age < stale_max_age:
+        return {"price": cached, "cache_age": age, "source": "stale_cache", "stale": True}
+
+    return {"price": None, "cache_age": None, "source": "unavailable", "stale": True}
+
+
 def _get_webull_market_data_broker():
     """Return a data-only Webull broker for realtime quotes, independent of the trading broker."""
     global _webull_market_data_broker
@@ -540,6 +595,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def reset_analysis_context_middleware(request: Request, call_next):
+    from user_config import active_evaluation_context, active_ticker_context
+
+    eval_token = active_evaluation_context.set("dashboard")
+    ticker_token = active_ticker_context.set(None)
+    try:
+        return await call_next(request)
+    finally:
+        active_ticker_context.reset(ticker_token)
+        active_evaluation_context.reset(eval_token)
 
 @app.get("/")
 def root():
@@ -746,6 +814,30 @@ async def get_market_data(eng: UserEngine = Depends(get_user_engine)):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/api/quote/{ticker}")
+async def get_live_quote(ticker: str, eng: UserEngine = Depends(get_user_engine)):
+    """Lightweight quote-only endpoint for visual active-chart candle updates."""
+    clean = _normalize_quote_symbol(ticker)
+    if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", clean):
+        raise HTTPException(status_code=400, detail="Invalid ticker format")
+
+    quote = await asyncio.to_thread(_get_cached_quote_detail, eng, clean, 10, 300)
+    price = quote.get("price")
+    if price is None:
+        raise HTTPException(status_code=404, detail=f"Quote unavailable for {clean}")
+
+    return {
+        "ticker": clean,
+        "price": float(price),
+        "price_display": _format_quote_price(clean, price),
+        "server_time": get_now().isoformat(),
+        "cache_age_seconds": round(float(quote.get("cache_age") or 0.0), 1),
+        "stale": bool(quote.get("stale")),
+        "source": quote.get("source") or "unavailable",
+    }
+
+
 _macro_calendar_cache = {"data": [], "timestamp": 0}
 
 @app.get("/api/macro-events")
@@ -811,6 +903,9 @@ def _get_threshold_setting(settings, keys, default_value):
 
 
 def _normalize_signal_threshold(value, selected_count, default_value):
+    if selected_count <= 0:
+        return 0
+
     try:
         threshold = int(value)
     except (TypeError, ValueError):
@@ -822,11 +917,9 @@ def _normalize_signal_threshold(value, selected_count, default_value):
         default_threshold = 1
 
     if threshold <= 0:
-        threshold = min(default_threshold, selected_count) if selected_count > 0 else default_threshold
+        threshold = min(default_threshold, selected_count)
 
-    if selected_count > 0:
-        return max(1, min(threshold, selected_count))
-    return max(1, threshold)
+    return max(1, min(threshold, selected_count))
 
 
 def _normalize_bot_signal_thresholds(settings, eng):
@@ -876,6 +969,9 @@ def _build_indicator_forecast(settings, scan_data, mode="entry", is_long=True, i
         target = "BULLISH"
         if is_option and options_type == "puts_only":
             target = "BEARISH"
+        target_label = target
+        if is_option and options_type == "both":
+            target_label = "OPTIONS"
             
         current_count = 0
         for name, data in active_signals.items():
@@ -884,7 +980,7 @@ def _build_indicator_forecast(settings, scan_data, mode="entry", is_long=True, i
                 current_count += data.get('weight', 1)
                 
         rem = max(0, buy_threshold - current_count)
-        parts.append(f"[{target} TARGET: {buy_threshold} | REMAINING: {rem}]")
+        parts.append(f"[{target_label} TARGET: {buy_threshold} | REMAINING: {rem}]")
         
         for name, data in active_signals.items():
             sig = data.get('signal', 'NEUTRAL')
@@ -1276,8 +1372,13 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
             timeout=3.0
         )
         total_profit, total_profit_pct = profit_data
+    except asyncio.TimeoutError:
+        print("[dashboard] Broker API timeout; using cached/fallback account data")
+        account = {'equity': 0, 'cash': 0, 'buying_power': 0, 'simulation': True, 'daily_pl': 0, 'daily_pl_pct': 0}
+        positions, orders, orders_history = [], [], []
+        total_profit, total_profit_pct = 0.0, 0.0
     except Exception as e:
-        print(f"[dashboard] Broker API error (timeout/failure): {e}")
+        print(f"[dashboard] Broker API unavailable: {type(e).__name__}: {e or repr(e)}")
         account = {'equity': 0, 'cash': 0, 'buying_power': 0, 'simulation': True, 'daily_pl': 0, 'daily_pl_pct': 0}
         positions, orders, orders_history = [], [], []
         total_profit, total_profit_pct = 0.0, 0.0
@@ -1457,7 +1558,7 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
             
             settings = eng.config.TICKER_SETTINGS.get(underlying, {})
             if is_option:
-                strat = settings.get('options_exit_strategy') or toggle_overrides.get('options_exit_strategy') or eng.config.active_toggles.get('options_exit_strategy', 'hybrid')
+                strat = settings.get('options_exit_strategy') or settings.get('sell_mode') or toggle_overrides.get('options_exit_strategy') or eng.config.active_toggles.get('options_exit_strategy', 'hybrid')
             else:
                 strat = settings.get('sell_mode') or toggle_overrides.get('exit_strategy') or eng.config.active_toggles.get('exit_strategy', 'hybrid')
                 
@@ -1478,8 +1579,10 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                 atr = underlying_scan.get('atr', 0)
                 
                 if strat in ('indicator', 'hybrid', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'):
-                    sell_threshold = settings.get('sell_threshold', getattr(eng.config, 'SELL_THRESHOLD', 1))
-                    buy_threshold = settings.get('buy_threshold', getattr(eng.config, 'BUY_THRESHOLD', 1))
+                    buy_default = getattr(eng.config, 'MIN_BULLISH_SIGNALS', getattr(get_user_config(), 'MIN_BULLISH_SIGNALS', 1))
+                    sell_default = getattr(eng.config, 'MIN_BEARISH_SIGNALS', getattr(get_user_config(), 'MIN_BEARISH_SIGNALS', 1))
+                    sell_threshold = _get_threshold_setting(settings, ('min_sell_signals', 'sell_threshold'), sell_default)
+                    buy_threshold = _get_threshold_setting(settings, ('min_buy_signals', 'threshold', 'buy_threshold'), buy_default)
                     desc_dynamic = _build_indicator_forecast(settings, underlying_scan, mode="exit", is_long=is_long, is_option=is_option, options_type=settings.get("options_type", "both"), eng=eng)
                     if not desc_dynamic:
                         desc_dynamic = f"≥ {sell_threshold} BEARISH Signals" if is_long else f"≥ {buy_threshold} BULLISH Signals"
@@ -1573,13 +1676,33 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                 op_type = parsed_occ.get('type', 'CALL') if parsed_occ else 'CALL'
                 is_call = op_type == 'CALL'
                 
-                if strat in ('premium_pct', 'hybrid') and avg_price > 0:
-                    sl_pct = strategy_overrides.get('options_premium_sl_pct') or eng.config.active_parameters.get('options_premium_sl_pct', 30.0)
-                    tp_pct = strategy_overrides.get('options_premium_tp_pct') or eng.config.active_parameters.get('options_premium_tp_pct', 50.0)
-                    sl_price = avg_price * (1.0 - (sl_pct / 100.0))
-                    tp_price = avg_price * (1.0 + (tp_pct / 100.0))
+                if strat in ('premium_pct', 'percentage', 'hybrid', 'hybrid_pct') and avg_price > 0:
+                    sl_pct = settings.get('options_stop_loss_pct')
+                    tp_pct = settings.get('options_take_profit_pct')
+                    if sl_pct is None:
+                        sl_pct = (strategy_overrides.get('options_premium_sl_pct') or eng.config.active_parameters.get('options_premium_sl_pct', 30.0)) / 100.0
+                    if tp_pct is None:
+                        tp_pct = (strategy_overrides.get('options_premium_tp_pct') or eng.config.active_parameters.get('options_premium_tp_pct', 50.0)) / 100.0
+                    sl_price = avg_price * (1.0 - float(sl_pct))
+                    trailing = eng.last_trailing_stops.get(symbol)
+                    if settings.get('enable_pct_trail', True) and isinstance(trailing, (int, float)):
+                        sl_price = trailing
+                    tp_price = avg_price * (1.0 + float(tp_pct))
                     targets.append({"label": "Prem SL", "val": sl_price, "type": "price"})
                     targets.append({"label": "Prem TP", "val": tp_price, "type": "price"})
+
+                if strat == 'sltp':
+                    atr = _entry_forecast_float(underlying_scan.get('atr'), 0.0)
+                    entry_underlying = _entry_forecast_float(settings.get('options_underlying_entry_price'), underlying_scan.get('price_raw', 0.0))
+                    sl_mult = _entry_forecast_float(settings.get('atr_stop_multiplier', getattr(eng.config, 'ATR_STOP_MULTIPLIER', 2.0)), 2.0)
+                    tp_mult = _entry_forecast_float(settings.get('take_profit_multiplier', getattr(eng.config, 'ATR_TAKE_PROFIT_MULTIPLIER', 4.0)), 4.0)
+                    if atr > 0 and entry_underlying > 0:
+                        if is_call:
+                            targets.append({"label": "ATR TP", "val": entry_underlying + (atr * tp_mult), "type": "underlying_price"})
+                            targets.append({"label": "ATR SL", "val": entry_underlying - (atr * sl_mult), "type": "underlying_price"})
+                        else:
+                            targets.append({"label": "ATR TP", "val": entry_underlying - (atr * tp_mult), "type": "underlying_price"})
+                            targets.append({"label": "ATR SL", "val": entry_underlying + (atr * sl_mult), "type": "underlying_price"})
 
                 if strat == 'custom_sltp':
                     custom_sl = _entry_forecast_float(settings.get('custom_stop_loss_price'), 0.0)
@@ -1622,9 +1745,11 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                             targets.append({"label": "H/L TP", "val": target_price, "type": "underlying_price"})
                             targets.append({"label": "H/L SL", "val": sl_target, "type": "underlying_price"})
 
-                if strat in ('indicator', 'hybrid', 'hybrid_swing'):
-                    sell_threshold = strategy_overrides.get('options_sell_threshold') or eng.config.active_parameters.get('options_sell_threshold', 1)
-                    buy_threshold = strategy_overrides.get('options_buy_threshold') or eng.config.active_parameters.get('options_buy_threshold', 1)
+                if strat in ('indicator', 'hybrid', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'):
+                    buy_default = getattr(eng.config, 'MIN_BULLISH_SIGNALS', getattr(get_user_config(), 'MIN_BULLISH_SIGNALS', 1))
+                    sell_default = getattr(eng.config, 'MIN_BEARISH_SIGNALS', getattr(get_user_config(), 'MIN_BEARISH_SIGNALS', 1))
+                    sell_threshold = _get_threshold_setting(settings, ('min_sell_signals', 'sell_threshold'), sell_default)
+                    buy_threshold = _get_threshold_setting(settings, ('min_buy_signals', 'threshold', 'buy_threshold'), buy_default)
                     desc = f"≥ {sell_threshold} BEARISH Signals" if is_call else f"≥ {buy_threshold} BULLISH Signals"
                     targets.append({"label": "Indicator", "val": float('-inf') if is_call else float('inf'), "type": "cond", "desc": desc})
 
@@ -1760,7 +1885,7 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
         "primaryTicker": primary_ticker,
         "primaryScan": formatted_primary,
         "signals": formatted_primary.get('signals', {}),
-        "priceHistory": primary_scan.get('price_history', []),
+        "priceHistory": [],
 
         # Risk Management
         "risk": risk_mgr.get_risk_status(account['equity']),
@@ -1798,20 +1923,23 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
         "debug_logs": cloud_restore_log
     }
 
+    # Dashboard heartbeats should not carry chart candles. The active chart owns
+    # candles through /api/chart so heavy refreshes can update signals without
+    # forcing a full chart redraw or shipping large payloads.
+    if "price_history" in payload["primaryScan"]:
+        del payload["primaryScan"]["price_history"]
+    for scan_map in (payload["watchlistScans"], payload["botScans"]):
+        for v in scan_map.values():
+            if "price_history" in v:
+                del v["price_history"]
+
     if mode == "fast":
         payload["signals"] = {}
         payload["primaryScan"]["signals"] = {}
-        if "price_history" in payload["primaryScan"]:
-            del payload["primaryScan"]["price_history"]
-        payload["priceHistory"] = []
         for k, v in payload["watchlistScans"].items():
             v["signals"] = {}
-            if "price_history" in v:
-                del v["price_history"]
         for k, v in payload["botScans"].items():
             v["signals"] = {}
-            if "price_history" in v:
-                del v["price_history"]
 
     return payload
 
@@ -1833,39 +1961,40 @@ async def get_chart_data(
     prefer_bot = ticker in eng.config.TRADELIST and source == "bots"
     started = time.perf_counter()
 
-    analysis, cached, cache_age = await asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, eng, force, source)
-    if not analysis:
-        raise HTTPException(status_code=404, detail=f"Could not load chart data for {ticker}")
+    with _analysis_request_context(source, ticker, prefer_bot):
+        analysis, cached, cache_age = await asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, eng, force, source)
+        if not analysis:
+            raise HTTPException(status_code=404, detail=f"Could not load chart data for {ticker}")
 
-    scan = _technical_scan_from_analysis(ticker, timeframe, analysis, use_bot_settings=prefer_bot)
-    formatted_scan = _format_scan_for_ui(scan, use_global_settings=(not prefer_bot))
-    settings = eng.config.TICKER_SETTINGS.get(ticker, {}) if prefer_bot else {}
-    is_opt = settings.get('options_trading', False)
-    formatted_scan["entry_forecast"] = _build_entry_forecast(
-        settings,
-        scan,
-        is_option=is_opt,
-        options_type=settings.get("options_type", "both"),
-        eng=eng,
-    ) if settings else ""
-    formatted_scan["swing_entry_forecast"] = _build_swing_forecast(
-        settings,
-        scan,
-        mode="entry",
-        is_long=True,
-        is_option=is_opt,
-        options_type=settings.get("options_type", "both"),
-        eng=eng,
-    ) if settings else ""
-    formatted_scan["swing_exit_forecast"] = _build_swing_forecast(
-        settings,
-        scan,
-        mode="exit",
-        is_long=True,
-        is_option=is_opt,
-        options_type=settings.get("options_type", "both"),
-        eng=eng,
-    ) if settings else ""
+        scan = _technical_scan_from_analysis(ticker, timeframe, analysis, use_bot_settings=prefer_bot)
+        formatted_scan = _format_scan_for_ui(scan, use_global_settings=(not prefer_bot))
+        settings = eng.config.TICKER_SETTINGS.get(ticker, {}) if prefer_bot else {}
+        is_opt = settings.get('options_trading', False)
+        formatted_scan["entry_forecast"] = _build_entry_forecast(
+            settings,
+            scan,
+            is_option=is_opt,
+            options_type=settings.get("options_type", "both"),
+            eng=eng,
+        ) if settings else ""
+        formatted_scan["swing_entry_forecast"] = _build_swing_forecast(
+            settings,
+            scan,
+            mode="entry",
+            is_long=True,
+            is_option=is_opt,
+            options_type=settings.get("options_type", "both"),
+            eng=eng,
+        ) if settings else ""
+        formatted_scan["swing_exit_forecast"] = _build_swing_forecast(
+            settings,
+            scan,
+            mode="exit",
+            is_long=True,
+            is_option=is_opt,
+            options_type=settings.get("options_type", "both"),
+            eng=eng,
+        ) if settings else ""
     
     # --- TEMPORARY LOGGING FOR DEBUGGING ---
     print(f"[perf] /api/chart {ticker} {timeframe}: {(time.perf_counter() - started) * 1000:.1f}ms cached={cached}")
@@ -1987,14 +2116,15 @@ async def get_fast_signals(
 
     timeframe = timeframe or eng.config.TICKER_SETTINGS.get(ticker, {}).get('timeframe') or eng.config.DEFAULT_TIMEFRAME
     prefer_bot = ticker in eng.config.TRADELIST and source == "bots"
-    analysis, cached, cache_age = await asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, eng, False, source)
-    if not analysis:
-        raise HTTPException(status_code=404, detail=f"Could not load signals for {ticker}")
+    with _analysis_request_context(source, ticker, prefer_bot):
+        analysis, cached, cache_age = await asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, eng, False, source)
+        if not analysis:
+            raise HTTPException(status_code=404, detail=f"Could not load signals for {ticker}")
 
-    scan = _technical_scan_from_analysis(ticker, timeframe, analysis, use_bot_settings=prefer_bot)
-    formatted_scan = _format_scan_for_ui(scan, use_global_settings=(not prefer_bot))
-    if "price_history" in formatted_scan:
-        del formatted_scan["price_history"]
+        scan = _technical_scan_from_analysis(ticker, timeframe, analysis, use_bot_settings=prefer_bot)
+        formatted_scan = _format_scan_for_ui(scan, use_global_settings=(not prefer_bot))
+        if "price_history" in formatted_scan:
+            del formatted_scan["price_history"]
     return {
         "ticker": ticker,
         "timeframe": timeframe,
@@ -2406,15 +2536,18 @@ async def deploy_backtest_as_bot(data: dict, eng: UserEngine = Depends(get_user_
     }
 
     if is_options:
+        options_exit_strategy = data.get("sell_mode", data.get("options_exit_strategy", data.get("exit_strategy")))
         deploy_payload.update({
             "options_trading": True,
             "options_type": data.get("options_type", "both"),
             "options_trade_amount": data.get("trade_amount"),
             "options_expiry_days": data.get("expiry_days"),
             "options_strike_type": data.get("strike_type"),
-            "options_exit_strategy": data.get("exit_strategy"),
+            "sell_mode": options_exit_strategy,
+            "options_exit_strategy": options_exit_strategy,
             "options_stop_loss_pct": data.get("stop_loss_pct"),
             "options_take_profit_pct": data.get("take_profit_pct"),
+            "options_trailing_pct": data.get("options_trailing_pct", data.get("trailing_pct")),
         })
     else:
         deploy_payload.update({
@@ -2919,6 +3052,8 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         eng.config.TICKER_SETTINGS[symbol]["options_stop_loss_pct"] = float(data["options_stop_loss_pct"])
     if "options_take_profit_pct" in data and data["options_take_profit_pct"] is not None:
         eng.config.TICKER_SETTINGS[symbol]["options_take_profit_pct"] = float(data["options_take_profit_pct"])
+    if "options_trailing_pct" in data and data["options_trailing_pct"] is not None:
+        eng.config.TICKER_SETTINGS[symbol]["options_trailing_pct"] = float(data["options_trailing_pct"])
 
     if "ai_autopilot" in data:
         eng.config.TICKER_SETTINGS[symbol]["ai_autopilot"] = bool(data["ai_autopilot"])

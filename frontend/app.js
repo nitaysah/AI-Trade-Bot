@@ -114,6 +114,17 @@ function formatDateTimeCT(time) {
     }) + ' CT';
 }
 
+function formatTimeOnlyCT(time) {
+    if (!time) return '—';
+    const d = new Date(time * 1000);
+    return d.toLocaleTimeString('en-US', {
+        timeZone: 'America/Chicago',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+    }) + ' CT';
+}
+
 function isRegularMarketBar(bar) {
     const d = new Date(bar.time * 1000);
     const parts = new Intl.DateTimeFormat('en-US', {
@@ -177,7 +188,22 @@ function updateLastBarInfo(bars, ticker = selectedTicker) {
     const info = document.getElementById('chartLastBarInfo');
     if (!info) return;
     const last = bars?.[bars.length - 1];
-    info.textContent = last ? `Last ticker/day: ${normalizeTicker(ticker)} • ${formatDateTimeCT(last.time)}` : 'Last ticker/day: —';
+    const normalized = normalizeTicker(ticker);
+    if (!last || !normalized) {
+        info.textContent = 'Last ticker/day: —';
+        return;
+    }
+
+    const status = window._liveCandleStatus || {};
+    let text = `${normalized} • Last completed: ${formatTimeOnlyCT(last.time)}`;
+    if (currentBackendTf === '1Day') {
+        text += ' • Daily chart uses completed candles';
+    } else if (status.key === activeChartStateKey(normalized) && status.state === 'delayed') {
+        text += ' • Live quote delayed';
+    } else if (status.key === activeChartStateKey(normalized) && status.state === 'forming') {
+        text += ' • Live candle forming';
+    }
+    info.textContent = text;
 }
 
 function updateVisibleHighLow() {
@@ -227,13 +253,26 @@ const chartDataCache = new Map();
 let chartRequestSerial = 0;
 const CHART_CACHE_VERSION = 'v3';
 const CHART_CACHE_TTL_MS = 5 * 60 * 1000;
+const LIVE_QUOTE_POLL_MS = 10000;
+const LIVE_QUOTE_DELAY_SECONDS = 30;
+let liveChartHeartbeatId = null;
+let liveQuoteRequestSerial = 0;
+let lastCompletedChartFetchAt = 0;
+let activeChartRefreshInFlight = false;
+window._liveCandleStatus = { key: null, state: 'idle', provisional: null };
+window._confirmedChartKey = null;
 
 const CHART_INTERVALS = {
+    "30Sec": { label: "30s", seconds: 30, backend: "30Sec" },
     "1Min": { label: "1m", seconds: 60, backend: "1Min" },
+    "2Min": { label: "2m", seconds: 120, backend: "2Min" },
+    "3Min": { label: "3m", seconds: 180, backend: "3Min" },
     "5Min": { label: "5m", seconds: 300, backend: "5Min" },
+    "10Min": { label: "10m", seconds: 600, backend: "10Min" },
     "15Min": { label: "15m", seconds: 900, backend: "15Min" },
     "30Min": { label: "30m", seconds: 1800, backend: "30Min" },
     "1Hour": { label: "1h", seconds: 3600, backend: "1Hour" },
+    "2Hour": { label: "2h", seconds: 7200, backend: "2Hour" },
     "4Hour": { label: "4h", seconds: 14400, backend: "4Hour" },
     "1Day": { label: "1D", seconds: 86400, backend: "1Day" },
 };
@@ -249,6 +288,160 @@ const CHART_RANGES = {
     "5Y": { label: "5Y", days: 365 * 5, preferredTf: "1Day" },
     "MAX": { label: "Max", days: null, preferredTf: "1Day" },
 };
+
+function activeChartStateKey(ticker = selectedTicker, timeframe = currentBackendTf, session = currentChartSession) {
+    return `${normalizeTicker(ticker) || ''}|${timeframe || ''}|${session || ''}`;
+}
+
+function clearLiveCandleState() {
+    window._liveCandleStatus = { key: activeChartStateKey(), state: 'idle', provisional: null };
+    window._visualPriceHistory = window._confirmedDisplayPriceHistory || [];
+    window._confirmedChartKey = null;
+    updateLastBarInfo(window._confirmedDisplayPriceHistory || [], selectedTicker);
+}
+
+function isLiveCandleTimeframe() {
+    return currentBackendTf !== '1Day' && Boolean(CHART_INTERVALS[currentBackendTf]?.seconds);
+}
+
+function completedChartRefreshMs() {
+    if (currentBackendTf === '1Day') return null;
+    const seconds = CHART_INTERVALS[currentBackendTf]?.seconds || 300;
+    if (seconds <= 60) return 60000;
+    if (seconds <= 1800) return 120000;
+    return 300000;
+}
+
+function bucketStartForTime(timeSec) {
+    const seconds = CHART_INTERVALS[currentBackendTf]?.seconds;
+    if (!seconds || seconds >= 86400) return null;
+    return Math.floor(timeSec / seconds) * seconds;
+}
+
+function quoteTimestampSeconds(serverTime) {
+    const parsed = Date.parse(serverTime || '');
+    return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : Math.floor(Date.now() / 1000);
+}
+
+function canFormLiveCandleAt(timeSec, ticker = selectedTicker) {
+    if (!isLiveCandleTimeframe()) return false;
+    if (isCryptoTicker(ticker) || currentChartSession === 'crypto24') return true;
+    const d = new Date(timeSec * 1000);
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Chicago',
+        weekday: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+    }).formatToParts(d);
+    const values = Object.fromEntries(parts.map(p => [p.type, p.value]));
+    const weekday = values.weekday;
+    if (weekday === 'Sat' || weekday === 'Sun') return false;
+    if (currentChartSession === 'regular') return isRegularMarketBar({ time: timeSec });
+    if (currentChartSession !== 'extended') return false;
+    const mins = Number(values.hour) * 60 + Number(values.minute);
+    return mins >= (3 * 60) && mins <= (19 * 60);
+}
+
+function renderLiveChartStatus(state) {
+    window._liveCandleStatus = {
+        key: activeChartStateKey(),
+        state,
+        provisional: state === 'forming' ? window._liveCandleStatus?.provisional : null
+    };
+    updateLastBarInfo(window._confirmedDisplayPriceHistory || [], selectedTicker);
+}
+
+function applyLiveQuoteToActiveChart(quote) {
+    if (!candleSeries || !quote || normalizeTicker(quote.ticker) !== normalizeTicker(selectedTicker)) return;
+    const price = Number(quote.price);
+    if (!Number.isFinite(price) || price <= 0) return;
+
+    const cacheAge = Number(quote.cache_age_seconds || 0);
+    if (quote.stale || cacheAge > LIVE_QUOTE_DELAY_SECONDS) {
+        renderLiveChartStatus('delayed');
+        return;
+    }
+
+    const quoteTime = quoteTimestampSeconds(quote.server_time);
+    if (!canFormLiveCandleAt(quoteTime, selectedTicker)) {
+        renderLiveChartStatus('idle');
+        return;
+    }
+
+    const key = activeChartStateKey();
+    if (window._confirmedChartKey !== key) return;
+
+    const confirmed = window._confirmedDisplayPriceHistory || [];
+    if (!confirmed.length) return;
+    const bucketTime = bucketStartForTime(quoteTime);
+    if (!bucketTime) return;
+
+    const lastConfirmed = confirmed[confirmed.length - 1];
+    if (bucketTime < lastConfirmed.time) return;
+
+    const previousProvisional = window._liveCandleStatus?.key === key
+        ? window._liveCandleStatus.provisional
+        : null;
+    const baseBar = bucketTime === lastConfirmed.time
+        ? lastConfirmed
+        : (previousProvisional?.time === bucketTime ? previousProvisional : {
+            time: bucketTime,
+            open: lastConfirmed.close,
+            high: lastConfirmed.close,
+            low: lastConfirmed.close,
+            close: lastConfirmed.close,
+            volume: 0,
+            provisional: true
+        });
+
+    const liveBar = {
+        ...baseBar,
+        high: Math.max(Number(baseBar.high), price),
+        low: Math.min(Number(baseBar.low), price),
+        close: price,
+        provisional: true
+    };
+
+    window._visualPriceHistory = bucketTime === lastConfirmed.time
+        ? [...confirmed.slice(0, -1), liveBar]
+        : [...confirmed, liveBar];
+    window._liveCandleStatus = { key, state: 'forming', provisional: liveBar };
+
+    candleSeries.update({
+        time: liveBar.time,
+        open: liveBar.open,
+        high: liveBar.high,
+        low: liveBar.low,
+        close: liveBar.close
+    });
+    if (extHoursSeries && !isCryptoTicker(selectedTicker) && currentChartSession === 'extended') {
+        const isExt = !isRegularMarketBar(liveBar);
+        extHoursSeries.update({
+            time: liveBar.time,
+            value: isExt ? 9999999 : 0,
+            color: isExt ? 'rgba(100, 116, 139, 0.12)' : 'rgba(0,0,0,0)'
+        });
+    }
+    updateLastBarInfo(confirmed, selectedTicker);
+    _updateChartLiveHeader(price, confirmed);
+}
+
+function _updateChartLiveHeader(price, confirmedBars) {
+    const priceEl = document.getElementById('chartPrice');
+    const changeEl = document.getElementById('chartPriceChange');
+    const first = confirmedBars?.[0];
+    if (!priceEl || !first || !Number.isFinite(price)) return;
+    const change = price - Number(first.open);
+    const changePct = first.open ? (change / Number(first.open)) * 100 : 0;
+    priceEl.textContent = formatPrice(price, selectedTicker);
+    priceEl.className = `text-xl font-black ${change >= 0 ? 'text-emerald-600' : 'text-red-500'}`;
+    if (changeEl) {
+        const sign = change >= 0 ? '+' : '';
+        changeEl.textContent = `${sign}${formatPrice(Math.abs(change), selectedTicker)} (${sign}${changePct.toFixed(2)}%)`;
+        changeEl.className = `text-xs font-bold ${change >= 0 ? 'text-emerald-500' : 'text-red-400'}`;
+    }
+}
 
 /**
  * Retrieves the current Firebase ID token and prepares headers.
@@ -640,11 +833,20 @@ function updateChart(priceHistory, ticker) {
     const rawSorted = [...priceHistory].sort((a, b) => a.time - b.time);
     const sorted = getDisplayBars(rawSorted, ticker);
     if (!sorted.length) {
+        window._confirmedPriceHistory = rawSorted;
+        window._confirmedDisplayPriceHistory = [];
+        window._visualPriceHistory = [];
+        clearLiveCandleState();
         updateLastBarInfo(rawSorted, ticker);
         updateChartControlState(ticker);
         return;
     }
     window._displayPriceHistory = sorted;
+    window._confirmedPriceHistory = rawSorted;
+    window._confirmedDisplayPriceHistory = sorted;
+    window._visualPriceHistory = sorted;
+    window._confirmedChartKey = activeChartStateKey(ticker);
+    window._liveCandleStatus = { key: activeChartStateKey(ticker), state: 'idle', provisional: null };
     // Background highlight for Extended Hours
     if (extHoursSeries) {
         if (!isCryptoTicker(ticker) && currentChartSession === 'extended' && currentBackendTf !== '1Day') {
@@ -1294,6 +1496,7 @@ async function loadTickerChartFast(ticker, options = {}) {
     }
 
     const requestId = ++chartRequestSerial;
+    lastCompletedChartFetchAt = Date.now();
     try {
         const headers = await getAuthHeaders();
         const chartSource = getChartSourceForTicker(requestedTicker);
@@ -1305,6 +1508,7 @@ async function loadTickerChartFast(ticker, options = {}) {
         }
         const data = await response.json();
         if (requestId !== chartRequestSerial || normalizeTicker(selectedTicker) !== requestedTicker) return;
+        lastCompletedChartFetchAt = Date.now();
         const wrapped = {
             data,
             fetchedAt: Date.now(),
@@ -1341,6 +1545,55 @@ async function loadTickerChartFast(ticker, options = {}) {
     } catch (e) {
         console.error('[chart] Fast chart load failed:', e);
     }
+}
+
+async function fetchLiveQuoteForActiveChart() {
+    const requestedTicker = normalizeTicker(selectedTicker);
+    if (!requestedTicker || !isLiveCandleTimeframe()) {
+        if (currentBackendTf === '1Day') renderLiveChartStatus('idle');
+        return;
+    }
+    if (document.hidden) return;
+    const isAuthReady = window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true');
+    if (!isAuthReady) return;
+
+    const keyAtStart = activeChartStateKey(requestedTicker);
+    const requestId = ++liveQuoteRequestSerial;
+    try {
+        const headers = await getAuthHeaders();
+        const response = await fetch(`${API_BASE}/api/quote/${encodeURIComponent(requestedTicker)}`, { headers });
+        if (!response.ok) return;
+        const quote = await response.json();
+        if (requestId !== liveQuoteRequestSerial || keyAtStart !== activeChartStateKey(requestedTicker)) return;
+        applyLiveQuoteToActiveChart(quote);
+    } catch (e) {
+        console.warn('[chart] Live quote update failed:', e);
+    }
+}
+
+async function refreshCompletedCandlesIfDue() {
+    if (document.hidden || activeChartRefreshInFlight) return;
+    const refreshMs = completedChartRefreshMs();
+    if (!refreshMs) return;
+    if (Date.now() - lastCompletedChartFetchAt < refreshMs) return;
+
+    activeChartRefreshInFlight = true;
+    try {
+        await loadSelectedTickerChart({ renderCached: false, fetchFresh: true });
+    } finally {
+        activeChartRefreshInFlight = false;
+    }
+}
+
+function startActiveChartHeartbeat() {
+    if (liveChartHeartbeatId) clearInterval(liveChartHeartbeatId);
+    const tick = () => {
+        if (document.hidden) return;
+        fetchLiveQuoteForActiveChart();
+        refreshCompletedCandlesIfDue();
+    };
+    tick();
+    liveChartHeartbeatId = setInterval(tick, LIVE_QUOTE_POLL_MS);
 }
 
 // ──────────────────────────────────────────────
@@ -1390,6 +1643,9 @@ function clearChartVisuals() {
 function setChartTimeframe(tf) {
     currentBackendTf = CHART_INTERVALS[tf]?.backend || tf;
     localStorage.setItem('lastChartTf', currentBackendTf);
+    liveQuoteRequestSerial++;
+    clearLiveCandleState();
+    lastCompletedChartFetchAt = 0;
 
     // If they choose a very small timeframe, check if the current range is too large.
     const smallTfs = ["1Min", "5Min", "15Min", "30Min"];
@@ -1415,6 +1671,8 @@ function setChartRange(range) {
     if (!CHART_RANGES[range]) return;
     currentChartRange = range;
     localStorage.setItem('lastChartRange', range);
+    liveQuoteRequestSerial++;
+    clearLiveCandleState();
 
     // Only force 1Y and 5Y (and MAX) to minimum timeframes if they are currently set to smaller ones.
     if (range === '1Y') {
@@ -1446,6 +1704,8 @@ function setChartSession(session) {
         currentChartSession = session === 'extended' ? 'extended' : 'regular';
     }
     localStorage.setItem('lastChartSession', currentChartSession);
+    liveQuoteRequestSerial++;
+    clearLiveCandleState();
     updateChartControlState(selectedTicker);
     if (window._lastPriceHistory) {
         updateChart(window._lastPriceHistory, window._lastTicker || selectedTicker);
@@ -2574,6 +2834,9 @@ function selectTicker(ticker) {
         return;
     }
     rememberSelectedTicker(normalizedTicker);
+    liveQuoteRequestSerial++;
+    clearLiveCandleState();
+    lastCompletedChartFetchAt = 0;
 
     // Keep whatever timeframe and range were previously selected
 
@@ -3000,11 +3263,8 @@ async function fetchDashboard(mode = 'heavy') {
         if (selectedTicker) {
             updateActiveTickerDisplay(selectedTicker);
             _updateStarState();
-
-            // Push price data to chart
-            if (data.priceHistory && !isStaleTickerResponse) {
-                updateChart(data.priceHistory, selectedTicker);
-            }
+            // Chart candles are owned by /api/chart so dashboard heartbeats do not
+            // trigger full redraws or overlay/oscillator recalculation.
         }
 
         // Watchlist scans are price-only. Full signals belong to the chart's primary ticker.
@@ -3321,6 +3581,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.log(`[dashboard] Phase 1 — Fetching live chart for: ${selectedTicker}`);
                 chartWarmup = loadSelectedTickerChart({ renderCached: true, fetchFresh: true });
             }
+            startActiveChartHeartbeat();
 
             // PHASE 2: Dashboard scan (signals, watchlist) — medium priority
             console.log('[dashboard] Phase 2 — Loading fast dashboard scan...');
@@ -3356,6 +3617,13 @@ document.addEventListener('DOMContentLoaded', () => {
             setInterval(fetchMarketData, 60000);
         }
     }, 50);
+
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+            fetchLiveQuoteForActiveChart();
+            refreshCompletedCandlesIfDue();
+        }
+    });
 
     // Backtest Timeframe Listener
     const btTfSelect = document.getElementById('btTimeframe');
