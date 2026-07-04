@@ -834,7 +834,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Forecast Exit</span>
                         ${decisionBadgeHtml}
                     </div>
-                    <span class="text-[0.55rem] font-bold text-slate-500 font-mono leading-tight whitespace-normal break-words" title="${(activePosition.exit_forecast || 'Checking exit criteria...').replace(/<[^>]*>?/gm, '')}">${activePosition.exit_forecast || 'Checking exit criteria...'}</span>
+                    <span class="text-[0.48rem] sm:text-[0.55rem] font-bold text-slate-500 font-mono leading-tight line-clamp-2 break-words" title="${(activePosition.exit_forecast || 'Checking exit criteria...').replace(/<[^>]*>?/gm, '')}">${activePosition.exit_forecast || 'Checking exit criteria...'}</span>
                     ${exitProtectionHtml}
                 </div>
             `;
@@ -846,7 +846,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Forecast Entry</span>
                         ${decisionBadgeHtml}
                     </div>
-                    <span class="text-[0.55rem] font-bold text-slate-500 font-mono leading-tight whitespace-normal break-words" title="${forecastText.replace(/<[^>]*>?/gm, '')}">
+                    <span class="text-[0.48rem] sm:text-[0.55rem] font-bold text-slate-500 font-mono leading-tight line-clamp-2 break-words" title="${forecastText.replace(/<[^>]*>?/gm, '')}">
                         ${forecastText}
                     </span>
                 </div>

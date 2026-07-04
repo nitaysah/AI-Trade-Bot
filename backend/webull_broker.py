@@ -13,6 +13,7 @@ Install: pip install webull-openapi-python-sdk
 
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="webull.*")
+warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*utcnow.*")
 
 import uuid
 import time

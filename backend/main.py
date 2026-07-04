@@ -12,6 +12,7 @@ Production-grade trading engine with:
 
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="webull.*")
+warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*utcnow.*")
 
 from fastapi import FastAPI, Query, Header, HTTPException, Depends, Request
 from fastapi.staticfiles import StaticFiles
