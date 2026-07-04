@@ -1476,26 +1476,18 @@
                     <div class="relative">
                         <select id="strategyBuyMode_regular" onchange="updateRegularEntryFields()"
                             class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-emerald-400/80 focus:ring-2 focus:ring-emerald-400/20 outline-none cursor-pointer appearance-none transition-all">
-                            <option value="indicator">Indicator &#x2014; Buys when Bullish Signals hit Buy Threshold
-                            </option>
-                            <option value="custom_price">Custom Price &#x2014; Buys when price crosses below target
-                            </option>
-                            <option value="atr">ATR / Volatility &#x2014; Buys on ATR pullback confirmation</option>
-                            <option value="hybrid_atr">Hybrid (Indicator + ATR) &#x2014; Signals + ATR pullback
-                                levels</option>
-                            <option value="percentage">Percentage &#x2014; Buys on fixed % pullback</option>
-                            <option value="hybrid_pct">Hybrid (Indicator + Percentage) &#x2014; Signals + % pullback
-                            </option>
-                            <option value="pivot_points">Pivot Points &#x2014; Buys on pivot / support reclaim</option>
-                            <option value="hybrid_pivot">Hybrid (Indicator + Pivots) &#x2014; Signals + pivot levels
-                            </option>
-                            <option value="high_low">Daily High/Low &#x2014; Buys on prior high breakout</option>
-                            <option value="hybrid_high_low">Hybrid (Indicator + High/Low) &#x2014; Signals + H/L breakout
-                            </option>
-                            <option value="swing_points">Swing Points &#x2014; Buys on confirmed swing bounce/breakout
-                            </option>
-                            <option value="hybrid_swing">Hybrid (Indicator + Swing) &#x2014; Signals + Swing levels
-                            </option>
+                            <option value="indicator">Indicator (Signals)</option>
+                            <option value="custom_price">Custom Price (Target)</option>
+                            <option value="atr">ATR / Volatility (Breakout)</option>
+                            <option value="hybrid_atr">Hybrid (Indicator + ATR)</option>
+                            <option value="percentage">Percentage (Pullback %)</option>
+                            <option value="hybrid_pct">Hybrid (Indicator + Pct)</option>
+                            <option value="pivot_points">Pivot Points (Support)</option>
+                            <option value="hybrid_pivot">Hybrid (Indicator + Pivots)</option>
+                            <option value="high_low">Daily High/Low (Breakout)</option>
+                            <option value="hybrid_high_low">Hybrid (Indicator + H/L)</option>
+                            <option value="swing_points">Swing Points (Structure)</option>
+                            <option value="hybrid_swing">Hybrid (Indicator + Swing)</option>
                         </select>
                         <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500" fill="none"
@@ -1505,6 +1497,7 @@
                             </svg>
                         </div>
                     </div>
+                    <div id="strategyBuyHelper_regular" class="mt-1.5 p-2.5 rounded-xl bg-indigo-50/80 border border-indigo-100/80 text-[0.62rem] text-indigo-900 font-semibold leading-relaxed break-words whitespace-normal shadow-2xs"></div>
                     <div id="strategyBuyFields_regular" class="grid grid-cols-1 gap-3">
                         <div
                             class="bg-emerald-500/10 backdrop-blur-md p-4 rounded-2xl border border-emerald-500/20 flex flex-col items-center gap-2 shadow-sm">
@@ -1649,7 +1642,7 @@
                     </div>
 
                     <div id="livePreviewEntryBox_regular"
-                        class="mt-2 p-2 bg-slate-50/50 rounded-lg border border-slate-200 text-[0.5rem] sm:text-[0.65rem] text-slate-700 font-medium line-clamp-2 break-words leading-tight hidden">
+                        class="mt-2 p-2 bg-slate-50/50 rounded-lg border border-slate-200 text-[0.65rem] text-slate-700 font-medium hidden">
                     </div>
                 </div>
 
@@ -1663,28 +1656,18 @@
                     <div class="relative">
                         <select id="strategySellMode_regular" onchange="updateRegularExitFields()"
                             class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none cursor-pointer appearance-none transition-all">
-                            <option value="indicator">Indicator &#x2014; Sells when Bearish Signals hit Sell Threshold
-                            </option>
-                            <option value="custom_sltp">Custom SL/TP &#x2014; Exits at user-defined stop-loss &amp; take-profit prices
-                            </option>
-                            <option value="sltp">ATR / Volatility &#x2014; Stop-Loss &amp; Take-Profit based on ATR
-                            </option>
-                            <option value="hybrid">Hybrid (Indicator + ATR) &#x2014; Whichever triggers first</option>
-                            <option value="percentage">Percentage &#x2014; Fixed % Stop-Loss, Take-Profit &amp; Trailing
-                                Stop</option>
-                            <option value="hybrid_pct">Hybrid (Indicator + Percentage) &#x2014; Signals + % levels
-                            </option>
-                            <option value="pivot_points">Pivot Points &#x2014; Exits at S1/R1 Support &amp; Resistance
-                                levels</option>
-                            <option value="hybrid_pivot">Hybrid (Indicator + Pivots) &#x2014; Signals + Pivot levels
-                            </option>
-                            <option value="high_low">Daily High/Low &#x2014; Exits at prior day high/low breakout
-                            </option>
-                            <option value="hybrid_high_low">Hybrid (Indicator + High/Low) &#x2014; Signals + H/L
-                                breakout</option>
-                            <option value="swing_points">Swing Points &#x2014; Exits at structural support/resistance
-                            </option>
-                            <option value="hybrid_swing">Hybrid (Indicator + Swing) &#x2014; Signals + Swing levels</option>
+                            <option value="indicator">Indicator (Signals)</option>
+                            <option value="custom_sltp">Custom SL/TP (Prices)</option>
+                            <option value="sltp">ATR / Volatility (Multipliers)</option>
+                            <option value="hybrid">Hybrid (Indicator + ATR)</option>
+                            <option value="percentage">Percentage (Fixed Pct)</option>
+                            <option value="hybrid_pct">Hybrid (Indicator + Pct)</option>
+                            <option value="pivot_points">Pivot Points (Resistance)</option>
+                            <option value="hybrid_pivot">Hybrid (Indicator + Pivots)</option>
+                            <option value="high_low">Daily High/Low (Breakout)</option>
+                            <option value="hybrid_high_low">Hybrid (Indicator + H/L)</option>
+                            <option value="swing_points">Swing Points (Structure)</option>
+                            <option value="hybrid_swing">Hybrid (Indicator + Swing)</option>
                         </select>
                         <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500" fill="none"
@@ -1694,6 +1677,7 @@
                             </svg>
                         </div>
                     </div>
+                    <div id="strategySellHelper_regular" class="mt-1.5 p-2.5 rounded-xl bg-indigo-50/80 border border-indigo-100/80 text-[0.62rem] text-indigo-900 font-semibold leading-relaxed break-words whitespace-normal shadow-2xs"></div>
                     <!-- Indicator sell threshold -->
                     <div id="exitFieldsIndicator" class="hidden space-y-1 pt-1">
                         <div
@@ -1836,7 +1820,7 @@
                     </div>
 
                 <div id="livePreviewExitBox_regular"
-                        class="mt-2 p-2 bg-slate-50/50 rounded-lg border border-slate-200 text-[0.5rem] sm:text-[0.65rem] text-slate-700 font-medium line-clamp-2 break-words leading-tight hidden">
+                        class="mt-2 p-2 bg-slate-50/50 rounded-lg border border-slate-200 text-[0.65rem] text-slate-700 font-medium hidden">
                 </div>
                 </div>
 
@@ -2778,25 +2762,18 @@
 	                <div class="relative">
 	                    <select id="strategyBuyMode_options" onchange="updateOptionsEntryFields()"
                         class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-emerald-400/80 outline-none cursor-pointer appearance-none transition-all">
-                        <option value="indicator">Indicator &#x2014; CALL on bullish threshold, PUT on bearish threshold
-                        </option>
-                        <option value="custom_price">Custom Price &#x2014; CALL when underlying drops to target</option>
-                        <option value="atr">ATR / Volatility &#x2014; CALL/PUT on ATR confirmation</option>
-                        <option value="hybrid_atr">Hybrid (Indicator + ATR) &#x2014; ATR setup or signal threshold
-                        </option>
-                        <option value="percentage">Percentage &#x2014; CALL/PUT on fixed % move confirmation</option>
-                        <option value="hybrid_pct">Hybrid (Indicator + Percentage) &#x2014; % move or signal threshold
-                        </option>
-                        <option value="pivot_points">Pivot Points &#x2014; CALL on support reclaim, PUT on resistance rejection</option>
-                        <option value="hybrid_pivot">Hybrid (Indicator + Pivots) &#x2014; Pivot setup or signal threshold
-                        </option>
-                        <option value="high_low">Daily High/Low &#x2014; CALL above prior high, PUT below prior low</option>
-                        <option value="hybrid_high_low">Hybrid (Indicator + High/Low) &#x2014; H/L break or signal threshold
-                        </option>
-                        <option value="swing_points">Swing Points &#x2014; CALL/PUT on confirmed swing level
-                        </option>
-                        <option value="hybrid_swing">Hybrid (Indicator + Swing) &#x2014; Swing setup or signal threshold
-                        </option>
+                        <option value="indicator">Indicator (Signals)</option>
+                        <option value="custom_price">Custom Price (Target)</option>
+                        <option value="atr">ATR / Volatility (Breakout)</option>
+                        <option value="hybrid_atr">Hybrid (Indicator + ATR)</option>
+                        <option value="percentage">Percentage (Pullback %)</option>
+                        <option value="hybrid_pct">Hybrid (Indicator + Pct)</option>
+                        <option value="pivot_points">Pivot Points (Support)</option>
+                        <option value="hybrid_pivot">Hybrid (Indicator + Pivots)</option>
+                        <option value="high_low">Daily High/Low (Breakout)</option>
+                        <option value="hybrid_high_low">Hybrid (Indicator + H/L)</option>
+                        <option value="swing_points">Swing Points (Structure)</option>
+                        <option value="hybrid_swing">Hybrid (Indicator + Swing)</option>
                     </select>
                     <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500" fill="none"
@@ -2806,6 +2783,7 @@
                         </svg>
 	                    </div>
 	                </div>
+                    <div id="strategyBuyHelper_options" class="mt-1.5 p-2.5 rounded-xl bg-indigo-50/80 border border-indigo-100/80 text-[0.62rem] text-indigo-900 font-semibold leading-relaxed break-words whitespace-normal shadow-2xs"></div>
 	                <div id="strategyBuyFields_options" class="grid grid-cols-1 gap-3">
 	                    <div
 	                        class="bg-emerald-500/10 backdrop-blur-md p-4 rounded-2xl border border-emerald-500/20 flex flex-col items-center gap-2 shadow-sm">
@@ -2955,7 +2933,7 @@
 	                </div>
 
                 <div id="livePreviewEntryBox_options"
-                    class="mt-2 p-2 bg-slate-50/50 rounded-lg border border-slate-200 text-[0.5rem] sm:text-[0.65rem] text-slate-700 font-medium line-clamp-2 break-words leading-tight hidden">
+                    class="mt-2 p-2 bg-slate-50/50 rounded-lg border border-slate-200 text-[0.65rem] text-slate-700 font-medium hidden">
                 </div>
             </div>
 
@@ -2969,25 +2947,19 @@
                 <div class="relative">
                     <select id="strategySellMode_options" onchange="updateOptionsExitFields()"
                         class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 outline-none cursor-pointer appearance-none transition-all">
-                        <option value="indicator">Indicator &#x2014; Sells when Bearish Signals hit Sell Threshold
-                        </option>
-                        <option value="custom_sltp">Custom SL/TP &#x2014; Exits at user-defined option premium prices</option>
-                        <option value="custom_underlying_sltp">Custom Underlying SL/TP &#x2014; Exits option when the underlying hits custom prices</option>
-                        <option value="sltp">ATR / Volatility &#x2014; Stop-Loss &amp; Take-Profit based on ATR</option>
-                        <option value="hybrid">Hybrid (Indicator + ATR) &#x2014; Whichever triggers first</option>
-                        <option value="percentage">Percentage &#x2014; Fixed % Stop-Loss, Take-Profit &amp; Trailing
-                            Stop</option>
-                        <option value="hybrid_pct">Hybrid (Indicator + Percentage) &#x2014; Signals + % levels</option>
-                        <option value="pivot_points">Pivot Points &#x2014; Exits at S1/R1 Support &amp; Resistance
-                            levels</option>
-                        <option value="hybrid_pivot">Hybrid (Indicator + Pivots) &#x2014; Signals + Pivot levels
-                        </option>
-                        <option value="high_low">Daily High/Low &#x2014; Exits at prior day high/low breakout</option>
-                        <option value="hybrid_high_low">Hybrid (Indicator + High/Low) &#x2014; Signals + H/L breakout
-                        </option>
-                        <option value="swing_points">Swing Points &#x2014; Exits at structural support/resistance
-                        </option>
-                        <option value="hybrid_swing">Hybrid (Indicator + Swing) &#x2014; Signals + Swing levels</option>
+                        <option value="indicator">Indicator (Signals)</option>
+                        <option value="custom_sltp">Custom SL/TP (Option Premium)</option>
+                        <option value="custom_underlying_sltp">Custom Underlying SL/TP (Stock Price)</option>
+                        <option value="sltp">ATR / Volatility (Multipliers)</option>
+                        <option value="hybrid">Hybrid (Indicator + ATR)</option>
+                        <option value="percentage">Percentage (Fixed Pct)</option>
+                        <option value="hybrid_pct">Hybrid (Indicator + Pct)</option>
+                        <option value="pivot_points">Pivot Points (Resistance)</option>
+                        <option value="hybrid_pivot">Hybrid (Indicator + Pivots)</option>
+                        <option value="high_low">Daily High/Low (Breakout)</option>
+                        <option value="hybrid_high_low">Hybrid (Indicator + H/L)</option>
+                        <option value="swing_points">Swing Points (Structure)</option>
+                        <option value="hybrid_swing">Hybrid (Indicator + Swing)</option>
                     </select>
                     <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500" fill="none"
@@ -2997,6 +2969,7 @@
                         </svg>
                     </div>
                 </div>
+                <div id="strategySellHelper_options" class="mt-1.5 p-2.5 rounded-xl bg-indigo-50/80 border border-indigo-100/80 text-[0.62rem] text-indigo-900 font-semibold leading-relaxed break-words whitespace-normal shadow-2xs"></div>
                 <!-- Sell threshold sub-field -->
                 <div id="exitFieldsIndicator_options" class="hidden space-y-1 pt-1">
                     <div
@@ -3155,7 +3128,7 @@
                 </div>
 
                 <div id="livePreviewExitBox_options"
-                    class="mt-2 p-2 bg-slate-50/50 rounded-lg border border-slate-200 text-[0.5rem] sm:text-[0.65rem] text-slate-700 font-medium line-clamp-2 break-words leading-tight hidden">
+                    class="mt-2 p-2 bg-slate-50/50 rounded-lg border border-slate-200 text-[0.65rem] text-slate-700 font-medium hidden">
                 </div>
 
                 <!-- Smart Re-entry & Signal Reset -->

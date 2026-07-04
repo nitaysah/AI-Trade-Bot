@@ -834,7 +834,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Forecast Exit</span>
                         ${decisionBadgeHtml}
                     </div>
-                    <span class="text-[0.48rem] sm:text-[0.55rem] font-bold text-slate-500 font-mono leading-tight line-clamp-2 break-words" title="${(activePosition.exit_forecast || 'Checking exit criteria...').replace(/<[^>]*>?/gm, '')}">${activePosition.exit_forecast || 'Checking exit criteria...'}</span>
+                    <span class="text-[0.55rem] font-bold text-slate-500 font-mono leading-tight whitespace-normal break-words" title="${(activePosition.exit_forecast || 'Checking exit criteria...').replace(/<[^>]*>?/gm, '')}">${activePosition.exit_forecast || 'Checking exit criteria...'}</span>
                     ${exitProtectionHtml}
                 </div>
             `;
@@ -846,7 +846,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Forecast Entry</span>
                         ${decisionBadgeHtml}
                     </div>
-                    <span class="text-[0.48rem] sm:text-[0.55rem] font-bold text-slate-500 font-mono leading-tight line-clamp-2 break-words" title="${forecastText.replace(/<[^>]*>?/gm, '')}">
+                    <span class="text-[0.55rem] font-bold text-slate-500 font-mono leading-tight whitespace-normal break-words" title="${forecastText.replace(/<[^>]*>?/gm, '')}">
                         ${forecastText}
                     </span>
                 </div>
@@ -4240,6 +4240,75 @@ window.toggleModeActive = function (mode) {
 
 
 
+const STRATEGY_HELPER_TEXTS = {
+    entry: {
+        indicator: "💡 Indicator (Signals) — Triggers buy order when active Bullish signals from your checked Indicator Pool meet or exceed the Buy Threshold.",
+        custom_price: "💡 Custom Price (Limit/Dip Entry) — Executes buy immediately when live market price drops to or crosses below your specified Target Buy Price.",
+        atr: "💡 ATR / Volatility Breakout — Buys when price confirms an upward breakout or pullback reversal above Average True Range (ATR) dynamic volatility bands.",
+        hybrid_atr: "💡 Hybrid (Indicator + ATR) — Dual-trigger entry: executes buy when EITHER your Indicator Pool threshold is met OR an ATR volatility breakout confirms.",
+        percentage: "💡 Percentage Pullback — Executes buy when price pulls back by your fixed percentage drop from recent swing highs, catching dip reversals.",
+        hybrid_pct: "💡 Hybrid (Indicator + Pct) — Dual-trigger entry: buys on EITHER active Indicator Pool signals OR fixed percentage dip confirmation.",
+        pivot_points: "💡 Pivot Points (Support Reclaim) — Buys when live price tests and confirms a bounce or reclaim above classic daily/weekly S1/S2/P support pivot levels.",
+        hybrid_pivot: "💡 Hybrid (Indicator + Pivots) — Dual-trigger entry: buys when EITHER Indicator signals trigger OR structural Pivot support bounce confirms.",
+        high_low: "💡 Daily High/Low Breakout — Momentum entry: buys when current price breaks and closes above the previous trading day's high.",
+        hybrid_high_low: "💡 Hybrid (Indicator + High/Low) — Dual-trigger momentum: buys on EITHER Indicator signal confirmation OR prior day high breakout.",
+        swing_points: "💡 Swing Points (Structure) — Buys on confirmed structural price action: higher-low support bounce or resistance breakout confirmation.",
+        hybrid_swing: "💡 Hybrid (Indicator + Swing) — Dual-trigger entry: buys on EITHER Indicator Pool threshold OR confirmed structural Swing Point breakout."
+    },
+    entry_options: {
+        indicator: "💡 Indicator (Directional Options) — Buys CALL when Bullish Signals meet threshold; buys PUT when Bearish Signals meet threshold (respected by Options Direction filter).",
+        custom_price: "💡 Custom Underlying Price — Buys CALL contract when the underlying stock price dips to your target buy level.",
+        atr: "💡 ATR / Volatility Breakout — Buys CALL on bullish ATR band breakout; buys PUT on bearish ATR band breakdown.",
+        hybrid_atr: "💡 Hybrid (Indicator + ATR) — Triggers CALL/PUT contract entry when EITHER Indicator signals confirm OR ATR volatility setup triggers.",
+        percentage: "💡 Percentage Move — Buys CALL on fixed % pullback dip; buys PUT on fixed % extension rally from recent extremes.",
+        hybrid_pct: "💡 Hybrid (Indicator + Pct) — Dual-trigger options entry: opens contract on EITHER Indicator signal threshold OR fixed % move confirmation.",
+        pivot_points: "💡 Pivot Points (S/R Levels) — Buys CALL on support pivot bounce/reclaim; buys PUT on resistance pivot rejection.",
+        hybrid_pivot: "💡 Hybrid (Indicator + Pivots) — Dual-trigger: opens contract when EITHER Indicator signals trigger OR Pivot S/R level setup confirms.",
+        high_low: "💡 Daily High/Low Momentum — Buys CALL on breakout above prior day high; buys PUT on breakdown below prior day low.",
+        hybrid_high_low: "💡 Hybrid (Indicator + High/Low) — Opens contract on EITHER Indicator signal threshold OR prior day High/Low breakout/breakdown.",
+        swing_points: "💡 Swing Points (Structure) — Buys CALL on structural swing support bounce; buys PUT on structural swing resistance rejection/breakdown.",
+        hybrid_swing: "💡 Hybrid (Indicator + Swing) — Opens contract when EITHER Indicator Pool threshold OR Swing Point structural setup confirms."
+    },
+    exit: {
+        indicator: "💡 Indicator (Signal Exit) — Closes position when active Bearish signals from your checked Indicator Pool meet or exceed the Sell Threshold.",
+        custom_sltp: "💡 Custom SL/TP (Hard Limits) — Exits position immediately when live market price hits your exact Stop-Loss price OR Take-Profit price target.",
+        custom_underlying_sltp: "💡 Custom Underlying SL/TP — Exits option when the underlying hits custom prices.",
+        sltp: "💡 ATR / Volatility Multipliers — Dynamic exit: sets Stop-Loss, Take-Profit, and trailing stops based on multiples of Average True Range (ATR) volatility.",
+        hybrid: "💡 Hybrid (Indicator + ATR) — Whichever triggers first: exits on EITHER Bearish Indicator threshold OR dynamic ATR Stop-Loss / Take-Profit.",
+        percentage: "💡 Percentage (Fixed Pct) — Exits position when price hits your fixed % Take-Profit gain, fixed % Stop-Loss drop, OR trailing percentage stop.",
+        hybrid_pct: "💡 Hybrid (Indicator + Pct) — Whichever triggers first: closes position on EITHER Bearish Indicator signals OR fixed percentage SL/TP/Trail.",
+        pivot_points: "💡 Pivot Points (Resistance Exit) — Sells to close when price rallies into structural R1/R2/R3 resistance or breaks below support pivots.",
+        hybrid_pivot: "💡 Hybrid (Indicator + Pivots) — Whichever triggers first: exits on EITHER Bearish Indicator signals OR structural Pivot resistance/support levels.",
+        high_low: "💡 Daily High/Low Exit — Sells position if price breaks down below prior day low (stop) or extends through prior day high target.",
+        hybrid_high_low: "💡 Hybrid (Indicator + High/Low) — Whichever triggers first: exits on EITHER Bearish Indicator signals OR Daily High/Low level breakdown.",
+        swing_points: "💡 Swing Points (Structure) — Closes position when price hits structural swing resistance targets or violates lower-high/lower-low support.",
+        hybrid_swing: "💡 Hybrid (Indicator + Swing) — Whichever triggers first: exits on EITHER Bearish Indicator signals OR structural Swing Point violation."
+    },
+    exit_options: {
+        indicator: "💡 Indicator (Opposite Signal Exit) — Sells contract to close when opposite signals hit threshold (Bearish threshold for CALLs; Bullish threshold for PUTs).",
+        custom_sltp: "💡 Custom SL/TP (Option Premium) — Exits position when the option contract's live premium ($) hits your user-defined Stop-Loss or Take-Profit price.",
+        custom_underlying_sltp: "💡 Custom Underlying SL/TP (Stock Price) — Exits option contract when the UNDERLYING stock's market price hits your custom stock SL/TP targets.",
+        sltp: "💡 ATR / Volatility Multipliers — Exits contract using dynamic ATR multiples for Stop-Loss, Take-Profit, and trailing stops on option premium.",
+        hybrid: "💡 Hybrid (Indicator + ATR) — Sells contract whichever triggers first: opposite Indicator signal threshold OR dynamic ATR stop/take-profit.",
+        percentage: "💡 Percentage (Contract Pct) — Exits option contract based on fixed % gain (TP), fixed % loss (SL), or trailing percentage drop from contract high.",
+        hybrid_pct: "💡 Hybrid (Indicator + Pct) — Sells contract whichever triggers first: opposite Indicator signal threshold OR fixed percentage SL/TP/Trail.",
+        pivot_points: "💡 Pivot Points (S/R Levels) — Closes option contract when underlying stock price reaches structural S1/R1 Support & Resistance levels.",
+        hybrid_pivot: "💡 Hybrid (Indicator + Pivots) — Sells contract whichever triggers first: opposite Indicator signals OR structural Pivot S/R levels.",
+        high_low: "💡 Daily High/Low Exit — Closes option position upon an underlying stock prior day high/low breakout or breakdown.",
+        hybrid_high_low: "💡 Hybrid (Indicator + High/Low) — Sells contract whichever triggers first: opposite Indicator signals OR underlying Daily High/Low break.",
+        swing_points: "💡 Swing Points (Structure) — Exits option contract when underlying price hits confirmed structural swing support or resistance levels.",
+        hybrid_swing: "💡 Hybrid (Indicator + Swing) — Sells contract whichever triggers first: opposite Indicator signals OR structural Swing Point level."
+    }
+};
+
+window.updateStrategyHelperText = function(targetId, category, mode) {
+    const el = document.getElementById(targetId);
+    if (!el) return;
+    const text = (STRATEGY_HELPER_TEXTS[category] && STRATEGY_HELPER_TEXTS[category][mode]) || "";
+    el.textContent = text;
+    el.classList.toggle('hidden', !text);
+};
+
 window.updateRegularExitFields = function() {
     const mode = document.getElementById('strategySellMode_regular')?.value || 'indicator';
     const showIndicator = ['indicator', 'hybrid', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'].includes(mode);
@@ -4252,6 +4321,7 @@ window.updateRegularExitFields = function() {
     if(document.getElementById('exitFieldsATR')) document.getElementById('exitFieldsATR').classList.toggle('hidden', !showATR);
     if(document.getElementById('exitFieldsPct')) document.getElementById('exitFieldsPct').classList.toggle('hidden', !showPct);
     updateSwingSettingsVisibility('regular');
+    if (window.updateStrategyHelperText) window.updateStrategyHelperText('strategySellHelper_regular', 'exit', mode);
 
     if (window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'exit');
 };
@@ -4273,6 +4343,7 @@ window.updateRegularEntryFields = function() {
     if(document.getElementById('strategyEntryHighLowFields_regular')) document.getElementById('strategyEntryHighLowFields_regular').classList.toggle('hidden', !showHL);
     if(document.getElementById('strategySwingEntrySettings_regular')) document.getElementById('strategySwingEntrySettings_regular').classList.toggle('hidden', !showSwing);
     updateSwingSettingsVisibility('regular');
+    if (window.updateStrategyHelperText) window.updateStrategyHelperText('strategyBuyHelper_regular', 'entry', mode);
     if (window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'entry');
 };
 
@@ -4296,12 +4367,13 @@ window.updateOptionsEntryFields = function() {
     const directionHint = document.getElementById('strategyOptionsDirectionHint');
     if (directionHint) {
         directionHint.textContent = direction === 'calls_only'
-            ? 'Calls Only: only bullish entry confirmations can open CALLS.'
+            ? '⚡ Calls Only: Bot will ONLY open bullish CALL option contracts when bullish entry signals confirm. All bearish signals are ignored.'
             : direction === 'puts_only'
-                ? 'Puts Only: only bearish entry confirmations can open PUTS.'
-                : 'Both: bullish entry buys CALLS; bearish entry buys PUTS.';
+                ? '⚡ Puts Only: Bot will ONLY open bearish PUT option contracts when bearish entry signals confirm. All bullish signals are ignored.'
+                : '⚡ Both Directions: Dynamic option selection — bullish entry signals open CALL contracts; bearish entry signals open PUT contracts.';
     }
     updateSwingSettingsVisibility('options');
+    if (window.updateStrategyHelperText) window.updateStrategyHelperText('strategyBuyHelper_options', 'entry_options', mode);
     if (window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry');
 };
 
@@ -4320,6 +4392,7 @@ window.updateOptionsExitFields = function() {
     if(document.getElementById('exitFieldsATR_options')) document.getElementById('exitFieldsATR_options').classList.toggle('hidden', !showATR);
     if(document.getElementById('exitFieldsPct_options')) document.getElementById('exitFieldsPct_options').classList.toggle('hidden', !showPct);
     updateSwingSettingsVisibility('options');
+    if (window.updateStrategyHelperText) window.updateStrategyHelperText('strategySellHelper_options', 'exit_options', mode);
 
     if (window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'exit');
 };
