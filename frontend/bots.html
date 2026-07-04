@@ -2094,6 +2094,7 @@
                             Direction</label>
                         <div class="relative">
                             <select id="strategyOptionsType"
+                                onchange="if(window.updateOptionsEntryFields) window.updateOptionsEntryFields(); if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry')"
                                 class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none cursor-pointer appearance-none transition-all">
                                 <option value="both" selected>Both (Calls &amp; Puts)</option>
                                 <option value="calls_only">Calls Only</option>
@@ -2105,9 +2106,13 @@
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
                                         d="M19 9l-7 7-7-7" />
                                 </svg>
-                            </div>
-                        </div>
-                    </div>
+	                            </div>
+	                        </div>
+	                        <p id="strategyOptionsDirectionHint"
+	                            class="text-[0.55rem] text-indigo-500 font-bold leading-snug pl-1">
+	                            Both: bullish entry buys CALLS; bearish entry buys PUTS.
+	                        </p>
+	                    </div>
                     <div class="space-y-2">
                         <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Expiry
                             (Days)</label>
@@ -2770,27 +2775,27 @@
                     <label class="text-sm font-black text-indigo-900 uppercase tracking-widest">Entry Strategy (Buy
                         Mode)</label>
                 </div>
-                <div class="relative">
-                    <select id="strategyBuyMode_options" onchange="updateOptionsEntryFields()"
+	                <div class="relative">
+	                    <select id="strategyBuyMode_options" onchange="updateOptionsEntryFields()"
                         class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-emerald-400/80 outline-none cursor-pointer appearance-none transition-all">
-                        <option value="indicator">Indicator &#x2014; Buys when Bullish Signals hit Buy Threshold
+                        <option value="indicator">Indicator &#x2014; CALL on bullish threshold, PUT on bearish threshold
                         </option>
-                        <option value="custom_price">Custom Price &#x2014; Buys when price crosses below target</option>
-                        <option value="atr">ATR / Volatility &#x2014; Buys on ATR pullback confirmation</option>
-                        <option value="hybrid_atr">Hybrid (Indicator + ATR) &#x2014; Signals + ATR pullback levels
+                        <option value="custom_price">Custom Price &#x2014; CALL when underlying drops to target</option>
+                        <option value="atr">ATR / Volatility &#x2014; CALL/PUT on ATR confirmation</option>
+                        <option value="hybrid_atr">Hybrid (Indicator + ATR) &#x2014; ATR setup or signal threshold
                         </option>
-                        <option value="percentage">Percentage &#x2014; Buys on fixed % pullback</option>
-                        <option value="hybrid_pct">Hybrid (Indicator + Percentage) &#x2014; Signals + % pullback
+                        <option value="percentage">Percentage &#x2014; CALL/PUT on fixed % move confirmation</option>
+                        <option value="hybrid_pct">Hybrid (Indicator + Percentage) &#x2014; % move or signal threshold
                         </option>
-                        <option value="pivot_points">Pivot Points &#x2014; Buys on pivot / support reclaim</option>
-                        <option value="hybrid_pivot">Hybrid (Indicator + Pivots) &#x2014; Signals + pivot levels
+                        <option value="pivot_points">Pivot Points &#x2014; CALL on support reclaim, PUT on resistance rejection</option>
+                        <option value="hybrid_pivot">Hybrid (Indicator + Pivots) &#x2014; Pivot setup or signal threshold
                         </option>
-                        <option value="high_low">Daily High/Low &#x2014; Buys on prior high breakout</option>
-                        <option value="hybrid_high_low">Hybrid (Indicator + High/Low) &#x2014; Signals + H/L breakout
+                        <option value="high_low">Daily High/Low &#x2014; CALL above prior high, PUT below prior low</option>
+                        <option value="hybrid_high_low">Hybrid (Indicator + High/Low) &#x2014; H/L break or signal threshold
                         </option>
-                        <option value="swing_points">Swing Points &#x2014; Buys on confirmed swing bounce/breakout
+                        <option value="swing_points">Swing Points &#x2014; CALL/PUT on confirmed swing level
                         </option>
-                        <option value="hybrid_swing">Hybrid (Indicator + Swing) &#x2014; Signals + Swing levels
+                        <option value="hybrid_swing">Hybrid (Indicator + Swing) &#x2014; Swing setup or signal threshold
                         </option>
                     </select>
                     <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
@@ -2799,11 +2804,11 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
                                 d="M19 9l-7 7-7-7" />
                         </svg>
-                    </div>
-                </div>
-                <div id="strategyBuyFields_options" class="grid grid-cols-1 gap-3">
-                    <div
-                        class="bg-emerald-500/10 backdrop-blur-md p-4 rounded-2xl border border-emerald-500/20 flex flex-col items-center gap-2 shadow-sm">
+	                    </div>
+	                </div>
+	                <div id="strategyBuyFields_options" class="grid grid-cols-1 gap-3">
+	                    <div
+	                        class="bg-emerald-500/10 backdrop-blur-md p-4 rounded-2xl border border-emerald-500/20 flex flex-col items-center gap-2 shadow-sm">
                         <div class="flex items-center gap-1.5">
                             <span
                                 class="flex items-center justify-center w-6 h-6 rounded-lg bg-emerald-500 text-white text-[0.6rem] font-black shadow-sm">B</span>
@@ -2819,20 +2824,25 @@
                             <button onclick="adjustStrategyThreshold('options', 'buy', 1)"
                                 class="w-7 h-7 flex items-center justify-center bg-white/30 text-emerald-700 rounded-lg border border-white/40 hover:bg-emerald-500/20 transition-all active:scale-90 text-sm font-black shadow-sm">+</button>
                         </div>
-                        <span id="strategyBuyLabel_options"
-                            class="text-[0.5rem] font-black px-3 py-1 rounded-full bg-emerald-100/80 text-emerald-700 border border-emerald-200/55 uppercase tracking-wider transition-all duration-300">4
-                            Signals</span>
-                    </div>
-                </div>
+	                        <span id="strategyBuyLabel_options"
+	                            class="text-[0.5rem] font-black px-3 py-1 rounded-full bg-emerald-100/80 text-emerald-700 border border-emerald-200/55 uppercase tracking-wider transition-all duration-300">4
+	                            Signals</span>
+	                        <p class="text-[0.55rem] text-indigo-500 font-bold text-center leading-snug">
+	                            CALL entries use the bullish threshold. PUT entries use the bearish threshold shared with indicator exits.
+	                        </p>
+	                    </div>
+	                </div>
                 <div id="strategyCustomBuyFields_options" class="hidden">
                     <div
                         class="bg-emerald-500/10 backdrop-blur-md p-4 rounded-2xl border border-emerald-500/20 flex flex-col items-center gap-2 shadow-sm">
+                        <div class="text-[0.55rem] font-black text-indigo-900 uppercase tracking-widest">Underlying CALL Entry Target</div>
                         <div class="relative w-full max-w-[200px] mt-1">
                             <span class="absolute left-3 top-1/2 -translate-y-1/2 text-emerald-600 font-bold">$</span>
                             <input type="number" step="0.01" id="strategyCustomBuyPrice_options" placeholder="0.00"
                                 oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry')"
                                 class="w-full h-9 pl-7 pr-3 text-sm font-black text-emerald-700 bg-white/40 border border-emerald-500/20 rounded-xl outline-none focus:bg-white/70 transition-all shadow-sm">
                         </div>
+                        <div class="text-[0.6rem] text-indigo-500/80 italic text-center mt-1">Custom price is CALL-oriented: it opens a call when the underlying drops to this target.</div>
                     </div>
                 </div>
 
@@ -2855,15 +2865,18 @@
                         <div class="space-y-1">
                             <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Entry
                                 Style</label>
-                            <select id="strategyEntryAtrStyle_options"
+	                            <select id="strategyEntryAtrStyle_options"
                                 onchange="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry')"
                                 class="w-full h-10 bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 text-[0.65rem] font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-sky-400/80 outline-none transition-all">
-                                <option value="pullback_reclaim">Pullback / Reclaim</option>
-                                <option value="breakout_momentum">Breakout / Momentum</option>
-                            </select>
-                        </div>
-                    </div>
-                </div>
+	                                <option value="pullback_reclaim">Pullback / Reclaim — CALL on dip reclaim, PUT on failed upside extension</option>
+	                                <option value="breakout_momentum">Breakout / Momentum — CALL on upside break, PUT on downside break</option>
+	                            </select>
+	                        </div>
+	                    </div>
+	                    <p class="text-[0.55rem] text-sky-700 font-bold leading-snug">
+	                        ATR entry is symmetric: bullish ATR confirmation buys a CALL; bearish ATR confirmation buys a PUT.
+	                    </p>
+	                </div>
 
                 <div id="strategyEntryPctFields_options"
                     class="hidden bg-fuchsia-500/10 backdrop-blur-md p-4 rounded-2xl border border-fuchsia-500/20 space-y-3 shadow-sm">
@@ -2875,7 +2888,7 @@
                     </div>
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         <div class="space-y-1">
-                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Pullback
+                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Move
                                 %</label>
                             <input type="number" step="0.1" min="0.1" id="strategyEntryPctMove_options" value="5"
                                 oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry')"
@@ -2887,12 +2900,15 @@
                             <select id="strategyEntryPctStyle_options"
                                 onchange="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry')"
                                 class="w-full h-10 bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 text-[0.65rem] font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-fuchsia-400/80 outline-none transition-all">
-                                <option value="dip_reclaim">Dip / Reclaim</option>
-                                <option value="breakout_momentum">Breakout / Momentum</option>
-                            </select>
-                        </div>
-                    </div>
-                </div>
+	                                <option value="dip_reclaim">Reversal / Reclaim — CALL on dip reclaim, PUT on failed upside extension</option>
+	                                <option value="breakout_momentum">Breakout / Momentum — CALL on upside break, PUT on downside break</option>
+	                            </select>
+	                        </div>
+	                    </div>
+	                    <p class="text-[0.55rem] text-fuchsia-700 font-bold leading-snug">
+	                        Percentage entry uses the underlying move: bullish confirmation buys a CALL; bearish confirmation buys a PUT.
+	                    </p>
+	                </div>
 
                 <div id="strategySwingEntrySettings_options"
                     class="hidden bg-cyan-500/10 backdrop-blur-md p-4 rounded-2xl border border-cyan-500/20 space-y-3 shadow-sm">
@@ -2909,10 +2925,10 @@
                             <select id="strategySwingEntryMode_options"
                                 onchange="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry'); if(window.fetchLiveAtrForPreview && window.currentStrategySymbol) window.fetchLiveAtrForPreview(window.currentStrategySymbol)"
                                 class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-cyan-400/80 outline-none transition-all">
-                                <option value="bounce_retest" selected>Bounce / Retest</option>
-                                <option value="breakout_retest">Breakout / Retest</option>
-                            </select>
-                        </div>
+	                                <option value="bounce_retest" selected>Bounce / Retest — CALL at support bounce, PUT at resistance rejection</option>
+	                                <option value="breakout_retest">Breakout / Retest — CALL above resistance, PUT below support</option>
+	                            </select>
+	                        </div>
                         <div class="space-y-1">
                             <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Lookback</label>
                         <select id="strategySwingEntryLookback_options"
@@ -2926,14 +2942,17 @@
                             </select>
                         </div>
                     </div>
-                    <div id="strategySwingEntryLookbackCustomWrap_options" class="hidden">
+	                    <div id="strategySwingEntryLookbackCustomWrap_options" class="hidden">
                         <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest mb-1">Custom
                             Days</label>
                         <input type="number" min="1" max="365" id="strategySwingEntryLookbackCustom_options" value="20"
                             oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry')"
                             class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-cyan-400/80 outline-none transition-all">
-                    </div>
-                </div>
+	                    </div>
+	                    <p class="text-[0.55rem] text-cyan-700 font-bold leading-snug">
+	                        Swing Points are directional: bullish support/breakout confirmation buys a CALL; bearish resistance/breakdown confirmation buys a PUT.
+	                    </p>
+	                </div>
 
                 <div id="livePreviewEntryBox_options"
                     class="mt-2 p-2 bg-slate-50/50 rounded-lg border border-slate-200 text-[0.65rem] text-slate-700 font-medium hidden">
@@ -2952,7 +2971,8 @@
                         class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 outline-none cursor-pointer appearance-none transition-all">
                         <option value="indicator">Indicator &#x2014; Sells when Bearish Signals hit Sell Threshold
                         </option>
-                        <option value="custom_sltp">Custom SL/TP &#x2014; Exits at user-defined stop-loss &amp; take-profit prices</option>
+                        <option value="custom_sltp">Custom SL/TP &#x2014; Exits at user-defined option premium prices</option>
+                        <option value="custom_underlying_sltp">Custom Underlying SL/TP &#x2014; Exits option when the underlying hits custom prices</option>
                         <option value="sltp">ATR / Volatility &#x2014; Stop-Loss &amp; Take-Profit based on ATR</option>
                         <option value="hybrid">Hybrid (Indicator + ATR) &#x2014; Whichever triggers first</option>
                         <option value="percentage">Percentage &#x2014; Fixed % Stop-Loss, Take-Profit &amp; Trailing
@@ -3014,6 +3034,23 @@
                         <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Take
                             Profit Premium</label>
                         <input type="number" step="0.01" id="strategyCustomTakeProfitPrice_options" placeholder="0.00"
+                            oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'exit')"
+                            class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 outline-none transition-all">
+                    </div>
+                </div>
+                <!-- Custom underlying SL/TP sub-fields (options) -->
+                <div id="exitFieldsCustomUnderlying_options" class="hidden grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2 pt-1">
+                    <div class="space-y-1">
+                        <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Underlying
+                            Stop Loss Price</label>
+                        <input type="number" step="0.01" id="strategyCustomUnderlyingStopLossPrice_options" placeholder="0.00"
+                            oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'exit')"
+                            class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 outline-none transition-all">
+                    </div>
+                    <div class="space-y-1">
+                        <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Underlying
+                            Take Profit Price</label>
+                        <input type="number" step="0.01" id="strategyCustomUnderlyingTakeProfitPrice_options" placeholder="0.00"
                             oninput="if(window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'exit')"
                             class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 outline-none transition-all">
                     </div>

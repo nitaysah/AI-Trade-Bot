@@ -151,8 +151,8 @@ ATR_TAKE_PROFIT_MULTIPLIER = 4.0
 ENABLE_OPTIONS_TRADING = False
 OPTIONS_TRADE_AMOUNT = 100.0         # Fixed USD allocation per options trade
 OPTIONS_EXPIRY_DAYS = 7             # Expiry target for selected contracts
-OPTIONS_STRIKE_TYPE = "ATM"          # "ATM" | "ITM" | "OTM"
-OPTIONS_DELTA_TARGET = 0.50          # Target delta for contract selection
+OPTIONS_STRIKE_TYPE = "ATM"          # "ATM" ~0.50 delta | "ITM" ~0.60 delta | "OTM" ~0.35 delta
+OPTIONS_DELTA_TARGET = 0.50          # Legacy fallback; live selection now uses strike-type profiles
 OPTIONS_EXIT_STRATEGY = "hybrid"     # "premium_pct" | "pivot_points" | "high_low" | "hybrid"
 OPTIONS_TAKE_PROFIT_PCT = 1.00       # Take profit when premium reaches +100%
 OPTIONS_CLOSE_BEFORE_EXPIRY_HOURS = 2.0  # Safe exit buffer before expiration
@@ -163,4 +163,3 @@ SMART_REENTRY_TYPE = "RSI"               # "RSI" | "VWAP"
 SMART_REENTRY_RSI_THRESHOLD = 35         # Blocks BUY if RSI > 65, blocks SELL if RSI < 35
 SMART_REENTRY_VWAP_PCT = 0.5             # Max allowed distance from VWAP (%)
 ENABLE_SIGNAL_RESET = False
-

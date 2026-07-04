@@ -4,8 +4,9 @@ import math
 import datetime
 from data_manager import get_historical_data
 from indicators import calculate_indicators_for_df, _generate_signals
-from swing_strategy import build_entry_signal
+from swing_strategy import build_entry_signal, build_swing_exit
 from options_pricing import black_scholes, calculate_historical_volatility
+from option_selector import add_us_market_trading_days, _strike_profile, _target_strike_from_profile
 
 class OptionsBacktester:
     def __init__(
@@ -43,6 +44,10 @@ class OptionsBacktester:
         cooldown_minutes: int = 0,
         buy_mode: str = "indicator",
         custom_buy_price: float = 0.0,
+        custom_stop_loss_price: float = 0.0,
+        custom_take_profit_price: float = 0.0,
+        custom_underlying_stop_loss_price: float = 0.0,
+        custom_underlying_take_profit_price: float = 0.0,
         atr_stop_multiplier: float = 2.0,
         atr_trail_multiplier: float = 3.0,
         atr_take_profit_multiplier: float = 4.0,
@@ -57,6 +62,7 @@ class OptionsBacktester:
         entry_pct_style: str = "dip_reclaim",
         swing_entry_mode: str = "bounce_retest",
         swing_entry_lookback_days: int = 20,
+        swing_exit_lookback_days: int = 20,
         market_session: str = "Regular"
     ):
         self.ticker = ticker
@@ -94,6 +100,10 @@ class OptionsBacktester:
         # Entry mode
         self.buy_mode = buy_mode
         self.custom_buy_price = custom_buy_price
+        self.custom_stop_loss_price = custom_stop_loss_price
+        self.custom_take_profit_price = custom_take_profit_price
+        self.custom_underlying_stop_loss_price = custom_underlying_stop_loss_price
+        self.custom_underlying_take_profit_price = custom_underlying_take_profit_price
         # ATR exit params
         self.atr_stop_multiplier = atr_stop_multiplier
         self.atr_trail_multiplier = atr_trail_multiplier
@@ -108,6 +118,7 @@ class OptionsBacktester:
         self.entry_pct_style = entry_pct_style or "dip_reclaim"
         self.swing_entry_mode = swing_entry_mode or "bounce_retest"
         self.swing_entry_lookback_days = swing_entry_lookback_days or 20
+        self.swing_exit_lookback_days = swing_exit_lookback_days or 20
         self.market_session = market_session or "Regular"
         # Risk sizing
         self.risk_per_trade = risk_per_trade
@@ -124,6 +135,29 @@ class OptionsBacktester:
         self.equity_history = []
         self.raw_df = df
         self.df = None
+
+    def _as_datetime(self, ts) -> datetime.datetime:
+        if hasattr(ts, "to_pydatetime"):
+            return ts.to_pydatetime()
+        return ts
+
+    def _expiration_close_for_entry(self, entry_time) -> datetime.datetime:
+        entry_dt = self._as_datetime(entry_time)
+        expiration_date = add_us_market_trading_days(entry_dt.date(), int(self.expiry_days or 0))
+        close_time = datetime.time(16, 0)
+        expiration_dt = datetime.datetime.combine(expiration_date, close_time)
+        if entry_dt.tzinfo is not None:
+            expiration_dt = expiration_dt.replace(tzinfo=entry_dt.tzinfo)
+        return expiration_dt
+
+    def _time_to_expiry_years(self, timestamp, expiration_close) -> float:
+        ts = self._as_datetime(timestamp)
+        remaining_seconds = (expiration_close - ts).total_seconds()
+        return max(0.00001, remaining_seconds / (365.0 * 24.0 * 3600.0))
+
+    def _hours_to_expiry(self, timestamp, expiration_close) -> float:
+        ts = self._as_datetime(timestamp)
+        return max(0.0, (expiration_close - ts).total_seconds() / 3600.0)
 
     def _localize_dt(self, ts):
         import pytz
@@ -326,15 +360,15 @@ class OptionsBacktester:
                 entry_date = self.position['entry_time']
 
                 # Compute current option premium with IV markup and dividend yield
-                hours_elapsed = (timestamp - entry_date).total_seconds() / 3600.0
-                t_remaining = max(0.00001, (self.expiry_days * 24.0 - hours_elapsed) / (365.0 * 24.0))
+                expiration_close = self.position.get('expiration_close') or self._expiration_close_for_entry(entry_date)
+                t_remaining = self._time_to_expiry_years(timestamp, expiration_close)
                 opt_price_bs = black_scholes(current_price, strike, t_remaining, self.r, current_vol + self.iv_markup, opt_type, q=self.q)
                 opt_price = max(0.01, opt_price_bs - (self.spread_width / 2.0)) # Sell at the bid
                 
                 # Check exit triggers
                 exit_triggered = False
                 exit_reason = ""
-                configured_exit_modes = {self.exit_strategy, self.sell_mode}
+                configured_exit_modes = {self.sell_mode or self.exit_strategy}
                 
                 # Intraday Check
                 if self.intraday_only and timestamp.time() >= datetime.time(15, 55):
@@ -342,34 +376,47 @@ class OptionsBacktester:
                     exit_reason = "Intraday End of Day (15:55 PM ET)"
 
                 # Expiration safeguard
-                if not exit_triggered and hours_elapsed >= (self.expiry_days * 24.0 - self.close_before_expiry_hours):
+                hours_remaining = self._hours_to_expiry(timestamp, expiration_close)
+                if not exit_triggered and hours_remaining <= self.close_before_expiry_hours:
                     exit_triggered = True
                     exit_reason = f"Expiration Safeguard ({self.close_before_expiry_hours}h remaining)"
 
-                # Strategy A: Option Premium Percent-based TP/SL
-                elif configured_exit_modes.intersection({"premium_pct", "percentage", "hybrid", "hybrid_pct"}):
-                    if opt_price <= self.position['entry_premium'] * (1 - self.stop_loss_pct):
+                # Strategy A: Custom premium SL/TP
+                if not exit_triggered and configured_exit_modes.intersection({"custom_sltp"}):
+                    if self.custom_stop_loss_price > 0 and opt_price <= self.custom_stop_loss_price:
                         exit_triggered = True
-                        exit_reason = f"Premium Stop Loss Hit (-{self.stop_loss_pct*100:.1f}%)"
-                    elif opt_price >= self.position['entry_premium'] * (1 + self.take_profit_pct):
+                        exit_reason = f"Custom Premium Stop Loss Hit (${opt_price:.2f} <= ${self.custom_stop_loss_price:.2f})"
+                    elif self.custom_take_profit_price > 0 and opt_price >= self.custom_take_profit_price:
                         exit_triggered = True
-                        exit_reason = f"Premium Take Profit Hit (+{self.take_profit_pct*100:.1f}%)"
+                        exit_reason = f"Custom Premium Take Profit Hit (${opt_price:.2f} >= ${self.custom_take_profit_price:.2f})"
+
+                # Strategy A2: Custom underlying-price SL/TP
+                if not exit_triggered and configured_exit_modes.intersection({"custom_underlying_sltp"}):
+                    if opt_type == "CALL":
+                        if self.custom_underlying_stop_loss_price > 0 and current_price <= self.custom_underlying_stop_loss_price:
+                            exit_triggered = True
+                            exit_reason = f"Custom Underlying Stop Loss Hit (Underlying ${current_price:.2f} <= ${self.custom_underlying_stop_loss_price:.2f})"
+                        elif self.custom_underlying_take_profit_price > 0 and current_price >= self.custom_underlying_take_profit_price:
+                            exit_triggered = True
+                            exit_reason = f"Custom Underlying Take Profit Hit (Underlying ${current_price:.2f} >= ${self.custom_underlying_take_profit_price:.2f})"
+                    else:
+                        if self.custom_underlying_stop_loss_price > 0 and current_price >= self.custom_underlying_stop_loss_price:
+                            exit_triggered = True
+                            exit_reason = f"Custom Underlying Stop Loss Hit (Underlying ${current_price:.2f} >= ${self.custom_underlying_stop_loss_price:.2f})"
+                        elif self.custom_underlying_take_profit_price > 0 and current_price <= self.custom_underlying_take_profit_price:
+                            exit_triggered = True
+                            exit_reason = f"Custom Underlying Take Profit Hit (Underlying ${current_price:.2f} <= ${self.custom_underlying_take_profit_price:.2f})"
 
                 # Strategy B: Dynamic Pivot Point Exit
-                if not exit_triggered and configured_exit_modes.intersection({"pivot_points", "hybrid", "hybrid_pivot"}):
+                if not exit_triggered and configured_exit_modes.intersection({"pivot_points", "hybrid_pivot"}):
                     P = (prev_h + prev_l + prev_c) / 3.0
                     R1 = 2 * P - prev_l
                     S1 = 2 * P - prev_h
-                    R2 = P + (prev_h - prev_l)
-                    S2 = P - (prev_h - prev_l)
 
                     if opt_type == "CALL":
                         if current_bar['High'] >= R1:
                             exit_triggered = True
                             exit_reason = f"Pivot Take Profit Hit (Underlying High >= R1: {R1:.2f})"
-                        elif current_bar['High'] >= R2:
-                            exit_triggered = True
-                            exit_reason = f"Pivot Take Profit Hit (Underlying High >= R2: {R2:.2f})"
                         elif current_bar['Low'] <= S1:
                             exit_triggered = True
                             exit_reason = f"Pivot Stop Loss Hit (Underlying Low <= S1: {S1:.2f})"
@@ -377,39 +424,54 @@ class OptionsBacktester:
                         if current_bar['Low'] <= S1:
                             exit_triggered = True
                             exit_reason = f"Pivot Take Profit Hit (Underlying Low <= S1: {S1:.2f})"
-                        elif current_bar['Low'] <= S2:
-                            exit_triggered = True
-                            exit_reason = f"Pivot Take Profit Hit (Underlying Low <= S2: {S2:.2f})"
                         elif current_bar['High'] >= R1:
                             exit_triggered = True
                             exit_reason = f"Pivot Stop Loss Hit (Underlying High >= R1: {R1:.2f})"
 
                 # Strategy C: Daily High/Low ranges
-                if not exit_triggered and configured_exit_modes.intersection({"high_low", "hybrid", "hybrid_high_low"}):
-                    # Intraday Check
-                    if opt_type == "CALL" and current_price < self._today_low:
-                        exit_triggered = True
-                        exit_reason = f"Intraday Low Breach (Underlying Close < Today's Low: {self._today_low:.2f})"
-                    elif opt_type == "PUT" and current_price > self._today_high:
-                        exit_triggered = True
-                        exit_reason = f"Intraday High Breach (Underlying Close > Today's High: {self._today_high:.2f})"
-                    
-                    # Prev Day Check
-                    if not exit_triggered:
+                if not exit_triggered and configured_exit_modes.intersection({"high_low", "hybrid_high_low"}):
+                    if opt_type == "CALL":
+                        if current_bar['High'] >= prev_h:
+                            exit_triggered = True
+                            exit_reason = f"Prev Day High Breakout (Underlying High >= {prev_h:.2f})"
+                        elif current_bar['Low'] <= prev_l:
+                            exit_triggered = True
+                            exit_reason = f"Prev Day Low Breakdown (Underlying Low <= {prev_l:.2f})"
+                    else: # PUT
+                        if current_bar['Low'] <= prev_l:
+                            exit_triggered = True
+                            exit_reason = f"Prev Day Low Breakout (Underlying Low <= {prev_l:.2f})"
+                        elif current_bar['High'] >= prev_h:
+                            exit_triggered = True
+                            exit_reason = f"Prev Day High Breakdown (Underlying High >= {prev_h:.2f})"
+
+                # Strategy C2: Swing support/resistance exits
+                if not exit_triggered and configured_exit_modes.intersection({"swing_points", "hybrid_swing"}):
+                    swing_exit = build_swing_exit(
+                        price_history_records[:i + 1],
+                        current_price=current_price,
+                        is_long=(opt_type == "CALL"),
+                        lookback_days=int(self.swing_exit_lookback_days or 20),
+                        market_session=self.market_session,
+                        is_crypto=False,
+                    )
+                    tp = swing_exit.get("take_profit")
+                    sl = swing_exit.get("stop_loss")
+                    if tp is not None and sl is not None:
                         if opt_type == "CALL":
-                            if current_bar['High'] >= prev_h:
+                            if current_price >= tp:
                                 exit_triggered = True
-                                exit_reason = f"Prev Day High Breakout (Underlying High >= {prev_h:.2f})"
-                            elif current_bar['Low'] <= prev_l:
+                                exit_reason = f"Swing Take Profit Hit (Underlying {current_price:.2f} >= {tp:.2f})"
+                            elif current_price <= sl:
                                 exit_triggered = True
-                                exit_reason = f"Prev Day Low Breakdown (Underlying Low <= {prev_l:.2f})"
-                        else: # PUT
-                            if current_bar['Low'] <= prev_l:
+                                exit_reason = f"Swing Stop Loss Hit (Underlying {current_price:.2f} <= {sl:.2f})"
+                        else:
+                            if current_price <= tp:
                                 exit_triggered = True
-                                exit_reason = f"Prev Day Low Breakout (Underlying Low <= {prev_l:.2f})"
-                            elif current_bar['High'] >= prev_h:
+                                exit_reason = f"Swing Take Profit Hit (Underlying {current_price:.2f} <= {tp:.2f})"
+                            elif current_price >= sl:
                                 exit_triggered = True
-                                exit_reason = f"Prev Day High Breakdown (Underlying High >= {prev_h:.2f})"
+                                exit_reason = f"Swing Stop Loss Hit (Underlying {current_price:.2f} >= {sl:.2f})"
 
                 # Strategy D: Indicator Reversal (Indicator/Hybrid modes)
                 if not exit_triggered and configured_exit_modes.intersection({"indicator", "hybrid", "hybrid_pct", "hybrid_pivot", "hybrid_high_low", "hybrid_swing"}):
@@ -432,7 +494,7 @@ class OptionsBacktester:
                 # ── Resolve effective exit strategy ─────────────────────────
                 # sell_mode maps the UI dropdown to a strategy key.
                 # If sell_mode is set (non-indicator), it overrides exit_strategy.
-                eff_mode = self.sell_mode if self.sell_mode not in ('indicator', 'hybrid') else self.exit_strategy
+                eff_mode = self.sell_mode or self.exit_strategy
 
                 # ── ATR-based Stop-Loss / Take-Profit ───────────────────────
                 current_atr = current_bar.get('ATR', None)
@@ -458,7 +520,7 @@ class OptionsBacktester:
                             exit_reason = f"ATR Take Profit Hit (Underlying {current_price:.2f} <= TP {atr_sl:.2f})"
 
                 # ── Percentage Stop-Loss / Take-Profit on Premium ───────────
-                if not exit_triggered and eff_mode in ['percentage', 'hybrid_pct', 'premium_pct', 'hybrid']:
+                if not exit_triggered and eff_mode in ['percentage', 'hybrid_pct', 'premium_pct']:
                     pct_sl = self.regular_stop_loss_pct
                     pct_tp = self.regular_take_profit_pct
                     trail_pct = self.regular_trailing_pct
@@ -635,8 +697,8 @@ class OptionsBacktester:
         if self.position:
             last_bar = self.df.iloc[-1]
             last_ts = self.df.index[-1]
-            hours_elapsed = (last_ts - self.position['entry_time']).total_seconds() / 3600.0
-            t_remaining = max(0.00001, (self.expiry_days * 24.0 - hours_elapsed) / (365.0 * 24.0))
+            expiration_close = self.position.get('expiration_close') or self._expiration_close_for_entry(self.position['entry_time'])
+            t_remaining = self._time_to_expiry_years(last_ts, expiration_close)
             opt_price_bs = black_scholes(last_bar['Close'], self.position['strike_price'], t_remaining, self.r, last_bar['Historical_Vol'] + self.iv_markup, self.position['option_type'], q=self.q)
             opt_price = max(0.01, opt_price_bs - (self.spread_width / 2.0))
             self._exit_option_trade(opt_price, last_bar['Close'], last_ts, "End of Backtest")
@@ -645,17 +707,21 @@ class OptionsBacktester:
 
     def _enter_option_trade(self, option_type: str, underlying_price: float, vol: float, timestamp: datetime.datetime, reason: str):
         # Determine Strike Price
-        strike = underlying_price
-        if self.strike_type == "ITM":
-            strike = underlying_price * 0.98 if option_type == "CALL" else underlying_price * 1.02
-        elif self.strike_type == "OTM":
-            strike = underlying_price * 1.02 if option_type == "CALL" else underlying_price * 0.98
+        strike_mode = str(self.strike_type or "ATM").upper()
+        profile = _strike_profile(strike_mode)
+        strike = _target_strike_from_profile(
+            underlying_price,
+            option_type,
+            strike_mode,
+            profile.get("target_depth_pct", 0.0),
+        )
         
         # Round strike price to nearest integer or 0.50
         strike = round(strike * 2) / 2
         
         # Calculate theoretical option price (premium) at entry with IV markup and dividends
-        t_years = (self.expiry_days * 24.0) / (365.0 * 24.0)
+        expiration_close = self._expiration_close_for_entry(timestamp)
+        t_years = self._time_to_expiry_years(timestamp, expiration_close)
         entry_premium_bs = black_scholes(underlying_price, strike, t_years, self.r, vol + self.iv_markup, option_type, q=self.q)
         entry_premium = max(0.01, entry_premium_bs + (self.spread_width / 2.0)) # Pay the ask
 
@@ -704,6 +770,8 @@ class OptionsBacktester:
             "option_type": option_type,
             "strike_price": strike,
             "entry_time": timestamp,
+            "expiration_date": expiration_close.date(),
+            "expiration_close": expiration_close,
             "entry_underlying": underlying_price,
             "entry_premium": entry_premium,
             "qty": qty,
@@ -727,6 +795,7 @@ class OptionsBacktester:
             'exit_time': self._to_utc_iso(timestamp),
             'qty': int(self.position['qty']),
             'option_type': self.position['option_type'],
+            'expiration_date': self.position.get('expiration_date').isoformat() if self.position.get('expiration_date') else None,
             'strike': self.position['strike_price'],
             'entry_price': round(self.position['entry_premium'], 4),
             'exit_price': round(option_premium, 4),
@@ -748,9 +817,8 @@ class OptionsBacktester:
         opt_type = self.position['option_type']
         strike = self.position['strike_price']
         entry_date = self.position['entry_time']
-
-        hours_elapsed = (timestamp - entry_date).total_seconds() / 3600.0
-        t_remaining = max(0.00001, (self.expiry_days * 24.0 - hours_elapsed) / (365.0 * 24.0))
+        expiration_close = self.position.get('expiration_close') or self._expiration_close_for_entry(entry_date)
+        t_remaining = self._time_to_expiry_years(timestamp, expiration_close)
         opt_price_bs = black_scholes(current_price, strike, t_remaining, self.r, vol + self.iv_markup, opt_type, q=self.q)
         opt_price = max(0.01, opt_price_bs - (self.spread_width / 2.0))
         

@@ -505,10 +505,84 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             const parsedPrice = parseFloat(scan.price.toString().replace('$', ''));
             price = `$${formatAssetPrice(parsedPrice, isCrypto)}`;
         }
-        const actionColor = action === 'BUY' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : action === 'SELL' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-400 border-slate-100';
-
         const bullish = scan?.bullish_count ?? 0;
         const bearish = scan?.bearish_count ?? 0;
+        const buyThreshold = Number(tickerSettings.min_buy_signals ?? tickerSettings.threshold ?? 0);
+        const sellThreshold = Number(tickerSettings.min_sell_signals ?? tickerSettings.sell_threshold ?? 0);
+
+        // ── Mode sets (sourced directly from updateRegularEntryFields / updateRegularExitFields) ──
+        // Entry: pure structural modes where indicators are NOT used at all
+        const PURE_STRUCTURAL_ENTRY_MODES = new Set([
+            'swing_points', 'atr', 'percentage', 'pivot_points',
+            'high_low', 'custom_price'
+        ]);
+        // Exit: pure structural modes where indicators are NOT used at all
+        // NOTE: 'sltp' is included here because engine.py explicitly suppresses any
+        // indicator SELL signal when sell_mode == 'sltp' (line 1449-1451):
+        //   result['action'] = 'HOLD'  ← indicator signal overridden
+        //   result['reason'] = 'Sell Signal Ignored (Fixed SL/TP Mode)'
+        // Exit only happens via ATR price level breach (SL/TP). Indicator pool irrelevant.
+        const PURE_STRUCTURAL_EXIT_MODES = new Set([
+            'swing_points', 'atr', 'sltp', 'percentage', 'pivot_points',
+            'high_low', 'custom_sltp', 'custom_underlying_sltp', 'trend_rider'
+        ]);
+        // Hybrid entry modes: use structural trigger + indicator fallback
+        const HYBRID_ENTRY_MODES = new Set([
+            'hybrid_atr', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'
+        ]);
+        // Hybrid exit modes: use structural trigger + indicator signals
+        const HYBRID_EXIT_MODES = new Set([
+            'hybrid', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'
+        ]);
+
+        // ── Resolve modes from tickerSettings ──
+        // buy_mode: always stored as 'buy_mode' in TICKER_SETTINGS
+        const buyMode = tickerSettings.buy_mode || 'indicator';
+        // sell_mode: stored as 'sell_mode'. options_exit_strategy is a legacy fallback only.
+        const sellMode = tickerSettings.sell_mode || tickerSettings.options_exit_strategy || 'indicator';
+
+        // ── Determine whether each side actively uses indicator pool ──
+        const isEntryIndActive = !PURE_STRUCTURAL_ENTRY_MODES.has(buyMode);
+        const isExitIndActive  = !PURE_STRUCTURAL_EXIT_MODES.has(sellMode);
+
+        // ── Label prefixes ──
+        const entryLabel = HYBRID_ENTRY_MODES.has(buyMode) ? 'Entry Hybrid Ind' : 'Entry Ind';
+        const exitLabel  = HYBRID_EXIT_MODES.has(sellMode)  ? 'Exit Hybrid Ind' : 'Exit Ind';
+
+        // ── Badge color for the Decision badge (action uses BUY/SELL/HOLD) ──
+        const badgeColor = (signal) => signal === 'BUY'
+            ? 'bg-emerald-50 text-emerald-600 border-emerald-100'
+            : signal === 'SELL'
+                ? 'bg-red-50 text-red-600 border-red-100'
+                : 'bg-slate-50 text-slate-400 border-slate-100';
+        const actionColor = badgeColor(action);
+
+        // ── Badge color for indicator status rows (uses BULLISH/BEARISH/HOLD) ──
+        const indBadgeColor = (sig) => sig === 'BULLISH'
+            ? 'bg-emerald-50 text-emerald-600 border-emerald-100'
+            : sig === 'BEARISH'
+                ? 'bg-red-50 text-red-600 border-red-100'
+                : 'bg-slate-50 text-slate-400 border-slate-100';
+
+        // ── Progress badge helpers ──
+        const bullishRemaining = buyThreshold > 0 ? Math.max(0, buyThreshold - bullish) : null;
+        const bearishRemaining = sellThreshold > 0 ? Math.max(0, sellThreshold - bearish) : null;
+        const bullishHit = buyThreshold > 0 && bullish >= buyThreshold;
+        const bearishHit = sellThreshold > 0 && bearish >= sellThreshold;
+        const bullishProgressText = buyThreshold > 0 ? `${bullish}/${buyThreshold}B` : `${bullish}B`;
+        const bearishProgressText = sellThreshold > 0 ? `${bearish}/${sellThreshold}S` : `${bearish}S`;
+        const bullishProgressTitle = buyThreshold > 0
+            ? `${bullish} bullish indicator signal${bullish === 1 ? '' : 's'} active. ${bullishHit ? 'Bullish threshold met.' : `${bullishRemaining} more needed for bullish threshold.`}`
+            : `${bullish} bullish indicator signal${bullish === 1 ? '' : 's'} active. No buy threshold configured.`;
+        const bearishProgressTitle = sellThreshold > 0
+            ? `${bearish} bearish indicator signal${bearish === 1 ? '' : 's'} active. ${bearishHit ? 'Bearish threshold met.' : `${bearishRemaining} more needed for bearish threshold.`}`
+            : `${bearish} bearish indicator signal${bearish === 1 ? '' : 's'} active. No sell threshold configured.`;
+        const bullishProgressClass = bullishHit
+            ? 'text-emerald-700 bg-emerald-100 border-emerald-200'
+            : 'text-emerald-600 bg-emerald-50 border-emerald-100';
+        const bearishProgressClass = bearishHit
+            ? 'text-red-700 bg-red-100 border-red-200'
+            : 'text-red-600 bg-red-50 border-red-100';
         const tickerTf = (window.lastBotsData?.ticker_settings || {})[ticker]?.timeframe || '';
         const tfLabel = tickerTf || (window.lastBotsData?.strategyTimeframe || '5Min');
         const isPaused = (window.lastBotsData?.ticker_settings || {})[ticker]?.paused || false;
@@ -526,6 +600,160 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             }
             return false;
         });
+        const decisionLabel = isOptions
+            ? (activePosition && action === 'SELL'
+                ? 'EXIT'
+                : action === 'BUY'
+                    ? 'CALL'
+                    : action === 'SELL'
+                        ? 'PUT'
+                        : action)
+            : action;
+        const decisionTitle = isOptions
+            ? 'Decision: final bot action. When flat, BUY maps to CALL and SELL maps to PUT. When holding an option, SELL means exit.'
+            : 'Decision: final bot action from the selected entry/exit strategy.';
+        const decisionBadgeHtml = `
+            <span class="px-1.5 py-0.5 rounded border ${actionColor} font-black text-[0.5rem] tracking-widest uppercase" title="${decisionTitle}">
+                <span class="opacity-60">Decision</span> ${decisionLabel}
+            </span>
+        `;
+
+        // ── Put position detection (for options dual-direction exit badge) ──
+        // Primary: OCC symbol format XXXXXYYMMDD[C|P]XXXXXXXX — 'P' is at offset [length - 9]
+        // Secondary: option_type field from backend (may be null for non-Alpaca brokers)
+        const isPutPosition = !!activePosition && (
+            (activePosition.option_type === 'PUT') ||
+            (typeof activePosition.symbol === 'string' &&
+             activePosition.symbol.length >= 15 &&
+             activePosition.symbol.charAt(activePosition.symbol.length - 9) === 'P')
+        );
+
+        // ── Options contract direction ──
+        const optionsType = tickerSettings.options_type || 'both'; // 'calls_only' | 'puts_only' | 'both'
+        const isBothDirections = isOptions && optionsType === 'both';
+        const isCallsOnly = isOptions && optionsType === 'calls_only';
+        const isPutsOnly  = isOptions && optionsType === 'puts_only';
+
+        // ── N/A badge (shared style for inactive sides) ──
+        const naClass = 'bg-slate-50 text-slate-400 border-slate-100';
+        const naBadge = (labelText) =>
+            `<span class="px-1.5 py-0.5 rounded border ${naClass} font-black text-[0.48rem] tracking-widest uppercase" title="Indicator signals are not used for this strategy mode.">${labelText} N/A</span>`;
+
+        // ────────────────────────────────────────────
+        // BUILD: Entry Indicator HTML
+        // ────────────────────────────────────────────
+        // Signal labels use BULLISH / BEARISH / HOLD (not BUY/SELL).
+        //
+        // Logic:
+        //  - If entry mode is pure structural → N/A badge
+        //  - If entry mode uses indicators (indicator / hybrid_*):
+        //      Regular/Crypto  : BULLISH/HOLD + B count ONLY — never show BEARISH or S count
+        //      Options Calls Only: BULLISH/HOLD + B count only
+        //      Options Puts Only : BEARISH/HOLD + S count only
+        //      Options Both      : BULLISH/BEARISH/HOLD + both B and S counts
+        let entryIndHtml;
+        if (!isEntryIndActive) {
+            entryIndHtml = naBadge(entryLabel);
+        } else {
+            let entrySignal;
+            let entryProgressBadges = '';
+            let entryProgressTitle = '';
+
+            if (isBothDirections) {
+                // Options Both: dual-direction — show whichever side is stronger/met
+                if (bullishHit && bearishHit) {
+                    entrySignal = bullish > bearish ? 'BULLISH' : bearish > bullish ? 'BEARISH' : 'HOLD';
+                } else if (bullishHit) {
+                    entrySignal = 'BULLISH';
+                } else if (bearishHit) {
+                    entrySignal = 'BEARISH';
+                } else {
+                    entrySignal = 'HOLD';
+                }
+                // Show both B and S counts for Options Both
+                entryProgressBadges = `<span class="text-[0.6rem] font-bold px-1 rounded border ${bullishProgressClass}" title="${bullishProgressTitle}">${bullishProgressText}</span>`
+                                    + `<span class="text-[0.6rem] font-bold px-1 rounded border ${bearishProgressClass}" title="${bearishProgressTitle}">${bearishProgressText}</span>`;
+                entryProgressTitle = `${bullishProgressTitle} ${bearishProgressTitle}`;
+            } else if (isPutsOnly) {
+                // Options Puts Only: only bearish signal matters for entry
+                entrySignal = bearishHit ? 'BEARISH' : 'HOLD';
+                entryProgressBadges = `<span class="text-[0.6rem] font-bold px-1 rounded border ${bearishProgressClass}" title="${bearishProgressTitle}">${bearishProgressText}</span>`;
+                entryProgressTitle = bearishProgressTitle;
+            } else {
+                // Regular/Crypto or Options Calls Only:
+                // ONLY bullish signal is relevant for entry — never show BEARISH or S count
+                entrySignal = bullishHit ? 'BULLISH' : 'HOLD';
+                entryProgressBadges = `<span class="text-[0.6rem] font-bold px-1 rounded border ${bullishProgressClass}" title="${bullishProgressTitle}">${bullishProgressText}</span>`;
+                entryProgressTitle = bullishProgressTitle;
+            }
+
+            const entrySignalColor = indBadgeColor(entrySignal);
+            const entryLabelBadge = `<span class="px-1.5 py-0.5 rounded border ${entrySignalColor} font-black text-[0.5rem] tracking-widest uppercase" title="Entry indicator pool: ${buyMode} mode. ${entryProgressTitle}">${entryLabel} <span class="opacity-70">${entrySignal}</span></span>`;
+
+            entryIndHtml = entryLabelBadge + entryProgressBadges;
+        }
+
+        // ────────────────────────────────────────────
+        // BUILD: Exit Indicator HTML
+        // ────────────────────────────────────────────
+        // Signal labels use BULLISH / BEARISH / HOLD (not BUY/SELL).
+        //
+        // Logic:
+        //  - If exit mode is pure structural → N/A
+        //  - If exit mode uses indicators (indicator / hybrid_*):
+        //      Regular/Crypto           : BEARISH/HOLD + S count (exit long on bearish)
+        //      Options holding CALL     : BEARISH/HOLD + S count (bearish needed to close)
+        //      Options holding PUT      : BULLISH/HOLD + B count (bullish needed to close)
+        //      Options flat (both/calls): BEARISH/HOLD + S count (default exit readiness)
+        //      Options flat (puts only) : BULLISH/HOLD + B count (default exit readiness)
+        let exitIndHtml;
+        if (!isExitIndActive) {
+            exitIndHtml = naBadge(exitLabel);
+        } else {
+            let exitSignal;
+            let exitProgressBadges = '';
+            let exitProgressTitle = '';
+
+            if (isOptions) {
+                if (activePosition) {
+                    if (isPutPosition) {
+                        // Holding a Put — need bullish reversal to exit
+                        exitSignal = bullishHit ? 'BULLISH' : 'HOLD';
+                        exitProgressBadges = `<span class="text-[0.6rem] font-bold px-1 rounded border ${bullishProgressClass}" title="${bullishProgressTitle}">${bullishProgressText}</span>`;
+                        exitProgressTitle = bullishProgressTitle;
+                    } else {
+                        // Holding a Call — need bearish reversal to exit
+                        exitSignal = bearishHit ? 'BEARISH' : 'HOLD';
+                        exitProgressBadges = `<span class="text-[0.6rem] font-bold px-1 rounded border ${bearishProgressClass}" title="${bearishProgressTitle}">${bearishProgressText}</span>`;
+                        exitProgressTitle = bearishProgressTitle;
+                    }
+                } else {
+                    // Flat — no position open, show default exit readiness direction
+                    if (isPutsOnly) {
+                        // Puts Only bot: needs bullish to exit a future Put
+                        exitSignal = bullishHit ? 'BULLISH' : 'HOLD';
+                        exitProgressBadges = `<span class="text-[0.6rem] font-bold px-1 rounded border ${bullishProgressClass}" title="${bullishProgressTitle}">${bullishProgressText}</span>`;
+                        exitProgressTitle = bullishProgressTitle;
+                    } else {
+                        // Both or Calls Only: needs bearish to exit a future Call
+                        exitSignal = bearishHit ? 'BEARISH' : 'HOLD';
+                        exitProgressBadges = `<span class="text-[0.6rem] font-bold px-1 rounded border ${bearishProgressClass}" title="${bearishProgressTitle}">${bearishProgressText}</span>`;
+                        exitProgressTitle = bearishProgressTitle;
+                    }
+                }
+            } else {
+                // Regular stock / crypto: always long — exit on bearish signals
+                exitSignal = bearishHit ? 'BEARISH' : 'HOLD';
+                exitProgressBadges = `<span class="text-[0.6rem] font-bold px-1 rounded border ${bearishProgressClass}" title="${bearishProgressTitle}">${bearishProgressText}</span>`;
+                exitProgressTitle = bearishProgressTitle;
+            }
+
+            const exitSignalColor = indBadgeColor(exitSignal);
+            const exitModeTitle = `Exit indicator pool: ${sellMode} mode. ${exitProgressTitle}`;
+            const exitLabelBadge = `<span class="px-1.5 py-0.5 rounded border ${exitSignalColor} font-black text-[0.5rem] tracking-widest uppercase" title="${exitModeTitle}">${exitLabel} <span class="opacity-70">${exitSignal}</span></span>`;
+
+            exitIndHtml = exitLabelBadge + exitProgressBadges;
+        }
 
         const pauseReason = (window.lastBotsData?.ticker_settings || {})[ticker]?.pause_reason || '';
         let pauseReasonHtml = '';
@@ -577,7 +805,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 : '';
 
             positionHtml = `
-                <div class="mt-2 pt-2 border-t border-slate-50 grid grid-cols-4 gap-1.5 cursor-pointer" onclick="selectTicker('${ticker}')">
+                <div class="mt-2 pt-2 border-t border-slate-50 grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-1.5 cursor-pointer" onclick="selectTicker('${ticker}')">
                     <div class="flex flex-col">
                         <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Holding</span>
                         <span class="text-[0.62rem] font-black text-indigo-950 font-mono tracking-tight">${qtyDisp} @ $${avgCost}</span>
@@ -602,7 +830,10 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                     </div>
                 </div>
                 <div class="mt-1.5 pt-1.5 border-t border-slate-50 flex flex-col justify-center cursor-pointer" onclick="selectTicker('${ticker}')">
-                    <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider mb-1">Forecast Exit</span>
+                    <div class="flex items-center gap-1.5 mb-1 flex-wrap">
+                        <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Forecast Exit</span>
+                        ${decisionBadgeHtml}
+                    </div>
                     <span class="text-[0.55rem] font-bold text-slate-500 font-mono leading-tight whitespace-normal break-words" title="${(activePosition.exit_forecast || 'Checking exit criteria...').replace(/<[^>]*>?/gm, '')}">${activePosition.exit_forecast || 'Checking exit criteria...'}</span>
                     ${exitProtectionHtml}
                 </div>
@@ -611,7 +842,10 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             const forecastText = scan.entry_forecast || "💤 Standing by. Watching market for entry...";
             positionHtml = `
                 <div class="mt-2 pt-2 border-t border-slate-50 flex flex-col justify-center cursor-pointer" onclick="selectTicker('${ticker}')">
-                    <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider mb-1">Forecast Entry</span>
+                    <div class="flex items-center gap-1.5 mb-1 flex-wrap">
+                        <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Forecast Entry</span>
+                        ${decisionBadgeHtml}
+                    </div>
                     <span class="text-[0.55rem] font-bold text-slate-500 font-mono leading-tight whitespace-normal break-words" title="${forecastText.replace(/<[^>]*>?/gm, '')}">
                         ${forecastText}
                     </span>
@@ -701,17 +935,17 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
 
         item.innerHTML = `
                 <!-- 1st Line: Ticker Name, Price, Watchlist Star, Settings Gear, and Remove Bot Cross -->
-                <div class="flex items-center justify-between cursor-text">
-                    <div class="flex items-center gap-2">
+                <div class="flex items-start sm:items-center justify-between gap-1.5 cursor-text">
+                    <div class="flex items-center gap-1.5 sm:gap-2 flex-wrap">
                         ${arrangeControlsHtml}
                         ${dragHandleHtml}
-                        <div class="${dotClass} cursor-pointer" onclick="selectTicker('${ticker}')"></div>
+                        <div class="${dotClass} cursor-pointer shrink-0" onclick="selectTicker('${ticker}')"></div>
                         <span class="font-black text-sm ${isPaused ? 'text-slate-400' : 'text-indigo-950'} tracking-tight cursor-pointer" onclick="selectTicker('${ticker}')">${ticker}</span>
                         <span class="text-[0.75rem] font-black text-slate-600 font-mono tracking-tight ml-1">${price}</span>
                         ${backtestBadge}${incubatorBadge}${allocationBadgeHtml}
                     </div>
                     
-                    <div class="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity ml-1">
+                    <div class="flex items-center gap-1 opacity-90 sm:opacity-60 group-hover:opacity-100 transition-opacity ml-1 shrink-0">
                         <button class="p-1 rounded hover:bg-amber-50 ${inWatchlist ? 'text-amber-400' : 'text-slate-300 hover:text-amber-400'} transition-all" 
                             title="Toggle Watchlist"
                             onclick="event.stopPropagation(); toggleWatchlist('${ticker}')">
@@ -738,7 +972,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 </div>
 
                 <!-- 2nd Line: Active/Passive Status, Timeframe (TF), and Signal Indicators -->
-                <div class="flex items-center justify-between cursor-pointer" onclick="selectTicker('${ticker}')">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-1 cursor-pointer" onclick="selectTicker('${ticker}')">
                     <div class="flex items-center gap-1.5 flex-wrap">
                         ${isPaused ? '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-500 border border-amber-200">PAUSED</span>' : '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-100">ACTIVE</span>'}
                         ${isOptions
@@ -758,16 +992,19 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         </button>
                     </div>
                     
-                    <div class="flex items-center gap-1.5">
-                        <span class="px-1.5 py-0.5 rounded border ${actionColor} font-black text-[0.5rem] tracking-widest uppercase">${action}</span>
-                        <span class="text-[0.6rem] font-bold text-emerald-600 bg-emerald-50 px-1 rounded border border-emerald-100">${bullish}B</span>
-                        <span class="text-[0.6rem] font-bold text-red-600 bg-red-50 px-1 rounded border border-red-100">${bearish}S</span>
+                    <div class="flex flex-col gap-1 sm:gap-0.5 items-start sm:items-end justify-center sm:ml-auto w-full sm:w-auto pt-1 sm:pt-0 border-t border-slate-50 sm:border-t-0">
+                        <div class="flex items-center gap-1 flex-wrap sm:justify-end">
+                            ${entryIndHtml}
+                        </div>
+                        <div class="flex items-center gap-1 flex-wrap sm:justify-end">
+                            ${exitIndHtml}
+                        </div>
                     </div>
                 </div>
 
                 <!-- Metadata Row: Runtime, Last Trade, and Trade Counts -->
-                <div class="flex items-center justify-between mt-1 text-[0.58rem] text-slate-500 font-semibold cursor-pointer" onclick="selectTicker('${ticker}')">
-                    <div class="flex items-center gap-1">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mt-1 text-[0.58rem] text-slate-500 font-semibold cursor-pointer" onclick="selectTicker('${ticker}')">
+                    <div class="flex items-center gap-1 flex-wrap">
                         <span class="flex items-center gap-0.5 ${isPaused ? 'text-slate-400' : 'text-slate-600'}" title="Bot Running Time">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 ${isPaused ? 'text-slate-300' : 'text-indigo-400'}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -777,7 +1014,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         <span class="text-slate-300">•</span>
                         <span class="text-slate-400 font-normal" title="Last Trade Time">${lastTradeText}</span>
                     </div>
-                    <div class="flex items-center">
+                    <div class="flex items-center self-start sm:self-auto">
                         ${tradeBadgeHtml}
                     </div>
                 </div>
@@ -1483,6 +1720,8 @@ function getStrategyModeSettings(mode = 'regular') {
         custom_buy_price: parseFloat(document.getElementById(`strategyCustomBuyPrice_${mode}`)?.value || 0),
         custom_stop_loss_price: parseFloat(document.getElementById(`strategyCustomStopLossPrice_${mode}`)?.value || 0),
         custom_take_profit_price: parseFloat(document.getElementById(`strategyCustomTakeProfitPrice_${mode}`)?.value || 0),
+        custom_underlying_stop_loss_price: mode === 'options' ? parseFloat(document.getElementById('strategyCustomUnderlyingStopLossPrice_options')?.value || 0) : undefined,
+        custom_underlying_take_profit_price: mode === 'options' ? parseFloat(document.getElementById('strategyCustomUnderlyingTakeProfitPrice_options')?.value || 0) : undefined,
         market_session: getMarketSessionForStrategy(mode),
         entry_atr_multiplier: parseFloat(document.getElementById(`strategyEntryAtrMult_${mode}`)?.value || 2),
         entry_pct_move: parseFloat(document.getElementById(`strategyEntryPctMove_${mode}`)?.value || 5),
@@ -1507,6 +1746,21 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
     currentStrategySymbol = symbol.toUpperCase();
     window.currentStrategySymbol = currentStrategySymbol;
     strategyModalMode = mode;
+
+    if (mode === 'deploy') {
+        const activeBots = window.lastBotsData?.tradelist || [];
+        if (activeBots.includes(currentStrategySymbol)) {
+            const existingSettings = (window.lastBotsData?.ticker_settings || {})[currentStrategySymbol] || {};
+            const modeLabel = existingSettings.options_trading ? 'Options' : 'Stock';
+            alert(
+                `⚠️ Active Bot Already Deployed for ${currentStrategySymbol}\n\n` +
+                `An active ${modeLabel} bot is already running for ${currentStrategySymbol}.\n\n` +
+                `To deploy a new bot, please delete the existing ${currentStrategySymbol} bot from your dashboard first.\n` +
+                `*(Note: Deleting an active bot will automatically close any open position and cancel pending orders for that ticker).*`
+            );
+            return;
+        }
+    }
 
     const modal = document.getElementById('botStrategyModal');
     const titleEl = document.getElementById('strategyModalTitle');
@@ -1549,6 +1803,8 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         if (document.getElementById('strategyCustomTakeProfitPrice_regular')) document.getElementById('strategyCustomTakeProfitPrice_regular').value = "";
         if (document.getElementById('strategyCustomStopLossPrice_options')) document.getElementById('strategyCustomStopLossPrice_options').value = "";
         if (document.getElementById('strategyCustomTakeProfitPrice_options')) document.getElementById('strategyCustomTakeProfitPrice_options').value = "";
+        if (document.getElementById('strategyCustomUnderlyingStopLossPrice_options')) document.getElementById('strategyCustomUnderlyingStopLossPrice_options').value = "";
+        if (document.getElementById('strategyCustomUnderlyingTakeProfitPrice_options')) document.getElementById('strategyCustomUnderlyingTakeProfitPrice_options').value = "";
         if (document.getElementById('strategyEntryAtrMult_regular')) document.getElementById('strategyEntryAtrMult_regular').value = 2;
         if (document.getElementById('strategyEntryAtrMult_options')) document.getElementById('strategyEntryAtrMult_options').value = 2;
         if (document.getElementById('strategyEntryPctMove_regular')) document.getElementById('strategyEntryPctMove_regular').value = 5;
@@ -1667,6 +1923,8 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         if (document.getElementById('strategyCustomTakeProfitPrice_regular')) document.getElementById('strategyCustomTakeProfitPrice_regular').value = settings.custom_take_profit_price || '';
         if (document.getElementById('strategyCustomStopLossPrice_options')) document.getElementById('strategyCustomStopLossPrice_options').value = settings.custom_stop_loss_price || '';
         if (document.getElementById('strategyCustomTakeProfitPrice_options')) document.getElementById('strategyCustomTakeProfitPrice_options').value = settings.custom_take_profit_price || '';
+        if (document.getElementById('strategyCustomUnderlyingStopLossPrice_options')) document.getElementById('strategyCustomUnderlyingStopLossPrice_options').value = settings.custom_underlying_stop_loss_price || '';
+        if (document.getElementById('strategyCustomUnderlyingTakeProfitPrice_options')) document.getElementById('strategyCustomUnderlyingTakeProfitPrice_options').value = settings.custom_underlying_take_profit_price || '';
         if (document.getElementById('strategyEntryAtrMult_regular')) document.getElementById('strategyEntryAtrMult_regular').value = settings.entry_atr_multiplier !== undefined ? settings.entry_atr_multiplier : (settings.atr_stop_multiplier !== undefined ? settings.atr_stop_multiplier : 2);
         if (document.getElementById('strategyEntryAtrMult_options')) document.getElementById('strategyEntryAtrMult_options').value = settings.entry_atr_multiplier !== undefined ? settings.entry_atr_multiplier : (settings.atr_stop_multiplier !== undefined ? settings.atr_stop_multiplier : 2);
         if (document.getElementById('strategyEntryPctMove_regular')) document.getElementById('strategyEntryPctMove_regular').value = settings.entry_pct_move !== undefined ? settings.entry_pct_move : Math.max(1, Math.round((settings.regular_stop_loss_pct !== undefined ? settings.regular_stop_loss_pct : 0.05) * 100));
@@ -2065,7 +2323,175 @@ window.checkStrategyCryptoOptionStatus = function (symbol) {
     }
 };
 
+window.validateStrategyPreflight = function (symbol, mode = 'regular') {
+    const indicatorModes = ['indicator', 'hybrid', 'hybrid_atr', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'];
+    const buyMode = document.getElementById(mode === 'options' ? 'strategyBuyMode_options' : 'strategyBuyMode_regular')?.value || 'indicator';
+    const sellMode = document.getElementById(mode === 'options' ? 'strategySellMode_options' : 'strategySellMode_regular')?.value || 'hybrid';
+
+    // 1. TOP OF FORM: Capital & Options Sizing
+    if (mode === 'regular') {
+        const capital = parseFloat(document.getElementById('strategyCapital')?.value || 0);
+        if (!Number.isFinite(capital) || capital <= 0) {
+            return {
+                valid: false,
+                title: "❌ Invalid Capital Allocation",
+                message: `The trade capital allocated for ${symbol} must be greater than $0.00.\n\nHow to fix: Enter a valid dollar amount in the Trade Capital field at the top of the form.`
+            };
+        }
+    } else if (mode === 'options') {
+        const optAmount = parseFloat(document.getElementById('strategyOptionsTradeAmount')?.value || 0);
+        const optExpiry = parseInt(document.getElementById('strategyOptionsExpiryDays')?.value || 0, 10);
+        if (!Number.isFinite(optAmount) || optAmount <= 0) {
+            return {
+                valid: false,
+                title: "❌ Invalid Options Trade Amount",
+                message: `The options trade amount for ${symbol} must be greater than $0.00.\n\nHow to fix: Enter a valid dollar amount in the Options Trade Amount field.`
+            };
+        }
+        if (!Number.isFinite(optExpiry) || optExpiry <= 0) {
+            return {
+                valid: false,
+                title: "❌ Invalid Expiry Days",
+                message: `The options expiration timeframe (Expiry Days) must be at least 1 day.\n\nHow to fix: Enter a valid number of days (e.g. 7 or 30) in the Expiry Days field.`
+            };
+        }
+    }
+
+    // 2. UPPER MIDDLE: Timeframe Validation
+    const timeframe = document.getElementById(`strategyTimeframe_${mode}`)?.value;
+    if (!timeframe) {
+        return {
+            valid: false,
+            title: "❌ No Timeframe Selected",
+            message: `Please select a chart timeframe (e.g., 1Hour, 5Min) for ${symbol} at the top of the strategy settings.`
+        };
+    }
+
+    // Gather Indicator checks for Entry & Exit evaluation
+    const container = document.getElementById(`indicatorChecksContainer_${mode}`);
+    const checkedIndicators = container ? container.querySelectorAll('.strategy-indicator-check:checked').length : 0;
+
+    // 3. MIDDLE OF FORM: Entry Strategy Validation
+    if (buyMode === 'custom_price') {
+        const customBuyPrice = parseFloat(document.getElementById(`strategyCustomBuyPrice_${mode}`)?.value || 0);
+        if (!Number.isFinite(customBuyPrice) || customBuyPrice <= 0) {
+            return {
+                valid: false,
+                title: "❌ Entry Strategy Error: Invalid Custom Buy Price",
+                message: `You selected Custom Price entry mode for ${symbol}, but the target buy price is set to $0.00 or blank.\n\nHow to fix: Enter a valid dollar price greater than $0.00 under the Custom Price Entry fields.`
+            };
+        }
+    } else if (['percentage', 'hybrid_pct'].includes(buyMode)) {
+        const pctMove = parseFloat(document.getElementById(`strategyEntryPctMove_${mode}`)?.value || 0);
+        if (!Number.isFinite(pctMove) || pctMove <= 0) {
+            return {
+                valid: false,
+                title: "❌ Entry Strategy Error: Invalid Pullback %",
+                message: `You selected a Percentage entry strategy for ${symbol}, but the Pullback % is set to 0 or negative.\n\nHow to fix: Enter a valid percentage (e.g. 3.0 or 5.0) under Percentage Entry fields.`
+            };
+        }
+    }
+    if (indicatorModes.includes(buyMode)) {
+        if (checkedIndicators === 0) {
+            const modeName = buyMode.replace(/_/g, ' ').toUpperCase();
+            return {
+                valid: false,
+                title: "❌ Entry Strategy Error: No Indicators Selected",
+                message: `You selected [${modeName}] as your Entry Strategy for ${symbol}, which requires technical indicators to generate buy signals.\n\nHowever, 0 indicators are currently checked in your Indicator Pool!\n\nHow to fix: Scroll down to the Indicator Pool checklist and check at least 1 indicator (e.g., RSI, EMA, MACD), or switch your Entry Strategy dropdown to a standalone mode like ATR / Volatility or Swing Points.`
+            };
+        }
+        const buyThreshold = parseInt(document.getElementById(`strategyBuyThreshold_${mode}`)?.value || 1, 10);
+        if (buyThreshold > checkedIndicators) {
+            return {
+                valid: false,
+                title: "❌ Entry Strategy Error: Buy Threshold Too High",
+                message: `Your Entry Strategy requires ${buyThreshold} buy signals to trigger an entry, but only ${checkedIndicators} indicator(s) are checked in your pool!\n\nHow to fix: Lower your Buy Signal Threshold to match your checked indicators (between 1 and ${checkedIndicators}), or check more indicators below.`
+            };
+        }
+    }
+
+    // 4. LOWER MIDDLE OF FORM: Exit Strategy Validation
+    if (sellMode === 'custom_sltp') {
+        const customSl = parseFloat(document.getElementById(`strategyCustomStopLossPrice_${mode}`)?.value || 0);
+        const customTp = parseFloat(document.getElementById(`strategyCustomTakeProfitPrice_${mode}`)?.value || 0);
+        if (!Number.isFinite(customSl) || customSl <= 0 || !Number.isFinite(customTp) || customTp <= 0) {
+            return {
+                valid: false,
+                title: "❌ Exit Strategy Error: Invalid Custom SL/TP",
+                message: `You selected Custom SL/TP exit mode for ${symbol}, but the Stop-Loss or Take-Profit price is set to $0.00 or blank.\n\nHow to fix: Enter valid dollar prices greater than $0.00 for both Stop-Loss and Take-Profit.`
+            };
+        }
+    } else if (mode === 'options' && sellMode === 'custom_underlying_sltp') {
+        const customUndSl = parseFloat(document.getElementById('strategyCustomUnderlyingStopLossPrice_options')?.value || 0);
+        const customUndTp = parseFloat(document.getElementById('strategyCustomUnderlyingTakeProfitPrice_options')?.value || 0);
+        if (!Number.isFinite(customUndSl) || customUndSl <= 0 || !Number.isFinite(customUndTp) || customUndTp <= 0) {
+            return {
+                valid: false,
+                title: "❌ Exit Strategy Error: Invalid Custom Underlying SL/TP",
+                message: `You selected Custom Underlying SL/TP exit mode for ${symbol}, but the Underlying Stop-Loss or Take-Profit price is set to $0.00 or blank.\n\nHow to fix: Enter valid dollar prices greater than $0.00 for both Underlying SL and TP.`
+            };
+        }
+    }
+    if (indicatorModes.includes(sellMode)) {
+        if (checkedIndicators === 0) {
+            const modeName = sellMode.replace(/_/g, ' ').toUpperCase();
+            return {
+                valid: false,
+                title: "❌ Exit Strategy Error: No Indicators Selected",
+                message: `You selected [${modeName}] as your Exit Strategy for ${symbol}, which requires technical indicators to generate sell signals.\n\nHowever, 0 indicators are currently checked in your Indicator Pool!\n\nHow to fix: Scroll down to the Indicator Pool checklist and check at least 1 indicator, or switch your Exit Strategy dropdown to a standalone mode.`
+            };
+        }
+        const sellThreshold = parseInt(document.getElementById(`strategySellThreshold_${mode}`)?.value || 1, 10);
+        if (sellThreshold > checkedIndicators) {
+            return {
+                valid: false,
+                title: "❌ Exit Strategy Error: Sell Threshold Too High",
+                message: `Your Exit Strategy requires ${sellThreshold} sell signals to trigger an exit, but only ${checkedIndicators} indicator(s) are checked in your pool!\n\nHow to fix: Lower your Sell Signal Threshold to match your checked indicators (between 1 and ${checkedIndicators}), or check more indicators below.`
+            };
+        }
+    }
+
+    // 5. BOTTOM OF FORM: Risk Management Validation
+    const enableRisk = document.getElementById(`strategyEnableRisk_${mode}`)?.checked;
+    if (enableRisk) {
+        const riskPerTrade = parseFloat(document.getElementById(mode === 'regular' ? 'strategyRiskPerTrade' : 'strategyOptionsRiskPerTrade')?.value || 0);
+        const maxDrawdown = parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxDailyDrawdown' : 'strategyOptionsMaxDailyDrawdown')?.value || 0);
+        const maxPosPct = parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxPositionPct' : 'strategyOptionsMaxPositionPct')?.value || 0);
+
+        if (!Number.isFinite(riskPerTrade) || riskPerTrade <= 0) {
+            return {
+                valid: false,
+                title: "❌ Risk Management Error: Risk Per Trade",
+                message: `You enabled Risk Management for ${symbol}, but Risk Per Trade % is set to 0 or negative.\n\nHow to fix: Enter a valid percentage (e.g. 2.0) under Risk Management settings at the bottom of the form.`
+            };
+        }
+        if (!Number.isFinite(maxDrawdown) || maxDrawdown <= 0) {
+            return {
+                valid: false,
+                title: "❌ Risk Management Error: Max Daily Drawdown",
+                message: `You enabled Risk Management for ${symbol}, but Max Daily Drawdown % is set to 0 or negative.\n\nHow to fix: Enter a valid percentage (e.g. 5.0) under Risk Management settings at the bottom of the form.`
+            };
+        }
+        if (!Number.isFinite(maxPosPct) || maxPosPct <= 0) {
+            return {
+                valid: false,
+                title: "❌ Risk Management Error: Max Position Allocation",
+                message: `You enabled Risk Management for ${symbol}, but Max Position Allocation % is set to 0 or negative.\n\nHow to fix: Enter a valid percentage (e.g. 100.0) under Risk Management settings at the bottom of the form.`
+            };
+        }
+    }
+
+    return { valid: true };
+};
+
 window.handleStrategyAction = async function () {
+    const mode = window.activeTradingMode || 'regular';
+    const validation = window.validateStrategyPreflight(currentStrategySymbol, mode);
+    if (!validation.valid) {
+        alert(`${validation.title}\n\n${validation.message}`);
+        return;
+    }
+
     if (strategyModalMode === 'deploy') {
         await confirmAndDeployBot();
     } else {
@@ -2077,6 +2503,11 @@ async function saveTickerSettings() {
     if (!currentStrategySymbol) return;
 
     const mode = window.activeTradingMode || 'regular';
+    const validation = window.validateStrategyPreflight(currentStrategySymbol, mode);
+    if (!validation.valid) {
+        alert(`${validation.title}\n\n${validation.message}`);
+        return;
+    }
 
     let buyThresholdVal = parseInt(document.getElementById(`strategyBuyThreshold_${mode}`).value, 10);
     let sellThresholdVal = parseInt(document.getElementById(`strategySellThreshold_${mode}`).value, 10);
@@ -2555,7 +2986,25 @@ function selectSearchResult(item) {
 window.confirmAndDeployBot = async function () {
     if (!currentStrategySymbol) return;
 
+    const activeBots = window.lastBotsData?.tradelist || [];
+    if (activeBots.includes(currentStrategySymbol)) {
+        const existingSettings = (window.lastBotsData?.ticker_settings || {})[currentStrategySymbol] || {};
+        const modeLabel = existingSettings.options_trading ? 'Options' : 'Stock';
+        alert(
+            `⚠️ Active Bot Already Deployed for ${currentStrategySymbol}\n\n` +
+            `An active ${modeLabel} bot is already running for ${currentStrategySymbol}.\n\n` +
+            `To deploy a new bot, please delete the existing ${currentStrategySymbol} bot from your dashboard first.\n` +
+            `*(Note: Deleting an active bot will automatically close any open position and cancel pending orders for that ticker).*`
+        );
+        return;
+    }
+
     const mode = window.activeTradingMode || 'regular';
+    const validation = window.validateStrategyPreflight(currentStrategySymbol, mode);
+    if (!validation.valid) {
+        alert(`${validation.title}\n\n${validation.message}`);
+        return;
+    }
 
     // Gather Settings
     const capital = (mode === 'options' ? document.getElementById('strategyOptionsTradeAmount')?.value : document.getElementById('strategyCapital')?.value) || 100;
@@ -3829,6 +4278,7 @@ window.updateRegularEntryFields = function() {
 
 window.updateOptionsEntryFields = function() {
     const mode = document.getElementById('strategyBuyMode_options')?.value || 'indicator';
+    const direction = document.getElementById('strategyOptionsType')?.value || 'both';
     const showIndicator = ['indicator', 'hybrid_atr', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'].includes(mode);
     const showCustom    = mode === 'custom_price';
     const showATR       = ['atr', 'hybrid_atr'].includes(mode);
@@ -3843,6 +4293,14 @@ window.updateOptionsEntryFields = function() {
     if(document.getElementById('strategyEntryPivotFields_options')) document.getElementById('strategyEntryPivotFields_options').classList.toggle('hidden', !showPivot);
     if(document.getElementById('strategyEntryHighLowFields_options')) document.getElementById('strategyEntryHighLowFields_options').classList.toggle('hidden', !showHL);
     if(document.getElementById('strategySwingEntrySettings_options')) document.getElementById('strategySwingEntrySettings_options').classList.toggle('hidden', !showSwing);
+    const directionHint = document.getElementById('strategyOptionsDirectionHint');
+    if (directionHint) {
+        directionHint.textContent = direction === 'calls_only'
+            ? 'Calls Only: only bullish entry confirmations can open CALLS.'
+            : direction === 'puts_only'
+                ? 'Puts Only: only bearish entry confirmations can open PUTS.'
+                : 'Both: bullish entry buys CALLS; bearish entry buys PUTS.';
+    }
     updateSwingSettingsVisibility('options');
     if (window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry');
 };
@@ -3852,11 +4310,13 @@ window.updateOptionsExitFields = function() {
     
     const showIndicator = ['indicator', 'hybrid', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'].includes(mode);
     const showCustom    = mode === 'custom_sltp';
+    const showCustomUnderlying = mode === 'custom_underlying_sltp';
     const showATR       = ['sltp', 'hybrid'].includes(mode);
     const showPct       = ['percentage', 'hybrid_pct'].includes(mode);
     
     if(document.getElementById('exitFieldsIndicator_options')) document.getElementById('exitFieldsIndicator_options').classList.toggle('hidden', !showIndicator);
     if(document.getElementById('exitFieldsCustom_options')) document.getElementById('exitFieldsCustom_options').classList.toggle('hidden', !showCustom);
+    if(document.getElementById('exitFieldsCustomUnderlying_options')) document.getElementById('exitFieldsCustomUnderlying_options').classList.toggle('hidden', !showCustomUnderlying);
     if(document.getElementById('exitFieldsATR_options')) document.getElementById('exitFieldsATR_options').classList.toggle('hidden', !showATR);
     if(document.getElementById('exitFieldsPct_options')) document.getElementById('exitFieldsPct_options').classList.toggle('hidden', !showPct);
     updateSwingSettingsVisibility('options');
@@ -4317,7 +4777,8 @@ function buildEntryPreviewHtml(mode, isOptions, symbol, simPrice, simAtr, priorD
     if (buyMode === 'custom_price') {
         const targetEl = document.getElementById(`strategyCustomBuyPrice_${isOptions ? 'options' : 'regular'}`);
         const target = parseFloat(targetEl?.value || 0);
-        return `${basePrefix}<br/>Target Entry: $${target.toFixed(2)}`;
+        const targetLabel = isOptions ? 'CALL Target Entry' : 'Target Entry';
+        return `${basePrefix}<br/>${targetLabel}: $${target.toFixed(2)}`;
     }
 
     if (['atr', 'hybrid_atr'].includes(buyMode)) {
@@ -4325,8 +4786,18 @@ function buildEntryPreviewHtml(mode, isOptions, symbol, simPrice, simAtr, priorD
         const mult = parseFloat(multEl?.value || 2);
         const style = document.getElementById(`strategyEntryAtrStyle_${isOptions ? 'options' : 'regular'}`)?.value || 'pullback_reclaim';
         const longLevel = style === 'breakout_momentum' ? simPrice + (simAtr * mult) : simPrice - (simAtr * mult);
+        const shortLevel = style === 'breakout_momentum' ? simPrice - (simAtr * mult) : simPrice + (simAtr * mult);
         const styleLabel = style === 'breakout_momentum' ? 'Breakout / Momentum' : 'Pullback / Reclaim';
         const longLabel = style === 'breakout_momentum' ? 'Buy Above' : 'Buy Below';
+        if (isOptions) {
+            const optionsType = document.getElementById('strategyOptionsType')?.value || 'both';
+            const callLabel = style === 'breakout_momentum' ? 'CALL Above' : 'CALL Reclaim From';
+            const putLabel = style === 'breakout_momentum' ? 'PUT Below' : 'PUT Rejection From';
+            const triggerLines = [];
+            if (optionsType !== 'puts_only') triggerLines.push(`${callLabel}: $${longLevel.toFixed(2)}`);
+            if (optionsType !== 'calls_only') triggerLines.push(`${putLabel}: $${shortLevel.toFixed(2)}`);
+            return `${basePrefix}<br/>${triggerLines.join('<br/>')}<br/>${styleLabel} | ATR x ${mult.toFixed(1)}${buyMode.startsWith('hybrid_') ? ' | Hybrid fallback: indicator signals' : ''}`;
+        }
         return `${basePrefix}<br/>${longLabel}: $${longLevel.toFixed(2)}<br/>${styleLabel} | ATR x ${mult.toFixed(1)}${buyMode.startsWith('hybrid_') ? ' | Hybrid fallback: indicator signals' : ''}`;
     }
 
@@ -4335,8 +4806,18 @@ function buildEntryPreviewHtml(mode, isOptions, symbol, simPrice, simAtr, priorD
         const pct = parseFloat(pctEl?.value || 5);
         const style = document.getElementById(`strategyEntryPctStyle_${isOptions ? 'options' : 'regular'}`)?.value || 'dip_reclaim';
         const longLevel = style === 'breakout_momentum' ? simPrice * (1 + pct / 100) : simPrice * (1 - pct / 100);
-        const styleLabel = style === 'breakout_momentum' ? 'Breakout / Momentum' : 'Dip / Reclaim';
+        const shortLevel = style === 'breakout_momentum' ? simPrice * (1 - pct / 100) : simPrice * (1 + pct / 100);
+        const styleLabel = style === 'breakout_momentum' ? 'Breakout / Momentum' : (isOptions ? 'Reversal / Reclaim' : 'Dip / Reclaim');
         const longLabel = style === 'breakout_momentum' ? 'Buy Above' : 'Buy Below';
+        if (isOptions) {
+            const optionsType = document.getElementById('strategyOptionsType')?.value || 'both';
+            const callLabel = style === 'breakout_momentum' ? 'CALL Above' : 'CALL Reclaim From';
+            const putLabel = style === 'breakout_momentum' ? 'PUT Below' : 'PUT Rejection From';
+            const triggerLines = [];
+            if (optionsType !== 'puts_only') triggerLines.push(`${callLabel}: $${longLevel.toFixed(2)}`);
+            if (optionsType !== 'calls_only') triggerLines.push(`${putLabel}: $${shortLevel.toFixed(2)}`);
+            return `${basePrefix}<br/>${triggerLines.join('<br/>')}<br/>${styleLabel} | ${pct.toFixed(1)}% move${buyMode.startsWith('hybrid_') ? ' | Hybrid fallback: indicator signals' : ''}`;
+        }
         return `${basePrefix}<br/>${longLabel}: $${longLevel.toFixed(2)}<br/>${styleLabel} | ${pct.toFixed(1)}% move${buyMode.startsWith('hybrid_') ? ' | Hybrid fallback: indicator signals' : ''}`;
     }
 
@@ -4384,6 +4865,7 @@ window.updateLivePreview_bots = function (mode, scope = 'both') {
     const buyMode = buyModeEl?.value || 'indicator';
 
     const showCustom = sellMode === 'custom_sltp';
+    const showCustomUnderlying = isOptions && sellMode === 'custom_underlying_sltp';
     const showATR = ['sltp', 'hybrid'].includes(sellMode);
     const showPct = ['percentage', 'hybrid_pct'].includes(sellMode);
     const showPivot = ['pivot_points', 'hybrid_pivot'].includes(sellMode);
@@ -4422,6 +4904,16 @@ window.updateLivePreview_bots = function (mode, scope = 'both') {
         const tpText = customTp > 0 ? `$${customTp.toFixed(2)}` : 'Not set';
         const priceLabel = isOptions ? 'Premium' : 'Price';
         exitBox.innerHTML = `&#128302; Live Preview: ${symbol} (Exit: Custom SL/TP) | ${priceLabel}: $${simPrice.toFixed(2)}<br/>Stop Loss: ${slText} &nbsp;|&nbsp; Take Profit: ${tpText}`;
+        exitBox.classList.remove('hidden');
+        return;
+    }
+
+    if (showCustomUnderlying) {
+        const customSl = parseFloat(document.getElementById('strategyCustomUnderlyingStopLossPrice_options')?.value || 0);
+        const customTp = parseFloat(document.getElementById('strategyCustomUnderlyingTakeProfitPrice_options')?.value || 0);
+        const slText = customSl > 0 ? `$${customSl.toFixed(2)}` : 'Not set';
+        const tpText = customTp > 0 ? `$${customTp.toFixed(2)}` : 'Not set';
+        exitBox.innerHTML = `&#128302; Live Preview: ${symbol} (Exit: Custom Underlying SL/TP) | Underlying Price: $${simPrice.toFixed(2)}<br/>Underlying Stop Loss: ${slText} &nbsp;|&nbsp; Underlying Take Profit: ${tpText}`;
         exitBox.classList.remove('hidden');
         return;
     }

@@ -1746,6 +1746,7 @@
                         <select id="strategySellMode_options" onchange="updateOptionsExitFields()"
                             class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-3 sm:pl-4 pr-8 sm:pr-10 py-2 sm:py-3 text-[10px] sm:text-xs tracking-tight sm:tracking-normal font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none cursor-pointer appearance-none transition-all">
                             <option value="indicator">Indicator — Sells when Bearish Signals hit Sell Threshold</option>
+                            <option value="custom_underlying_sltp">Custom Underlying SL/TP — Exits option when the underlying hits custom prices</option>
                             <option value="sltp">ATR / Volatility — Stop-Loss & Take-Profit based on ATR</option>
                             <option value="hybrid">Hybrid (Indicator + ATR) — Whichever triggers first</option>
                             <option value="percentage">Percentage — Fixed % Stop-Loss, Take-Profit & Trailing Stop</option>
@@ -1789,6 +1790,21 @@
                         </div>
                     </div>
                     
+                    <div id="exitFieldsCustomUnderlying_options" class="hidden grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2 pt-1">
+                        <div class="space-y-1">
+                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Underlying Stop Loss Price</label>
+                            <input type="number" step="0.01" id="strategyCustomUnderlyingStopLossPrice_options"
+                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
+                                placeholder="0.00">
+                        </div>
+                        <div class="space-y-1">
+                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Underlying Take Profit Price</label>
+                            <input type="number" step="0.01" id="strategyCustomUnderlyingTakeProfitPrice_options"
+                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
+                                placeholder="0.00">
+                        </div>
+                    </div>
+
                     <div id="exitFieldsATR_options" class="hidden grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2 pt-1">
                         <div class="space-y-1">
                             <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">ATR

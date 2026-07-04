@@ -426,6 +426,64 @@ class UserEngine:
         t_settings[compound_key] = next_amount
         return next_amount
 
+    def _normalize_pct_value(self, value, fallback: float) -> float:
+        pct = _safe_float(value, fallback)
+        # Accept both UI decimal values (0.10) and defensive whole-percent values (10).
+        if pct > 1:
+            pct = pct / 100.0
+        return max(0.0, pct)
+
+    def _option_pct_exit_settings(self, t_settings: dict):
+        stop_loss_pct = self._normalize_pct_value(
+            t_settings.get('options_stop_loss_pct', t_settings.get('regular_stop_loss_pct', 0.10)),
+            0.10
+        )
+        take_profit_pct = self._normalize_pct_value(
+            t_settings.get('options_take_profit_pct', t_settings.get('regular_take_profit_pct', 0.20)),
+            0.20
+        )
+        trailing_pct = self._normalize_pct_value(
+            t_settings.get('options_trailing_pct', t_settings.get('regular_trailing_pct', 0.10)),
+            0.10
+        )
+        return stop_loss_pct, take_profit_pct, trailing_pct
+
+    def _get_option_exit_price(self, option_symbol: str, fallback_price: float) -> dict:
+        fallback_price = _safe_float(fallback_price, 0.0)
+        quote = {
+            'price': fallback_price,
+            'source': 'alpaca_position_current_price',
+            'bid': None,
+            'ask': None,
+            'mid': None,
+        }
+        if self.broker.simulation_mode:
+            return quote
+        if not getattr(self.config, 'ALPACA_API_KEY', None) or not getattr(self.config, 'ALPACA_SECRET_KEY', None):
+            return quote
+        try:
+            from alpaca.data.historical.option import OptionHistoricalDataClient
+            from alpaca.data.requests import OptionLatestQuoteRequest
+            data_client = OptionHistoricalDataClient(self.config.ALPACA_API_KEY, self.config.ALPACA_SECRET_KEY)
+            req = OptionLatestQuoteRequest(symbol_or_symbols=[option_symbol])
+            quotes = data_client.get_option_latest_quote(req)
+            latest = quotes.get(option_symbol) if hasattr(quotes, 'get') else quotes[option_symbol]
+            bid = _safe_float(getattr(latest, 'bid_price', None), 0.0)
+            ask = _safe_float(getattr(latest, 'ask_price', None), 0.0)
+            mid = ((bid + ask) / 2.0) if bid > 0 and ask > 0 else 0.0
+            # Long option exits are sell orders, so bid is the most honest trigger price.
+            exit_price = bid if bid > 0 else (mid if mid > 0 else fallback_price)
+            quote.update({
+                'price': exit_price,
+                'source': 'alpaca_option_latest_quote_bid' if bid > 0 else 'alpaca_option_latest_quote_mid',
+                'bid': bid if bid > 0 else None,
+                'ask': ask if ask > 0 else None,
+                'mid': mid if mid > 0 else None,
+            })
+        except Exception as exc:
+            print(f"[options-exit] Latest quote unavailable for {option_symbol}: {exc}. Using position current_price={fallback_price:.2f}")
+        return quote
+
     def _build_exit_protection_targets(self, ticker: str, result: dict, pos_info: dict, t_settings: dict):
         sell_mode = t_settings.get('sell_mode', 'indicator')
         if sell_mode not in FIXED_LEVEL_EXIT_MODES:
@@ -890,9 +948,9 @@ class UserEngine:
                                 is_options_enabled = t_settings.get('options_trading', getattr(self.config, 'ENABLE_OPTIONS_TRADING', False))
                                 
                                 # Resolve options configurations from ticker settings with config fallback
-                                opt_stop_loss = t_settings.get('options_stop_loss_pct', getattr(self.config, 'OPTIONS_STOP_LOSS_PCT', 0.50))
-                                opt_take_profit = t_settings.get('options_take_profit_pct', getattr(self.config, 'OPTIONS_TAKE_PROFIT_PCT', 1.00))
-                                opt_exit_strategy = t_settings.get('options_exit_strategy') or t_settings.get('sell_mode') or getattr(self.config, 'OPTIONS_EXIT_STRATEGY', 'hybrid')
+                                opt_stop_loss, opt_take_profit, opt_trailing_pct = self._option_pct_exit_settings(t_settings)
+                                # sell_mode is the visible UI setting. Prefer it over legacy/stale options_exit_strategy.
+                                opt_exit_strategy = t_settings.get('sell_mode') or t_settings.get('options_exit_strategy') or getattr(self.config, 'OPTIONS_EXIT_STRATEGY', 'hybrid')
                                 opt_expiry_days = t_settings.get('options_expiry_days', getattr(self.config, 'OPTIONS_EXPIRY_DAYS', 7))
                                 opt_strike_type = t_settings.get('options_strike_type', getattr(self.config, 'OPTIONS_STRIKE_TYPE', 'ATM'))
                                 opt_trade_amount = self._allocation_amount(t_settings, 'options') or float(getattr(self.config, 'OPTIONS_TRADE_AMOUNT', 100.0))
@@ -1017,14 +1075,23 @@ class UserEngine:
                                         current_price = result['price_raw']
                                         
                                         # 1. Premium-based check
-                                        opt_curr = float(pos_info['current_price'])
+                                        quote_info = self._get_option_exit_price(pos_info['symbol'], pos_info.get('current_price'))
+                                        opt_curr = float(quote_info['price'])
+                                        result['option_exit_check'] = {
+                                            'premium': opt_curr,
+                                            'source': quote_info.get('source'),
+                                            'bid': quote_info.get('bid'),
+                                            'ask': quote_info.get('ask'),
+                                            'mid': quote_info.get('mid'),
+                                            'strategy': opt_exit_strategy,
+                                        }
                                         opt_avg = float(pos_info['avg_price'])
                                         stop_loss_pct = opt_stop_loss
                                         take_profit_pct = opt_take_profit
-                                        option_trail_pct = _safe_float(t_settings.get('options_trailing_pct'), 0.10)
+                                        option_trail_pct = opt_trailing_pct
                                         
                                         # Strategy A: Premium percent triggers
-                                        if opt_exit_strategy in ['premium_pct', 'percentage', 'hybrid', 'hybrid_pct']:
+                                        if opt_exit_strategy in ['premium_pct', 'percentage', 'hybrid_pct']:
                                             base_stop = opt_avg * (1 - stop_loss_pct)
                                             stop_loss_price = base_stop
                                             trail_key = pos_info.get('symbol', ticker)
@@ -1037,13 +1104,21 @@ class UserEngine:
                                                 stop_loss_price = self.last_trailing_stops[trail_key]
                                             if opt_curr <= stop_loss_price:
                                                 exit_triggered = True
-                                                exit_reason = f"Option Premium SL Hit (${opt_curr:.2f} <= ${stop_loss_price:.2f})"
+                                                exit_reason = (
+                                                    f"Option Premium SL Hit (${opt_curr:.2f} <= ${stop_loss_price:.2f}; "
+                                                    f"entry ${opt_avg:.2f}, SL {stop_loss_pct*100:.1f}%, trail {option_trail_pct*100:.1f}%, "
+                                                    f"price_source={quote_info['source']})"
+                                                )
                                             elif opt_curr >= opt_avg * (1 + take_profit_pct):
                                                 exit_triggered = True
-                                                exit_reason = f"Option Premium TP Hit (${opt_curr:.2f} >= ${opt_avg*(1+take_profit_pct):.2f})"
+                                                exit_reason = (
+                                                    f"Option Premium TP Hit (${opt_curr:.2f} >= ${opt_avg*(1+take_profit_pct):.2f}; "
+                                                    f"entry ${opt_avg:.2f}, TP {take_profit_pct*100:.1f}%, "
+                                                    f"price_source={quote_info['source']})"
+                                                )
 
                                         # Strategy A1: Underlying ATR trigger, anchored to the underlying entry when known.
-                                        if not exit_triggered and opt_exit_strategy == 'sltp':
+                                        if not exit_triggered and opt_exit_strategy in ['sltp', 'hybrid']:
                                             atr_val = _safe_float(result.get('atr'), 0.0)
                                             entry_underlying = _safe_float(t_settings.get('options_underlying_entry_price'), current_price)
                                             stop_mult = _safe_float(t_settings.get('atr_stop_multiplier'), 2.0)
@@ -1078,9 +1153,28 @@ class UserEngine:
                                             elif custom_tp > 0 and opt_curr >= custom_tp:
                                                 exit_triggered = True
                                                 exit_reason = f"Option Custom TP Hit (${opt_curr:.2f} >= ${custom_tp:.2f})"
+
+                                        # Strategy A3: Custom underlying-price SL/TP triggers
+                                        if not exit_triggered and opt_exit_strategy == 'custom_underlying_sltp':
+                                            custom_u_sl = _safe_float(t_settings.get('custom_underlying_stop_loss_price'), 0.0)
+                                            custom_u_tp = _safe_float(t_settings.get('custom_underlying_take_profit_price'), 0.0)
+                                            if opt_type == 'CALL':
+                                                if custom_u_sl > 0 and current_price <= custom_u_sl:
+                                                    exit_triggered = True
+                                                    exit_reason = f"Option Custom Underlying SL Hit (Underlying ${current_price:.2f} <= ${custom_u_sl:.2f})"
+                                                elif custom_u_tp > 0 and current_price >= custom_u_tp:
+                                                    exit_triggered = True
+                                                    exit_reason = f"Option Custom Underlying TP Hit (Underlying ${current_price:.2f} >= ${custom_u_tp:.2f})"
+                                            else:
+                                                if custom_u_sl > 0 and current_price >= custom_u_sl:
+                                                    exit_triggered = True
+                                                    exit_reason = f"Option Custom Underlying SL Hit (Underlying ${current_price:.2f} >= ${custom_u_sl:.2f})"
+                                                elif custom_u_tp > 0 and current_price <= custom_u_tp:
+                                                    exit_triggered = True
+                                                    exit_reason = f"Option Custom Underlying TP Hit (Underlying ${current_price:.2f} <= ${custom_u_tp:.2f})"
                                                 
                                         # Reuse the already-fetched OHLCV candles for pivot & range exits.
-                                        if not exit_triggered and opt_exit_strategy in ['pivot_points', 'hybrid_pivot', 'high_low', 'hybrid', 'hybrid_high_low']:
+                                        if not exit_triggered and opt_exit_strategy in ['pivot_points', 'hybrid_pivot', 'high_low', 'hybrid_high_low']:
                                             prior_day = _prior_day_ohlc_from_history(result.get('price_history', []))
                                             if prior_day:
                                                 prev_h = prior_day['high']
@@ -1090,20 +1184,15 @@ class UserEngine:
                                                 prev_h = prev_l = prev_c = result['price_raw']
 
                                             # Strategy B: Pivot points
-                                            if opt_exit_strategy in ['pivot_points', 'hybrid', 'hybrid_pivot']:
+                                            if opt_exit_strategy in ['pivot_points', 'hybrid_pivot']:
                                                 P = (prev_h + prev_l + prev_c) / 3.0
                                                 R1 = 2 * P - prev_l
                                                 S1 = 2 * P - prev_h
-                                                R2 = P + (prev_h - prev_l)
-                                                S2 = P - (prev_h - prev_l)
-                                                
+
                                                 if opt_type == 'CALL':
                                                     if current_price >= R1:
                                                         exit_triggered = True
                                                         exit_reason = f"Pivot TP Hit (Underlying {current_price:.2f} >= R1 {R1:.2f})"
-                                                    elif current_price >= R2:
-                                                        exit_triggered = True
-                                                        exit_reason = f"Pivot TP Hit (Underlying {current_price:.2f} >= R2 {R2:.2f})"
                                                     elif current_price <= S1:
                                                         exit_triggered = True
                                                         exit_reason = f"Pivot SL Hit (Underlying {current_price:.2f} <= S1 {S1:.2f})"
@@ -1111,37 +1200,21 @@ class UserEngine:
                                                     if current_price <= S1:
                                                         exit_triggered = True
                                                         exit_reason = f"Pivot TP Hit (Underlying {current_price:.2f} <= S1 {S1:.2f})"
-                                                    elif current_price <= S2:
-                                                        exit_triggered = True
-                                                        exit_reason = f"Pivot TP Hit (Underlying {current_price:.2f} <= S2 {S2:.2f})"
                                                     elif current_price >= R1:
                                                         exit_triggered = True
                                                         exit_reason = f"Pivot SL Hit (Underlying {current_price:.2f} >= R1 {R1:.2f})"
                                                         
                                             # Strategy C: Daily High/Low ranges
-                                            if not exit_triggered and opt_exit_strategy in ['high_low', 'hybrid', 'hybrid_high_low']:
-                                                today_range = _current_day_range_from_history(result.get('price_history', []))
-                                                if today_range:
-                                                    today_high = today_range['high']
-                                                    today_low = today_range['low']
-                                                else:
-                                                    today_high = today_low = current_price
-                                                    
+                                            if not exit_triggered and opt_exit_strategy in ['high_low', 'hybrid_high_low']:
                                                 if opt_type == 'CALL':
-                                                    if current_price < today_low:
-                                                        exit_triggered = True
-                                                        exit_reason = f"Intraday Low Breach (Underlying {current_price:.2f} < Today Low {today_low:.2f})"
-                                                    elif current_price >= prev_h:
+                                                    if current_price >= prev_h:
                                                         exit_triggered = True
                                                         exit_reason = f"Prev Day High Breakout (Underlying {current_price:.2f} >= Prev High {prev_h:.2f})"
                                                     elif current_price <= prev_l:
                                                         exit_triggered = True
                                                         exit_reason = f"Prev Day Low Breakdown (Underlying {current_price:.2f} <= Prev Low {prev_l:.2f})"
                                                 else:  # PUT
-                                                    if current_price > today_high:
-                                                        exit_triggered = True
-                                                        exit_reason = f"Intraday High Breach (Underlying {current_price:.2f} > Today High {today_high:.2f})"
-                                                    elif current_price <= prev_l:
+                                                    if current_price <= prev_l:
                                                         exit_triggered = True
                                                         exit_reason = f"Prev Day Low Breakout (Underlying {current_price:.2f} <= Prev Low {prev_l:.2f})"
                                                     elif current_price >= prev_h:
@@ -1418,17 +1491,26 @@ class UserEngine:
                                                 current_price=result['price_raw'],
                                                 client=self.broker.client
                                             )
+                                            selection_data_client = None
+                                            if not self.broker.simulation_mode and self.config.ALPACA_API_KEY and self.config.ALPACA_SECRET_KEY:
+                                                try:
+                                                    from alpaca.data.historical.option import OptionHistoricalDataClient
+                                                    selection_data_client = OptionHistoricalDataClient(self.config.ALPACA_API_KEY, self.config.ALPACA_SECRET_KEY)
+                                                except Exception as data_client_err:
+                                                    print(f"[options] Delta selection unavailable: {data_client_err}")
                                             contract = select_contract(
                                                 contracts=chain,
                                                 current_underlying_price=result['price_raw'],
                                                 option_type="CALL",
                                                 strike_type=opt_strike_type,
-                                                target_expiry_days=opt_expiry_days
+                                                target_expiry_days=opt_expiry_days,
+                                                data_client=selection_data_client
                                             )
                                             
                                             if contract:
                                                 # Fetch estimate premium for sizing
                                                 import math
+                                                quote_bid = quote_ask = quote_spread = quote_spread_pct = None
                                                 if self.broker.simulation_mode:
                                                     from options_pricing import black_scholes
                                                     import datetime
@@ -1443,38 +1525,60 @@ class UserEngine:
                                                         data_client = OptionHistoricalDataClient(self.config.ALPACA_API_KEY, self.config.ALPACA_SECRET_KEY)
                                                         req = OptionLatestQuoteRequest(symbol_or_symbols=[contract['symbol']])
                                                         quotes = data_client.get_option_latest_quote(req)
-                                                        est_premium = float(quotes[contract['symbol']].ask_price)
+                                                        quote = quotes[contract['symbol']]
+                                                        quote_bid = _safe_float(getattr(quote, 'bid_price', None), 0.0)
+                                                        quote_ask = _safe_float(getattr(quote, 'ask_price', None), 0.0)
+                                                        est_premium = quote_ask
+                                                        if quote_bid > 0 and quote_ask > 0:
+                                                            quote_spread = quote_ask - quote_bid
+                                                            quote_mid = (quote_bid + quote_ask) / 2.0
+                                                            quote_spread_pct = (quote_spread / quote_mid) * 100.0 if quote_mid > 0 else None
                                                     except Exception as quote_err:
                                                         print(f"[options] Quote fetch failed (no OPRA?): {quote_err}. Falling back to theoretical pricing.")
-                                                        # Fallback to our realistic theoretical pricing
                                                         from options_pricing import black_scholes
                                                         import datetime
                                                         days = (contract['expiration'] - datetime.date.today()).days
                                                         t_years = max(0.0001, days / 365.0)
-                                                        # Use realistic parameters: 0.05 rate, 0.20 base vol + 0.04 markup, 0.013 div yield, plus $0.015 half-spread
                                                         est_premium_bs = black_scholes(result['price_raw'], contract['strike'], t_years, r=0.05, sigma=0.24, option_type="CALL", q=0.013)
                                                         est_premium = max(0.01, est_premium_bs + 0.015)
-                                                
-                                                if est_premium > 0:
+
+                                                spread_limit_pct = _safe_float(
+                                                    t_settings.get('options_max_entry_spread_pct'),
+                                                    15.0 if str(opt_strike_type).upper() == 'OTM' else 12.0
+                                                )
+                                                if not self.broker.simulation_mode and (_safe_float(quote_bid, 0.0) <= 0 or _safe_float(quote_ask, 0.0) <= 0):
+                                                    result['reason'] = f"Skipped: live option bid/ask unavailable for {contract['symbol']}."
+                                                elif not self.broker.simulation_mode and quote_spread_pct is not None and quote_spread_pct > spread_limit_pct:
+                                                    result['reason'] = f"Skipped: option spread too wide for {contract['symbol']} ({quote_spread_pct:.1f}% > {spread_limit_pct:.1f}%)."
+                                                elif est_premium > 0:
                                                     allocated = opt_trade_amount
                                                     qty = math.floor(allocated / (est_premium * 100.0))
-                                                    
                                                     if qty > 0:
                                                         order_result = self.broker.place_option_order(
                                                             option_symbol=contract['symbol'],
                                                             qty=qty,
-                                                            side='buy'
+                                                            side='buy',
+                                                            limit_price=est_premium
                                                         )
                                                         if order_result.get('success'):
                                                             result['order'] = order_result
                                                             result['order_id'] = order_result.get('order_id')
                                                             trade_executed = True
                                                             portfolio_count += 1
-                                                            
+
                                                             result['qty'] = qty
                                                             result['total_cost'] = qty * est_premium * 100.0
                                                             result['fees'] = 0.0
-                                                            result['reason'] = f"✅ BOUGHT {qty} CALL contracts ({contract['symbol']}) at premium ${est_premium:.2f}: {result['reason']}"
+                                                            result['option_entry_quote'] = {
+                                                                'bid': quote_bid,
+                                                                'ask': quote_ask,
+                                                                'spread': quote_spread,
+                                                                'spread_pct': quote_spread_pct,
+                                                                'limit_price': est_premium,
+                                                            }
+                                                            spread_note = f" | bid/ask ${quote_bid:.2f}/${quote_ask:.2f}, spread {quote_spread_pct:.1f}%" if quote_spread_pct is not None else ""
+                                                            selection_note = f" | {contract.get('selection_reason')}" if contract.get('selection_reason') else ""
+                                                            result['reason'] = f"✅ BOUGHT {qty} CALL contracts ({contract['symbol']}) with limit ${est_premium:.2f}{spread_note}{selection_note}: {result['reason']}"
                                                             t_settings['options_underlying_entry_price'] = float(result.get('price_raw') or 0.0)
                                                             t_settings['options_active_contract'] = contract['symbol']
                                                             self.last_trade_timestamps[ticker] = self.get_now()
@@ -1556,7 +1660,8 @@ class UserEngine:
                                                 portfolio_count -= 1
                                                 
                                                 qty = float(pos_info['qty'])
-                                                val = qty * float(pos_info['current_price']) * 100.0
+                                                exit_check_price = _safe_float(result.get('option_exit_check', {}).get('premium'), pos_info.get('current_price'))
+                                                val = qty * exit_check_price * 100.0
                                                 cost = qty * float(pos_info['avg_price']) * 100.0
                                                 pl = val - cost
                                                 pl_pct = (pl / cost * 100.0) if cost > 0 else 0.0
@@ -1567,7 +1672,7 @@ class UserEngine:
                                                 result['pl'] = round(pl, 2)
                                                 result['pl_pct'] = round(pl_pct, 2)
                                                 
-                                                result['reason'] = f"✅ CLOSED option position ({pos_info['symbol']}) at premium ${pos_info['current_price']:.2f} (P/L: ${pl:+.2f}): {result['reason']}"
+                                                result['reason'] = f"✅ CLOSED option position ({pos_info['symbol']}) at checked premium ${exit_check_price:.2f} (est. P/L: ${pl:+.2f}): {result['reason']}"
                                                 t_settings.pop('options_underlying_entry_price', None)
                                                 t_settings.pop('options_active_contract', None)
                                                 self.last_trailing_stops.pop(pos_info['symbol'], None)
@@ -1608,17 +1713,26 @@ class UserEngine:
                                                     current_price=result['price_raw'],
                                                     client=self.broker.client
                                                 )
+                                                selection_data_client = None
+                                                if not self.broker.simulation_mode and self.config.ALPACA_API_KEY and self.config.ALPACA_SECRET_KEY:
+                                                    try:
+                                                        from alpaca.data.historical.option import OptionHistoricalDataClient
+                                                        selection_data_client = OptionHistoricalDataClient(self.config.ALPACA_API_KEY, self.config.ALPACA_SECRET_KEY)
+                                                    except Exception as data_client_err:
+                                                        print(f"[options] Delta selection unavailable: {data_client_err}")
                                                 contract = select_contract(
                                                     contracts=chain,
                                                     current_underlying_price=result['price_raw'],
                                                     option_type="PUT",
                                                     strike_type=opt_strike_type,
-                                                    target_expiry_days=opt_expiry_days
+                                                    target_expiry_days=opt_expiry_days,
+                                                    data_client=selection_data_client
                                                 )
                                                 
                                                 if contract:
                                                     # Fetch estimate premium for sizing
                                                     import math
+                                                    quote_bid = quote_ask = quote_spread = quote_spread_pct = None
                                                     if self.broker.simulation_mode:
                                                         from options_pricing import black_scholes
                                                         import datetime
@@ -1633,37 +1747,60 @@ class UserEngine:
                                                             data_client = OptionHistoricalDataClient(self.config.ALPACA_API_KEY, self.config.ALPACA_SECRET_KEY)
                                                             req = OptionLatestQuoteRequest(symbol_or_symbols=[contract['symbol']])
                                                             quotes = data_client.get_option_latest_quote(req)
-                                                            est_premium = float(quotes[contract['symbol']].ask_price)
+                                                            quote = quotes[contract['symbol']]
+                                                            quote_bid = _safe_float(getattr(quote, 'bid_price', None), 0.0)
+                                                            quote_ask = _safe_float(getattr(quote, 'ask_price', None), 0.0)
+                                                            est_premium = quote_ask
+                                                            if quote_bid > 0 and quote_ask > 0:
+                                                                quote_spread = quote_ask - quote_bid
+                                                                quote_mid = (quote_bid + quote_ask) / 2.0
+                                                                quote_spread_pct = (quote_spread / quote_mid) * 100.0 if quote_mid > 0 else None
                                                         except Exception as quote_err:
                                                             print(f"[options] Quote fetch failed (no OPRA?): {quote_err}. Falling back to theoretical pricing.")
-                                                            # Fallback to our realistic theoretical pricing
                                                             from options_pricing import black_scholes
                                                             import datetime
                                                             days = (contract['expiration'] - datetime.date.today()).days
                                                             t_years = max(0.0001, days / 365.0)
                                                             est_premium_bs = black_scholes(result['price_raw'], contract['strike'], t_years, r=0.05, sigma=0.24, option_type="PUT", q=0.013)
                                                             est_premium = max(0.01, est_premium_bs + 0.015)
-                                                    
-                                                    if est_premium > 0:
+
+                                                    spread_limit_pct = _safe_float(
+                                                        t_settings.get('options_max_entry_spread_pct'),
+                                                        15.0 if str(opt_strike_type).upper() == 'OTM' else 12.0
+                                                    )
+                                                    if not self.broker.simulation_mode and (_safe_float(quote_bid, 0.0) <= 0 or _safe_float(quote_ask, 0.0) <= 0):
+                                                        result['reason'] = f"Skipped: live option bid/ask unavailable for {contract['symbol']}."
+                                                    elif not self.broker.simulation_mode and quote_spread_pct is not None and quote_spread_pct > spread_limit_pct:
+                                                        result['reason'] = f"Skipped: option spread too wide for {contract['symbol']} ({quote_spread_pct:.1f}% > {spread_limit_pct:.1f}%)."
+                                                    elif est_premium > 0:
                                                         allocated = opt_trade_amount
                                                         qty = math.floor(allocated / (est_premium * 100.0))
-                                                        
                                                         if qty > 0:
                                                             order_result = self.broker.place_option_order(
                                                                 option_symbol=contract['symbol'],
                                                                 qty=qty,
-                                                                side='buy'
+                                                                side='buy',
+                                                                limit_price=est_premium
                                                             )
                                                             if order_result.get('success'):
                                                                 result['order'] = order_result
                                                                 result['order_id'] = order_result.get('order_id')
                                                                 trade_executed = True
                                                                 portfolio_count += 1
-                                                                
+
                                                                 result['qty'] = qty
                                                                 result['total_cost'] = qty * est_premium * 100.0
                                                                 result['fees'] = 0.0
-                                                                result['reason'] = f"✅ BOUGHT {qty} PUT contracts ({contract['symbol']}) at premium ${est_premium:.2f}: {result['reason']}"
+                                                                result['option_entry_quote'] = {
+                                                                    'bid': quote_bid,
+                                                                    'ask': quote_ask,
+                                                                    'spread': quote_spread,
+                                                                    'spread_pct': quote_spread_pct,
+                                                                    'limit_price': est_premium,
+                                                                }
+                                                                spread_note = f" | bid/ask ${quote_bid:.2f}/${quote_ask:.2f}, spread {quote_spread_pct:.1f}%" if quote_spread_pct is not None else ""
+                                                                selection_note = f" | {contract.get('selection_reason')}" if contract.get('selection_reason') else ""
+                                                                result['reason'] = f"✅ BOUGHT {qty} PUT contracts ({contract['symbol']}) with limit ${est_premium:.2f}{spread_note}{selection_note}: {result['reason']}"
                                                                 t_settings['options_underlying_entry_price'] = float(result.get('price_raw') or 0.0)
                                                                 t_settings['options_active_contract'] = contract['symbol']
                                                                 self.last_trade_timestamps[ticker] = self.get_now()

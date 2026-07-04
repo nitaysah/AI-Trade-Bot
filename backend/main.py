@@ -10,6 +10,9 @@ Production-grade trading engine with:
 - MULTI-TENANT ARCHITECTURE
 """
 
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="webull.*")
+
 from fastapi import FastAPI, Query, Header, HTTPException, Depends, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -1089,6 +1092,23 @@ def _entry_forecast_float(value, default=0.0):
         return default
 
 
+def _normalize_pct_setting(value, default=0.0):
+    pct = _entry_forecast_float(value, default)
+    if pct is None:
+        pct = default
+    if pct > 1:
+        pct = pct / 100.0
+    return max(0.0, pct)
+
+
+def _option_pct_exit_settings(settings):
+    return (
+        _normalize_pct_setting(settings.get('options_stop_loss_pct', settings.get('regular_stop_loss_pct', 0.10)), 0.10),
+        _normalize_pct_setting(settings.get('options_take_profit_pct', settings.get('regular_take_profit_pct', 0.20)), 0.20),
+        _normalize_pct_setting(settings.get('options_trailing_pct', settings.get('regular_trailing_pct', 0.10)), 0.10),
+    )
+
+
 def _entry_forecast_money(value):
     value = _entry_forecast_float(value, None)
     return "N/A" if value is None else f"${value:.2f}"
@@ -1126,14 +1146,15 @@ def _exit_strategy_label(sell_mode):
     labels = {
         "indicator": "Indicator",
         "custom_sltp": "Custom SL/TP",
+        "custom_underlying_sltp": "Custom Underlying SL/TP",
         "sltp": "ATR Stop / Take Profit",
-        "hybrid": "Hybrid",
+        "hybrid": "Hybrid (Indicator + ATR)",
         "percentage": "Percentage",
-        "hybrid_pct": "Hybrid Percentage",
+        "hybrid_pct": "Hybrid (Indicator + Percentage)",
         "pivot_points": "Pivot Points",
-        "hybrid_pivot": "Hybrid Pivot",
+        "hybrid_pivot": "Hybrid (Indicator + Pivot)",
         "high_low": "Prior Day High/Low",
-        "hybrid_high_low": "Hybrid High/Low",
+        "hybrid_high_low": "Hybrid (Indicator + High/Low)",
         "swing_points": "Swing Points",
         "hybrid_swing": "Hybrid (Indicator + Swing)",
         "premium_pct": "Premium Percentage",
@@ -1154,8 +1175,9 @@ def _format_entry_card_forecast(settings, scan_data, entry_signal, current_price
 
     if mode == "custom_price":
         target = settings.get("custom_buy_price", (entry_signal or {}).get("trigger_price"))
+        label = "CALL Target Entry" if is_option else "Custom Entry"
         parts.extend([
-            f"[Custom Entry] {_entry_forecast_money(target)}",
+            f"[{label}] {_entry_forecast_money(target)}",
             f"[Status] {status}",
             reason,
         ])
@@ -1172,17 +1194,32 @@ def _format_entry_card_forecast(settings, scan_data, entry_signal, current_price
         if len(candles) >= 2:
             prev_close = _entry_forecast_float(candles[-2].get("close"), current_price)
         offset = max(atr_val * max(mult, 0.1), current_price * 0.001)
-        level = prev_close + offset if style == "breakout_momentum" else prev_close - offset
+        long_level = prev_close + offset if style == "breakout_momentum" else prev_close - offset
+        short_level = prev_close - offset if style == "breakout_momentum" else prev_close + offset
         label = "ATR Buy Above" if style == "breakout_momentum" else "ATR Buy Below"
         style_label = "Breakout / Momentum" if style == "breakout_momentum" else "Pullback / Reclaim"
         if mode == "hybrid_atr":
             parts.append("[Hybrid] ATR setup or indicator buy threshold")
-        parts.extend([
-            f"[{label}] {_entry_forecast_money(level)}",
-            f"[Style] {style_label}",
-            f"[ATR] x{mult:.1f}",
-            reason,
-        ])
+        if is_option:
+            option_side = str(options_type or "both").lower()
+            call_label = "CALL Above" if style == "breakout_momentum" else "CALL Reclaim From"
+            put_label = "PUT Below" if style == "breakout_momentum" else "PUT Rejection From"
+            if option_side != "puts_only":
+                parts.append(f"[{call_label}] {_entry_forecast_money(long_level)}")
+            if option_side != "calls_only":
+                parts.append(f"[{put_label}] {_entry_forecast_money(short_level)}")
+            parts.extend([
+                f"[Style] {style_label}",
+                f"[ATR] x{mult:.1f}",
+                reason,
+            ])
+        else:
+            parts.extend([
+                f"[{label}] {_entry_forecast_money(long_level)}",
+                f"[Style] {style_label}",
+                f"[ATR] x{mult:.1f}",
+                reason,
+            ])
         return " | ".join(parts)
 
     if mode in ("percentage", "hybrid_pct"):
@@ -1192,17 +1229,32 @@ def _format_entry_card_forecast(settings, scan_data, entry_signal, current_price
         candles = ctx.get("candles") or []
         if len(candles) >= 2:
             prev_close = _entry_forecast_float(candles[-2].get("close"), current_price)
-        level = prev_close * (1.0 + (pct / 100.0)) if style == "breakout_momentum" else prev_close * (1.0 - (pct / 100.0))
+        long_level = prev_close * (1.0 + (pct / 100.0)) if style == "breakout_momentum" else prev_close * (1.0 - (pct / 100.0))
+        short_level = prev_close * (1.0 - (pct / 100.0)) if style == "breakout_momentum" else prev_close * (1.0 + (pct / 100.0))
         label = "PCT Buy Above" if style == "breakout_momentum" else "PCT Buy Below"
-        style_label = "Breakout / Momentum" if style == "breakout_momentum" else "Dip / Reclaim"
+        style_label = "Breakout / Momentum" if style == "breakout_momentum" else ("Reversal / Reclaim" if is_option else "Dip / Reclaim")
         if mode == "hybrid_pct":
             parts.append("[Hybrid] Percentage setup or indicator buy threshold")
-        parts.extend([
-            f"[{label}] {_entry_forecast_money(level)}",
-            f"[Style] {style_label}",
-            f"[Move] {pct:.1f}%",
-            reason,
-        ])
+        if is_option:
+            option_side = str(options_type or "both").lower()
+            call_label = "CALL Above" if style == "breakout_momentum" else "CALL Reclaim From"
+            put_label = "PUT Below" if style == "breakout_momentum" else "PUT Rejection From"
+            if option_side != "puts_only":
+                parts.append(f"[{call_label}] {_entry_forecast_money(long_level)}")
+            if option_side != "calls_only":
+                parts.append(f"[{put_label}] {_entry_forecast_money(short_level)}")
+            parts.extend([
+                f"[Style] {style_label}",
+                f"[Move] {pct:.1f}%",
+                reason,
+            ])
+        else:
+            parts.extend([
+                f"[{label}] {_entry_forecast_money(long_level)}",
+                f"[Style] {style_label}",
+                f"[Move] {pct:.1f}%",
+                reason,
+            ])
         return " | ".join(parts)
 
     if mode in ("pivot_points", "hybrid_pivot"):
@@ -1558,7 +1610,7 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
             
             settings = eng.config.TICKER_SETTINGS.get(underlying, {})
             if is_option:
-                strat = settings.get('options_exit_strategy') or settings.get('sell_mode') or toggle_overrides.get('options_exit_strategy') or eng.config.active_toggles.get('options_exit_strategy', 'hybrid')
+                strat = settings.get('sell_mode') or settings.get('options_exit_strategy') or toggle_overrides.get('options_exit_strategy') or eng.config.active_toggles.get('options_exit_strategy', 'hybrid')
             else:
                 strat = settings.get('sell_mode') or toggle_overrides.get('exit_strategy') or eng.config.active_toggles.get('exit_strategy', 'hybrid')
                 
@@ -1609,7 +1661,7 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                         targets.append({"label": "Custom SL", "val": custom_sl, "type": "price"})
                     if custom_tp > 0:
                         targets.append({"label": "Custom TP", "val": custom_tp, "type": "price"})
-                
+
                 if strat in ('sltp', 'hybrid') and atr > 0 and avg_price > 0:
                     sl_mult = settings.get('atr_stop_multiplier', getattr(eng.config, 'ATR_STOP_MULTIPLIER', 2.0))
                     tp_mult = settings.get('take_profit_multiplier', getattr(eng.config, 'ATR_TAKE_PROFIT_MULTIPLIER', 4.0))
@@ -1676,33 +1728,28 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                 op_type = parsed_occ.get('type', 'CALL') if parsed_occ else 'CALL'
                 is_call = op_type == 'CALL'
                 
-                if strat in ('premium_pct', 'percentage', 'hybrid', 'hybrid_pct') and avg_price > 0:
-                    sl_pct = settings.get('options_stop_loss_pct')
-                    tp_pct = settings.get('options_take_profit_pct')
-                    if sl_pct is None:
-                        sl_pct = (strategy_overrides.get('options_premium_sl_pct') or eng.config.active_parameters.get('options_premium_sl_pct', 30.0)) / 100.0
-                    if tp_pct is None:
-                        tp_pct = (strategy_overrides.get('options_premium_tp_pct') or eng.config.active_parameters.get('options_premium_tp_pct', 50.0)) / 100.0
-                    sl_price = avg_price * (1.0 - float(sl_pct))
+                if strat in ('premium_pct', 'percentage', 'hybrid_pct') and avg_price > 0:
+                    sl_pct, tp_pct, trail_pct = _option_pct_exit_settings(settings)
+                    sl_price = avg_price * (1.0 - sl_pct)
                     trailing = eng.last_trailing_stops.get(symbol)
                     if settings.get('enable_pct_trail', True) and isinstance(trailing, (int, float)):
                         sl_price = trailing
-                    tp_price = avg_price * (1.0 + float(tp_pct))
-                    targets.append({"label": "Prem SL", "val": sl_price, "type": "price"})
-                    targets.append({"label": "Prem TP", "val": tp_price, "type": "price"})
+                    tp_price = avg_price * (1.0 + tp_pct)
+                    targets.append({"label": f"Option Pct SL ({sl_pct*100:.1f}% / Trail {trail_pct*100:.1f}%)", "val": sl_price, "type": "price"})
+                    targets.append({"label": f"Option Pct TP ({tp_pct*100:.1f}%)", "val": tp_price, "type": "price"})
 
-                if strat == 'sltp':
+                if strat in ('sltp', 'hybrid'):
                     atr = _entry_forecast_float(underlying_scan.get('atr'), 0.0)
                     entry_underlying = _entry_forecast_float(settings.get('options_underlying_entry_price'), underlying_scan.get('price_raw', 0.0))
                     sl_mult = _entry_forecast_float(settings.get('atr_stop_multiplier', getattr(eng.config, 'ATR_STOP_MULTIPLIER', 2.0)), 2.0)
                     tp_mult = _entry_forecast_float(settings.get('take_profit_multiplier', getattr(eng.config, 'ATR_TAKE_PROFIT_MULTIPLIER', 4.0)), 4.0)
                     if atr > 0 and entry_underlying > 0:
                         if is_call:
-                            targets.append({"label": "ATR TP", "val": entry_underlying + (atr * tp_mult), "type": "underlying_price"})
-                            targets.append({"label": "ATR SL", "val": entry_underlying - (atr * sl_mult), "type": "underlying_price"})
+                            targets.append({"label": f"ATR TP ({tp_mult:.1f}x)", "val": entry_underlying + (atr * tp_mult), "type": "underlying_price"})
+                            targets.append({"label": f"ATR SL ({sl_mult:.1f}x)", "val": entry_underlying - (atr * sl_mult), "type": "underlying_price"})
                         else:
-                            targets.append({"label": "ATR TP", "val": entry_underlying - (atr * tp_mult), "type": "underlying_price"})
-                            targets.append({"label": "ATR SL", "val": entry_underlying + (atr * sl_mult), "type": "underlying_price"})
+                            targets.append({"label": f"ATR TP ({tp_mult:.1f}x)", "val": entry_underlying - (atr * tp_mult), "type": "underlying_price"})
+                            targets.append({"label": f"ATR SL ({sl_mult:.1f}x)", "val": entry_underlying + (atr * sl_mult), "type": "underlying_price"})
 
                 if strat == 'custom_sltp':
                     custom_sl = _entry_forecast_float(settings.get('custom_stop_loss_price'), 0.0)
@@ -1711,6 +1758,14 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                         targets.append({"label": "Custom SL", "val": custom_sl, "type": "price"})
                     if custom_tp > 0:
                         targets.append({"label": "Custom TP", "val": custom_tp, "type": "price"})
+
+                if strat == 'custom_underlying_sltp':
+                    custom_u_sl = _entry_forecast_float(settings.get('custom_underlying_stop_loss_price'), 0.0)
+                    custom_u_tp = _entry_forecast_float(settings.get('custom_underlying_take_profit_price'), 0.0)
+                    if custom_u_sl > 0:
+                        targets.append({"label": "Custom Underlying SL", "val": custom_u_sl, "type": "underlying_price"})
+                    if custom_u_tp > 0:
+                        targets.append({"label": "Custom Underlying TP", "val": custom_u_tp, "type": "underlying_price"})
                     
                 if strat in ('pivot_points', 'hybrid_pivot'):
                     last_day = underlying_scan.get('prior_day_ohlc')
@@ -2430,12 +2485,17 @@ async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_en
         cooldown_minutes=int(data["cooldown_minutes"]) if data.get("cooldown_minutes") is not None else 0,
         buy_mode=data.get("buy_mode", "indicator"),
         custom_buy_price=float(data.get("custom_buy_price", 0.0)),
+        custom_stop_loss_price=float(data.get("custom_stop_loss_price", 0.0)),
+        custom_take_profit_price=float(data.get("custom_take_profit_price", 0.0)),
+        custom_underlying_stop_loss_price=float(data.get("custom_underlying_stop_loss_price", 0.0)),
+        custom_underlying_take_profit_price=float(data.get("custom_underlying_take_profit_price", 0.0)),
         entry_atr_multiplier=float(entry_atr_multiplier),
         entry_pct_move=float(entry_pct_move),
         entry_atr_style=data.get("entry_atr_style", "pullback_reclaim"),
         entry_pct_style=data.get("entry_pct_style", "dip_reclaim"),
         swing_entry_mode=data.get("swing_entry_mode", "bounce_retest"),
         swing_entry_lookback_days=int(data.get("swing_entry_lookback_days", data.get("swing_lookback_days", 20)) or 20),
+        swing_exit_lookback_days=int(data.get("swing_exit_lookback_days", data.get("swing_lookback_days", 20)) or 20),
         market_session=data.get("market_session", "Regular"),
         sell_mode=data.get("sell_mode", data.get("exit_strategy", "indicator")),
         atr_stop_multiplier=float(data.get("atr_stop_multiplier", 2.0)),
@@ -2606,6 +2666,148 @@ async def get_options_chain_api(ticker: str, expiry_days: int = 7, current_price
         client=eng.broker.client
     )
     return {"status": "success", "chain": chain}
+
+
+@app.get("/api/options/review")
+async def get_options_review(review_date: str = None, eng: UserEngine = Depends(get_user_engine)):
+    """Returns today's option fills and current Alpaca quotes/snapshots for trade review."""
+    if review_date:
+        try:
+            review_day = datetime.strptime(review_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="review_date must be YYYY-MM-DD")
+    else:
+        review_day = get_now().date()
+
+    try:
+        order_history, positions = await asyncio.wait_for(
+            asyncio.gather(
+                asyncio.to_thread(eng.broker.get_order_history, eng.trade_log, 250),
+                asyncio.to_thread(eng.broker.get_positions),
+            ),
+            timeout=8.0
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Timed out loading option trade history")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not load option trade history: {e}")
+
+    today_option_orders = []
+    for order in order_history or []:
+        symbol = _normalize_quote_symbol(order.get("symbol", ""))
+        if not _is_option_occ_symbol(symbol):
+            continue
+
+        ts = _parse_iso_datetime(order.get("filled_at") or order.get("created_at"))
+        if ts and ts.date() == review_day:
+            today_option_orders.append(order)
+
+    open_option_positions = []
+    for position in positions or []:
+        symbol = _normalize_quote_symbol(position.get("symbol", ""))
+        if _is_option_occ_symbol(symbol) or position.get("is_option"):
+            open_option_positions.append(position)
+
+    quote_symbols = list(dict.fromkeys(
+        [
+            _normalize_quote_symbol(order.get("symbol", ""))
+            for order in today_option_orders
+            if _is_option_occ_symbol(order.get("symbol", ""))
+        ] + [
+            _normalize_quote_symbol(position.get("symbol", ""))
+            for position in open_option_positions
+            if _is_option_occ_symbol(position.get("symbol", ""))
+        ]
+    ))
+
+    snapshots, quote_feed, quote_error = await asyncio.to_thread(_fetch_alpaca_option_snapshots, eng, quote_symbols)
+    serialized_snapshots = {}
+    for sym, snapshot in (snapshots or {}).items():
+        serialized = _serialize_option_snapshot(snapshot)
+        serialized["quote_feed"] = quote_feed if quote_feed != "unavailable" else None
+        serialized_snapshots[_normalize_quote_symbol(sym)] = serialized
+
+    today_rows = []
+    realized_today = 0.0
+    for order in today_option_orders:
+        symbol = _normalize_quote_symbol(order.get("symbol", ""))
+        row = _build_option_review_row(order, serialized_snapshots.get(symbol, {}), review_day)
+        today_rows.append(row)
+        if row.get("realized_pl") is not None:
+            try:
+                realized_today += float(row["realized_pl"])
+            except (TypeError, ValueError):
+                pass
+
+    open_rows = []
+    for position in open_option_positions:
+        symbol = _normalize_quote_symbol(position.get("symbol", ""))
+        parsed = None
+        try:
+            from option_selector import parse_occ_symbol
+            parsed = parse_occ_symbol(symbol)
+        except Exception:
+            parsed = None
+
+        snap = serialized_snapshots.get(symbol, {})
+        quote = snap.get("quote", {})
+        mid = quote.get("mid")
+        avg_price = _float_or_none(position.get("avg_price")) or 0.0
+        qty = _float_or_none(position.get("qty")) or 0.0
+        cost_basis = _float_or_none(position.get("cost_basis"))
+        if cost_basis is None and avg_price and qty:
+            cost_basis = avg_price * qty * 100.0
+
+        current_value = None
+        if mid is not None and qty > 0:
+            current_value = round(mid * qty * 100.0, 2)
+        elif _float_or_none(position.get("market_value")) is not None:
+            current_value = round(float(position.get("market_value")), 2)
+
+        unrealized_pl = None
+        unrealized_pl_pct = None
+        if current_value is not None and cost_basis is not None:
+            unrealized_pl = round(current_value - cost_basis, 2)
+            unrealized_pl_pct = round(((current_value - cost_basis) / cost_basis) * 100.0, 2) if cost_basis > 0 else None
+
+        open_rows.append({
+            "symbol": symbol,
+            "underlying": parsed["underlying"] if parsed else None,
+            "expiration": parsed["expiration"].isoformat() if parsed else None,
+            "option_type": parsed["type"] if parsed else None,
+            "strike": parsed["strike"] if parsed else None,
+            "qty": qty,
+            "avg_price": avg_price,
+            "current_quote": quote,
+            "latest_trade": snap.get("latest_trade", {}),
+            "greeks": snap.get("greeks", {}),
+            "quote_feed": snap.get("quote_feed"),
+            "market_value": current_value,
+            "cost_basis": cost_basis,
+            "unrealized_pl": unrealized_pl,
+            "unrealized_pl_pct": unrealized_pl_pct,
+            "days_to_expiry": (parsed["expiration"] - review_day).days if parsed else None,
+        })
+
+    today_rows.sort(key=lambda row: row.get("filled_at") or row.get("created_at") or "", reverse=True)
+    open_rows.sort(key=lambda row: row.get("symbol", ""))
+
+    summary = {
+        "review_date": review_day.isoformat(),
+        "today_option_orders": len(today_rows),
+        "open_option_positions": len(open_rows),
+        "tracked_contracts": len(serialized_snapshots),
+        "quote_feed": quote_feed,
+        "quote_error": quote_error or None,
+        "today_realized_pl": round(realized_today, 2),
+    }
+
+    return {
+        "status": "success",
+        "summary": summary,
+        "today_orders": today_rows,
+        "open_positions": open_rows,
+    }
 
 
 @app.post("/api/download_all")
@@ -2930,6 +3132,12 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
     if not symbol:
         return {"status": "error", "message": "Symbol is required"}
         
+    if symbol in eng.config.TRADELIST and not data.get("force_override", False):
+        return {
+            "status": "error",
+            "message": f"An active bot for '{symbol}' is already deployed. Please delete the existing bot first to deploy a new one."
+        }
+        
     # Check if the asset is tradable in Alpaca
     tradable_check = eng.broker.check_tradable(symbol)
     if not tradable_check.get("success") or not tradable_check.get("tradable"):
@@ -2963,6 +3171,8 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         "custom_buy_price",
         "custom_stop_loss_price",
         "custom_take_profit_price",
+        "custom_underlying_stop_loss_price",
+        "custom_underlying_take_profit_price",
         "allocation_mode",
         "compound_amount",
         "options_allocation_mode",
@@ -3048,6 +3258,8 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         eng.config.TICKER_SETTINGS[symbol]["options_strike_type"] = data["options_strike_type"]
     if "options_exit_strategy" in data:
         eng.config.TICKER_SETTINGS[symbol]["options_exit_strategy"] = data["options_exit_strategy"]
+    if eng.config.TICKER_SETTINGS[symbol].get("options_trading") and eng.config.TICKER_SETTINGS[symbol].get("sell_mode"):
+        eng.config.TICKER_SETTINGS[symbol]["options_exit_strategy"] = eng.config.TICKER_SETTINGS[symbol]["sell_mode"]
     if "options_stop_loss_pct" in data and data["options_stop_loss_pct"] is not None:
         eng.config.TICKER_SETTINGS[symbol]["options_stop_loss_pct"] = float(data["options_stop_loss_pct"])
     if "options_take_profit_pct" in data and data["options_take_profit_pct"] is not None:
@@ -3204,6 +3416,8 @@ async def update_ticker_settings(data: dict, eng: UserEngine = Depends(get_user_
     eng.config.TICKER_SETTINGS[ticker]["market_session"] = market_session_check["market_session"]
 
     current_settings = eng.config.TICKER_SETTINGS[ticker]
+    if current_settings.get("options_trading") and current_settings.get("sell_mode"):
+        current_settings["options_exit_strategy"] = current_settings["sell_mode"]
     allocation_mode = str(current_settings.get("allocation_mode", "fixed") or "fixed").lower()
     if allocation_mode == "compound" and not current_settings.get("compound_amount"):
         current_settings["compound_amount"] = float(current_settings.get("amount", 0) or 0)
@@ -3277,6 +3491,209 @@ def _format_trade_for_ui(trade: dict) -> dict:
         "total_signals": trade.get("total_signals", 0),
         "timeframe": tf,
         "log_type": trade.get("log_type", "Active Bot"),
+    }
+
+
+def _parse_iso_datetime(value):
+    if not value:
+        return None
+
+    dt = value if isinstance(value, datetime) else None
+    if dt is None:
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    if dt.tzinfo is None:
+        dt = pytz.utc.localize(dt)
+    return dt.astimezone(pytz.timezone(get_user_config().TIMEZONE))
+
+
+def _is_option_occ_symbol(symbol: str) -> bool:
+    return bool(re.fullmatch(r"[A-Z]{1,6}\d{6}[CP]\d{8}", _normalize_quote_symbol(symbol)))
+
+
+def _model_value(obj, *names, default=None):
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        for name in names:
+            if name in obj and obj[name] is not None:
+                return obj[name]
+    for name in names:
+        if hasattr(obj, name):
+            value = getattr(obj, name)
+            if value is not None:
+                return value
+    return default
+
+
+def _float_or_none(value):
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _mapping_from_response(resp) -> dict:
+    if resp is None:
+        return {}
+    if isinstance(resp, dict):
+        return resp
+    if hasattr(resp, "items"):
+        try:
+            return dict(resp.items())
+        except Exception:
+            pass
+    if hasattr(resp, "model_dump"):
+        try:
+            return resp.model_dump()
+        except Exception:
+            pass
+    if hasattr(resp, "dict"):
+        try:
+            return resp.dict()
+        except Exception:
+            pass
+    return {}
+
+
+def _serialize_option_snapshot(snapshot: dict) -> dict:
+    latest_quote = _model_value(snapshot, "latest_quote")
+    latest_trade = _model_value(snapshot, "latest_trade")
+    greeks = _model_value(snapshot, "greeks")
+
+    bid = _float_or_none(_model_value(latest_quote, "bid_price", "bid"))
+    ask = _float_or_none(_model_value(latest_quote, "ask_price", "ask"))
+    mid = ((bid + ask) / 2.0) if bid is not None and ask is not None else None
+    spread = (ask - bid) if bid is not None and ask is not None else None
+    spread_pct = ((spread / mid) * 100.0) if spread is not None and mid else None
+
+    return {
+        "quote": {
+            "bid": bid,
+            "ask": ask,
+            "bid_size": _float_or_none(_model_value(latest_quote, "bid_size")),
+            "ask_size": _float_or_none(_model_value(latest_quote, "ask_size")),
+            "timestamp": str(_model_value(latest_quote, "timestamp", "t", default="")) or None,
+            "exchange": _model_value(latest_quote, "exchange", "bid_exchange", "ask_exchange"),
+            "mid": mid,
+            "spread": spread,
+            "spread_pct": spread_pct,
+        },
+        "latest_trade": {
+            "price": _float_or_none(_model_value(latest_trade, "price", "trade_price")),
+            "size": _float_or_none(_model_value(latest_trade, "size", "trade_size")),
+            "timestamp": str(_model_value(latest_trade, "timestamp", "t", default="")) or None,
+            "exchange": _model_value(latest_trade, "exchange"),
+        },
+        "greeks": {
+            "delta": _float_or_none(_model_value(greeks, "delta")),
+            "gamma": _float_or_none(_model_value(greeks, "gamma")),
+            "theta": _float_or_none(_model_value(greeks, "theta")),
+            "vega": _float_or_none(_model_value(greeks, "vega")),
+            "rho": _float_or_none(_model_value(greeks, "rho")),
+            "iv": _float_or_none(_model_value(greeks, "implied_volatility", "iv")),
+        },
+        "implied_volatility": _float_or_none(_model_value(snapshot, "implied_volatility", "iv")),
+        "open_interest": _float_or_none(_model_value(snapshot, "open_interest")),
+        "updated_at": str(_model_value(snapshot, "updated_at", "timestamp", default="")) or None,
+    }
+
+
+def _fetch_alpaca_option_snapshots(eng: UserEngine, symbols: list[str]) -> tuple[dict, str, str]:
+    clean_symbols = list(dict.fromkeys(_normalize_quote_symbol(s) for s in symbols if _is_option_occ_symbol(s)))
+    if not clean_symbols:
+        return {}, "unavailable", ""
+
+    api_key = getattr(eng.config, "ALPACA_API_KEY", "") or config.ALPACA_API_KEY
+    api_secret = getattr(eng.config, "ALPACA_SECRET_KEY", "") or config.ALPACA_SECRET_KEY
+    if not api_key or not api_secret:
+        return {}, "unavailable", "Missing Alpaca API credentials."
+
+    try:
+        from alpaca.data.enums import OptionsFeed
+        from alpaca.data.historical.option import OptionHistoricalDataClient
+        from alpaca.data.requests import OptionSnapshotRequest
+    except Exception as exc:
+        return {}, "unavailable", f"Alpaca option data client unavailable: {exc}"
+
+    data_client = OptionHistoricalDataClient(api_key, api_secret)
+    last_error = ""
+
+    for feed in (OptionsFeed.OPRA, OptionsFeed.INDICATIVE):
+        try:
+            merged = {}
+            for i in range(0, len(clean_symbols), 100):
+                batch = clean_symbols[i:i + 100]
+                req = OptionSnapshotRequest(symbol_or_symbols=batch, feed=feed)
+                resp = data_client.get_option_snapshot(req)
+                merged.update(_mapping_from_response(resp))
+
+            if merged:
+                return merged, getattr(feed, "value", str(feed)), ""
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            continue
+
+    return {}, "unavailable", last_error
+
+
+def _build_option_review_row(order: dict, snapshot: dict, review_day) -> dict:
+    symbol = _normalize_quote_symbol(order.get("symbol", ""))
+    parsed = None
+    try:
+        from option_selector import parse_occ_symbol
+        parsed = parse_occ_symbol(symbol)
+    except Exception:
+        parsed = None
+
+    quote = snapshot.get("quote", {}) if snapshot else {}
+    greeks = snapshot.get("greeks", {}) if snapshot else {}
+    latest_trade = snapshot.get("latest_trade", {}) if snapshot else {}
+
+    fill_price = _float_or_none(order.get("filled_avg_price")) or 0.0
+    qty = _float_or_none(order.get("filled_qty") or order.get("qty")) or 0.0
+    side = str(order.get("side", "")).upper()
+    current_mid = quote.get("mid")
+    contract_value = (fill_price * qty * 100.0) if fill_price and qty else 0.0
+
+    mtm_pl = None
+    mtm_pl_pct = None
+    if side == "BUY" and current_mid is not None and fill_price > 0 and qty > 0:
+        mtm_pl = round((current_mid - fill_price) * qty * 100.0, 2)
+        mtm_pl_pct = round(((current_mid - fill_price) / fill_price) * 100.0, 2)
+
+    return {
+        "symbol": symbol,
+        "underlying": parsed["underlying"] if parsed else None,
+        "expiration": parsed["expiration"].isoformat() if parsed else None,
+        "option_type": parsed["type"] if parsed else None,
+        "strike": parsed["strike"] if parsed else None,
+        "side": side,
+        "status": order.get("status"),
+        "qty": qty,
+        "filled_avg_price": fill_price,
+        "filled_at": order.get("filled_at") or order.get("created_at"),
+        "created_at": order.get("created_at"),
+        "total_cost": order.get("total_cost", contract_value),
+        "realized_pl": order.get("pl"),
+        "realized_pl_pct": order.get("pl_pct"),
+        "current_quote": quote,
+        "latest_trade": latest_trade,
+        "greeks": greeks,
+        "quote_feed": snapshot.get("quote_feed") if snapshot else None,
+        "mark_to_market_pl": mtm_pl,
+        "mark_to_market_pl_pct": mtm_pl_pct,
+        "days_to_expiry": (parsed["expiration"] - review_day).days if parsed else None,
+        "review_date": review_day.isoformat(),
+        "reason": order.get("reason", ""),
     }
 
 

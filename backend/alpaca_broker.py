@@ -346,13 +346,13 @@ class AlpacaBroker:
                 return t
         return None
 
-    def get_order_history(self, trade_log: list = None) -> list:
+    def get_order_history(self, trade_log: list = None, limit: int = 200) -> list:
         """Returns list of all historical orders (filled, rejected, cancelled) with linked trade summaries and chronological realized P/L lot-matching."""
         if self.simulation_mode:
             return self.sim_orders  # Contains historical orders if in sim
 
         try:
-            req = GetOrdersRequest(status=QueryOrderStatus.ALL, limit=50)
+            req = GetOrdersRequest(status=QueryOrderStatus.ALL, limit=limit)
             orders = self.client.get_orders(filter=req)
             history_list = []
             
@@ -884,29 +884,40 @@ class AlpacaBroker:
         except Exception as e:
             return {'success': False, 'error': str(e)}
 
-    def place_option_order(self, option_symbol: str, qty: int, side: str = 'buy') -> dict:
+    def place_option_order(self, option_symbol: str, qty: int, side: str = 'buy', limit_price: float = None) -> dict:
         """
-        Places a market order for an options contract.
+        Places an order for an options contract.
         option_symbol: OCC format (e.g. SPY260612C00450000)
         qty: number of contracts (integer)
         side: 'buy' or 'sell'
+        limit_price: optional marketable limit cap/floor per contract
         """
         if self.simulation_mode:
             return self._sim_option_order(option_symbol, qty, side)
 
         try:
-            from alpaca.trading.requests import MarketOrderRequest
+            from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
             from alpaca.trading.enums import OrderSide, TimeInForce, OrderType
             
             order_side = OrderSide.BUY if side.lower() == 'buy' else OrderSide.SELL
-            
-            order_data = MarketOrderRequest(
-                symbol=option_symbol.upper(),
-                qty=int(qty),
-                side=order_side,
-                type=OrderType.MARKET,
-                time_in_force=TimeInForce.DAY
-            )
+            rounded_limit = self._round_price(option_symbol, limit_price) if limit_price and float(limit_price) > 0 else None
+
+            if rounded_limit:
+                order_data = LimitOrderRequest(
+                    symbol=option_symbol.upper(),
+                    qty=int(qty),
+                    side=order_side,
+                    limit_price=rounded_limit,
+                    time_in_force=TimeInForce.DAY
+                )
+            else:
+                order_data = MarketOrderRequest(
+                    symbol=option_symbol.upper(),
+                    qty=int(qty),
+                    side=order_side,
+                    type=OrderType.MARKET,
+                    time_in_force=TimeInForce.DAY
+                )
             order = self.client.submit_order(order_data=order_data)
             
             return {
@@ -916,6 +927,8 @@ class AlpacaBroker:
                 'side': side.upper(),
                 'qty': int(qty),
                 'status': str(order.status),
+                'order_type': 'limit' if rounded_limit else 'market',
+                'limit_price': rounded_limit or 0.0,
             }
         except Exception as e:
             print(f"[broker] Option order error: {e}")

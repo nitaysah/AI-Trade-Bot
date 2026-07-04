@@ -11,6 +11,9 @@ Uses the official webull-openapi-python-sdk for:
 Install: pip install webull-openapi-python-sdk
 """
 
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="webull.*")
+
 import uuid
 import time
 import config

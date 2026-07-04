@@ -441,6 +441,8 @@ async function runBacktest() {
             const atrTrailMult = parseFloat(document.getElementById('strategyAtrTrailMult_options')?.value || '3');
             const buyMode = document.getElementById('strategyBuyMode_options')?.value || 'indicator';
             const customBuyPrice = parseFloat(document.getElementById('strategyCustomBuyPrice_options')?.value || '0');
+            const customUnderlyingStopLossPrice = parseFloat(document.getElementById('strategyCustomUnderlyingStopLossPrice_options')?.value || '0');
+            const customUnderlyingTakeProfitPrice = parseFloat(document.getElementById('strategyCustomUnderlyingTakeProfitPrice_options')?.value || '0');
             const enableRisk = document.getElementById('btEnableRisk_options')?.checked ?? true;
             const riskPerTrade = enableRisk ? (parseFloat(document.getElementById('btRiskPerTrade_options')?.value || '2.0') / 100.0) : 1.0;
             const maxPositionPct = enableRisk ? (parseFloat(document.getElementById('btMaxPositionPct_options')?.value || '100.0') / 100.0) : 1.0;
@@ -453,6 +455,8 @@ async function runBacktest() {
                 options_type: optionsType,
                 stop_loss_pct: stopLossPct, take_profit_pct: takeProfitPct,
                 exit_strategy: exitStrategy, close_before_expiry_hours: closeBeforeExpiry,
+                custom_underlying_stop_loss_price: customUnderlyingStopLossPrice,
+                custom_underlying_take_profit_price: customUnderlyingTakeProfitPrice,
                 indicators, ext_hours: extHoursVal, r, results: null,
                 enable_cooldown: enableCooldown,
                 cooldown_minutes: cooldownMinutes,
@@ -482,6 +486,8 @@ async function runBacktest() {
                     atr_trail_multiplier: atrTrailMult,
                     buy_mode: buyMode,
                     custom_buy_price: customBuyPrice,
+                    custom_underlying_stop_loss_price: customUnderlyingStopLossPrice,
+                    custom_underlying_take_profit_price: customUnderlyingTakeProfitPrice,
                     sell_mode: exitStrategy,
                     risk_per_trade: riskPerTrade,
                     max_pos_pct: maxPositionPct,
@@ -1765,8 +1771,10 @@ window.updateBtOptionsExitFields = function() {
     const showPct     = ['percentage', 'hybrid_pct'].includes(mode);
     const showPivot   = ['pivot_points', 'hybrid_pivot'].includes(mode);
     const showHighLow = ['high_low', 'hybrid_high_low'].includes(mode);
+    const showCustomUnderlying = mode === 'custom_underlying_sltp';
     
     document.getElementById('exitFieldsIndicator_options')?.classList.toggle('hidden', !['indicator', 'hybrid', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low'].includes(mode));
+    document.getElementById('exitFieldsCustomUnderlying_options')?.classList.toggle('hidden', !showCustomUnderlying);
     document.getElementById('exitFieldsATR_options')?.classList.toggle('hidden', !showATR);
     document.getElementById('exitFieldsPct_options')?.classList.toggle('hidden', !showPct);
     document.getElementById('exitFieldsPivot_options')?.classList.toggle('hidden', !showPivot);
