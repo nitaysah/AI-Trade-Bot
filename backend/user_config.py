@@ -17,6 +17,7 @@ class UserConfig:
         self.ALPACA_PAPER = True
         self.TIMEZONE = getattr(global_config, 'TIMEZONE', 'US/Central')
         self.SCAN_INTERVAL_SECONDS = getattr(global_config, 'SCAN_INTERVAL_SECONDS', 60)
+        self.OPTIONS_SCAN_INTERVAL_SECONDS = getattr(global_config, 'OPTIONS_SCAN_INTERVAL_SECONDS', 10)
         
         # Load all ENABLE_ toggles and indicator parameters from global config as defaults
         self.toggles = {k: getattr(global_config, k) for k in dir(global_config) if k.startswith("ENABLE_")}

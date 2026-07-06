@@ -184,8 +184,10 @@ class UserEngine:
         self.bot_scans = {}
         self.bot_scans_by_tf = {}
         self.last_scan_timestamps = {}
+        self.last_bot_scan_time = {}
         self.signal_locked_direction = {}
         self.exit_order_state = {}
+        self.scan_log_state = {}
         
         self.bot_running = False
         self.task = None
@@ -586,7 +588,7 @@ class UserEngine:
             'stop_loss': sl,
             'strategy': source,
             'asset_class': 'crypto' if is_crypto else 'stock',
-            'protection_type': 'watcher' if is_crypto else 'broker_oco',
+            'protection_type': 'watcher',
             'current_price': current_price,
         }
 
@@ -599,80 +601,30 @@ class UserEngine:
         if sell_mode not in FIXED_LEVEL_EXIT_MODES:
             cancel_res = self.broker.cancel_exit_orders(ticker_norm)
             if cancel_res.get('cancelled', 0) > 0:
-                print(f"[exit-protect] {ticker_norm} cancelled stale OCO because exit mode is {sell_mode}")
+                print(f"[exit-protect] {ticker_norm} cancelled stale broker exit order because exit mode is {sell_mode}")
             return None
 
         targets = self._build_exit_protection_targets(ticker, result, pos_info, t_settings)
         if not targets:
             return None
 
-        if targets['protection_type'] != 'broker_oco':
-            return {'status': 'watching', **targets}
-
         if t_settings.get('exit_protection_enabled', True) is False:
             return None
 
-        market_session = str(t_settings.get('market_session', 'Regular')).lower()
-        if market_session not in ('regular', 'regular-hours', 'regular_hours'):
-            print(f"[exit-protect] {ticker_norm} skipped OCO: extended-hours OCO unsupported")
-            return None
+        cancel_res = self.broker.cancel_exit_orders(ticker_norm)
+        if cancel_res.get('cancelled', 0) > 0:
+            print(f"[exit-protect] {ticker_norm} cancelled stale broker exit order; watcher protection is active")
 
-        current_price = targets.get('current_price') or 0.0
-        if current_price > 0 and (current_price >= targets['take_profit'] or current_price <= targets['stop_loss']):
-            return None
-
-        existing = self.broker.get_exit_order_levels(ticker_norm)
-        old_tp = existing.get('take_profit')
-        old_sl = existing.get('stop_loss')
-        has_orders = bool(existing.get('orders'))
-        new_tp = targets['take_profit']
-        new_sl = targets['stop_loss']
-
-        if old_sl is not None and not bool(t_settings.get('allow_exit_stop_loosen', False)):
-            threshold = self._exit_level_change_threshold(old_sl)
-            if new_sl < old_sl - threshold:
-                new_sl = old_sl
-
-        should_place = not has_orders or old_tp is None or old_sl is None
-        if not should_place:
-            tp_changed = abs(new_tp - old_tp) >= self._exit_level_change_threshold(old_tp)
-            sl_changed = abs(new_sl - old_sl) >= self._exit_level_change_threshold(old_sl)
-            should_place = tp_changed or sl_changed
-
-        if not should_place:
-            return {'status': 'active', **targets, 'take_profit': old_tp, 'stop_loss': old_sl}
-
-        state = self.exit_order_state.get(ticker_norm, {})
-        now_ts = time.time()
-        if has_orders and not force and now_ts - state.get('updated_at', 0) < 15:
-            return {'status': 'debounced', **targets}
-
-        if has_orders:
-            order_res = self.broker.replace_equity_oco_exit(ticker_norm, targets['qty'], new_tp, new_sl)
-            action = 'replaced'
-        else:
-            order_res = self.broker.place_equity_oco_exit(ticker_norm, targets['qty'], new_tp, new_sl)
-            action = 'placed'
-
-        if order_res.get('success'):
-            self.exit_order_state[ticker_norm] = {
-                'updated_at': now_ts,
-                'take_profit': new_tp,
-                'stop_loss': new_sl,
-                'strategy': sell_mode,
-            }
-            print(f"[exit-protect] {ticker_norm} OCO {action} TP={new_tp} SL={new_sl} qty={targets['qty']:.6f}")
-            return {'status': action, **targets, 'take_profit': new_tp, 'stop_loss': new_sl, 'order': order_res}
-
-        print(f"[exit-protect] {ticker_norm} OCO {action} failed: {order_res.get('error')}")
-        return {'status': 'error', **targets, 'error': order_res.get('error')}
+        precision = 6 if _is_crypto_symbol(ticker_norm) or min(targets['take_profit'], targets['stop_loss']) < 1 else 2
+        status = f"Active | Watcher | TP ${targets['take_profit']:.{precision}f} | SL ${targets['stop_loss']:.{precision}f}"
+        return {'status': status, 'active': True, **targets}
 
     def _cancel_exit_protection(self, ticker: str, reason: str = ""):
         ticker_norm = ticker.upper().replace("/", "")
         res = self.broker.cancel_exit_orders(ticker_norm)
         if res.get('cancelled', 0) > 0:
             detail = f" ({reason})" if reason else ""
-            print(f"[exit-protect] {ticker_norm} cancelled OCO{detail}")
+            print(f"[exit-protect] {ticker_norm} cancelled broker exit order{detail}")
         return res
 
     async def _warm_timeframe_scans(self, timeframe: str, primary_ticker: str = None, limit: int = 4):
@@ -736,14 +688,11 @@ class UserEngine:
                 all_orders = self.broker.get_open_orders()
                 portfolio_count = len(all_positions)
 
-                viewed = self.dashboard_primary_ticker
-                # Watchlist rows are quote-only. Full indicator scans are reserved for active bots
-                # and the ticker currently loaded by the dashboard chart.
-                all_tickers_to_scan = list(dict.fromkeys(self.config.TRADELIST))
-                if viewed and viewed in all_tickers_to_scan:
-                    scan_order = [viewed] + [t for t in all_tickers_to_scan if t != viewed]
-                else:
-                    scan_order = all_tickers_to_scan
+                # Watchlist rows and dashboard charts have their own data refresh.
+                # The 60s trading loop is dedicated strictly to active bots in TRADELIST
+                # and prioritized over dashboard data refresh.
+                scan_order = list(dict.fromkeys(self.config.TRADELIST))
+                force_triggered = self.force_scan_trigger.is_set()
                 
                 for ticker in scan_order:
                     try:
@@ -753,6 +702,14 @@ class UserEngine:
                         
                         if t_settings.get('paused', False):
                             continue
+
+                        is_opt_bot = t_settings.get('options_trading', t_settings.get('is_option', False))
+                        required_interval = getattr(self.config, 'OPTIONS_SCAN_INTERVAL_SECONDS', 10) if is_opt_bot else getattr(self.config, 'SCAN_INTERVAL_SECONDS', 60)
+                        now_ts = time.time()
+                        last_ts = self.last_bot_scan_time.get(ticker, 0)
+                        if not force_triggered and (now_ts - last_ts) < (required_interval - 1.0):
+                            continue
+                        self.last_bot_scan_time[ticker] = now_ts
 
                         # --- Bot Loss Limit (Drawdown Limit on Allocated Bot Capital) ---
                         enable_risk = t_settings.get('enable_risk_management', True)
@@ -1558,7 +1515,7 @@ class UserEngine:
                                                             option_symbol=contract['symbol'],
                                                             qty=qty,
                                                             side='buy',
-                                                            limit_price=est_premium
+                                                            limit_price=None
                                                         )
                                                         if order_result.get('success'):
                                                             result['order'] = order_result
@@ -1581,6 +1538,22 @@ class UserEngine:
                                                             result['reason'] = f"✅ BOUGHT {qty} CALL contracts ({contract['symbol']}) with limit ${est_premium:.2f}{spread_note}{selection_note}: {result['reason']}"
                                                             t_settings['options_underlying_entry_price'] = float(result.get('price_raw') or 0.0)
                                                             t_settings['options_active_contract'] = contract['symbol']
+                                                            try:
+                                                                fresh_positions = self.broker.get_positions()
+                                                                fresh_option_pos = self._find_position(
+                                                                    fresh_positions,
+                                                                    contract['symbol'].replace("/", "").upper(),
+                                                                )
+                                                                if fresh_option_pos:
+                                                                    from main import _ensure_exit_forecast_snapshot
+                                                                    _ensure_exit_forecast_snapshot(
+                                                                        t_settings,
+                                                                        result,
+                                                                        fresh_option_pos,
+                                                                        ticker,
+                                                                    )
+                                                            except Exception as snapshot_err:
+                                                                print(f"[forecast] {ticker} CALL snapshot deferred until position fill is visible: {snapshot_err}")
                                                             self.last_trade_timestamps[ticker] = self.get_now()
                                                             await self._increment_trade_count(ticker)
                                                             await self.save_settings()
@@ -1635,11 +1608,18 @@ class UserEngine:
                                                     fresh_positions = self.broker.get_positions()
                                                     fresh_pos = self._find_position(fresh_positions, ticker_norm)
                                                     if fresh_pos:
+                                                        from main import _ensure_exit_forecast_snapshot
+                                                        _ensure_exit_forecast_snapshot(
+                                                            t_settings,
+                                                            result,
+                                                            fresh_pos,
+                                                            ticker,
+                                                        )
                                                         protection = self._sync_exit_protection(ticker, result, fresh_pos, t_settings, force=True)
                                                         if protection:
                                                             result['exit_protection'] = protection
                                                     else:
-                                                        print(f"[exit-protect] {ticker_norm} buy accepted; OCO will be placed after position fill is visible")
+                                                        print(f"[exit-protect] {ticker_norm} buy accepted; watcher and exit snapshot will be applied after position fill is visible")
                                                 except Exception as protect_err:
                                                     print(f"[exit-protect] {ticker_norm} post-buy protection error: {protect_err}")
                                                 
@@ -1675,6 +1655,8 @@ class UserEngine:
                                                 result['reason'] = f"✅ CLOSED option position ({pos_info['symbol']}) at checked premium ${exit_check_price:.2f} (est. P/L: ${pl:+.2f}): {result['reason']}"
                                                 t_settings.pop('options_underlying_entry_price', None)
                                                 t_settings.pop('options_active_contract', None)
+                                                from main import _clear_forecast_exit_snapshots
+                                                _clear_forecast_exit_snapshots(t_settings)
                                                 self.last_trailing_stops.pop(pos_info['symbol'], None)
                                                 self.last_trade_timestamps[ticker] = self.get_now()
                                                 await self._increment_trade_count(ticker)
@@ -1780,7 +1762,7 @@ class UserEngine:
                                                                 option_symbol=contract['symbol'],
                                                                 qty=qty,
                                                                 side='buy',
-                                                                limit_price=est_premium
+                                                                limit_price=None
                                                             )
                                                             if order_result.get('success'):
                                                                 result['order'] = order_result
@@ -1803,6 +1785,22 @@ class UserEngine:
                                                                 result['reason'] = f"✅ BOUGHT {qty} PUT contracts ({contract['symbol']}) with limit ${est_premium:.2f}{spread_note}{selection_note}: {result['reason']}"
                                                                 t_settings['options_underlying_entry_price'] = float(result.get('price_raw') or 0.0)
                                                                 t_settings['options_active_contract'] = contract['symbol']
+                                                                try:
+                                                                    fresh_positions = self.broker.get_positions()
+                                                                    fresh_option_pos = self._find_position(
+                                                                        fresh_positions,
+                                                                        contract['symbol'].replace("/", "").upper(),
+                                                                    )
+                                                                    if fresh_option_pos:
+                                                                        from main import _ensure_exit_forecast_snapshot
+                                                                        _ensure_exit_forecast_snapshot(
+                                                                            t_settings,
+                                                                            result,
+                                                                            fresh_option_pos,
+                                                                            ticker,
+                                                                        )
+                                                                except Exception as snapshot_err:
+                                                                    print(f"[forecast] {ticker} PUT snapshot deferred until position fill is visible: {snapshot_err}")
                                                                 self.last_trade_timestamps[ticker] = self.get_now()
                                                                 await self._increment_trade_count(ticker)
                                                                 await self.save_settings()
@@ -1854,6 +1852,8 @@ class UserEngine:
                                                     current_realized = t_settings.get('realized_pl', 0.0)
                                                     t_settings['realized_pl'] = round(current_realized + pl, 2)
                                                     self._apply_compound_pl(t_settings, pl, 'regular')
+                                                    from main import _clear_forecast_exit_snapshots
+                                                    _clear_forecast_exit_snapshots(t_settings)
                                                     await self.save_settings()
                                                 else:
                                                     result['reason'] = f"✅ SOLD at {result['price']}: {result['reason']}"
@@ -1899,10 +1899,14 @@ class UserEngine:
                 print(f"[scheduler-{self.uid}] Loop error: {e}")
 
             try:
-                await asyncio.wait_for(self.force_scan_trigger.wait(), timeout=self.config.get('SCAN_INTERVAL_SECONDS', 60))
+                min_sleep = getattr(self.config, 'OPTIONS_SCAN_INTERVAL_SECONDS', 10) if any(
+                    self.config.TICKER_SETTINGS.get(t, {}).get('options_trading', self.config.TICKER_SETTINGS.get(t, {}).get('is_option', False))
+                    for t in self.config.TRADELIST
+                ) else getattr(self.config, 'SCAN_INTERVAL_SECONDS', 60)
+                await asyncio.wait_for(self.force_scan_trigger.wait(), timeout=min_sleep)
                 self.force_scan_trigger.clear()
             except asyncio.TimeoutError:
-                pass
+                self.force_scan_trigger.clear()
 
     async def _increment_trade_count(self, ticker: str):
         t_settings = self.config.TICKER_SETTINGS.get(ticker, {})

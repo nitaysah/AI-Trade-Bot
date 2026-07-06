@@ -282,6 +282,9 @@ class WebullBroker:
                     continue
                 return res
             except Exception as e:
+                err_str = str(e).lower()
+                if "401" in err_str or "unauthorized" in err_str or "permission" in err_str or "403" in err_str:
+                    raise e
                 if attempt < max_retries - 1:
                     time.sleep(2 ** attempt)
                 else:
@@ -721,9 +724,11 @@ class WebullBroker:
                     return nested_price
 
         for key in (
-            "last_price", "lastPrice", "latest_price", "latestPrice",
-            "price", "close", "last", "pPrice", "trade_price",
-            "tradePrice", "lastSalePrice", "mark"
+            "price", "extend_hour_last_price", "nightPrice", "overnightPrice",
+            "afterHoursPrice", "afterPrice", "extPrice", "pPrice",
+            "preMarketPrice", "latest_price", "latestPrice", "last_price",
+            "lastPrice", "close", "last", "trade_price", "tradePrice",
+            "lastSalePrice", "mark"
         ):
             raw = item.get(key)
             if raw is None:
@@ -737,17 +742,23 @@ class WebullBroker:
         return None
 
     def _record_snapshot_price(self, prices: dict, requested_symbol: str, item: dict):
-        clean_requested = self._normalize_symbol(requested_symbol)
-        response_symbol = self._normalize_symbol(
-            item.get("symbol") or item.get("ticker") or item.get("code") or clean_requested
-        ) if isinstance(item, dict) else clean_requested
         price = self._extract_snapshot_price(item)
         if not price:
             return
 
-        for key in {clean_requested, response_symbol}:
-            if key:
-                prices[key] = price
+        response_symbol = None
+        if isinstance(item, dict):
+            raw_sym = item.get("symbol") or item.get("ticker") or item.get("code")
+            if raw_sym:
+                response_symbol = self._normalize_symbol(raw_sym)
+
+        clean_requested = self._normalize_symbol(requested_symbol) if requested_symbol else None
+        target_symbol = response_symbol or clean_requested
+        if target_symbol:
+            prices[target_symbol] = price
+            if clean_requested and clean_requested != target_symbol:
+                if ''.join(e for e in clean_requested if e.isalnum()) == ''.join(e for e in target_symbol if e.isalnum()):
+                    prices[clean_requested] = price
 
     def _get_current_price(self, symbol: str) -> float:
         """Fetches current market price for notional→qty conversion."""
@@ -796,7 +807,13 @@ class WebullBroker:
             return self.market_client.market_data.get_snapshot
 
         def _fetch_one(symbol, category):
-            res = self._retry_request(_snapshot_client(category), symbol, category)
+            if category == "US_STOCK":
+                try:
+                    res = self._retry_request(_snapshot_client(category), symbol, category, extend_hour_required=True, overnight_required=True)
+                except Exception:
+                    res = self._retry_request(_snapshot_client(category), symbol, category, extend_hour_required=True)
+            else:
+                res = self._retry_request(_snapshot_client(category), symbol, category)
             return _record_snapshot_response([symbol], res, category)
 
         def _fetch_group(request_symbols, category):
@@ -804,11 +821,12 @@ class WebullBroker:
                 return
 
             if category == "US_STOCK":
-                for symbol in request_symbols:
-                    _fetch_one(symbol, category)
-                return
-
-            res = self._retry_request(_snapshot_client(category), request_symbols, category)
+                try:
+                    res = self._retry_request(_snapshot_client(category), request_symbols, category, extend_hour_required=True, overnight_required=True)
+                except Exception:
+                    res = self._retry_request(_snapshot_client(category), request_symbols, category, extend_hour_required=True)
+            else:
+                res = self._retry_request(_snapshot_client(category), request_symbols, category)
             found = _record_snapshot_response(request_symbols, res, category)
             if found == 0:
                 for symbol in request_symbols:

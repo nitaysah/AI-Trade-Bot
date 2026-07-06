@@ -428,6 +428,73 @@ window.moveBotCard = async function (ticker, direction) {
     await persistBotOrderFromVisible(visibleTickers);
 };
 
+function sanitizePlainText(text) {
+    return String(text || '').replace(/<[^>]*>?/gm, '');
+}
+
+function scanLogStatusClass(status) {
+    switch (status) {
+        case 'READY':
+            return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+        case 'BLOCKED':
+            return 'bg-rose-50 text-rose-700 border-rose-200';
+        case 'NEAR_ENTRY':
+        case 'NEAR_EXIT':
+        case 'MOVING_CLOSER':
+            return 'bg-amber-50 text-amber-700 border-amber-200';
+        case 'MOVING_AWAY':
+            return 'bg-slate-100 text-slate-600 border-slate-200';
+        default:
+            return 'bg-blue-50 text-blue-700 border-blue-200';
+    }
+}
+
+function formatScanIndicatorGroup(label, indicators, icon = '') {
+    if (!indicators || indicators.length === 0) return '';
+    return `<strong class="font-bold text-slate-500">${label}:</strong> ${indicators.map(item => {
+        const reason = item.reason ? ` (${item.reason})` : '';
+        const itemIcon = (icon && !String(item.name || '').startsWith(icon)) ? `${icon} ` : '';
+        return `${itemIcon}${item.name} ${item.signal}${reason}`;
+    }).join(', ')}`;
+}
+
+function formatProtectionBox(protection, fallbackStatus = '') {
+    const status = String(protection?.status || fallbackStatus || '').trim();
+    if (!status) return '';
+
+    const parts = status.split('|').map(part => part.trim()).filter(Boolean);
+    const state = parts[0] || (protection?.active ? 'Active' : 'Pending');
+    const type = parts[1] || String(protection?.protection_type || 'Protection').replace(/_/g, ' ');
+    const tpPart = parts.find(part => /^(U-)?TP\b/i.test(part));
+    const slPart = parts.find(part => /^(U-)?SL\b/i.test(part));
+    const active = protection?.active || /^active$/i.test(state);
+    const boxClass = active
+        ? 'bg-emerald-50/70 border-emerald-200 text-emerald-800'
+        : 'bg-amber-50/70 border-amber-200 text-amber-800';
+    const stateClass = active
+        ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
+        : 'bg-amber-100 text-amber-700 border-amber-200';
+    const cleanType = type.replace(/\boco\b/i, 'OCO').replace(/\bwatcher\b/i, 'Watcher');
+    const extraText = parts.filter(part => part !== state && part !== type && part !== tpPart && part !== slPart).join(' | ');
+
+    return `
+        <div class="mt-0.5 px-2 py-1 rounded-md border ${boxClass} flex flex-col gap-1" title="${sanitizePlainText(status)}">
+            <div class="flex items-center gap-1.5 flex-wrap">
+                <span class="text-[0.48rem] font-black uppercase tracking-wider opacity-70">Protection</span>
+                <span class="px-1.5 py-0.5 rounded border ${stateClass} text-[0.48rem] font-black uppercase tracking-widest">${state}</span>
+                <span class="text-[0.5rem] font-black uppercase tracking-wider">${cleanType}</span>
+            </div>
+            ${(tpPart || slPart || extraText) ? `
+                <div class="flex items-center gap-1 flex-wrap text-[0.5rem] font-bold font-mono leading-tight">
+                    ${tpPart ? `<span class="px-1.5 py-0.5 rounded bg-white/70 border border-current/10">${tpPart}</span>` : ''}
+                    ${slPart ? `<span class="px-1.5 py-0.5 rounded bg-white/70 border border-current/10">${slPart}</span>` : ''}
+                    ${extraText ? `<span class="text-[0.5rem] font-bold opacity-80">${extraText}</span>` : ''}
+                </div>
+            ` : ''}
+        </div>
+    `;
+}
+
 function renderTradelist(scans, tradelist, tickerAmounts = {}) {
     const container = document.getElementById('tradelistContainer');
     if (!container) return;
@@ -767,6 +834,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         }
 
         let positionHtml = '';
+        let scanLogHtml = '';
         if (activePosition) {
             const qty = activePosition.qty;
             const avgCostVal = activePosition.avg_price;
@@ -795,15 +863,9 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 ? activePosition.cost_basis.toFixed(2)
                 : (qty * avgCostVal).toFixed(2);
             const qtyDisp = qty % 1 === 0 ? qty : (qty < 1 ? qty.toFixed(6) : qty.toFixed(4));
-            const exitProtection = activePosition.exit_protection || {};
-            const exitProtectionText = exitProtection.status || activePosition.exit_protection_status || '';
-            const exitProtectionClass = exitProtection.active
-                ? 'text-emerald-600 bg-emerald-50 border-emerald-100'
-                : 'text-slate-500 bg-slate-50 border-slate-100';
-            const exitProtectionHtml = exitProtectionText
-                ? `<span class="mt-1 inline-flex w-fit max-w-full px-1.5 py-0.5 rounded border ${exitProtectionClass} text-[0.5rem] font-black uppercase tracking-wide font-mono leading-tight whitespace-normal break-words" title="${exitProtectionText.replace(/<[^>]*>?/gm, '')}">${exitProtectionText}</span>`
-                : '';
 
+            const rawForecastExitText = scan?.forecast_exit_static || activePosition.exit_forecast_static || activePosition.exit_forecast || 'Checking exit criteria...';
+            const forecastExitText = String(rawForecastExitText).replace(/\[(Entry|Exit) Strategy\]\s*/gi, '');
             positionHtml = `
                 <div class="mt-2 pt-2 border-t border-slate-50 grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-1.5 cursor-pointer" onclick="selectTicker('${ticker}')">
                     <div class="flex flex-col">
@@ -831,24 +893,84 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 </div>
                 <div class="mt-1.5 pt-1.5 border-t border-slate-50 flex flex-col justify-center cursor-pointer" onclick="selectTicker('${ticker}')">
                     <div class="flex items-center gap-1.5 mb-1 flex-wrap">
-                        <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Forecast Exit</span>
-                        ${decisionBadgeHtml}
+                        <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Forecast Exit Strategy</span>
                     </div>
-                    <span class="text-[0.55rem] font-bold text-slate-500 font-mono leading-tight whitespace-normal break-words" title="${(activePosition.exit_forecast || 'Checking exit criteria...').replace(/<[^>]*>?/gm, '')}">${activePosition.exit_forecast || 'Checking exit criteria...'}</span>
-                    ${exitProtectionHtml}
+                    <span class="text-[0.55rem] font-bold text-slate-500 font-mono leading-tight whitespace-normal break-words" title="${sanitizePlainText(forecastExitText)}">${forecastExitText}</span>
                 </div>
             `;
         } else {
-            const forecastText = scan.entry_forecast || "💤 Standing by. Watching market for entry...";
+            const rawForecastText = scan?.forecast_entry_static || scan?.entry_forecast || "Standing by. Watching market for entry...";
+            const forecastText = String(rawForecastText).replace(/\[(Entry|Exit) Strategy\]\s*/gi, '');
             positionHtml = `
                 <div class="mt-2 pt-2 border-t border-slate-50 flex flex-col justify-center cursor-pointer" onclick="selectTicker('${ticker}')">
                     <div class="flex items-center gap-1.5 mb-1 flex-wrap">
-                        <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Forecast Entry</span>
-                        ${decisionBadgeHtml}
+                        <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Forecast Entry Strategy</span>
                     </div>
                     <span class="text-[0.55rem] font-bold text-slate-500 font-mono leading-tight whitespace-normal break-words" title="${forecastText.replace(/<[^>]*>?/gm, '')}">
                         ${forecastText}
                     </span>
+                </div>
+            `;
+        }
+
+        const scanLog = scan?.scan_log || null;
+        if (scanLog) {
+            const indicators = Array.isArray(scanLog.indicators) ? scanLog.indicators : [];
+            const confirmedText = formatScanIndicatorGroup('Confirmed', indicators.filter(item => item.status === 'CONFIRMED'), '🟢');
+            const waitingText = formatScanIndicatorGroup('Waiting', indicators.filter(item => item.status === 'WAITING'), '🟡');
+            const opposingText = formatScanIndicatorGroup('Opposing', indicators.filter(item => item.status === 'OPPOSING'), '🔴');
+            const blockers = Array.isArray(scanLog.blockers) ? scanLog.blockers : [];
+            const primaryBlocker = blockers[0] || '';
+            const secondaryBlockers = blockers.slice(1);
+            const protection = scanLog.exit_protection || activePosition?.exit_protection || {};
+            const protectionText = protection.status || activePosition?.exit_protection_status || '';
+            const protectionBoxHtml = formatProtectionBox(protection, protectionText);
+            const statusText = String(scanLog.status || 'WAITING_ENTRY').replace(/_/g, ' ');
+            const confirmedStrength = Number.isFinite(Number(scanLog.confirmed_weight))
+                ? Number(scanLog.confirmed_weight)
+                : Number(scanLog.confirmed_count || 0);
+            const fallbackProgressText = scanLog.required_count
+                ? `${scanLog.target_direction || 'BULLISH'} ${confirmedStrength}/${scanLog.required_count} confirmed${scanLog.remaining_count > 0 ? `, needs ${scanLog.remaining_count}` : ''}`
+                : (scanLog.target_direction || 'Monitoring');
+            const progressText = scanLog.progress_label || fallbackProgressText;
+            const summaryText = [progressText, primaryBlocker].filter(Boolean).join(' | ') || scanLog.summary || 'Waiting for next heartbeat...';
+            const detailParts = [
+                secondaryBlockers.length ? `Also blocked by: ${secondaryBlockers.join(' | ')}` : '',
+                confirmedText,
+                waitingText,
+                opposingText,
+            ].filter(Boolean);
+            const rawDetail = detailParts.join(' | ');
+            const cleanDetail = rawDetail.replace(/[🟢🟡🔴]\s*(Confirmed|Waiting|Opposing):/g, '$1:');
+            const cleanTitle = (scanLog.detail || cleanDetail).replace(/[🟢🟡🔴]\s*(Confirmed|Waiting|Opposing):/g, '$1:');
+            const formattedDetail = cleanDetail.replace(/(?<!<strong[^>]*>)(Confirmed|Waiting|Opposing):/g, '<strong class="font-bold text-slate-500">$1:</strong>');
+            const detailHtml = formattedDetail
+                ? `<span class="text-[0.52rem] text-slate-400 leading-snug whitespace-normal break-words" title="${sanitizePlainText(cleanTitle)}">${formattedDetail}</span>`
+                : '';
+
+            let timeAgoText = '';
+            if (scanLog.updated_at) {
+                try {
+                    const dt = new Date(scanLog.updated_at);
+                    if (!isNaN(dt.getTime())) {
+                        const secAgo = Math.max(0, Math.floor((Date.now() - dt.getTime()) / 1000));
+                        const timeStr = dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+                        timeAgoText = `<span class="text-[0.48rem] font-mono text-slate-400 font-normal ml-auto" title="Updated at ${timeStr}">⏱️ ${secAgo <= 60 ? `${secAgo}s ago` : timeStr}</span>`;
+                    }
+                } catch (e) {}
+            }
+
+            scanLogHtml = `
+                <div class="mt-1.5 pt-1.5 border-t border-slate-50 flex flex-col gap-1 cursor-pointer" onclick="selectTicker('${ticker}')">
+                    <div class="flex items-center gap-1.5 flex-wrap">
+                        <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Scan Log</span>
+                        <span class="px-1.5 py-0.5 rounded border ${scanLogStatusClass(scanLog.status)} font-black text-[0.48rem] tracking-widest uppercase">${statusText}</span>
+                        ${decisionBadgeHtml}
+                        ${timeAgoText}
+                    </div>
+                    <span class="text-[0.55rem] font-bold text-slate-500 font-mono leading-tight whitespace-normal break-words" title="${sanitizePlainText(scanLog.summary || summaryText)}">${summaryText}</span>
+                    ${protectionBoxHtml}
+                    ${detailHtml}
                 </div>
             `;
         }
@@ -904,6 +1026,8 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                </span>`
             : '';
         const incubatorBadge = '';
+        const isOpt = tickerSettings.options_trading || tickerSettings.is_option || (scan && scan.scan_log && scan.scan_log.is_option);
+        const fastRefreshBadge = isOpt ? `<span class="px-1.5 py-0.5 rounded-md bg-amber-50 text-amber-600 border border-amber-200 font-black text-[0.55rem] uppercase tracking-tight ml-1 inline-flex items-center gap-0.5" title="Options Bot running on 10s Fast Quant Loop">⚡ 10s Refresh</span>` : '';
         const arrangeControlsHtml = botArrangeMode ? `
                         <div class="flex items-center gap-1 mr-1">
                             <button class="h-7 w-7 flex items-center justify-center rounded-lg bg-white/80 border border-emerald-200 text-emerald-600 disabled:opacity-30 disabled:text-slate-300 disabled:border-slate-200"
@@ -942,7 +1066,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         <div class="${dotClass} cursor-pointer shrink-0" onclick="selectTicker('${ticker}')"></div>
                         <span class="font-black text-sm ${isPaused ? 'text-slate-400' : 'text-indigo-950'} tracking-tight cursor-pointer" onclick="selectTicker('${ticker}')">${ticker}</span>
                         <span class="text-[0.75rem] font-black text-slate-600 font-mono tracking-tight ml-1">${price}</span>
-                        ${backtestBadge}${incubatorBadge}${allocationBadgeHtml}
+                        ${backtestBadge}${incubatorBadge}${allocationBadgeHtml}${fastRefreshBadge}
                     </div>
                     
                     <div class="flex items-center gap-1 opacity-90 sm:opacity-60 group-hover:opacity-100 transition-opacity ml-1 shrink-0">
@@ -1023,6 +1147,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
 
                 <!-- 3rd Line: Position Details or Standing By Message -->
                 ${positionHtml}
+                ${scanLogHtml}
         `;
         container.appendChild(item);
     });
@@ -4726,7 +4851,7 @@ function buildSwingEntryPreviewHtml(mode, isOptions, symbol, simPrice) {
     const support = swingCtx.nearest_support;
     const resistance = swingCtx.nearest_resistance;
     const modeLabel = buyMode === 'hybrid_swing' ? 'Hybrid (Indicator + Swing)' : 'Swing Points';
-    const parts = [`[Entry Strategy] ${modeLabel}`, `[Swing Entry] ${entryMode === 'breakout_retest' ? 'Breakout / Retest' : 'Bounce / Retest'} | ${lookbackDays}D`];
+    const parts = [modeLabel, `[Swing Entry] ${entryMode === 'breakout_retest' ? 'Breakout / Retest' : 'Bounce / Retest'} | ${lookbackDays}D`];
 
     if (buyMode === 'hybrid_swing') {
         parts.push('[Hybrid] Swing setup or indicator buy threshold');

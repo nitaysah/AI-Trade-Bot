@@ -900,6 +900,7 @@ def _load_saved_settings(user: dict = Depends(verify_token)):
             eng.config.TICKER_SETTINGS = saved.get("TICKER_SETTINGS", {})
             eng.config.DEFAULT_TIMEFRAME = saved.get("DEFAULT_TIMEFRAME", eng.config.DEFAULT_TIMEFRAME)
             eng.config.SCAN_INTERVAL_SECONDS = saved.get("SCAN_INTERVAL_SECONDS", eng.config.SCAN_INTERVAL_SECONDS)
+            eng.config.OPTIONS_SCAN_INTERVAL_SECONDS = saved.get("OPTIONS_SCAN_INTERVAL_SECONDS", getattr(eng.config, 'OPTIONS_SCAN_INTERVAL_SECONDS', 10))
             
             print(f"[settings] Loaded {len(saved)} saved settings")
         except Exception as e:

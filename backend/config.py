@@ -45,6 +45,7 @@ WATCHLIST = ["TSLA", "AAPL", "MSFT", "AMZN", "BTCUSD"]
 TRADELIST = ["BTCUSD"]
 DEFAULT_TIMEFRAME = "1Hour"
 SCAN_INTERVAL_SECONDS = 60
+OPTIONS_SCAN_INTERVAL_SECONDS = 10
 
 # ──────────────────────────────────────────────
 # Bot Safety Controls
