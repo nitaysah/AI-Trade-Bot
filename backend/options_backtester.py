@@ -5,6 +5,7 @@ import datetime
 from data_manager import get_historical_data
 from indicators import calculate_indicators_for_df, _generate_signals
 from swing_strategy import build_entry_signal, build_swing_exit
+from options_direction import validate_options_type
 from options_pricing import black_scholes, calculate_historical_volatility
 from option_selector import add_us_market_trading_days, _strike_profile, _target_strike_from_profile
 
@@ -20,7 +21,7 @@ class OptionsBacktester:
         trade_amount: float = 100.0,
         expiry_days: int = 7,
         strike_type: str = "ATM",
-        options_type: str = "both",
+        options_type: str = "calls_only",
         stop_loss_pct: float = 0.50,
         take_profit_pct: float = 1.00,
         exit_strategy: str = "hybrid",
@@ -73,7 +74,7 @@ class OptionsBacktester:
         self.trade_amount = trade_amount
         self.expiry_days = expiry_days
         self.strike_type = strike_type
-        self.options_type = options_type
+        self.options_type = validate_options_type(options_type)
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
         # sell_mode is the unified exit strategy key (mirrors regular backtester).
@@ -566,38 +567,41 @@ class OptionsBacktester:
                     elif self.signal_locked_direction == 'SELL' and bearish_count < self.sell_threshold:
                         self.signal_locked_direction = None
 
-                action = "HOLD"
-                if bullish_count >= self.threshold:
-                    action = "BUY"
-                elif bearish_count >= self.sell_threshold:
-                    action = "SELL"
+                desired_direction = "BULLISH" if self.options_type == "calls_only" else "BEARISH"
+                option_type = "CALL" if self.options_type == "calls_only" else "PUT"
+                expected_action = "BUY" if desired_direction == "BULLISH" else "SELL"
+                indicator_action = "HOLD"
+                if desired_direction == "BULLISH" and bullish_count >= self.threshold:
+                    indicator_action = "BUY"
+                elif desired_direction == "BEARISH" and bearish_count >= self.sell_threshold:
+                    indicator_action = "SELL"
 
-                if action == 'BUY' and self.enable_signal_reset and self.signal_locked_direction == 'BUY':
-                    action = "HOLD"
-                elif action == 'SELL' and self.enable_signal_reset and self.signal_locked_direction == 'SELL':
-                    action = "HOLD"
+                if indicator_action == 'BUY' and self.enable_signal_reset and self.signal_locked_direction == 'BUY':
+                    indicator_action = "HOLD"
+                elif indicator_action == 'SELL' and self.enable_signal_reset and self.signal_locked_direction == 'SELL':
+                    indicator_action = "HOLD"
 
-                if action in ["BUY", "SELL"] and self.enable_smart_reentry:
+                if indicator_action in ["BUY", "SELL"] and self.enable_smart_reentry:
                     if self.smart_reentry_type == "RSI":
                         current_rsi = current_bar.get("RSI")
                         if current_rsi is not None:
-                            if action == "BUY" and current_rsi > self.smart_reentry_rsi_call_max:
-                                action = "HOLD"
-                            elif action == "SELL" and current_rsi < self.smart_reentry_rsi_put_min:
-                                action = "HOLD"
+                            if indicator_action == "BUY" and current_rsi > self.smart_reentry_rsi_call_max:
+                                indicator_action = "HOLD"
+                            elif indicator_action == "SELL" and current_rsi < self.smart_reentry_rsi_put_min:
+                                indicator_action = "HOLD"
                     elif self.smart_reentry_type == "VWAP":
                         current_vwap = current_bar.get("VWAP")
                         if current_vwap is not None and current_vwap > 0:
                             dist_pct = abs(current_price - current_vwap) / current_vwap * 100.0
-                            if action == "BUY" and dist_pct > self.smart_reentry_vwap_call_max_dist_pct:
-                                action = "HOLD"
-                            elif action == "SELL" and dist_pct > self.smart_reentry_vwap_put_max_dist_pct:
-                                action = "HOLD"
+                            if indicator_action == "BUY" and dist_pct > self.smart_reentry_vwap_call_max_dist_pct:
+                                indicator_action = "HOLD"
+                            elif indicator_action == "SELL" and dist_pct > self.smart_reentry_vwap_put_max_dist_pct:
+                                indicator_action = "HOLD"
 
                 entry_mode = self.buy_mode
                 price_action_modes = ['custom_price', 'atr', 'hybrid_atr', 'percentage', 'hybrid_pct', 'pivot_points', 'hybrid_pivot', 'high_low', 'hybrid_high_low', 'swing_points', 'hybrid_swing']
+                hybrid_modes = {'hybrid_atr', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'}
                 if entry_mode in price_action_modes:
-                    action = "HOLD"
                     entry_signal = build_entry_signal(
                         price_history_records[: i + 1],
                         current_price=current_price,
@@ -612,79 +616,43 @@ class OptionsBacktester:
                         entry_atr_style=self.entry_atr_style,
                         entry_pct_style=self.entry_pct_style,
                         swing_entry_mode=self.swing_entry_mode,
+                        desired_direction=desired_direction,
                     )
-                    signal_action = entry_signal.get("action", "HOLD")
-                    entry_executed = False
-                    if signal_action == "BUY" and self.options_type in ["both", "calls_only"]:
-                        self._enter_option_trade(
-                            option_type="CALL",
-                            underlying_price=current_price,
-                            vol=current_vol,
-                            timestamp=timestamp,
-                            reason=entry_signal.get("reason", f"Entry trigger: {entry_mode}")
-                        )
-                        entry_executed = True
-                    elif signal_action == "SELL" and self.options_type in ["both", "puts_only"]:
-                        self._enter_option_trade(
-                            option_type="PUT",
-                            underlying_price=current_price,
-                            vol=current_vol,
-                            timestamp=timestamp,
-                            reason=entry_signal.get("reason", f"Entry trigger: {entry_mode}")
-                        )
-                        entry_executed = True
+                    structure_action = entry_signal.get("action", "HOLD")
+                    structure_ok = structure_action == expected_action and entry_signal.get("structure_direction") == desired_direction
+                    indicator_ok = indicator_action == expected_action
 
-                    if entry_executed:
+                    if entry_mode in hybrid_modes:
+                        if indicator_ok and structure_ok:
+                            self._enter_option_trade(
+                                option_type=option_type,
+                                underlying_price=current_price,
+                                vol=current_vol,
+                                timestamp=timestamp,
+                                reason=f"Hybrid {option_type}: indicators and structure confirmed"
+                            )
+                            continue
+                    elif structure_ok:
+                        self._enter_option_trade(
+                            option_type=option_type,
+                            underlying_price=current_price,
+                            vol=current_vol,
+                            timestamp=timestamp,
+                            reason=entry_signal.get("reason", f"Entry trigger: {entry_mode}")
+                        )
                         continue
 
-                    if entry_mode.startswith("hybrid_"):
-                        if action == "BUY" and self.options_type in ["both", "calls_only"]:
-                            self._enter_option_trade(
-                                option_type="CALL",
-                                underlying_price=current_price,
-                                vol=current_vol,
-                                timestamp=timestamp,
-                                reason=f"Bullish signals crossover ({bullish_count} Bullish)"
-                            )
-                            continue
-                        elif action == "SELL" and self.options_type in ["both", "puts_only"]:
-                            self._enter_option_trade(
-                                option_type="PUT",
-                                underlying_price=current_price,
-                                vol=current_vol,
-                                timestamp=timestamp,
-                                reason=f"Bearish signals crossover ({bearish_count} Bearish)"
-                            )
-                            continue
-                    elif entry_mode == 'custom_price':
-                        if self.custom_buy_price > 0 and current_price <= self.custom_buy_price:
-                            if self.options_type in ["both", "calls_only"]:
-                                self._enter_option_trade(
-                                    option_type="CALL",
-                                    underlying_price=current_price,
-                                    vol=current_vol,
-                                    timestamp=timestamp,
-                                    reason=f"Custom Price Entry: Underlying {current_price:.2f} <= {self.custom_buy_price:.2f}"
-                                )
-                        continue  # Skip indicator-based logic when in custom_price mode
-
-                if action == "BUY" and self.options_type in ["both", "calls_only"]:
-                    # Enter CALL
+                elif indicator_action == expected_action:
                     self._enter_option_trade(
-                        option_type="CALL",
+                        option_type=option_type,
                         underlying_price=current_price,
                         vol=current_vol,
                         timestamp=timestamp,
-                        reason=f"Bullish signals crossover ({bullish_count} Bullish)"
-                    )
-                elif action == "SELL" and self.options_type in ["both", "puts_only"]:
-                    # Enter PUT
-                    self._enter_option_trade(
-                        option_type="PUT",
-                        underlying_price=current_price,
-                        vol=current_vol,
-                        timestamp=timestamp,
-                        reason=f"Bearish signals crossover ({bearish_count} Bearish)"
+                        reason=(
+                            f"Bullish signals crossover ({bullish_count} Bullish)"
+                            if option_type == "CALL"
+                            else f"Bearish signals crossover ({bearish_count} Bearish)"
+                        )
                     )
 
             # Record equity curve

@@ -15,12 +15,15 @@ from indicators import get_full_analysis
 from ai_indicator import get_ai_sentiment
 from risk_manager import RiskManager
 from swing_strategy import detect_swing_entry, build_entry_signal
+from options_direction import normalize_options_type, VALID_OPTION_DIRECTIONS
 import config as global_config
 from user_config import get_user_config
 
 
 from concurrent.futures import ThreadPoolExecutor
 import threading
+import hashlib
+import json
 
 risk_mgr = RiskManager()
 executor = ThreadPoolExecutor(max_workers=10) # Dedicated pool for parallel analysis
@@ -36,6 +39,29 @@ _evaluation_cache = TTLCacheStore(maxsize=128)
 EVAL_CACHE_TTL = 45 # seconds
 IN_FLIGHT_EVALS = {}
 IN_FLIGHT_LOCK = threading.Lock()
+
+def _evaluation_cache_key(uc, ticker_key: str, timeframe_key: str, data_source: str, use_bot_settings: bool, account_equity, available_cash):
+    """Scope cached evaluations to one user and their active strategy/risk inputs."""
+    ticker_settings = getattr(uc, 'TICKER_SETTINGS', {}).get(ticker_key, {})
+    payload = {
+        "uid": getattr(uc, "uid", "default"),
+        "ticker_settings": ticker_settings,
+        "active_toggles": getattr(uc, "active_toggles", {}),
+        "active_parameters": getattr(uc, "active_parameters", {}),
+        "tradelist": getattr(uc, "TRADELIST", []),
+        "ticker_amount": getattr(uc, "TICKER_AMOUNTS", {}).get(ticker_key),
+        "account_equity": round(float(account_equity or 0), 2),
+        "available_cash": round(float(available_cash or 0), 2),
+    }
+    settings_hash = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    return (
+        ticker_key,
+        timeframe_key,
+        data_source,
+        bool(use_bot_settings),
+        getattr(uc, "uid", "default"),
+        settings_hash,
+    )
 
 def clear_evaluation_cache(ticker: str = None, timeframe: str = None):
     """Clear cached trade evaluations, optionally scoped by ticker/timeframe."""
@@ -77,7 +103,7 @@ def get_confluence_decision(
     ai_sentiment_score=0.0,
     ai_sentiment_confidence=0.0,
     use_bot_settings=False,
-    options_type="both",
+    options_type="calls_only",
 ):
     """
     Pure decision logic based on technical and AI signals.
@@ -195,6 +221,203 @@ def get_confluence_decision(
 
     action = "HOLD"
     reason = "Neutral"
+    option_intent = "HOLD"
+
+    bullish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BULLISH' and v.get('enabled')]
+    bearish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BEARISH' and v.get('enabled')]
+    bullish_ready = bullish_count >= min_buy
+    bearish_ready = bearish_count >= min_sell
+    if bullish_ready and bearish_ready:
+        if bullish_count > bearish_count:
+            indicator_direction = "BULLISH"
+            indicator_reason = f"{bullish_count} bullish signals > {bearish_count} bearish signals"
+        elif bearish_count > bullish_count:
+            indicator_direction = "BEARISH"
+            indicator_reason = f"{bearish_count} bearish signals > {bullish_count} bullish signals"
+        else:
+            indicator_direction = "CONFLICT"
+            indicator_reason = f"bullish and bearish signals tied at {bullish_count}"
+    elif bullish_ready:
+        indicator_direction = "BULLISH"
+        indicator_reason = f"{bullish_count} bullish signals ({', '.join(bullish_names)})"
+    elif bearish_ready:
+        indicator_direction = "BEARISH"
+        indicator_reason = f"{bearish_count} bearish signals ({', '.join(bearish_names)})"
+    else:
+        indicator_direction = "NONE"
+        indicator_reason = f"waiting for thresholds ({bullish_count}B/{bearish_count}S, need {min_buy}B/{min_sell}S)"
+
+    is_options_bot = bool(t_settings.get("options_trading")) if use_bot_settings else False
+    option_side = normalize_options_type(options_type or t_settings.get("options_type"), default="calls_only")
+
+    if is_options_bot:
+        if option_side not in VALID_OPTION_DIRECTIONS:
+            action = "HOLD"
+            reason = "HOLD: Both direction is disabled. Choose CALL or PUT."
+            option_intent = "DISABLED"
+            return {
+                "action": action,
+                "option_intent": option_intent,
+                "reason": reason,
+                "bullish_count": bullish_count,
+                "bearish_count": bearish_count,
+                "signals": filtered_signals,
+                "indicator_direction": indicator_direction,
+                "structure_direction": "NONE",
+            }
+
+        desired_direction = "BULLISH" if option_side == "calls_only" else "BEARISH"
+        expected_action = "BUY" if desired_direction == "BULLISH" else "SELL"
+        contract_label = "CALL" if option_side == "calls_only" else "PUT"
+        option_intent_open = "OPEN_CALL" if contract_label == "CALL" else "OPEN_PUT"
+        indicator_ok = indicator_direction == desired_direction
+
+        structural_modes = {
+            "custom_price", "atr", "percentage", "pivot_points", "high_low", "swing_points",
+            "hybrid_atr", "hybrid_pct", "hybrid_pivot", "hybrid_high_low", "hybrid_swing",
+        }
+        hybrid_modes = {"hybrid_atr", "hybrid_pct", "hybrid_pivot", "hybrid_high_low", "hybrid_swing"}
+        structure_direction = "NONE"
+        structure_reason = ""
+        structure_ok = False
+
+        if buy_mode in structural_modes:
+            entry_signal = build_entry_signal(
+                analysis_results.get('price_history', []),
+                current_price=current_price,
+                entry_mode=buy_mode,
+                lookback_days=swing_entry_lookback_days,
+                market_session=market_session,
+                is_crypto=is_crypto,
+                atr=analysis_results.get('atr', 0.0),
+                custom_buy_price=custom_buy_price,
+                entry_atr_mult=entry_atr_mult,
+                entry_pct_move=entry_pct_move,
+                entry_atr_style=entry_atr_style,
+                entry_pct_style=entry_pct_style,
+                swing_entry_mode=swing_entry_mode,
+                desired_direction=desired_direction,
+            )
+            structure_direction = entry_signal.get("structure_direction", "NONE")
+            structure_reason = entry_signal.get("reason", "")
+            structure_ok = entry_signal.get("action") == expected_action and structure_direction == desired_direction
+
+        if buy_mode == "indicator":
+            if indicator_ok:
+                action = expected_action
+                option_intent = option_intent_open
+                reason = f"{contract_label} Entry Triggered: {indicator_reason}"
+            elif indicator_direction in {"BULLISH", "BEARISH"}:
+                action = "HOLD"
+                reason = f"HOLD: {indicator_direction.title()} signals ignored because bot direction is {contract_label}."
+            else:
+                action = "HOLD"
+                reason = f"{contract_label} indicator entry waiting: {indicator_reason}"
+        elif buy_mode in hybrid_modes:
+            if indicator_ok and structure_ok:
+                action = expected_action
+                option_intent = option_intent_open
+                reason = f"{contract_label} Hybrid Entry Triggered: {indicator_reason} AND {structure_reason}"
+            elif indicator_ok:
+                action = "HOLD"
+                reason = f"Hybrid HOLD: {contract_label} indicators confirmed, waiting for {contract_label} structure."
+            elif structure_ok:
+                action = "HOLD"
+                reason = f"Hybrid HOLD: {contract_label} structure confirmed, waiting for {desired_direction.lower()} indicators."
+            elif structure_direction in {"BULLISH", "BEARISH"} and structure_direction != desired_direction:
+                action = "HOLD"
+                reason = f"HOLD: {structure_direction.title()} setup ignored because bot direction is {contract_label}."
+            else:
+                action = "HOLD"
+                reason = f"Hybrid HOLD: waiting for {contract_label} indicators and {contract_label} structure."
+        elif buy_mode in structural_modes:
+            if structure_ok:
+                action = expected_action
+                option_intent = option_intent_open
+                reason = f"{contract_label} Entry Triggered: {structure_reason}"
+            elif structure_direction in {"BULLISH", "BEARISH"} and structure_direction != desired_direction:
+                action = "HOLD"
+                reason = f"HOLD: {structure_direction.title()} setup ignored because bot direction is {contract_label}."
+            else:
+                action = "HOLD"
+                reason = f"{contract_label} structural entry waiting: {structure_reason or 'no setup'}"
+        else:
+            if indicator_ok:
+                action = expected_action
+                option_intent = option_intent_open
+                reason = f"{contract_label} Entry Triggered: {indicator_reason}"
+            else:
+                action = "HOLD"
+                reason = f"{contract_label} entry waiting: {indicator_reason}"
+
+        if ticker in uc.TRADELIST:
+            print(f"[trader] {ticker} Options Decision: {option_intent}/{action} ({bullish_count}B/{bearish_count}S, need {min_buy}B/{min_sell}S) - {reason}")
+
+        return {
+            "action": action,
+            "option_intent": option_intent,
+            "reason": reason,
+            "bullish_count": bullish_count,
+            "bearish_count": bearish_count,
+            "signals": filtered_signals,
+            "indicator_direction": indicator_direction,
+            "structure_direction": structure_direction,
+        }
+
+    non_option_hybrid_modes = {"hybrid_atr", "hybrid_pct", "hybrid_pivot", "hybrid_high_low", "hybrid_swing"}
+    if buy_mode in non_option_hybrid_modes:
+        entry_signal = build_entry_signal(
+            analysis_results.get('price_history', []),
+            current_price=current_price,
+            entry_mode=buy_mode,
+            lookback_days=swing_entry_lookback_days,
+            market_session=market_session,
+            is_crypto=is_crypto,
+            atr=analysis_results.get('atr', 0.0),
+            custom_buy_price=custom_buy_price,
+            entry_atr_mult=entry_atr_mult,
+            entry_pct_move=entry_pct_move,
+            entry_atr_style=entry_atr_style,
+            entry_pct_style=entry_pct_style,
+            swing_entry_mode=swing_entry_mode,
+            desired_direction="BULLISH",
+        )
+        structure_direction = entry_signal.get("structure_direction", "NONE")
+        structure_ok = entry_signal.get("action") == "BUY" and structure_direction == "BULLISH"
+        indicator_ok = indicator_direction == "BULLISH"
+
+        if indicator_ok and structure_ok:
+            action = "BUY"
+            reason = f"Hybrid BUY Triggered: {indicator_reason} AND {entry_signal.get('reason', 'bullish structure confirmed')}"
+        elif indicator_direction == "BEARISH":
+            action = "SELL"
+            reason = f"SELL Triggered: {indicator_reason}"
+        elif indicator_ok:
+            action = "HOLD"
+            reason = "Hybrid HOLD: bullish indicators confirmed, waiting for bullish structure."
+        elif structure_ok:
+            action = "HOLD"
+            reason = "Hybrid HOLD: bullish structure confirmed, waiting for bullish indicators."
+        elif structure_direction == "BEARISH":
+            action = "HOLD"
+            reason = "Hybrid HOLD: bearish structure ignored for long entry; waiting for bullish indicators and bullish structure."
+        else:
+            action = "HOLD"
+            reason = "Hybrid HOLD: waiting for bullish indicators and bullish structure."
+
+        if ticker in uc.TRADELIST:
+            print(f"[trader] {ticker} Hybrid Decision: {action} ({bullish_count}B/{bearish_count}S, need {min_buy}B/{min_sell}S) - {reason}")
+
+        return {
+            "action": action,
+            "option_intent": option_intent,
+            "reason": reason,
+            "bullish_count": bullish_count,
+            "bearish_count": bearish_count,
+            "signals": filtered_signals,
+            "indicator_direction": indicator_direction,
+            "structure_direction": structure_direction,
+        }
 
     # Evaluate Swing Points entry first so the dedicated strategy family stays deterministic.
     if buy_mode in ('swing_points', 'hybrid_swing'):
@@ -314,14 +537,17 @@ def get_confluence_decision(
 
     return {
         "action": action,
+        "option_intent": option_intent,
         "reason": reason,
         "bullish_count": bullish_count,
         "bearish_count": bearish_count,
-        "signals": filtered_signals
+        "signals": filtered_signals,
+        "indicator_direction": indicator_direction,
+        "structure_direction": "NONE",
     }
 
 
-def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash: float = None, timeframe: str = None, data_source: str = "webull", use_bot_settings: bool = False):
+def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash: float = None, timeframe: str = None, data_source: str = "webull", use_bot_settings: bool = False, ignore_cache: bool = False):
     """
     Full evaluation pipeline for a single ticker.
     Combines technical signals + AI sentiment + risk management.
@@ -334,11 +560,21 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
     # --- Check Evaluation Cache ---
     ticker_key = ticker.upper()
     timeframe_key = timeframe.upper()
-    cache_key = (ticker_key, timeframe_key, data_source, use_bot_settings)
+    cache_key = _evaluation_cache_key(
+        uc,
+        ticker_key,
+        timeframe_key,
+        data_source,
+        use_bot_settings,
+        account_equity,
+        available_cash,
+    )
     
-    cached_entry = _evaluation_cache.get(cache_key, EVAL_CACHE_TTL)
-    if cached_entry is not None:
-        return cached_entry['data']
+    if not ignore_cache:
+        ttl = 2.0 if use_bot_settings else EVAL_CACHE_TTL
+        cached_entry = _evaluation_cache.get(cache_key, ttl)
+        if cached_entry is not None:
+            return cached_entry['data']
 
     start_ts = time.perf_counter()
     analysis = None
@@ -407,7 +643,7 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         ai_data['score'], 
         ai_data['confidence'],
         use_bot_settings=use_bot_settings,
-        options_type=ticker_settings.get('options_type', 'both') if ticker_settings else 'both'
+        options_type=ticker_settings.get('options_type', 'calls_only') if ticker_settings else 'calls_only'
     )
     action = decision['action']
     reason = decision['reason']
@@ -434,6 +670,7 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
     result = {
         "time": get_now().isoformat(),
         "action": action,
+        "option_intent": decision.get("option_intent", "HOLD"),
         "ticker": ticker,
         "price": f"${analysis['price']:.4f}" if analysis['price'] < 10 else f"${analysis['price']:.2f}",
         "price_raw": analysis['price'],
@@ -445,6 +682,8 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         "signals": decision['signals'],
         "bullish_count": decision['bullish_count'],
         "bearish_count": decision['bearish_count'],
+        "indicator_direction": decision.get("indicator_direction", "NONE"),
+        "structure_direction": decision.get("structure_direction", "NONE"),
         "total_signals": len(analysis['signals']),
         "atr": analysis['atr'],
         "rsi": analysis.get('rsi', 50),
@@ -456,8 +695,9 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         "timeframe": timeframe
     }
 
-    # Save to cache
-    _evaluation_cache.set(cache_key, {"data": result})
+    # Save to cache if not ignored
+    if not ignore_cache:
+        _evaluation_cache.set(cache_key, {"data": result})
     print(f"[perf] evaluate_trade {ticker_key} {timeframe_key}: {(time.perf_counter() - start_ts) * 1000:.1f}ms")
     return result
 

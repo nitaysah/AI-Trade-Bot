@@ -313,6 +313,7 @@ class Backtester:
                 else:
                     entry_mode = self.buy_mode
                     price_action_modes = ['custom_price', 'atr', 'hybrid_atr', 'percentage', 'hybrid_pct', 'pivot_points', 'hybrid_pivot', 'high_low', 'hybrid_high_low', 'swing_points', 'hybrid_swing']
+                    hybrid_modes = {'hybrid_atr', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'}
                     if entry_mode in price_action_modes:
                         action = "HOLD"
                         entry_signal = build_entry_signal(
@@ -329,20 +330,23 @@ class Backtester:
                             entry_atr_style=self.entry_atr_style,
                             entry_pct_style=self.entry_pct_style,
                             swing_entry_mode=self.swing_entry_mode,
+                            desired_direction="BULLISH" if entry_mode in hybrid_modes else None,
                         )
                         signal_action = entry_signal.get("action", "HOLD")
-                        if signal_action != "HOLD":
-                            action = signal_action
-                            reason = entry_signal.get("reason", reason)
-                        elif entry_mode.startswith("hybrid_"):
-                            if analysis['bullish_count'] >= self.threshold:
+                        if entry_mode in hybrid_modes:
+                            structure_ok = signal_action == "BUY" and entry_signal.get("structure_direction") == "BULLISH"
+                            indicator_ok = analysis['bullish_count'] >= self.threshold
+                            if indicator_ok and structure_ok:
                                 action = "BUY"
                                 names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
-                                reason = f"{analysis['bullish_count']} signals ({', '.join(names)})"
+                                reason = f"Hybrid BUY: {analysis['bullish_count']} signals ({', '.join(names)}) + {entry_signal.get('reason', 'bullish structure')}"
                             elif analysis['bearish_count'] >= self.sell_threshold:
                                 action = "SELL"
                                 names = [k for k, v in filtered_signals.items() if v['signal'] == 'BEARISH']
-                                reason = f"{analysis['bearish_count']} signals ({', '.join(names)})"
+                                reason = f"Dynamic Sell: {analysis['bearish_count']} signals ({', '.join(names)})"
+                        elif signal_action != "HOLD":
+                            action = signal_action
+                            reason = entry_signal.get("reason", reason)
                         elif entry_mode == 'custom_price':
                             if analysis['bearish_count'] >= self.sell_threshold:
                                 action = "SELL"

@@ -45,9 +45,18 @@ class AlpacaBroker:
         # Caching for All-Time P/L API queries
         self._all_time_pl_cached = None
         self._all_time_pl_cache_time = 0.0
+        self._positions_cached = None
+        self._positions_cache_time = 0.0
+        self._open_orders_cached = None
+        self._open_orders_cache_time = 0.0
+        self._order_history_cached = None
+        self._order_history_cache_time = 0.0
 
-        if config.ALPACA_API_KEY and not config.ALPACA_API_KEY.startswith("your_alpaca"):
-            self.connect(config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY, config.ALPACA_PAPER)
+    def _invalidate_caches(self):
+        self._positions_cached = None
+        self._open_orders_cached = None
+        self._order_history_cached = None
+        self._all_time_pl_cached = None
 
     def _format_api_error(self, e: Exception) -> str:
         name = type(e).__name__
@@ -232,7 +241,7 @@ class AlpacaBroker:
                 )
             }
 
-        if session == 'extended':
+        if session in {'extended', 'all'}:
             return {
                 'success': True,
                 'allowed': True,
@@ -274,6 +283,11 @@ class AlpacaBroker:
 
     def get_positions(self) -> list:
         """Returns list of open positions."""
+        import time
+        now = time.time()
+        if getattr(self, '_positions_cached', None) is not None and (now - getattr(self, '_positions_cache_time', 0)) < 2.5:
+            return self._positions_cached
+
         if self.simulation_mode:
             positions = []
             for symbol, pos in self.sim_positions.items():
@@ -301,6 +315,8 @@ class AlpacaBroker:
                     'take_profit': pos.get('take_profit', 0),
                     'is_option': is_opt,
                 })
+            self._positions_cached = positions
+            self._positions_cache_time = now
             return positions
 
         try:
@@ -327,7 +343,8 @@ class AlpacaBroker:
                     'take_profit': 0,
                     'is_option': is_opt,
                 })
-            print(f"[broker] Fetched {len(positions)} active positions from Alpaca")
+            self._positions_cached = positions
+            self._positions_cache_time = now
             return positions
         except Exception as e:
             print(f"[broker] Positions unavailable: {self._format_api_error(e)}")
@@ -348,6 +365,11 @@ class AlpacaBroker:
 
     def get_order_history(self, trade_log: list = None, limit: int = 200) -> list:
         """Returns list of all historical orders (filled, rejected, cancelled) with linked trade summaries and chronological realized P/L lot-matching."""
+        import time
+        now = time.time()
+        if getattr(self, '_order_history_cached', None) is not None and (now - getattr(self, '_order_history_cache_time', 0)) < 30:
+            return self._order_history_cached
+
         if self.simulation_mode:
             return self.sim_orders  # Contains historical orders if in sim
 
@@ -382,9 +404,6 @@ class AlpacaBroker:
                 reason = ""
                 
                 if side == 'buy':
-                    if status == 'filled' and filled_qty > 0:
-                        print(f"[MATCH] BUY  {sym}  qty={filled_qty:.4f}  price=${filled_avg:.4f}  date={o.created_at}")
-                    
                     # Resolve trade reason
                     matched = self._find_matching_trade(sym, side, trade_log)
                     
@@ -450,7 +469,6 @@ class AlpacaBroker:
                             f"(Value: ${exit_value:.2f}). "
                             f"Realized P/L: {sign}${pl:.2f} ({sign}{pl_pct:.2f}%)."
                         )
-                        print(f"[MATCH] SELL {sym}  sell_qty={filled_qty:.4f}  entry_qty={entry_qty:.4f}  entry=${entry_price:.4f}  exit=${filled_avg:.4f}  P/L={sign}${pl:.2f}")
                     else:
                         # No matching buy found – fallback
                         matched = self._find_matching_trade(sym, side, trade_log)
@@ -460,7 +478,6 @@ class AlpacaBroker:
                             reason = matched.get('reason')
                         else:
                             reason = f"AI Exit: Position closed at ${self._round_price(sym, filled_avg)}."
-                        print(f"[MATCH] NO BUY for SELL {sym}  qty={filled_qty:.4f} – using fallback")
 
                 history_list.append({
                     'id': str(o.id),
@@ -485,7 +502,8 @@ class AlpacaBroker:
                 })
             # Sort newest first for table rendering
             history_list.sort(key=lambda x: x['created_at'] or "", reverse=True)
-            print(f"[broker] Fetched {len(history_list)} historical orders from Alpaca")
+            self._order_history_cached = history_list
+            self._order_history_cache_time = now
             return history_list
         except Exception as e:
             print(f"[broker] Order history unavailable: {self._format_api_error(e)}")
@@ -493,6 +511,11 @@ class AlpacaBroker:
 
     def get_open_orders(self, trade_log: list = None) -> list:
         """Returns list of currently open (pending) orders with linked trade summaries."""
+        import time
+        now = time.time()
+        if getattr(self, '_open_orders_cached', None) is not None and (now - getattr(self, '_open_orders_cache_time', 0)) < 2.5:
+            return self._open_orders_cached
+
         if self.simulation_mode:
             return [] # Sim mode fills immediately
 
@@ -534,7 +557,8 @@ class AlpacaBroker:
                     'pl_pct': None,
                     'reason': reason
                 })
-            print(f"[broker] Fetched {len(open_list)} open orders from Alpaca")
+            self._open_orders_cached = open_list
+            self._open_orders_cache_time = now
             return open_list
         except Exception as e:
             print(f"[broker] Open orders unavailable: {self._format_api_error(e)}")
@@ -589,6 +613,7 @@ class AlpacaBroker:
 
     def cancel_exit_orders(self, symbol: str) -> dict:
         """Cancels bot-managed exit orders for a symbol."""
+        self._invalidate_caches()
         if self.simulation_mode:
             return {'success': True, 'cancelled': 0}
 
@@ -606,6 +631,7 @@ class AlpacaBroker:
 
     def place_equity_oco_exit(self, symbol: str, qty: float, take_profit: float, stop_loss: float) -> dict:
         """Places a broker-side OCO sell exit for a regular stock/ETF position."""
+        self._invalidate_caches()
         if self.simulation_mode:
             return {'success': True, 'simulated': True, 'symbol': symbol, 'qty': qty, 'take_profit': take_profit, 'stop_loss': stop_loss}
 
@@ -657,6 +683,7 @@ class AlpacaBroker:
 
     def cancel_order_by_id(self, order_id: str) -> dict:
         """Cancels a specific working order by its ID."""
+        self._invalidate_caches()
         if self.simulation_mode:
             return {'success': False, 'error': 'Cannot cancel orders in simple simulation mode.'}
 
@@ -670,6 +697,7 @@ class AlpacaBroker:
 
     def cancel_orders_for_ticker(self, ticker: str, side_filter: str = None) -> dict:
         """Cancels all pending orders for a specific ticker. Optionally filter by side ('buy' or 'sell')."""
+        self._invalidate_caches()
         if self.simulation_mode:
             return {'success': True, 'cancelled': 0}
 
@@ -699,6 +727,7 @@ class AlpacaBroker:
         """
         Places a notional (dollar-based) market order for fractional shares.
         """
+        self._invalidate_caches()
         if self.simulation_mode:
             return self._sim_order(symbol, notional, side, stop_loss, take_profit)
 
@@ -708,8 +737,9 @@ class AlpacaBroker:
             # Crypto logic: Must use GTC and slash-format symbol
             request_symbol = symbol.upper().replace("/", "")
             is_crypto = any(request_symbol.endswith(base) for base in ["USD", "USDT", "USDC"])
+            is_option_symbol = len(request_symbol) >= 15 and request_symbol[-9:-8] in {"C", "P"}
             session = str(market_session or "Regular").strip().lower()
-            use_extended_equity = (not is_crypto) and session in {"extended", "24h", "crypto24"}
+            use_extended_equity = (not is_crypto) and (not is_option_symbol) and session in {"extended", "24h", "crypto24", "all"}
             
             # Crypto market orders often fill instantly when using IOC (Immediate Or Cancel)
             tif = TimeInForce.IOC if is_crypto else TimeInForce.DAY
@@ -726,9 +756,9 @@ class AlpacaBroker:
                     return {'success': False, 'error': 'Extended-hours stock orders require a current price for limit order placement.'}
                 limit_price = ref_price * (1.003 if order_side == OrderSide.BUY else 0.9991)
                 limit_price = self._round_price(request_symbol, limit_price)
-                qty = round(float(notional) / float(limit_price), 6)
+                qty = int(float(notional) / float(limit_price))
                 if qty <= 0:
-                    return {'success': False, 'error': 'Calculated extended-hours order quantity was zero.'}
+                    return {'success': False, 'error': f'Extended-hours stock orders require whole shares (notional ${notional} < limit price ${limit_price}).'}
                 order_data = LimitOrderRequest(
                     symbol=request_symbol,
                     qty=qty,
@@ -769,6 +799,7 @@ class AlpacaBroker:
 
     def close_position(self, symbol: str, market_session: str = "Regular", current_price: float = None) -> dict:
         """Closes an entire position for a given symbol."""
+        self._invalidate_caches()
         if self.simulation_mode:
             if symbol in self.sim_positions:
                 pos = self.sim_positions.pop(symbol)
@@ -821,7 +852,7 @@ class AlpacaBroker:
             is_crypto = any(request_symbol.endswith(base) for base in ["USD", "USDT", "USDC"])
             is_option_symbol = len(request_symbol) >= 15 and request_symbol[-9:-8] in {"C", "P"}
             session = str(market_session or "Regular").strip().lower()
-            use_extended_equity = (not is_crypto) and (not is_option_symbol) and session in {"extended", "24h", "crypto24"}
+            use_extended_equity = (not is_crypto) and (not is_option_symbol) and session in {"extended", "24h", "crypto24", "all"}
             
             formats_to_try = [request_symbol] # Try no-slash first
             if is_crypto:
@@ -837,9 +868,10 @@ class AlpacaBroker:
                 pos = next((p for p in self.get_positions() if p.get('symbol', '').replace("/", "").upper() == request_symbol), None)
                 if not pos:
                     return {'success': False, 'error': f'No position in {symbol}'}
-                qty = abs(float(pos.get('qty', 0)))
+                raw_qty = abs(float(pos.get('qty', 0)))
+                qty = int(raw_qty)
                 if qty <= 0:
-                    return {'success': False, 'error': f'No sellable quantity in {symbol}'}
+                    return {'success': False, 'error': f'Extended-hours stock exits require whole shares (held fractional {raw_qty} cannot be sold during extended hours).'}
                 limit_price = self._round_price(request_symbol, ref_price * 0.9991)
                 order_data = LimitOrderRequest(
                     symbol=request_symbol,
@@ -892,6 +924,7 @@ class AlpacaBroker:
         side: 'buy' or 'sell'
         limit_price: optional marketable limit cap/floor per contract
         """
+        self._invalidate_caches()
         if self.simulation_mode:
             return self._sim_option_order(option_symbol, qty, side)
 
@@ -1080,6 +1113,7 @@ class AlpacaBroker:
 
     def close_all_positions(self) -> dict:
         """Liquidates all positions immediately."""
+        self._invalidate_caches()
         if self.simulation_mode:
             count = len(self.sim_positions)
             self.sim_positions = {}
@@ -1192,7 +1226,7 @@ class AlpacaBroker:
                         'price': float(o.filled_avg_price),
                         'side': o.side.value.upper(),
                         'time': o.filled_at.isoformat(),
-                        'id': str(o.id)
+                'id': str(o.id)
                     })
             return trades
         except Exception as e:
@@ -1204,6 +1238,15 @@ class AlpacaBroker:
         Fetches the portfolio equity and profit/loss history from Alpaca API.
         If in simulation mode, returns a high-fidelity generated portfolio history.
         """
+        import time
+        now_ts_cache = time.time()
+        if not hasattr(self, '_ph_cache'):
+            self._ph_cache = {}
+        cache_key = (period.lower(), timeframe.lower())
+        ttl = 180.0 if period.lower() in ["all", "1a", "1y"] else 60.0
+        if cache_key in self._ph_cache and (now_ts_cache - self._ph_cache[cache_key]['ts']) < ttl:
+            return self._ph_cache[cache_key]['data']
+
         if self.simulation_mode or not self.client:
             # Generate highly realistic simulated portfolio history using random walk (Brownian motion)
             import random
@@ -1287,13 +1330,15 @@ class AlpacaBroker:
             profit_loss = [round(eq - base_value, 2) for eq in equity]
             profit_loss_pct = [round((eq - base_value) / base_value * 100, 4) for eq in equity]
             
-            return {
+            res = {
                 "timestamp": timestamps,
                 "equity": equity,
                 "profit_loss": profit_loss,
                 "profit_loss_pct": profit_loss_pct,
                 "base_value": base_value
             }
+            self._ph_cache[cache_key] = {'ts': now_ts_cache, 'data': res}
+            return res
             
         try:
             # Map '1Hour' or standard '1H' to the correct Alpaca API string format
@@ -1322,21 +1367,10 @@ class AlpacaBroker:
             clean_profit_loss = []
             clean_profit_loss_pct = []
             
-            last_valid_equity = float(ph.base_value) if ph.base_value else 0.0
-            
-            for idx in range(len(raw_timestamp)):
-                ts = raw_timestamp[idx]
-                eq = raw_equity[idx] if idx < len(raw_equity) else None
-                pl = raw_profit_loss[idx] if idx < len(raw_profit_loss) else None
-                pl_pct = raw_profit_loss_pct[idx] if idx < len(raw_profit_loss_pct) else None
-                
-                # Check that values are valid
-                if ts is not None:
-                    if eq is None or eq <= 0:
-                        eq = last_valid_equity
-                    else:
-                        last_valid_equity = eq
-                        
+            last_valid_equity = float(raw_equity[0] or 0.0)
+            for ts, eq, pl, pl_pct in zip(raw_timestamp, raw_equity, raw_profit_loss, raw_profit_loss_pct):
+                if ts is not None and eq is not None and float(eq) > 0:
+                    last_valid_equity = float(eq)
                     clean_timestamp.append(int(ts))
                     clean_equity.append(round(float(eq), 2))
                     clean_profit_loss.append(round(float(pl or 0.0), 2))
@@ -1431,15 +1465,19 @@ class AlpacaBroker:
                 clean_profit_loss = filtered_profit_loss
                 clean_profit_loss_pct = filtered_profit_loss_pct
             
-            return {
+            res = {
                 "timestamp": clean_timestamp,
                 "equity": clean_equity,
                 "profit_loss": clean_profit_loss,
                 "profit_loss_pct": clean_profit_loss_pct,
                 "base_value": float(ph.base_value) if ph.base_value else last_valid_equity
             }
+            self._ph_cache[cache_key] = {'ts': now_ts_cache, 'data': res}
+            return res
         except Exception as e:
             print(f"[broker] Error getting real portfolio history: {e}")
+            if cache_key in self._ph_cache:
+                return self._ph_cache[cache_key]['data']
             # Fallback to simulated data rather than throwing an exception to avoid breaking the UI
             # Temporarily toggle off real to run simulation
             old_sim = self.simulation_mode

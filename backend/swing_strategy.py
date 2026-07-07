@@ -545,6 +545,7 @@ def build_entry_signal(
     entry_atr_style: str = "pullback_reclaim",
     entry_pct_style: str = "dip_reclaim",
     swing_entry_mode: str = "bounce_retest",
+    desired_direction: Optional[str] = None,
 ) -> dict:
     ctx = _extract_context(
         price_history=price_history,
@@ -568,12 +569,32 @@ def build_entry_signal(
     reason = "Entry strategy: waiting for confirmation"
     trigger_price = None
     label = entry_mode or "indicator"
+    desired_direction = str(desired_direction or "").upper()
+    structure_direction = "NONE"
+
+    def _set_signal(next_action: str, next_reason: str, next_trigger=None):
+        nonlocal action, reason, trigger_price, structure_direction
+        next_action = str(next_action or "HOLD").upper()
+        next_direction = "BULLISH" if next_action == "BUY" else "BEARISH" if next_action == "SELL" else "NONE"
+        if desired_direction in {"BULLISH", "BEARISH"} and next_direction != desired_direction:
+            action = "HOLD"
+            structure_direction = next_direction
+            reason = f"{next_direction.title()} structure ignored; waiting for {desired_direction.title()} setup"
+            trigger_price = next_trigger
+            return
+        action = next_action
+        structure_direction = next_direction
+        reason = next_reason
+        trigger_price = next_trigger
 
     if entry_mode == "custom_price":
         trigger_price = _safe_float(custom_buy_price, 0.0)
-        if trigger_price > 0 and current_price <= trigger_price:
-            action = "BUY"
-            reason = f"Custom price entry confirmed at ${trigger_price:.2f}"
+        if trigger_price > 0:
+            if desired_direction == "BEARISH":
+                if current_price >= trigger_price:
+                    _set_signal("SELL", f"Custom PUT price entry confirmed at/above ${trigger_price:.2f}", trigger_price)
+            elif current_price <= trigger_price:
+                _set_signal("BUY", f"Custom price entry confirmed at ${trigger_price:.2f}", trigger_price)
 
     elif entry_mode in ("atr", "hybrid_atr"):
         atr_val = _safe_float(atr, 0.0)
@@ -584,24 +605,16 @@ def build_entry_signal(
             long_level = prev["close"] + offset
             short_level = prev["close"] - offset
             if latest["high"] >= long_level and latest["close"] >= long_level and latest["close"] >= latest["open"]:
-                action = "BUY"
-                trigger_price = long_level
-                reason = f"ATR breakout entry confirmed above ${long_level:.2f} (ATR x {entry_atr_mult:.2f})"
+                _set_signal("BUY", f"ATR breakout entry confirmed above ${long_level:.2f} (ATR x {entry_atr_mult:.2f})", long_level)
             elif latest["low"] <= short_level and latest["close"] <= short_level and latest["close"] <= latest["open"]:
-                action = "SELL"
-                trigger_price = short_level
-                reason = f"ATR breakdown entry confirmed below ${short_level:.2f} (ATR x {entry_atr_mult:.2f})"
+                _set_signal("SELL", f"ATR breakdown entry confirmed below ${short_level:.2f} (ATR x {entry_atr_mult:.2f})", short_level)
         else:
             long_level = prev["close"] - offset
             short_level = prev["close"] + offset
             if latest["low"] <= long_level and latest["close"] >= long_level and latest["close"] >= latest["open"]:
-                action = "BUY"
-                trigger_price = long_level
-                reason = f"ATR pullback entry confirmed at ${long_level:.2f} (ATR x {entry_atr_mult:.2f})"
+                _set_signal("BUY", f"ATR pullback entry confirmed at ${long_level:.2f} (ATR x {entry_atr_mult:.2f})", long_level)
             elif latest["high"] >= short_level and latest["close"] <= short_level and latest["close"] <= latest["open"]:
-                action = "SELL"
-                trigger_price = short_level
-                reason = f"ATR extension entry confirmed at ${short_level:.2f} (ATR x {entry_atr_mult:.2f})"
+                _set_signal("SELL", f"ATR extension entry confirmed at ${short_level:.2f} (ATR x {entry_atr_mult:.2f})", short_level)
 
     elif entry_mode in ("percentage", "hybrid_pct"):
         pct = max(entry_pct_move, 0.01)
@@ -609,24 +622,16 @@ def build_entry_signal(
             long_level = prev["close"] * (1.0 + (pct / 100.0))
             short_level = prev["close"] * (1.0 - (pct / 100.0))
             if latest["high"] >= long_level and latest["close"] >= long_level and latest["close"] >= latest["open"]:
-                action = "BUY"
-                trigger_price = long_level
-                reason = f"Percentage breakout entry confirmed above ${long_level:.2f} ({pct:.2f}%)"
+                _set_signal("BUY", f"Percentage breakout entry confirmed above ${long_level:.2f} ({pct:.2f}%)", long_level)
             elif latest["low"] <= short_level and latest["close"] <= short_level and latest["close"] <= latest["open"]:
-                action = "SELL"
-                trigger_price = short_level
-                reason = f"Percentage breakdown entry confirmed below ${short_level:.2f} ({pct:.2f}%)"
+                _set_signal("SELL", f"Percentage breakdown entry confirmed below ${short_level:.2f} ({pct:.2f}%)", short_level)
         else:
             long_level = prev["close"] * (1.0 - (pct / 100.0))
             short_level = prev["close"] * (1.0 + (pct / 100.0))
             if latest["low"] <= long_level and latest["close"] >= long_level and latest["close"] >= latest["open"]:
-                action = "BUY"
-                trigger_price = long_level
-                reason = f"Percentage pullback entry confirmed at ${long_level:.2f} ({pct:.2f}%)"
+                _set_signal("BUY", f"Percentage pullback entry confirmed at ${long_level:.2f} ({pct:.2f}%)", long_level)
             elif latest["high"] >= short_level and latest["close"] <= short_level and latest["close"] <= latest["open"]:
-                action = "SELL"
-                trigger_price = short_level
-                reason = f"Percentage extension entry confirmed at ${short_level:.2f} ({pct:.2f}%)"
+                _set_signal("SELL", f"Percentage extension entry confirmed at ${short_level:.2f} ({pct:.2f}%)", short_level)
 
     elif entry_mode in ("pivot_points", "hybrid_pivot"):
         prior = _prior_day_ohlc(candles)
@@ -637,23 +642,18 @@ def build_entry_signal(
             tolerance = ctx.get("price_tolerance", 0.0)
             trigger_price = pivot
             if (latest["low"] <= s1 + tolerance and latest["close"] > s1) or (latest["close"] > pivot and prev["close"] <= pivot):
-                action = "BUY"
-                reason = f"Pivot reclaim confirmed above support at ${s1:.2f}"
+                _set_signal("BUY", f"Pivot reclaim confirmed above support at ${s1:.2f}", s1)
             elif (latest["high"] >= r1 - tolerance and latest["close"] < r1) or (latest["close"] < pivot and prev["close"] >= pivot):
-                action = "SELL"
-                reason = f"Pivot rejection confirmed below resistance at ${r1:.2f}"
+                _set_signal("SELL", f"Pivot rejection confirmed below resistance at ${r1:.2f}", r1)
 
     elif entry_mode in ("high_low", "hybrid_high_low"):
         prior = _prior_day_ohlc(candles)
         if prior:
             trigger_price = prior["high"]
             if latest["close"] > prior["high"] and prev["close"] <= prior["high"]:
-                action = "BUY"
-                reason = f"Prior day high breakout confirmed at ${prior['high']:.2f}"
+                _set_signal("BUY", f"Prior day high breakout confirmed at ${prior['high']:.2f}", prior["high"])
             elif latest["close"] < prior["low"] and prev["close"] >= prior["low"]:
-                action = "SELL"
-                trigger_price = prior["low"]
-                reason = f"Prior day low breakdown confirmed at ${prior['low']:.2f}"
+                _set_signal("SELL", f"Prior day low breakdown confirmed at ${prior['low']:.2f}", prior["low"])
 
     elif entry_mode in ("swing_points", "hybrid_swing"):
         swing_decision = detect_swing_entry(
@@ -667,11 +667,16 @@ def build_entry_signal(
         action = swing_decision.get("action", "HOLD")
         reason = swing_decision.get("reason", reason)
         ctx = swing_decision.get("context", ctx)
+        structure_direction = "BULLISH" if action == "BUY" else "BEARISH" if action == "SELL" else "NONE"
+        if desired_direction in {"BULLISH", "BEARISH"} and structure_direction != "NONE" and structure_direction != desired_direction:
+            action = "HOLD"
+            reason = f"{structure_direction.title()} swing setup ignored; waiting for {desired_direction.title()} setup"
 
     return {
         "action": action,
         "reason": reason,
         "trigger_price": trigger_price,
+        "structure_direction": structure_direction,
         "mode": label,
         "context": ctx,
     }

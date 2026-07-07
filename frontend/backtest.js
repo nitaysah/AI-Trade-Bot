@@ -429,7 +429,7 @@ async function runBacktest() {
         if (optionsEnabled) {
             const tradeAmount = parseFloat(document.getElementById('strategyCapital_options')?.value || '1000');
             
-            const optionsType = document.getElementById('strategyOptionsOptionType')?.value || 'both';
+            const optionsType = document.getElementById('strategyOptionsOptionType')?.value || 'calls_only';
             const expiryDays = parseInt(document.getElementById('strategyOptionsExpiryDays')?.value || '3');
             const strikeType = document.getElementById('strategyOptionsStrikeType')?.value || 'ATM';
             const exitStrategy = document.getElementById('strategySellMode_options')?.value || 'indicator';

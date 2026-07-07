@@ -39,6 +39,7 @@ from indicators import get_full_analysis
 from data_manager import get_historical_data
 from engine import FIXED_LEVEL_EXIT_MODES, UserManager, UserEngine
 from swing_strategy import build_swing_exit, detect_swing_entry, format_swing_preview, build_entry_signal, format_entry_preview
+from options_direction import validate_options_type, normalize_options_type, VALID_OPTION_DIRECTIONS, options_type_label
 import config as global_config
 from user_config import set_user_config, get_user_config
 from ai_indicator import get_ai_indicator, clear_ai_cache
@@ -115,6 +116,58 @@ _webull_market_data_broker = None
 _chart_analysis_cache = TTLCacheStore(maxsize=256)
 _quote_cache = TTLCacheStore(maxsize=512)
 
+DASHBOARD_CONFLUENCE_TOGGLE_KEYS = [
+    "ENABLE_RSI",
+    "ENABLE_MACD",
+    "ENABLE_EMA",
+    "ENABLE_SUPERTREND",
+    "ENABLE_BOLLINGER",
+    "ENABLE_VWAP",
+    "ENABLE_MYSTIC_PULSE",
+    "ENABLE_AI_SENTIMENT",
+    "ENABLE_CANDLE_PATTERNS",
+    "ENABLE_ADX_TREND",
+    "ENABLE_SMA",
+    "ENABLE_BOTBULLS1",
+    "ENABLE_BOTBULLS2",
+    "ENABLE_BOTBULLS3",
+]
+
+INDICATOR_PARAMETER_KEYS = [
+    "BOTBULLS1_WT_CHANNEL",
+    "BOTBULLS1_WT_AVERAGE",
+    "BOTBULLS1_MFI_CONFIRM",
+    "BOTBULLS2_ATR_MULT",
+    "BOTBULLS2_TREND_TRACER_PERIOD",
+    "BOTBULLS2_REVERSAL_ZONE_PERIOD",
+    "BOTBULLS3_ATR_PERIOD",
+    "BOTBULLS3_ATR_MULT",
+    "RSI_PERIOD",
+    "RSI_OVERBOUGHT",
+    "RSI_OVERSOLD",
+    "EMA_FAST",
+    "EMA_SLOW",
+    "MACD_FAST",
+    "MACD_SLOW",
+    "MACD_SIGNAL",
+    "BOLL_PERIOD",
+    "BOLL_STD_DEV",
+    "SUPERTREND_PERIOD",
+    "SUPERTREND_MULTIPLIER",
+    "MYSTIC_PULSE_THRESHOLD",
+    "ADX_PERIOD",
+    "ADX_TRENDING_THRESHOLD",
+    "SMA_PERIOD",
+    "ATR_PERIOD",
+    "ATR_STOP_MULTIPLIER",
+    "ATR_TRAIL_MULTIPLIER",
+    "ATR_TAKE_PROFIT_MULTIPLIER",
+    "MIN_BULLISH_SIGNALS",
+    "MIN_BEARISH_SIGNALS",
+    "SENTIMENT_BULLISH_PERCENTAGE",
+    "SENTIMENT_BEARISH_PERCENTAGE",
+]
+
 
 def _cache_settings_hash(eng: UserEngine, ticker: str | None = None, context: str = "dashboard") -> str:
     ticker_key = (ticker or "").upper()
@@ -180,6 +233,24 @@ def _clear_chart_analysis_cache(ticker: str = None, timeframe: str = None):
             and (not timeframe_key or k[3] == timeframe_key)
         )
     )
+
+
+def _log_background_task_result(task: asyncio.Task, reason: str):
+    if task.cancelled():
+        print(f"[settings] Background save cancelled ({reason})")
+        return
+    exc = task.exception()
+    if exc:
+        print(f"[settings] Background save failed ({reason}): {exc}")
+
+
+def _queue_settings_save(eng: UserEngine, reason: str = "settings"):
+    async def _save():
+        await eng.save_settings()
+
+    task = asyncio.create_task(_save())
+    task.add_done_callback(lambda t: _log_background_task_result(t, reason))
+    return task
 
 
 def _get_cached_chart_analysis(ticker: str, timeframe: str, eng: UserEngine, force: bool = False, source: str = "dashboard"):
@@ -666,7 +737,10 @@ async def update_alpaca_config(cfg: AlpacaConfig, eng: UserEngine = Depends(get_
 def unlink_alpaca(eng: UserEngine = Depends(get_user_engine)):
     # Delete from cloud
     if db:
-        db.collection("users").document(eng.uid).collection("settings").document("alpaca").delete()
+        try:
+            db.collection("users").document(eng.uid).collection("settings").document("alpaca").delete(timeout=2.0)
+        except Exception as e:
+            print(f"[api] Error deleting alpaca settings: {e}")
     
     # Reset broker to simulation
     eng.broker.simulation_mode = True
@@ -690,11 +764,24 @@ async def get_portfolio_history(
     """
     alpaca_period = "1A" if period.upper() == "1Y" else ("all" if period.upper() == "ALL" else period)
     try:
-        data = await asyncio.to_thread(eng.broker.get_portfolio_history, period=alpaca_period, timeframe=timeframe)
+        data = await asyncio.wait_for(
+            asyncio.to_thread(eng.broker.get_portfolio_history, period=alpaca_period, timeframe=timeframe),
+            timeout=12.0,
+        )
         return data
-    except Exception as e:
-        print(f"[api] Error getting portfolio history: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except (asyncio.TimeoutError, Exception) as e:
+        print(f"[api] Portfolio history error/timeout ({e}) for period={alpaca_period}, timeframe={timeframe}. Using fallback data.")
+        try:
+            if hasattr(eng.broker, '_ph_cache') and (alpaca_period.lower(), timeframe.lower()) in eng.broker._ph_cache:
+                return eng.broker._ph_cache[(alpaca_period.lower(), timeframe.lower())]['data']
+            old_sim = eng.broker.simulation_mode
+            eng.broker.simulation_mode = True
+            fallback_data = eng.broker.get_portfolio_history(period=alpaca_period, timeframe=timeframe)
+            eng.broker.simulation_mode = old_sim
+            return fallback_data
+        except Exception as fallback_err:
+            print(f"[api] Fallback generation failed: {fallback_err}")
+            return {"timestamp": [], "equity": [], "profit_loss": [], "profit_loss_pct": [], "base_value": 0}
 import time as time_module
 _MARKET_DATA_CACHE = None
 _MARKET_DATA_LAST_FETCH = 0
@@ -965,12 +1052,15 @@ async def _repair_bot_signal_thresholds_if_needed(eng):
         if _normalize_bot_signal_thresholds(settings, eng):
             repaired = True
     if repaired:
-        await eng.save_settings()
+        _queue_settings_save(eng, "repair bot signal thresholds")
         print("[settings] Repaired zero/invalid bot signal thresholds")
 
 
-def _build_indicator_forecast(settings, scan_data, mode="entry", is_long=True, is_option=False, options_type="both", eng=None):
+def _build_indicator_forecast(settings, scan_data, mode="entry", is_long=True, is_option=False, options_type="calls_only", eng=None):
     if not scan_data: return ""
+    options_type = normalize_options_type(options_type, default="calls_only")
+    if is_option and options_type not in VALID_OPTION_DIRECTIONS:
+        return "Legacy Both direction disabled. Choose CALL or PUT."
     signals = scan_data.get('signals', {})
     
     # active_signals filter only those with enabled=True (set by trader.py)
@@ -992,18 +1082,17 @@ def _build_indicator_forecast(settings, scan_data, mode="entry", is_long=True, i
         target = "BULLISH"
         if is_option and options_type == "puts_only":
             target = "BEARISH"
-        target_label = target
-        if is_option and options_type == "both":
-            target_label = "OPTIONS"
+        target_label = "PUT" if target == "BEARISH" and is_option else "CALL" if is_option else target
+        entry_threshold = sell_threshold if target == "BEARISH" else buy_threshold
             
         current_count = 0
         for name, data in active_signals.items():
             sig = data.get('signal', 'NEUTRAL')
-            if sig == target or (target == "BULLISH" and sig == "BEARISH" and is_option and options_type == "both"):
+            if sig == target:
                 current_count += data.get('weight', 1)
                 
-        rem = max(0, buy_threshold - current_count)
-        parts.append(f"[{target_label} TARGET: {buy_threshold} | REMAINING: {rem}]")
+        rem = max(0, entry_threshold - current_count)
+        parts.append(f"[{target_label} ENTRY TARGET: {entry_threshold} | REMAINING: {rem}]")
         
         for name, data in active_signals.items():
             sig = data.get('signal', 'NEUTRAL')
@@ -1011,8 +1100,6 @@ def _build_indicator_forecast(settings, scan_data, mode="entry", is_long=True, i
             if sig == target:
                 icon = "🔴" if sig == "BEARISH" else "✅"
                 parts.append(f"{icon} {name} {sig} ({reason})")
-            elif target == "BULLISH" and sig == "BEARISH" and is_option and options_type == "both":
-                parts.append(f"🔴 {name} BEARISH ({reason})")
             else:
                 parts.append(f"⏳ {name} {sig} ({reason})")
     else:
@@ -1037,7 +1124,7 @@ def _build_indicator_forecast(settings, scan_data, mode="entry", is_long=True, i
     return " | ".join(parts)
 
 
-def _build_swing_forecast(settings, scan_data, mode="entry", is_long=True, is_option=False, options_type="both", eng=None):
+def _build_swing_forecast(settings, scan_data, mode="entry", is_long=True, is_option=False, options_type="calls_only", eng=None):
     if not scan_data:
         return ""
 
@@ -1182,7 +1269,10 @@ def _exit_strategy_label(sell_mode):
     return labels.get(sell_mode or "indicator", str(sell_mode or "indicator").replace("_", " ").title())
 
 
-def _format_entry_card_forecast(settings, scan_data, entry_signal, current_price, buy_mode, is_option=False, options_type="both"):
+def _format_entry_card_forecast(settings, scan_data, entry_signal, current_price, buy_mode, is_option=False, options_type="calls_only"):
+    options_type = normalize_options_type(options_type, default="calls_only")
+    if is_option and options_type not in VALID_OPTION_DIRECTIONS:
+        return "Legacy Both direction disabled. Choose CALL or PUT."
     ctx = (entry_signal or {}).get("context") or {}
     reason = (entry_signal or {}).get("reason") or "Entry strategy: waiting for confirmation"
     action = (entry_signal or {}).get("action", "HOLD")
@@ -1191,11 +1281,11 @@ def _format_entry_card_forecast(settings, scan_data, entry_signal, current_price
     parts = [_entry_strategy_label(mode)]
 
     if is_option:
-        parts.append(f"[Options] {str(options_type or 'both').upper()}")
+        parts.append(f"[Options] {options_type_label(options_type)}")
 
     if mode == "custom_price":
         target = settings.get("custom_buy_price", (entry_signal or {}).get("trigger_price"))
-        label = "CALL Target Entry" if is_option else "Custom Entry"
+        label = "PUT Target Entry At/Above" if is_option and options_type == "puts_only" else "CALL Target Entry At/Below" if is_option else "Custom Entry"
         parts.extend([
             f"[{label}] {_entry_forecast_money(target)}",
             f"[Status] {status}",
@@ -1219,14 +1309,13 @@ def _format_entry_card_forecast(settings, scan_data, entry_signal, current_price
         label = "ATR Buy Above" if style == "breakout_momentum" else "ATR Buy Below"
         style_label = "Breakout / Momentum" if style == "breakout_momentum" else "Pullback / Reclaim"
         if mode == "hybrid_atr":
-            parts.append("[Hybrid] ATR setup or indicator buy threshold")
+            parts.append("[Hybrid] indicator + ATR setup required")
         if is_option:
-            option_side = str(options_type or "both").lower()
             call_label = "CALL Above" if style == "breakout_momentum" else "CALL Reclaim From"
             put_label = "PUT Below" if style == "breakout_momentum" else "PUT Rejection From"
-            if option_side != "puts_only":
+            if options_type == "calls_only":
                 parts.append(f"[{call_label}] {_entry_forecast_money(long_level)}")
-            if option_side != "calls_only":
+            elif options_type == "puts_only":
                 parts.append(f"[{put_label}] {_entry_forecast_money(short_level)}")
             parts.extend([
                 f"[Style] {style_label}",
@@ -1254,14 +1343,13 @@ def _format_entry_card_forecast(settings, scan_data, entry_signal, current_price
         label = "PCT Buy Above" if style == "breakout_momentum" else "PCT Buy Below"
         style_label = "Breakout / Momentum" if style == "breakout_momentum" else ("Reversal / Reclaim" if is_option else "Dip / Reclaim")
         if mode == "hybrid_pct":
-            parts.append("[Hybrid] Percentage setup or indicator buy threshold")
+            parts.append("[Hybrid] indicator + percentage setup required")
         if is_option:
-            option_side = str(options_type or "both").lower()
             call_label = "CALL Above" if style == "breakout_momentum" else "CALL Reclaim From"
             put_label = "PUT Below" if style == "breakout_momentum" else "PUT Rejection From"
-            if option_side != "puts_only":
+            if options_type == "calls_only":
                 parts.append(f"[{call_label}] {_entry_forecast_money(long_level)}")
-            if option_side != "calls_only":
+            elif options_type == "puts_only":
                 parts.append(f"[{put_label}] {_entry_forecast_money(short_level)}")
             parts.extend([
                 f"[Style] {style_label}",
@@ -1280,7 +1368,7 @@ def _format_entry_card_forecast(settings, scan_data, entry_signal, current_price
     if mode in ("pivot_points", "hybrid_pivot"):
         prior = _entry_card_prior_day(scan_data, entry_signal)
         if mode == "hybrid_pivot":
-            parts.append("[Hybrid] Pivot setup or indicator buy threshold")
+            parts.append("[Hybrid] indicator + pivot setup required")
         if prior:
             high = _entry_forecast_float(prior.get("high"))
             low = _entry_forecast_float(prior.get("low"))
@@ -1290,8 +1378,8 @@ def _format_entry_card_forecast(settings, scan_data, entry_signal, current_price
             s1 = (2 * pivot) - high
             parts.extend([
                 f"[Pivot] {_entry_forecast_money(pivot)}",
-                f"[Buy Support S1] {_entry_forecast_money(s1)}",
-                f"[Breakout R1] {_entry_forecast_money(r1)}",
+                f"[CALL Support S1] {_entry_forecast_money(s1)}" if is_option and options_type == "calls_only" else f"[PUT Resistance R1] {_entry_forecast_money(r1)}" if is_option and options_type == "puts_only" else f"[Buy Support S1] {_entry_forecast_money(s1)}",
+                f"[CALL Breakout R1] {_entry_forecast_money(r1)}" if is_option and options_type == "calls_only" else f"[PUT Breakdown Pivot] {_entry_forecast_money(pivot)}" if is_option and options_type == "puts_only" else f"[Breakout R1] {_entry_forecast_money(r1)}",
                 reason,
             ])
         else:
@@ -1301,11 +1389,10 @@ def _format_entry_card_forecast(settings, scan_data, entry_signal, current_price
     if mode in ("high_low", "hybrid_high_low"):
         prior = _entry_card_prior_day(scan_data, entry_signal)
         if mode == "hybrid_high_low":
-            parts.append("[Hybrid] High/Low setup or indicator buy threshold")
+            parts.append("[Hybrid] indicator + high/low setup required")
         if prior:
             parts.extend([
-                f"[Buy Breakout] Prior High {_entry_forecast_money(prior.get('high'))}",
-                f"[Buy Breakdown Guard] Prior Low {_entry_forecast_money(prior.get('low'))}",
+                f"[CALL Breakout] Prior High {_entry_forecast_money(prior.get('high'))}" if is_option and options_type == "calls_only" else f"[PUT Breakdown] Prior Low {_entry_forecast_money(prior.get('low'))}" if is_option and options_type == "puts_only" else f"[Buy Breakout] Prior High {_entry_forecast_money(prior.get('high'))}",
                 reason,
             ])
         else:
@@ -1318,7 +1405,7 @@ def _format_entry_card_forecast(settings, scan_data, entry_signal, current_price
         entry_mode = settings.get("swing_entry_mode", "bounce_retest").replace("_", " ").title()
         lookback = settings.get("swing_entry_lookback_days", settings.get("swing_lookback_days", 20))
         if mode == "hybrid_swing":
-            parts.append("[Hybrid] Swing setup or indicator buy threshold")
+            parts.append("[Hybrid] indicator + swing setup required")
         parts.append(f"[Swing Entry] {entry_mode} | {lookback}D")
         parts.append(f"[Support] {_entry_forecast_money(support.get('price'))}" if support else "[Support] N/A")
         parts.append(f"[Resistance] {_entry_forecast_money(resistance.get('price'))}" if resistance else "[Resistance] N/A")
@@ -1328,9 +1415,12 @@ def _format_entry_card_forecast(settings, scan_data, entry_signal, current_price
     return reason
 
 
-def _build_entry_forecast(settings, scan_data, is_option=False, options_type="both", eng=None, for_card=False):
+def _build_entry_forecast(settings, scan_data, is_option=False, options_type="calls_only", eng=None, for_card=False):
     if not scan_data:
         return ""
+    options_type = normalize_options_type(options_type, default="calls_only")
+    if is_option and options_type not in VALID_OPTION_DIRECTIONS:
+        return "Legacy Both direction disabled. Choose CALL or PUT."
 
     price_history = scan_data.get("price_history", [])
     current_price = scan_data.get("price_raw") or scan_data.get("price") or 0.0
@@ -1353,7 +1443,7 @@ def _build_entry_forecast(settings, scan_data, is_option=False, options_type="bo
         if for_card:
             parts = [_entry_strategy_label(buy_mode)]
             if is_option:
-                parts.append(f"[Options] {str(options_type or 'both').upper()}")
+                parts.append(f"[Options] {options_type_label(options_type)}")
             if indicator_forecast:
                 parts.append(indicator_forecast)
             return " | ".join(parts)
@@ -1381,6 +1471,7 @@ def _build_entry_forecast(settings, scan_data, is_option=False, options_type="bo
         entry_atr_style=settings.get("entry_atr_style", "pullback_reclaim"),
         entry_pct_style=settings.get("entry_pct_style", "dip_reclaim"),
         swing_entry_mode=settings.get("swing_entry_mode", "bounce_retest"),
+        desired_direction=("BULLISH" if is_option and options_type == "calls_only" else "BEARISH" if is_option and options_type == "puts_only" else None),
     )
     if for_card:
         return _format_entry_card_forecast(
@@ -1524,12 +1615,12 @@ def _timeframe_to_seconds(timeframe: str) -> int:
 
 
 def _option_direction_label(settings: dict) -> str:
-    option_type = str(settings.get("options_type", "both") or "both").lower()
+    option_type = normalize_options_type(settings.get("options_type", "calls_only"), default="calls_only")
     if option_type == "calls_only":
         return "CALLS_ONLY"
     if option_type == "puts_only":
         return "PUTS_ONLY"
-    return "BOTH"
+    return "LEGACY_BOTH_DISABLED"
 
 
 def _indicator_pool_text(settings: dict) -> str:
@@ -1634,14 +1725,16 @@ def _scan_log_entry_levels(ticker: str, formatted_scan: dict, settings: dict, ta
         return []
 
     lines = []
-    option_side = str(settings.get("options_type", "both") or "both").lower()
+    option_side = normalize_options_type(settings.get("options_type", "calls_only"), default="calls_only")
     is_option = bool(settings.get("options_trading"))
+    if is_option and option_side not in VALID_OPTION_DIRECTIONS:
+        return ["Legacy Both direction disabled. Choose CALL or PUT."]
 
     def include_bullish():
-        return not is_option or option_side in {"both", "calls_only"} or target_direction == "BULLISH"
+        return not is_option or option_side == "calls_only" or target_direction == "BULLISH"
 
     def include_bearish():
-        return is_option and (option_side in {"both", "puts_only"} or target_direction == "BEARISH")
+        return is_option and (option_side == "puts_only" or target_direction == "BEARISH")
 
     if mode == "custom_price":
         custom_price = _entry_forecast_float(settings.get("custom_buy_price"), 0.0)
@@ -1973,14 +2066,17 @@ def _build_static_entry_forecast(settings: dict, scan: dict, ticker: str) -> str
     if is_option:
         option_label = _option_direction_label(settings)
         parts.append(f"[Options] {option_label}")
-        if option_label == "CALLS_ONLY":
-            parts.append(f"Opens CALL when {buy_threshold} enabled bullish signals confirm")
-        elif option_label == "PUTS_ONLY":
-            parts.append(f"Opens PUT when {buy_threshold} enabled bearish signals confirm")
+
+    if mode in {"indicator", "hybrid", "hybrid_atr", "hybrid_pct", "hybrid_pivot", "hybrid_high_low", "hybrid_swing"}:
+        if is_option:
+            if option_label == "CALLS_ONLY":
+                parts.append(f"Opens CALL when {buy_threshold} enabled bullish signals confirm")
+            elif option_label == "PUTS_ONLY":
+                parts.append(f"Opens PUT when {buy_threshold} enabled bearish signals confirm")
+            else:
+                parts.append(f"Opens CALL on {buy_threshold} bullish signals or PUT on {buy_threshold} bearish signals")
         else:
-            parts.append(f"Opens CALL on {buy_threshold} bullish signals or PUT on {buy_threshold} bearish signals")
-    elif mode == "indicator":
-        parts.append(f"Opens long when {buy_threshold} enabled bullish signals confirm")
+            parts.append(f"Opens long when {buy_threshold} enabled bullish signals confirm")
 
     if mode == "custom_price":
         parts.append(f"[Trigger] {_entry_forecast_money(settings.get('custom_buy_price'))}")
@@ -2008,7 +2104,8 @@ def _build_static_entry_forecast(settings: dict, scan: dict, ticker: str) -> str
         swing_mode = str(settings.get("swing_entry_mode", "bounce_retest")).replace("_", " ").title()
         parts.append(f"[Swing] {swing_mode} | {lookback}D")
 
-    parts.append(f"[Pool] {pool_text}")
+    if mode in {"indicator", "hybrid", "hybrid_atr", "hybrid_pct", "hybrid_pivot", "hybrid_high_low", "hybrid_swing"}:
+        parts.append(f"[Pool] {pool_text}")
     return " | ".join(parts)
 
 
@@ -2089,6 +2186,7 @@ def _build_static_exit_forecast(settings: dict, scan: dict, position: dict, tick
 
 def _clear_forecast_exit_snapshots(settings: dict):
     settings.pop("forecast_exit_snapshots", None)
+    settings.pop("forecast_entry_snapshot", None)
 
 
 def _ensure_entry_forecast_snapshot(settings: dict, scan: dict, ticker: str) -> tuple[str, bool]:
@@ -2147,31 +2245,16 @@ def _resolve_scan_log_phase(settings: dict, position: dict) -> tuple[str, str, i
             return "EXIT", "BULLISH", buy_threshold, context
         return "EXIT", "BEARISH", sell_threshold, context
 
-    option_type = str(settings.get("options_type", "both") or "both").lower()
+    option_type = normalize_options_type(settings.get("options_type", "calls_only"), default="calls_only")
+    if is_option and option_type not in VALID_OPTION_DIRECTIONS:
+        return "ENTRY", "DISABLED", buy_threshold, context
     if is_option and option_type == "puts_only":
-        return "ENTRY", "BEARISH", buy_threshold, context
+        return "ENTRY", "BEARISH", sell_threshold, context
     return "ENTRY", "BULLISH", buy_threshold, context
 
 
 def _resolve_scan_log_target(settings: dict, formatted_scan: dict, position: dict) -> tuple[str, str, int, dict]:
     phase, target_direction, required_count, context = _resolve_scan_log_phase(settings, position)
-    if phase == "ENTRY" and settings.get("options_trading") and str(settings.get("options_type", "both") or "both").lower() == "both":
-        decision = str(formatted_scan.get("action") or "HOLD").upper()
-        selected_indicators = _selected_indicator_names(settings)
-        if decision == "SELL":
-            target_direction = "BEARISH"
-        elif decision == "BUY":
-            target_direction = "BULLISH"
-        elif context["uses_indicators"] and selected_indicators:
-            signals = formatted_scan.get("signals", {}) or {}
-            bullish = _signal_weight_for_direction(signals, selected_indicators, "BULLISH")
-            bearish = _signal_weight_for_direction(signals, selected_indicators, "BEARISH")
-            bull_remaining = max(0, required_count - bullish)
-            bear_remaining = max(0, required_count - bearish)
-            if bear_remaining < bull_remaining:
-                target_direction = "BEARISH"
-            elif bear_remaining == bull_remaining and bearish > bullish:
-                target_direction = "BEARISH"
     return phase, target_direction, required_count, context
 
 
@@ -2195,6 +2278,55 @@ def _build_scan_log(
     uses_structural = bool(strategy_context["uses_structural"])
     strategy_label = strategy_context["label"]
     decision = str(formatted_scan.get("action") or "HOLD").upper()
+
+    if settings.get("options_trading") or settings.get("is_option"):
+        opt_status = eng.get_options_market_status()
+        if not opt_status["is_active_window"]:
+            return {
+                "summary": f"🛑 Options Market Closed. Starts scanning 2m before open ({opt_status['next_open_str']}).",
+                "detail": f"Starts scanning in {_format_duration_compact(opt_status['seconds_to_pre_open'])} (2m prior to market opening).",
+                "status": "MARKET_CLOSED",
+                "is_options_market_closed": True,
+                "phase": phase,
+                "decision": "HOLD",
+                "target_direction": target_direction,
+                "strategy_mode": strategy_context["mode"],
+                "strategy_label": strategy_label,
+                "uses_indicators": strategy_uses_indicators,
+                "uses_structural": uses_structural,
+                "show_indicator_leg": show_indicator_leg,
+                "seconds_to_open": opt_status["seconds_to_open"],
+                "seconds_to_pre_open": opt_status["seconds_to_pre_open"],
+                "next_open_str": opt_status["next_open_str"],
+                "refresh_rate_sec": max(10, min(3600, opt_status["seconds_to_pre_open"])),
+                "is_option": True,
+            }
+    elif not _is_crypto_symbol(ticker):
+        market_session = str(settings.get("market_session", "Regular")).strip().lower()
+        stock_status = eng.get_stock_market_status(market_session)
+        if not stock_status["is_active_window"]:
+            session_label = stock_status["market_session_label"]
+            return {
+                "summary": f"🛑 {session_label} Market Closed. Starts scanning 2m before open ({stock_status['next_open_str']}).",
+                "detail": f"Starts scanning in {_format_duration_compact(stock_status['seconds_to_pre_open'])} (2m prior to market opening).",
+                "status": "MARKET_CLOSED",
+                "is_stock_market_closed": True,
+                "market_session": session_label,
+                "phase": phase,
+                "decision": "HOLD",
+                "target_direction": target_direction,
+                "strategy_mode": strategy_context["mode"],
+                "strategy_label": strategy_label,
+                "uses_indicators": strategy_uses_indicators,
+                "uses_structural": uses_structural,
+                "show_indicator_leg": show_indicator_leg,
+                "seconds_to_open": stock_status["seconds_to_open"],
+                "seconds_to_pre_open": stock_status["seconds_to_pre_open"],
+                "next_open_str": stock_status["next_open_str"],
+                "refresh_rate_sec": max(60, min(3600, stock_status["seconds_to_pre_open"])),
+                "is_option": False,
+            }
+
     signals = formatted_scan.get("signals", {}) or {}
     indicators = []
     confirmed_weight = 0
@@ -2242,11 +2374,20 @@ def _build_scan_log(
     if settings.get("paused"):
         blockers.append(settings.get("pause_reason") or "Bot paused.")
 
+    if settings.get("options_trading") and normalize_options_type(settings.get("options_type", "calls_only"), default="calls_only") not in VALID_OPTION_DIRECTIONS:
+        blockers.append("Legacy Both direction disabled. Choose CALL or PUT.")
+
     if formatted_scan.get("price_raw", 0) <= 0:
         blockers.append("Live quote unavailable.")
 
-    if not is_crypto and not session_allows_outside_rth and eng.config.get("MARKET_HOURS_ONLY", True) and not eng.is_market_open():
-        blockers.append("Market closed for the configured session.")
+    if not is_crypto and eng.config.get("MARKET_HOURS_ONLY", True):
+        is_opt_check = settings.get("options_trading") or settings.get("is_option")
+        if is_opt_check:
+            if not eng.get_options_market_status()["is_open"]:
+                blockers.append("Market closed for the configured session.")
+        else:
+            if not eng.get_stock_market_status(market_session)["is_open"]:
+                blockers.append("Market closed for the configured session.")
 
     has_pending_order = False
     ticker_norm = _normalize_quote_symbol(ticker)
@@ -2426,33 +2567,48 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
     if timeframe is None:
         timeframe = eng.config.TICKER_SETTINGS.get(primary_ticker, {}).get('timeframe') or eng.config.DEFAULT_TIMEFRAME
     
-    # Get general account info and broker data concurrently
+    # Get broker data concurrently, but never let slow secondary calls mark Alpaca disconnected.
     import asyncio
-    try:
-        account, positions, orders, profit_data, orders_history = await asyncio.wait_for(
-            asyncio.gather(
-                asyncio.to_thread(eng.broker.get_account_info),
-                asyncio.to_thread(eng.broker.get_positions),
-                asyncio.to_thread(eng.broker.get_open_orders),
-                asyncio.to_thread(eng.broker.get_all_time_profit),
-                asyncio.to_thread(eng.broker.get_order_history),
-                return_exceptions=False
-            ),
-            timeout=3.0
-        )
-        total_profit, total_profit_pct = profit_data
-    except asyncio.TimeoutError:
-        print("[dashboard] Broker API timeout; using cached/fallback account data")
-        account = {'equity': 0, 'cash': 0, 'buying_power': 0, 'simulation': True, 'daily_pl': 0, 'daily_pl_pct': 0}
-        positions, orders, orders_history = [], [], []
-        total_profit, total_profit_pct = 0.0, 0.0
-    except Exception as e:
-        print(f"[dashboard] Broker API unavailable: {type(e).__name__}: {e or repr(e)}")
-        account = {'equity': 0, 'cash': 0, 'buying_power': 0, 'simulation': True, 'daily_pl': 0, 'daily_pl_pct': 0}
-        positions, orders, orders_history = [], [], []
-        total_profit, total_profit_pct = 0.0, 0.0
+
+    async def _broker_call(label, fn, fallback, timeout=3.0):
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(fn), timeout=timeout)
+        except asyncio.TimeoutError:
+            print(f"[dashboard] Broker {label} timeout; using fallback")
+            return fallback
+        except Exception as e:
+            print(f"[dashboard] Broker {label} unavailable: {type(e).__name__}: {e or repr(e)}")
+            return fallback
+
+    account_fallback = {
+        'equity': 0,
+        'cash': 0,
+        'buying_power': 0,
+        'simulation': True,
+        'daily_pl': 0,
+        'daily_pl_pct': 0,
+        'broker_status_reason': 'Account check unavailable',
+    }
+    account_task = _broker_call("account", eng.broker.get_account_info, account_fallback, timeout=3.0)
+    positions_task = _broker_call("positions", eng.broker.get_positions, [], timeout=2.5)
+    orders_task = _broker_call("open orders", eng.broker.get_open_orders, [], timeout=2.5)
+    profit_task = _broker_call("profit", eng.broker.get_all_time_profit, (0.0, 0.0), timeout=2.5)
+    history_task = _broker_call("order history", eng.broker.get_order_history, [], timeout=2.5)
+
+    account, positions, orders, profit_data, orders_history = await asyncio.gather(
+        account_task,
+        positions_task,
+        orders_task,
+        profit_task,
+        history_task,
+    )
+    total_profit, total_profit_pct = profit_data
     
     account_ms = (time.perf_counter() - account_start) * 1000
+    has_broker_keys = bool(eng.config.ALPACA_API_KEY)
+    broker_connected = has_broker_keys and not account.get('simulation', True)
+    broker_status = "connected" if broker_connected else ("retrying" if has_broker_keys else "not_configured")
+    broker_status_reason = account.get("broker_status_reason") or account.get("error") or ""
     
     # Active bot status check
     is_active_bot = primary_ticker in eng.config.TRADELIST
@@ -2660,13 +2816,13 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                     sell_default = getattr(eng.config, 'MIN_BEARISH_SIGNALS', getattr(get_user_config(), 'MIN_BEARISH_SIGNALS', 1))
                     sell_threshold = _get_threshold_setting(settings, ('min_sell_signals', 'sell_threshold'), sell_default)
                     buy_threshold = _get_threshold_setting(settings, ('min_buy_signals', 'threshold', 'buy_threshold'), buy_default)
-                    desc_dynamic = _build_indicator_forecast(settings, underlying_scan, mode="exit", is_long=is_long, is_option=is_option, options_type=settings.get("options_type", "both"), eng=eng)
+                    desc_dynamic = _build_indicator_forecast(settings, underlying_scan, mode="exit", is_long=is_long, is_option=is_option, options_type=settings.get("options_type", "calls_only"), eng=eng)
                     if not desc_dynamic:
                         desc_dynamic = f"≥ {sell_threshold} BEARISH Signals" if is_long else f"≥ {buy_threshold} BULLISH Signals"
                     targets.append({"label": "Indicator", "val": float('-inf') if is_long else float('inf'), "type": "cond", "desc": desc_dynamic})
 
                 if strat in ('swing_points', 'hybrid_swing'):
-                    swing_desc = _build_swing_forecast(settings, underlying_scan, mode="exit", is_long=(is_long if not is_option else is_call), is_option=is_option, options_type=settings.get("options_type", "both"), eng=eng)
+                    swing_desc = _build_swing_forecast(settings, underlying_scan, mode="exit", is_long=(is_long if not is_option else is_call), is_option=is_option, options_type=settings.get("options_type", "calls_only"), eng=eng)
                     swing_exit = build_swing_exit(
                         underlying_scan.get('price_history', []),
                         current_price=underlying_scan.get('price_raw', 0.0),
@@ -2834,7 +2990,7 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
                     targets.append({"label": "Indicator", "val": float('-inf') if is_call else float('inf'), "type": "cond", "desc": desc})
 
                 if strat in ('swing_points', 'hybrid_swing'):
-                    swing_desc = _build_swing_forecast(settings, underlying_scan, mode="exit", is_long=is_call, is_option=is_option, options_type=settings.get("options_type", "both"), eng=eng)
+                    swing_desc = _build_swing_forecast(settings, underlying_scan, mode="exit", is_long=is_call, is_option=is_option, options_type=settings.get("options_type", "calls_only"), eng=eng)
                     swing_exit = build_swing_exit(
                         underlying_scan.get('price_history', []),
                         current_price=underlying_scan.get('price_raw', 0.0),
@@ -2949,7 +3105,7 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
             t_settings,
             scan,
             is_option=is_opt,
-            options_type=t_settings.get("options_type", "both"),
+            options_type=t_settings.get("options_type", "calls_only"),
             eng=eng,
             for_card=True,
         )
@@ -2971,7 +3127,7 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
         bot_scans_dict[t] = ui_scan
 
     if settings_dirty:
-        await eng.save_settings()
+        _queue_settings_save(eng, "dashboard scan snapshots")
         
     payload = {
         "simulation": account.get('simulation', True),
@@ -3013,8 +3169,10 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
 
         # Bot Meta
         "botRunning": eng.bot_running,
-        "brokerConnected": not account.get('simulation', True),
-        "has_keys": bool(eng.config.ALPACA_API_KEY),
+        "brokerConnected": broker_connected,
+        "brokerStatus": broker_status,
+        "brokerStatusReason": broker_status_reason,
+        "has_keys": has_broker_keys,
         "lastScan": last_scan_time or "Starting...",
         "indicator_settings": eng.config.active_toggles,
         "indicator_parameters": eng.config.active_parameters,
@@ -3083,7 +3241,13 @@ async def get_chart_data(
     started = time.perf_counter()
 
     with _analysis_request_context(source, ticker, prefer_bot):
-        analysis, cached, cache_age = await asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, eng, force, source)
+        try:
+            analysis, cached, cache_age = await asyncio.wait_for(
+                asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, eng, force, source),
+                timeout=15.0,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail=f"Chart refresh timed out for {ticker}")
         if not analysis:
             raise HTTPException(status_code=404, detail=f"Could not load chart data for {ticker}")
 
@@ -3095,7 +3259,7 @@ async def get_chart_data(
             settings,
             scan,
             is_option=is_opt,
-            options_type=settings.get("options_type", "both"),
+            options_type=settings.get("options_type", "calls_only"),
             eng=eng,
         ) if settings else ""
         formatted_scan["swing_entry_forecast"] = _build_swing_forecast(
@@ -3104,7 +3268,7 @@ async def get_chart_data(
             mode="entry",
             is_long=True,
             is_option=is_opt,
-            options_type=settings.get("options_type", "both"),
+            options_type=settings.get("options_type", "calls_only"),
             eng=eng,
         ) if settings else ""
         formatted_scan["swing_exit_forecast"] = _build_swing_forecast(
@@ -3113,7 +3277,7 @@ async def get_chart_data(
             mode="exit",
             is_long=True,
             is_option=is_opt,
-            options_type=settings.get("options_type", "both"),
+            options_type=settings.get("options_type", "calls_only"),
             eng=eng,
         ) if settings else ""
     
@@ -3191,24 +3355,42 @@ async def get_ai_indicator_endpoint(
     if force:
         clear_ai_cache(ticker, timeframe)
 
-    account = eng.broker.get_account_info()
+    try:
+        account = await asyncio.wait_for(
+            asyncio.to_thread(eng.broker.get_account_info),
+            timeout=3.0,
+        )
+    except asyncio.TimeoutError:
+        account = {"cash": 10000.0, "equity": 10000.0}
     available_cash = float(account.get("cash", 10000.0))
     account_equity = float(account.get("equity", 10000.0))
 
     try:
-        result = await asyncio.to_thread(
-            get_ai_indicator,
-            ticker,
-            timeframe,
-            available_cash,
-            account_equity,
-            model,
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                get_ai_indicator,
+                ticker,
+                timeframe,
+                available_cash,
+                account_equity,
+                model,
+            ),
+            timeout=25.0,
         )
         result.setdefault("performance", {})
         result["performance"].update({
             "total_ms": (time.perf_counter() - started) * 1000,
         })
         return result
+    except asyncio.TimeoutError:
+        print(f"[api] AI indicator timeout for {ticker}")
+        return {
+            "error": "AI indicator timed out",
+            "signal": "HOLD",
+            "confidence": 0,
+            "timeframe": timeframe,
+            "model": model,
+        }
     except Exception as e:
         print(f"[api] AI indicator error for {ticker}: {e}")
         return {
@@ -3228,6 +3410,7 @@ async def get_fast_signals(
     ticker: str,
     timeframe: str = None,
     source: str = "dashboard",
+    force: bool = False,
     eng: UserEngine = Depends(get_user_engine)
 ):
     """Fast signal endpoint reusing cached chart analysis when available."""
@@ -3238,7 +3421,13 @@ async def get_fast_signals(
     timeframe = timeframe or eng.config.TICKER_SETTINGS.get(ticker, {}).get('timeframe') or eng.config.DEFAULT_TIMEFRAME
     prefer_bot = ticker in eng.config.TRADELIST and source == "bots"
     with _analysis_request_context(source, ticker, prefer_bot):
-        analysis, cached, cache_age = await asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, eng, False, source)
+        try:
+            analysis, cached, cache_age = await asyncio.wait_for(
+                asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, eng, force, source),
+                timeout=10.0,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail=f"Signal refresh timed out for {ticker}")
         if not analysis:
             raise HTTPException(status_code=404, detail=f"Could not load signals for {ticker}")
 
@@ -3491,7 +3680,10 @@ async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_en
     trade_amount = float(data.get("trade_amount", 100.0))
     expiry_days = int(data.get("expiry_days", 7))
     strike_type = data.get("strike_type", "ATM")
-    options_type = data.get("options_type", "both")
+    try:
+        options_type = validate_options_type(data.get("options_type", "calls_only"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     stop_loss_pct = float(data.get("stop_loss_pct", 0.50))
     take_profit_pct = float(data.get("take_profit_pct", 1.00))
     exit_strategy = data.get("exit_strategy", "hybrid")
@@ -3663,9 +3855,13 @@ async def deploy_backtest_as_bot(data: dict, eng: UserEngine = Depends(get_user_
 
     if is_options:
         options_exit_strategy = data.get("sell_mode", data.get("options_exit_strategy", data.get("exit_strategy")))
+        try:
+            deploy_options_type = validate_options_type(data.get("options_type", "calls_only"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         deploy_payload.update({
             "options_trading": True,
-            "options_type": data.get("options_type", "both"),
+            "options_type": deploy_options_type,
             "options_trade_amount": data.get("trade_amount"),
             "options_expiry_days": data.get("expiry_days"),
             "options_strike_type": data.get("strike_type"),
@@ -4311,8 +4507,11 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
     # Options Trading parameters
     if "options_trading" in data:
         eng.config.TICKER_SETTINGS[symbol]["options_trading"] = bool(data["options_trading"])
-    if "options_type" in data:
-        eng.config.TICKER_SETTINGS[symbol]["options_type"] = data["options_type"]
+    if data.get("options_trading") or "options_type" in data:
+        try:
+            eng.config.TICKER_SETTINGS[symbol]["options_type"] = validate_options_type(data.get("options_type", "calls_only"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     if "options_trade_amount" in data:
         eng.config.TICKER_SETTINGS[symbol]["options_trade_amount"] = float(data["options_trade_amount"])
     options_allocation_mode = str(eng.config.TICKER_SETTINGS[symbol].get("options_allocation_mode", eng.config.TICKER_SETTINGS[symbol].get("allocation_mode", "fixed")) or "fixed").lower()
@@ -4362,41 +4561,47 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         print(f"[settings] Launched new bot for {symbol} with custom settings for {eng.uid}")
 
     _clear_forecast_exit_snapshots(eng.config.TICKER_SETTINGS[symbol])
-    await eng.save_settings()
     clear_evaluation_cache(symbol, None)
     clear_ai_cache(symbol, None)
     _clear_chart_analysis_cache(symbol, None)
     
-    # Warm up cache synchronously before returning so immediate dashboard refresh gets the price/data
-    try:
-        timeframe = data.get("timeframe") or eng.config.TICKER_SETTINGS.get(symbol, {}).get('timeframe') or eng.config.DEFAULT_TIMEFRAME
-        is_crypto = _is_crypto_symbol(symbol)
-        account = eng.broker.get_account_info()
-        avail_cash = account.get('non_marginable_buying_power') or account['cash'] if is_crypto else account['cash']
-        
-        initial_scan = await asyncio.to_thread(
-            evaluate_trade,
-            symbol,
-            account_equity=account['equity'],
-            available_cash=avail_cash,
-            timeframe=timeframe,
-            use_bot_settings=True
-        )
-        if initial_scan:
-            eng._record_bot_scan(initial_scan)
-            _ensure_entry_forecast_snapshot(eng.config.TICKER_SETTINGS[symbol], initial_scan, symbol)
-            await eng.save_settings()
-            print(f"[bots/create] Synchronous warm up scan completed for new bot {symbol}")
-    except Exception as e:
-        print(f"[bots/create] Synchronous warm up scan failed for {symbol}: {e}")
+    async def _background_warmup_and_save():
+        try:
+            timeframe = data.get("timeframe") or eng.config.TICKER_SETTINGS.get(symbol, {}).get('timeframe') or eng.config.DEFAULT_TIMEFRAME
+            is_crypto = _is_crypto_symbol(symbol)
+            account = await asyncio.wait_for(asyncio.to_thread(eng.broker.get_account_info), timeout=2.5)
+            avail_cash = account.get('non_marginable_buying_power') or account['cash'] if is_crypto else account['cash']
+            
+            initial_scan = await asyncio.wait_for(
+                asyncio.to_thread(
+                    evaluate_trade,
+                    symbol,
+                    account_equity=account['equity'],
+                    available_cash=avail_cash,
+                    timeframe=timeframe,
+                    use_bot_settings=True,
+                    ignore_cache=True
+                ),
+                timeout=3.5
+            )
+            if initial_scan:
+                eng._record_bot_scan(initial_scan)
+                _ensure_entry_forecast_snapshot(eng.config.TICKER_SETTINGS[symbol], initial_scan, symbol)
+                positions = await asyncio.wait_for(asyncio.to_thread(eng.broker.get_positions), timeout=2.5)
+                active_pos = _matching_position_for_ticker(positions, symbol, eng.config.TICKER_SETTINGS[symbol])
+                _ensure_exit_forecast_snapshot(eng.config.TICKER_SETTINGS[symbol], initial_scan, active_pos, symbol)
+                print(f"[bots/create] Background warm up scan completed for new bot {symbol}")
+        except Exception as e:
+            print(f"[bots/create] Background warm up scan failed for {symbol}: {e}")
 
-    if not eng.config.TICKER_SETTINGS[symbol].get("forecast_entry_snapshot"):
-        _ensure_entry_forecast_snapshot(eng.config.TICKER_SETTINGS[symbol], {}, symbol)
+        if not eng.config.TICKER_SETTINGS[symbol].get("forecast_entry_snapshot"):
+            _ensure_entry_forecast_snapshot(eng.config.TICKER_SETTINGS[symbol], {}, symbol)
+            
         await eng.save_settings()
-    
-    if eng.force_scan_trigger:
-        eng.force_scan_trigger.set()
-    
+        if eng.force_scan_trigger:
+            eng.force_scan_trigger.set()
+
+    asyncio.create_task(_background_warmup_and_save())
     return {"status": "success", "symbol": symbol, "watchlist": eng.config.WATCHLIST, "tradelist": eng.config.TRADELIST, "settings": eng.config.TICKER_SETTINGS[symbol]}
 
 
@@ -4416,6 +4621,7 @@ async def cancel_order(data: dict, eng: UserEngine = Depends(get_user_engine)):
 @app.post("/api/settings/indicators")
 async def update_indicators(updates: dict, context: str = "dashboard", ticker: str = None, eng: UserEngine = Depends(get_user_engine)):
     """Update indicator toggles or parameters dynamically. Instant in-memory + persists to Firestore."""
+    reset_confluence = bool(updates.pop("reset_confluence", False) or updates.pop("__reset_confluence", False))
     
     if ticker:
         ticker = ticker.upper()
@@ -4440,35 +4646,62 @@ async def update_indicators(updates: dict, context: str = "dashboard", ticker: s
         from user_config import active_evaluation_context
         token = active_evaluation_context.set(context)
         try:
-            for k, v in updates.items():
-                if v == "" or v is None:
+            if reset_confluence:
+                ctx = context if context in getattr(eng.config, "contexts", {}) else "dashboard"
+                ctx_data = eng.config.contexts.setdefault(ctx, {"toggles": {}, "parameters": {}})
+                ctx_data["parameters"] = {}
+                ctx_data["toggles"] = {
+                    **{
+                        k: v for k, v in ctx_data.get("toggles", {}).items()
+                        if k not in DASHBOARD_CONFLUENCE_TOGGLE_KEYS
+                    },
+                    **{k: False for k in DASHBOARD_CONFLUENCE_TOGGLE_KEYS},
+                }
+                for k in INDICATOR_PARAMETER_KEYS:
                     eng.config.set(k, None)
-                elif k.startswith("ENABLE_"):
-                    eng.config.set(k, bool(v))
-                else:
-                    try:
-                        default_val = getattr(global_config, k, None)
-                        if isinstance(default_val, int):
-                            eng.config.set(k, int(v))
-                        elif isinstance(default_val, float):
-                            eng.config.set(k, float(v))
-                        else:
+            else:
+                for k, v in updates.items():
+                    if v == "" or v is None:
+                        eng.config.set(k, None)
+                    elif k.startswith("ENABLE_"):
+                        eng.config.set(k, bool(v))
+                    else:
+                        try:
+                            default_val = getattr(global_config, k, None)
+                            if isinstance(default_val, int):
+                                eng.config.set(k, int(v))
+                            elif isinstance(default_val, float):
+                                eng.config.set(k, float(v))
+                            else:
+                                eng.config.set(k, v)
+                        except Exception as e:
+                            print(f"[settings] Type conversion error for {k}: {e}")
                             eng.config.set(k, v)
-                    except Exception as e:
-                        print(f"[settings] Type conversion error for {k}: {e}")
-                        eng.config.set(k, v)
         finally:
             active_evaluation_context.reset(token)
 
-    await eng.save_settings()
+    if ticker and ticker in eng.config.TICKER_SETTINGS:
+        _clear_forecast_exit_snapshots(eng.config.TICKER_SETTINGS[ticker])
+
+    _queue_settings_save(eng, "indicator settings")
     clear_evaluation_cache()
     clear_ai_cache(ticker, None) if ticker else clear_ai_cache()
     _clear_chart_analysis_cache(ticker, None)
     if eng.force_scan_trigger:
         eng.force_scan_trigger.set()
         
+    if reset_confluence:
+        print(f"[settings] Reset dashboard confluence for {eng.uid} ({context})")
+        return {
+            "status": "success",
+            "reset": True,
+            "save": "queued",
+            "toggles": {k: False for k in DASHBOARD_CONFLUENCE_TOGGLE_KEYS},
+            "parameters_reset": INDICATOR_PARAMETER_KEYS,
+        }
+
     print(f"[settings] Updated indicator settings for {eng.uid}: {', '.join(updates.keys())}")
-    return {"status": "success"}
+    return {"status": "success", "save": "queued"}
 
 
 @app.post("/api/settings/ticker")
@@ -4483,6 +4716,11 @@ async def update_ticker_settings(data: dict, eng: UserEngine = Depends(get_user_
     previously_paused = eng.config.TICKER_SETTINGS.get(ticker, {}).get('paused', False)
     requested_session = settings.get("market_session", eng.config.TICKER_SETTINGS[ticker].get("market_session", "Regular"))
     market_session_check = _validate_market_session_for_symbol(ticker, requested_session, eng)
+    if settings.get("options_trading") or "options_type" in settings:
+        try:
+            settings["options_type"] = validate_options_type(settings.get("options_type", "calls_only"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     for k, v in settings.items():
         if v is not None and v != "default":
             eng.config.TICKER_SETTINGS[ticker][k] = v
@@ -4523,33 +4761,42 @@ async def update_ticker_settings(data: dict, eng: UserEngine = Depends(get_user_
     clear_ai_cache(ticker, None)
     _clear_chart_analysis_cache(ticker, None)
 
-    await eng.save_settings()
+    async def _background_warmup_and_save():
+        try:
+            timeframe = current_settings.get('timeframe') or eng.config.DEFAULT_TIMEFRAME
+            is_crypto = _is_crypto_symbol(ticker)
+            account = await asyncio.wait_for(asyncio.to_thread(eng.broker.get_account_info), timeout=2.5)
+            avail_cash = account.get('non_marginable_buying_power') or account['cash'] if is_crypto else account['cash']
 
-    try:
-        timeframe = current_settings.get('timeframe') or eng.config.DEFAULT_TIMEFRAME
-        is_crypto = _is_crypto_symbol(ticker)
-        account = eng.broker.get_account_info()
-        avail_cash = account.get('non_marginable_buying_power') or account['cash'] if is_crypto else account['cash']
+            refreshed_scan = await asyncio.wait_for(
+                asyncio.to_thread(
+                    evaluate_trade,
+                    ticker,
+                    account_equity=account['equity'],
+                    available_cash=avail_cash,
+                    timeframe=timeframe,
+                    use_bot_settings=True,
+                    ignore_cache=True
+                ),
+                timeout=3.5
+            )
+            if refreshed_scan:
+                eng._record_bot_scan(refreshed_scan)
+                _ensure_entry_forecast_snapshot(current_settings, refreshed_scan, ticker)
+                positions = await asyncio.wait_for(asyncio.to_thread(eng.broker.get_positions), timeout=2.5)
+                active_pos = _matching_position_for_ticker(positions, ticker, current_settings)
+                _ensure_exit_forecast_snapshot(current_settings, refreshed_scan, active_pos, ticker)
+        except Exception as e:
+            print(f"[settings/update] Background warm up scan failed for {ticker}: {e}")
 
-        refreshed_scan = await asyncio.to_thread(
-            evaluate_trade,
-            ticker,
-            account_equity=account['equity'],
-            available_cash=avail_cash,
-            timeframe=timeframe,
-            use_bot_settings=True
-        )
-        if refreshed_scan:
-            eng._record_bot_scan(refreshed_scan)
-            _ensure_entry_forecast_snapshot(current_settings, refreshed_scan, ticker)
-            await eng.save_settings()
-    except Exception as e:
-        print(f"[settings/update] Synchronous warm up scan failed for {ticker}: {e}")
+        if not current_settings.get("forecast_entry_snapshot"):
+            _ensure_entry_forecast_snapshot(current_settings, {}, ticker)
 
-    if not current_settings.get("forecast_entry_snapshot"):
-        _ensure_entry_forecast_snapshot(current_settings, {}, ticker)
         await eng.save_settings()
+        if eng.force_scan_trigger:
+            eng.force_scan_trigger.set()
 
+    asyncio.create_task(_background_warmup_and_save())
     return {"status": "success"}
 
 @app.delete("/api/settings/ticker/{ticker}")
@@ -4558,7 +4805,7 @@ async def reset_ticker_settings(ticker: str, eng: UserEngine = Depends(get_user_
     ticker = ticker.upper()
     if ticker in eng.config.TICKER_SETTINGS:
         del eng.config.TICKER_SETTINGS[ticker]
-        await eng.save_settings()
+        asyncio.create_task(eng.save_settings())
     clear_evaluation_cache(ticker, None)
     clear_ai_cache(ticker, None)
     _clear_chart_analysis_cache(ticker, None)
@@ -4715,9 +4962,9 @@ def _fetch_alpaca_option_snapshots(eng: UserEngine, symbols: list[str]) -> tuple
     if not clean_symbols:
         return {}, "unavailable", ""
 
-    api_key = getattr(eng.config, "ALPACA_API_KEY", "") or config.ALPACA_API_KEY
-    api_secret = getattr(eng.config, "ALPACA_SECRET_KEY", "") or config.ALPACA_SECRET_KEY
-    if not api_key or not api_secret:
+    api_key = getattr(eng.config, "ALPACA_API_KEY", "").strip()
+    api_secret = getattr(eng.config, "ALPACA_SECRET_KEY", "").strip()
+    if not api_key or not api_secret or api_key.startswith("your_alpaca"):
         return {}, "unavailable", "Missing Alpaca API credentials."
 
     try:

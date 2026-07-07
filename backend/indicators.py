@@ -6,6 +6,7 @@ Exposes calculate_indicators_for_df and _generate_signals for backtesting.
 """
 
 from datetime import datetime, timedelta
+import hashlib
 import pandas as pd
 import numpy as np
 import ta as ta_lib
@@ -64,25 +65,26 @@ def _get_mystic_v2_presets(timeframe):
 
 # Alpaca clients (Dynamic access)
 # ---------------------------------------------------------------------------
-_stock_client = None
-_crypto_client = None
+_client_cache = {}
 
 def get_alpaca_clients():
-    """Returns initialized Alpaca clients using the latest config keys (cached)."""
-    global _stock_client, _crypto_client
+    """Returns initialized Alpaca clients for the active user's credentials (cached per key pair)."""
+    global _client_cache
+    usr_cfg = get_user_config()
+    api_key = getattr(usr_cfg, 'ALPACA_API_KEY', '').strip()
+    secret_key = getattr(usr_cfg, 'ALPACA_SECRET_KEY', '').strip()
     
-    if not get_user_config().ALPACA_API_KEY or get_user_config().ALPACA_API_KEY == "your_alpaca_api_key_here":
+    if not api_key or api_key.startswith("your_alpaca"):
         return None, None
-    
-    if _stock_client is None:
-        print("[indicators] Initializing Alpaca Stock client...")
-        _stock_client = StockHistoricalDataClient(get_user_config().ALPACA_API_KEY, get_user_config().ALPACA_SECRET_KEY)
-    
-    if _crypto_client is None:
-        print("[indicators] Initializing Alpaca Crypto client...")
-        _crypto_client = CryptoHistoricalDataClient(get_user_config().ALPACA_API_KEY, get_user_config().ALPACA_SECRET_KEY)
         
-    return _stock_client, _crypto_client
+    cache_key = (api_key, secret_key)
+    if cache_key not in _client_cache:
+        print(f"[indicators] Initializing Alpaca clients for user key {api_key[:4]}***...")
+        s_client = StockHistoricalDataClient(api_key, secret_key)
+        c_client = CryptoHistoricalDataClient(api_key, secret_key)
+        _client_cache[cache_key] = (s_client, c_client)
+        
+    return _client_cache[cache_key]
 
 _data_cache = {}
 
@@ -159,7 +161,11 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca"):
                 return None
 
             end_date = datetime.now()
-            cache_key = (ticker.upper(), timeframe.upper())
+            usr_cfg = get_user_config()
+            api_key = getattr(usr_cfg, 'ALPACA_API_KEY', '').strip()
+            secret_key = getattr(usr_cfg, 'ALPACA_SECRET_KEY', '').strip()
+            credential_scope = hashlib.sha256(f"{api_key}:{secret_key}".encode()).hexdigest()[:16]
+            cache_key = (credential_scope, ticker.upper(), timeframe.upper())
 
             # Timeframe -> Alpaca object + lookback
             tf_str = timeframe.upper()

@@ -22,6 +22,10 @@ const API_BASE = window.location.hostname === 'localhost' || window.location.hos
     ? 'http://localhost:8000'
     : CLOUD_URL;
 const REFRESH_INTERVAL = 10000; // 10 seconds (faster real-time tracking)
+const DASHBOARD_FETCH_TIMEOUT_MS = 15000;
+const PORTFOLIO_FETCH_TIMEOUT_MS = 15000;
+const AI_FETCH_TIMEOUT_MS = 20000;
+const PORTFOLIO_REFRESH_INTERVAL = 30000;
 
 let selectedTicker = null;
 let currentBackendTf = "5Min";
@@ -30,6 +34,38 @@ let currentLogTab = "all";
 let currentChartPeriod = "ALL";
 let portfolioChartInstance = null;
 let botArrangeMode = false;
+let botsDashboardAbortController = null;
+let botsDashboardFetchPromise = null;
+let botsDashboardFetchId = 0;
+let portfolioHistoryFetchInFlight = false;
+let portfolioHistoryAbortController = null;
+let portfolioHistoryFetchId = 0;
+let lastPortfolioRefreshAt = 0;
+let botsRefreshTimerId = null;
+let botsCountdownTimerId = null;
+let botsSoftRefreshTimerId = null;
+let aiIndicatorAbortController = null;
+let aiIndicatorInFlightKey = null;
+let aiIndicatorInFlightPromise = null;
+
+function shouldRunBotsCardRefresh() {
+    return !!document.getElementById('tradelistContainer');
+}
+
+function shouldRunBotsVisualRefresh() {
+    return !document.hidden && shouldRunBotsCardRefresh();
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+    const controller = options.controller || new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const { controller: _controller, ...fetchOptions } = options;
+    try {
+        return await fetch(url, { ...fetchOptions, signal: controller.signal });
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
 
 // ──────────────────────────────────────────────
 // Auth Headers
@@ -130,6 +166,16 @@ function formatRelativeTime(isoString) {
     if (diffHours < 24) return `${diffHours}h ago`;
     const diffDays = Math.floor(diffHours / 24);
     return `${diffDays}d ago`;
+}
+
+function formatDurationCompactJs(seconds) {
+    const rem = Math.max(0, Math.floor(seconds));
+    const h = Math.floor(rem / 3600);
+    const m = Math.floor((rem % 3600) / 60);
+    const s = rem % 60;
+    if (h > 0) return `${h}h ${m}m ${s}s`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
 }
 
 // ──────────────────────────────────────────────
@@ -268,18 +314,20 @@ window.goToDashboardChart = async function (ticker) {
                 }
 
                 // Overwrite global dashboard indicators
-                if (settings.indicators) {
-                    const SIGNAL_TO_TOGGLE = {
-                        'RSI': 'ENABLE_RSI', 'MACD': 'ENABLE_MACD', 'EMA Cross': 'ENABLE_EMA',
-                        'Supertrend': 'ENABLE_SUPERTREND', 'Bollinger': 'ENABLE_BOLLINGER',
-                        'VWAP': 'ENABLE_VWAP', 'Mystic Pulse': 'ENABLE_MYSTIC_PULSE',
-                        'Botbulls4 News AI': 'ENABLE_AI_SENTIMENT', 'Candle Patterns': 'ENABLE_CANDLE_PATTERNS',
-                        'ADX Trend': 'ENABLE_ADX_TREND', 'SMA': 'ENABLE_SMA',
-                        'BotBulls1': 'ENABLE_BOTBULLS1', 'BotBulls2': 'ENABLE_BOTBULLS2', 'BotBulls3': 'ENABLE_BOTBULLS3'
-                    };
+                const SIGNAL_TO_TOGGLE = {
+                    'RSI': 'ENABLE_RSI', 'MACD': 'ENABLE_MACD', 'EMA Cross': 'ENABLE_EMA',
+                    'Supertrend': 'ENABLE_SUPERTREND', 'Bollinger': 'ENABLE_BOLLINGER',
+                    'VWAP': 'ENABLE_VWAP', 'Mystic Pulse': 'ENABLE_MYSTIC_PULSE',
+                    'Botbulls4 News AI': 'ENABLE_AI_SENTIMENT', 'Candle Patterns': 'ENABLE_CANDLE_PATTERNS',
+                    'ADX Trend': 'ENABLE_ADX_TREND', 'SMA': 'ENABLE_SMA',
+                    'BotBulls1': 'ENABLE_BOTBULLS1', 'BotBulls2': 'ENABLE_BOTBULLS2', 'BotBulls3': 'ENABLE_BOTBULLS3'
+                };
 
-                    const payload = {};
-                    const newPrefs = {};
+                const payload = {};
+                let newPrefs = null;
+
+                if (Array.isArray(settings.indicators) && settings.indicators.length > 0) {
+                    newPrefs = {};
                     Object.values(SIGNAL_TO_TOGGLE).forEach(k => payload[k] = false); // Disable all
                     Object.keys(SIGNAL_TO_TOGGLE).forEach(ind => newPrefs[ind] = false);
 
@@ -290,36 +338,52 @@ window.goToDashboardChart = async function (ticker) {
                         }
                     });
 
-                    // Inject bot's custom settings (overrides) into the payload
-                    // so the global chart accurately reflects the bot's custom parameters
-                    if (settings.indicator_overrides) {
-                        for (const [key, val] of Object.entries(settings.indicator_overrides)) {
-                            payload[key] = val;
-                        }
-                    }
-
-                    // Save the bot's threshold settings so the Dashboard Backtest modal can auto-load them
-                    if (settings.min_buy_signals !== undefined) {
-                        localStorage.setItem('lastBotBuyThreshold', settings.min_buy_signals);
-                    }
-                    if (settings.min_sell_signals !== undefined) {
-                        localStorage.setItem('lastBotSellThreshold', settings.min_sell_signals);
-                    }
-
                     // Save to local storage so the UI updates immediately
                     localStorage.setItem('globalIndicatorPrefs', JSON.stringify(newPrefs));
+                }
 
-                    try {
-                        sessionStorage.setItem('dashboardChartContext', JSON.stringify({
-                            ticker,
-                            source: 'dashboard',
-                            timeframe: settings.timeframe || null,
-                            indicatorPrefs: newPrefs
-                        }));
-                    } catch (contextErr) {
-                        console.warn('Failed to store dashboard chart context:', contextErr);
+                // Inject bot's custom settings (overrides) into the payload
+                // so the global chart accurately reflects the bot's custom parameters
+                if (settings.indicator_overrides) {
+                    for (const [key, val] of Object.entries(settings.indicator_overrides)) {
+                        payload[key] = val;
                     }
+                }
 
+                // Save the bot's threshold settings so the Dashboard Backtest modal can auto-load them
+                if (settings.min_buy_signals !== undefined) {
+                    localStorage.setItem('lastBotBuyThreshold', settings.min_buy_signals);
+                }
+                if (settings.min_sell_signals !== undefined) {
+                    localStorage.setItem('lastBotSellThreshold', settings.min_sell_signals);
+                }
+
+                try {
+                    sessionStorage.setItem('dashboardChartContext', JSON.stringify({
+                        ticker,
+                        source: 'bots',
+                        timeframe: settings.timeframe || null,
+                        indicatorPrefs: newPrefs || undefined,
+                        forceRefresh: true
+                    }));
+                } catch (contextErr) {
+                    console.warn('Failed to store dashboard chart context:', contextErr);
+                }
+
+                // Wipe old cached charts for this ticker so the dashboard loads fresh parameters
+                try {
+                    const cleanTicker = (ticker || '').toUpperCase().trim();
+                    for (let i = localStorage.length - 1; i >= 0; i--) {
+                        const k = localStorage.key(i);
+                        if (k && k.startsWith(`chart_cache_${cleanTicker}`)) {
+                            localStorage.removeItem(k);
+                        }
+                    }
+                } catch (e) {
+                    console.warn('Failed to clear old chart cache:', e);
+                }
+
+                if (Object.keys(payload).length > 0) {
                     await fetch(`${API_BASE}/api/settings/indicators?context=dashboard`, {
                         method: 'POST',
                         headers: headers,
@@ -406,7 +470,7 @@ async function persistBotOrderFromVisible(newVisibleTickers) {
         });
         if (response.ok) {
             if (window.lastBotsData) window.lastBotsData.tradelist = finalFullList;
-            await fetchBotsData();
+            await fetchBotsData({ force: true });
         }
     } catch (err) {
         console.error("Error reordering:", err);
@@ -434,6 +498,8 @@ function sanitizePlainText(text) {
 
 function scanLogStatusClass(status) {
     switch (status) {
+        case 'MARKET_CLOSED':
+            return 'bg-red-100 text-red-800 border-red-300 font-bold';
         case 'READY':
             return 'bg-emerald-50 text-emerald-700 border-emerald-200';
         case 'BLOCKED':
@@ -593,7 +659,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             'swing_points', 'atr', 'sltp', 'percentage', 'pivot_points',
             'high_low', 'custom_sltp', 'custom_underlying_sltp', 'trend_rider'
         ]);
-        // Hybrid entry modes: use structural trigger + indicator fallback
+        // Hybrid entry modes: require structural trigger + indicator confirmation
         const HYBRID_ENTRY_MODES = new Set([
             'hybrid_atr', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'
         ]);
@@ -696,8 +762,8 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         );
 
         // ── Options contract direction ──
-        const optionsType = tickerSettings.options_type || 'both'; // 'calls_only' | 'puts_only' | 'both'
-        const isBothDirections = isOptions && optionsType === 'both';
+        const optionsType = tickerSettings.options_type || 'calls_only'; // 'calls_only' | 'puts_only'
+        const isLegacyBoth = isOptions && optionsType === 'both';
         const isCallsOnly = isOptions && optionsType === 'calls_only';
         const isPutsOnly  = isOptions && optionsType === 'puts_only';
 
@@ -717,7 +783,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         //      Regular/Crypto  : BULLISH/HOLD + B count ONLY — never show BEARISH or S count
         //      Options Calls Only: BULLISH/HOLD + B count only
         //      Options Puts Only : BEARISH/HOLD + S count only
-        //      Options Both      : BULLISH/BEARISH/HOLD + both B and S counts
+        //      Legacy Both      : disabled; user must choose CALL or PUT
         let entryIndHtml;
         if (!isEntryIndActive) {
             entryIndHtml = naBadge(entryLabel);
@@ -726,21 +792,10 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             let entryProgressBadges = '';
             let entryProgressTitle = '';
 
-            if (isBothDirections) {
-                // Options Both: dual-direction — show whichever side is stronger/met
-                if (bullishHit && bearishHit) {
-                    entrySignal = bullish > bearish ? 'BULLISH' : bearish > bullish ? 'BEARISH' : 'HOLD';
-                } else if (bullishHit) {
-                    entrySignal = 'BULLISH';
-                } else if (bearishHit) {
-                    entrySignal = 'BEARISH';
-                } else {
-                    entrySignal = 'HOLD';
-                }
-                // Show both B and S counts for Options Both
-                entryProgressBadges = `<span class="text-[0.6rem] font-bold px-1 rounded border ${bullishProgressClass}" title="${bullishProgressTitle}">${bullishProgressText}</span>`
-                                    + `<span class="text-[0.6rem] font-bold px-1 rounded border ${bearishProgressClass}" title="${bearishProgressTitle}">${bearishProgressText}</span>`;
-                entryProgressTitle = `${bullishProgressTitle} ${bearishProgressTitle}`;
+            if (isLegacyBoth) {
+                entrySignal = 'HOLD';
+                entryProgressBadges = `<span class="text-[0.6rem] font-bold px-1 rounded border bg-amber-50 text-amber-700 border-amber-200" title="Legacy Both direction disabled. Choose CALL or PUT.">DISABLED</span>`;
+                entryProgressTitle = 'Legacy Both direction disabled. Choose CALL or PUT.';
             } else if (isPutsOnly) {
                 // Options Puts Only: only bearish signal matters for entry
                 entrySignal = bearishHit ? 'BEARISH' : 'HOLD';
@@ -771,7 +826,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         //      Regular/Crypto           : BEARISH/HOLD + S count (exit long on bearish)
         //      Options holding CALL     : BEARISH/HOLD + S count (bearish needed to close)
         //      Options holding PUT      : BULLISH/HOLD + B count (bullish needed to close)
-        //      Options flat (both/calls): BEARISH/HOLD + S count (default exit readiness)
+        //      Options flat (calls): BEARISH/HOLD + S count (default exit readiness)
         //      Options flat (puts only) : BULLISH/HOLD + B count (default exit readiness)
         let exitIndHtml;
         if (!isExitIndActive) {
@@ -802,7 +857,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         exitProgressBadges = `<span class="text-[0.6rem] font-bold px-1 rounded border ${bullishProgressClass}" title="${bullishProgressTitle}">${bullishProgressText}</span>`;
                         exitProgressTitle = bullishProgressTitle;
                     } else {
-                        // Both or Calls Only: needs bearish to exit a future Call
+                        // Calls Only: needs bearish to exit a future Call
                         exitSignal = bearishHit ? 'BEARISH' : 'HOLD';
                         exitProgressBadges = `<span class="text-[0.6rem] font-bold px-1 rounded border ${bearishProgressClass}" title="${bearishProgressTitle}">${bearishProgressText}</span>`;
                         exitProgressTitle = bearishProgressTitle;
@@ -891,22 +946,22 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         </div>
                     </div>
                 </div>
-                <div class="mt-1.5 pt-1.5 border-t border-slate-50 flex flex-col justify-center cursor-pointer" onclick="selectTicker('${ticker}')">
+                <div class="mt-1.5 pt-1.5 border-t border-slate-50 flex flex-col justify-center cursor-pointer w-full min-w-0" onclick="selectTicker('${ticker}')">
                     <div class="flex items-center gap-1.5 mb-1 flex-wrap">
                         <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Forecast Exit Strategy</span>
                     </div>
-                    <span class="text-[0.55rem] font-bold text-slate-500 font-mono leading-tight whitespace-normal break-words" title="${sanitizePlainText(forecastExitText)}">${forecastExitText}</span>
+                    <span class="text-[0.5rem] sm:text-[0.55rem] font-bold text-slate-500 font-mono leading-normal whitespace-normal break-words w-full min-w-0" title="${sanitizePlainText(forecastExitText)}">${forecastExitText}</span>
                 </div>
             `;
         } else {
             const rawForecastText = scan?.forecast_entry_static || scan?.entry_forecast || "Standing by. Watching market for entry...";
             const forecastText = String(rawForecastText).replace(/\[(Entry|Exit) Strategy\]\s*/gi, '');
             positionHtml = `
-                <div class="mt-2 pt-2 border-t border-slate-50 flex flex-col justify-center cursor-pointer" onclick="selectTicker('${ticker}')">
+                <div class="mt-2 pt-2 border-t border-slate-50 flex flex-col justify-center cursor-pointer w-full min-w-0" onclick="selectTicker('${ticker}')">
                     <div class="flex items-center gap-1.5 mb-1 flex-wrap">
                         <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Forecast Entry Strategy</span>
                     </div>
-                    <span class="text-[0.55rem] font-bold text-slate-500 font-mono leading-tight whitespace-normal break-words" title="${forecastText.replace(/<[^>]*>?/gm, '')}">
+                    <span class="text-[0.5rem] sm:text-[0.55rem] font-bold text-slate-500 font-mono leading-normal whitespace-normal break-words w-full min-w-0" title="${forecastText.replace(/<[^>]*>?/gm, '')}">
                         ${forecastText}
                     </span>
                 </div>
@@ -945,34 +1000,68 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             const cleanTitle = (scanLog.detail || cleanDetail).replace(/[🟢🟡🔴]\s*(Confirmed|Waiting|Opposing):/g, '$1:');
             const formattedDetail = cleanDetail.replace(/(?<!<strong[^>]*>)(Confirmed|Waiting|Opposing):/g, '<strong class="font-bold text-slate-500">$1:</strong>');
             const detailHtml = formattedDetail
-                ? `<span class="text-[0.52rem] text-slate-400 leading-snug whitespace-normal break-words" title="${sanitizePlainText(cleanTitle)}">${formattedDetail}</span>`
+                ? `<span class="text-[0.48rem] sm:text-[0.52rem] text-slate-400 leading-normal whitespace-normal break-words w-full min-w-0" title="${sanitizePlainText(cleanTitle)}">${formattedDetail}</span>`
                 : '';
 
-            let timeAgoText = '';
-            if (scanLog.updated_at) {
-                try {
-                    const dt = new Date(scanLog.updated_at);
-                    if (!isNaN(dt.getTime())) {
-                        const secAgo = Math.max(0, Math.floor((Date.now() - dt.getTime()) / 1000));
-                        const timeStr = dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-                        timeAgoText = `<span class="text-[0.48rem] font-mono text-slate-400 font-normal ml-auto" title="Updated at ${timeStr}">⏱️ ${secAgo <= 60 ? `${secAgo}s ago` : timeStr}</span>`;
-                    }
-                } catch (e) {}
-            }
+            const isOptBot = scanLog.is_option || tickerSettings.options_trading || tickerSettings.is_option;
+            const isMarketClosed = scanLog.is_options_market_closed || scanLog.is_stock_market_closed || scanLog.status === 'MARKET_CLOSED';
+            if (isMarketClosed) {
+                const secToPre = Number(scanLog.seconds_to_pre_open || 0);
+                const secToOpen = Number(scanLog.seconds_to_open || 0);
+                const nextOpenStr = scanLog.next_open_str || 'Market Open';
+                const countdownText = secToPre > 0 
+                    ? `⏱️ Starts scanning in ${formatDurationCompactJs(secToPre)} (2m prior to Market Open)`
+                    : `🔥 Pre-Market Active! Scanning started (${formatDurationCompactJs(secToOpen)} until Open)`;
+                
+                const sessionTag = isOptBot ? 'Options' : (scanLog.market_session || (tickerSettings.market_session && tickerSettings.market_session.toLowerCase() === 'extended' ? 'Extended' : 'Regular'));
 
-            scanLogHtml = `
-                <div class="mt-1.5 pt-1.5 border-t border-slate-50 flex flex-col gap-1 cursor-pointer" onclick="selectTicker('${ticker}')">
-                    <div class="flex items-center gap-1.5 flex-wrap">
-                        <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Scan Log</span>
-                        <span class="px-1.5 py-0.5 rounded border ${scanLogStatusClass(scanLog.status)} font-black text-[0.48rem] tracking-widest uppercase">${statusText}</span>
-                        ${decisionBadgeHtml}
-                        ${timeAgoText}
+                scanLogHtml = `
+                    <div class="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800 flex flex-col gap-1.5 cursor-pointer w-full min-w-0" onclick="selectTicker('${ticker}')">
+                        <div class="w-full p-2.5 rounded-xl bg-gradient-to-r from-red-500/15 via-rose-500/20 to-red-500/15 border-2 border-red-500/60 dark:border-red-500/50 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                            <div class="flex items-center gap-1.5 font-black text-red-600 dark:text-red-400 text-[0.65rem] sm:text-[0.7rem] uppercase tracking-widest">
+                                <span class="text-base leading-none">🛑</span>
+                                <span>MARKET CLOSED</span>
+                                <span class="px-1.5 py-0.5 rounded bg-red-600 dark:bg-red-500 text-white font-mono font-bold text-[0.5rem] uppercase tracking-normal">${sessionTag}</span>
+                            </div>
+                            <span class="options-market-countdown font-mono font-bold text-[0.55rem] sm:text-[0.6rem] text-red-700 dark:text-red-300 bg-red-500/10 px-2 py-1 rounded-lg border border-red-500/30" data-rendered-at="${Date.now()}" data-initial-pre-open="${secToPre}" data-initial-open="${secToOpen}">
+                                ${countdownText}
+                            </span>
+                        </div>
+                        <span class="text-[0.5rem] sm:text-[0.55rem] font-medium text-slate-500 dark:text-slate-400 leading-normal whitespace-normal break-words w-full min-w-0">
+                            ⚡ Scanning resumes automatically 2 minutes prior to ${nextOpenStr}.
+                        </span>
                     </div>
-                    <span class="text-[0.55rem] font-bold text-slate-500 font-mono leading-tight whitespace-normal break-words" title="${sanitizePlainText(scanLog.summary || summaryText)}">${summaryText}</span>
-                    ${protectionBoxHtml}
-                    ${detailHtml}
-                </div>
-            `;
+                `;
+            } else {
+                const refreshRate = Number(scanLog.refresh_rate_sec) || (isOptBot ? 10 : 60);
+                let timeAgoText = '';
+                if (scanLog.updated_at) {
+                    try {
+                        const dt = new Date(scanLog.updated_at);
+                        if (!isNaN(dt.getTime())) {
+                            const secAgo = Math.max(0, Math.floor((Date.now() - dt.getTime()) / 1000));
+                            const remMod = secAgo % refreshRate;
+                            const initialRemaining = remMod === 0 && secAgo > 0 ? refreshRate : (refreshRate - remMod);
+                            const timeStr = dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+                            timeAgoText = `<span class="scan-countdown text-[0.48rem] font-mono text-slate-400 font-normal ml-auto" data-rendered-at="${Date.now()}" data-refresh-rate="${refreshRate}" data-initial-remaining="${initialRemaining}" title="Last scan at ${timeStr} (${secAgo}s ago)">⏱️ Refreshing in ${initialRemaining}s</span>`;
+                        }
+                    } catch (e) {}
+                }
+
+                scanLogHtml = `
+                    <div class="mt-1.5 pt-1.5 border-t border-slate-50 flex flex-col gap-1 cursor-pointer w-full min-w-0" onclick="selectTicker('${ticker}')">
+                        <div class="flex items-center gap-1.5 flex-wrap">
+                            <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Scan Log</span>
+                            <span class="px-1.5 py-0.5 rounded border ${scanLogStatusClass(scanLog.status)} font-black text-[0.48rem] tracking-widest uppercase">${statusText}</span>
+                            ${decisionBadgeHtml}
+                            ${timeAgoText}
+                        </div>
+                        <span class="text-[0.5rem] sm:text-[0.55rem] font-bold text-slate-500 font-mono leading-normal whitespace-normal break-words w-full min-w-0" title="${sanitizePlainText(scanLog.summary || summaryText)}">${summaryText}</span>
+                        ${protectionBoxHtml}
+                        ${detailHtml}
+                    </div>
+                `;
+            }
         }
 
         const startedAt = tickerSettings.started_at;
@@ -1101,7 +1190,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         ${isPaused ? '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-500 border border-amber-200">PAUSED</span>' : '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-100">ACTIVE</span>'}
                         ${isOptions
                 ? `<span class="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-700 font-black text-[0.5rem] border border-amber-500/20 uppercase tracking-widest">Options</span>
-                                   <span class="px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 font-black text-[0.45rem] border border-amber-200 uppercase tracking-widest">${tickerSettings.options_type === 'calls_only' ? 'Calls Only' : (tickerSettings.options_type === 'puts_only' ? 'Puts Only' : 'Calls & Puts')}</span>
+                                   <span class="px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 font-black text-[0.45rem] border border-amber-200 uppercase tracking-widest">${tickerSettings.options_type === 'puts_only' ? 'PUT' : (tickerSettings.options_type === 'both' ? 'Legacy Both Disabled' : 'CALL')}</span>
                                    <span class="px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 font-black text-[0.45rem] border border-amber-200 uppercase tracking-widest">${tickerSettings.options_expiry_days || 7}D Exp</span>`
                 : (isCrypto
                     ? `<span class="px-1.5 py-0.5 rounded bg-fuchsia-500/10 text-fuchsia-700 font-black text-[0.5rem] border border-fuchsia-500/20 uppercase tracking-widest">Crypto</span>`
@@ -1303,7 +1392,7 @@ async function handleDrop(e) {
             });
             if (response.ok) {
                 // Fetch the updated list from the backend
-                await fetchBotsData();
+                await fetchBotsData({ force: true });
             }
         } catch (err) {
             console.error("Error reordering:", err);
@@ -1347,7 +1436,7 @@ async function removeFromTradelist(ticker) {
             method: 'DELETE',
             headers: headers
         });
-        if (response.ok) fetchBotsData();
+        if (response.ok) fetchBotsData({ force: true });
     } catch (e) {
         console.error('Error removing from tradelist:', e);
     }
@@ -1406,7 +1495,7 @@ async function cancelOrder(orderId) {
         const result = await response.json();
         if (result.status === 'success') {
             alert(result.message || "Order cancelled successfully.");
-            fetchBotsData(); // reload
+            fetchBotsData({ force: true }); // reload
         } else {
             alert("Error: " + (result.message || "Could not cancel order."));
         }
@@ -1960,7 +2049,8 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
 
         // Reset Options Defaults
 
-        document.getElementById('strategyOptionsType').value = "both";
+        document.getElementById('strategyOptionsType').value = "calls_only";
+        delete document.getElementById('strategyOptionsType').dataset.legacyBoth;
         document.getElementById('strategyOptionsTradeAmount').value = 100;
         document.getElementById('strategyOptionsExpiryDays').value = 3;
         document.getElementById('strategyOptionsStrikeType').value = "ATM";
@@ -2089,7 +2179,16 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         // Load Options settings
         const optEnabled = settings.options_trading || false;
         window.toggleModeActive(optEnabled ? 'options' : 'regular');
-        document.getElementById('strategyOptionsType').value = settings.options_type || 'both';
+        const savedOptionsType = settings.options_type === 'puts_only' ? 'puts_only' : 'calls_only';
+        const optionsTypeEl = document.getElementById('strategyOptionsType');
+        optionsTypeEl.value = savedOptionsType;
+        if (settings.options_type === 'both') {
+            optionsTypeEl.dataset.legacyBoth = 'true';
+            const directionHint = document.getElementById('strategyOptionsDirectionHint');
+            if (directionHint) directionHint.textContent = 'Legacy Both direction is disabled. Choose CALL or PUT before saving this bot.';
+        } else {
+            delete optionsTypeEl.dataset.legacyBoth;
+        }
         document.getElementById('strategyOptionsTradeAmount').value = settings.options_trade_amount !== undefined ? settings.options_trade_amount : 100;
         document.getElementById('strategyOptionsExpiryDays').value = settings.options_expiry_days !== undefined ? settings.options_expiry_days : 7;
         document.getElementById('strategyOptionsStrikeType').value = settings.options_strike_type || 'ATM';
@@ -2290,6 +2389,7 @@ window.updateStrategySignalLabels = function (mode = window.activeTradingMode ||
         sellInput.value = 0;
         buyLabel.textContent = "0 of 0 Signals";
         sellLabel.textContent = "0 of 0 Signals";
+        if (mode === 'options') syncOptionsPutEntryThresholdLabel(checkedCount);
         return;
     }
 
@@ -2303,6 +2403,41 @@ window.updateStrategySignalLabels = function (mode = window.activeTradingMode ||
 
     buyLabel.textContent = `${buyInput.value} of ${checkedCount} Signals`;
     sellLabel.textContent = `${sellInput.value} of ${checkedCount} Signals`;
+    if (mode === 'options') syncOptionsPutEntryThresholdLabel(checkedCount);
+};
+
+function syncOptionsPutEntryThresholdLabel(checkedCount = null) {
+    const putInput = document.getElementById('strategyPutEntryThreshold_options');
+    const putLabel = document.getElementById('strategyPutEntryLabel_options');
+    const sellInput = document.getElementById('strategySellThreshold_options');
+    if (!putInput || !putLabel || !sellInput) return;
+
+    if (checkedCount === null) {
+        const container = document.getElementById('indicatorChecksContainer_options');
+        checkedCount = container ? container.querySelectorAll('.strategy-indicator-check:checked').length : 0;
+    }
+
+    putInput.min = sellInput.min;
+    putInput.max = sellInput.max;
+    putInput.value = sellInput.value;
+    putLabel.textContent = `${sellInput.value} of ${checkedCount} Signals`;
+}
+
+window.syncOptionsPutEntryThreshold = function () {
+    const putInput = document.getElementById('strategyPutEntryThreshold_options');
+    const sellInput = document.getElementById('strategySellThreshold_options');
+    const container = document.getElementById('indicatorChecksContainer_options');
+    if (!putInput || !sellInput || !container) return;
+
+    const checkedCount = container.querySelectorAll('.strategy-indicator-check:checked').length;
+    sellInput.value = normalizeSignalThreshold(putInput.value, checkedCount, 'sell');
+    window.updateStrategySignalLabels('options');
+};
+
+window.adjustOptionsPutEntryThreshold = function (delta) {
+    window.adjustStrategyThreshold('options', 'sell', delta);
+    syncOptionsPutEntryThresholdLabel();
+    if (window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry');
 };
 
 window.adjustStrategyThreshold = function (mode, type, delta) {
@@ -2624,10 +2759,32 @@ window.handleStrategyAction = async function () {
     }
 };
 
+function setBotCardRefreshing(ticker, statusText = "Refreshing settings...") {
+    if (!ticker) return;
+    const cards = document.querySelectorAll(`.active-bot[data-ticker="${ticker}"]`);
+    cards.forEach(card => {
+        card.classList.add('opacity-80', 'transition-all', 'duration-200');
+        let badge = card.querySelector('.bot-refreshing-badge');
+        if (!badge) {
+            badge = document.createElement('div');
+            badge.className = 'bot-refreshing-badge mt-2 p-2 bg-indigo-50/95 border border-indigo-200/80 rounded-lg flex items-center justify-center gap-2 text-xs font-bold text-indigo-800 shadow-sm transition-all duration-200';
+            card.appendChild(badge);
+        }
+        badge.innerHTML = `
+            <svg class="animate-spin h-3.5 w-3.5 text-indigo-600 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <span>${statusText}</span>
+        `;
+    });
+}
+
 async function saveTickerSettings() {
     if (!currentStrategySymbol) return;
 
     const mode = window.activeTradingMode || 'regular';
+    if (!requireValidOptionsDirectionForSave(mode)) return;
     const validation = window.validateStrategyPreflight(currentStrategySymbol, mode);
     if (!validation.valid) {
         alert(`${validation.title}\n\n${validation.message}`);
@@ -2671,7 +2828,7 @@ async function saveTickerSettings() {
             enable_cooldown: document.getElementById(`strategyEnableCooldown_${mode}`)?.checked || false,
             cooldown_minutes: getCooldownMinutesValue(mode),
             options_trading: mode === 'options',
-            options_type: document.getElementById('strategyOptionsType')?.value || 'both',
+            options_type: document.getElementById('strategyOptionsType')?.value || 'calls_only',
             options_trade_amount: parseFloat(document.getElementById('strategyOptionsTradeAmount')?.value || 100),
             options_expiry_days: parseInt(document.getElementById('strategyOptionsExpiryDays')?.value || 7),
             options_strike_type: document.getElementById('strategyOptionsStrikeType')?.value || 'ATM',
@@ -2689,6 +2846,7 @@ async function saveTickerSettings() {
         }
     };
 
+    const targetTicker = currentStrategySymbol;
     try {
         if (mode === 'regular' && window.updateMarketSessionNotice) {
             const sessionCheck = await window.updateMarketSessionNotice();
@@ -2697,6 +2855,9 @@ async function saveTickerSettings() {
                 return;
             }
         }
+        closeStrategyModal();
+        setBotCardRefreshing(targetTicker, "Saving settings & scanning...");
+
         const headers = await getAuthHeaders();
         const response = await fetch(`${API_BASE}/api/settings/ticker`, {
             method: 'POST',
@@ -2704,15 +2865,10 @@ async function saveTickerSettings() {
             body: JSON.stringify(data)
         });
         if (response.ok) {
-            // Optimistically update the cache so instant navigation works flawlessly
-            if (window.lastBotsData && window.lastBotsData.ticker_settings) {
-                window.lastBotsData.ticker_settings[currentStrategySymbol] = {
-                    ...window.lastBotsData.ticker_settings[currentStrategySymbol],
-                    ...data.settings
-                };
-            }
-            closeStrategyModal();
-            fetchBotsData(); // let it refresh in background
+            setBotCardRefreshing(targetTicker, "Refreshing scan results...");
+            setTimeout(() => {
+                fetchBotsData({ force: true });
+            }, 1500);
         } else {
             const errData = await response.json().catch(() => ({}));
             alert(`Failed to save settings: ${errData.message || errData.detail || response.statusText}`);
@@ -2727,14 +2883,20 @@ window.resetTickerSettings = async function () {
     if (!currentStrategySymbol) return;
     if (!confirm(`Reset ${currentStrategySymbol} to global defaults?`)) return;
 
+    const targetTicker = currentStrategySymbol;
+    closeStrategyModal();
+    setBotCardRefreshing(targetTicker, "Resetting to defaults...");
+
     try {
         const headers = await getAuthHeaders();
-        await fetch(`${API_BASE}/api/settings/ticker/${currentStrategySymbol}`, {
+        await fetch(`${API_BASE}/api/settings/ticker/${targetTicker}`, {
             method: 'DELETE',
             headers: headers
         });
-        closeStrategyModal();
-        fetchBotsData();
+        setBotCardRefreshing(targetTicker, "Refreshing scan results...");
+        setTimeout(() => {
+            fetchBotsData({ force: true });
+        }, 1500);
     } catch (e) {
         console.error('Error resetting ticker settings:', e);
     }
@@ -2762,7 +2924,7 @@ window.toggleWatchlist = async function (ticker) {
             });
         }
         // Refresh UI
-        fetchBotsData();
+        fetchBotsData({ force: true });
     } catch (e) {
         console.error('Error toggling watchlist:', e);
     }
@@ -2770,11 +2932,29 @@ window.toggleWatchlist = async function (ticker) {
 // ──────────────────────────────────────────────
 // Main Fetch Loop
 // ──────────────────────────────────────────────
-async function fetchBotsData() {
-    try {
+async function fetchBotsData(options = {}) {
+    const { force = false } = options;
+    if (!force && !shouldRunBotsCardRefresh()) return false;
+    if (window._isFetchingBotsData) {
+        if (force && botsDashboardAbortController) {
+            botsDashboardAbortController.abort();
+        } else {
+            return botsDashboardFetchPromise || false;
+        }
+    }
+    window._isFetchingBotsData = true;
+
+    const fetchId = ++botsDashboardFetchId;
+    botsDashboardAbortController = new AbortController();
+    botsDashboardFetchPromise = (async () => {
         const headers = await getAuthHeaders();
         const url = `${API_BASE}/api/dashboard?mode=fast&source=bots&_t=${Date.now()}`;
-        const response = await fetch(url, { headers, cache: 'no-store' });
+        const response = await fetchWithTimeout(
+            url,
+            { headers, cache: 'no-store', controller: botsDashboardAbortController },
+            DASHBOARD_FETCH_TIMEOUT_MS
+        );
+        if (!response.ok) throw new Error(`Dashboard HTTP ${response.status}`);
         const data = await response.json();
 
         // Cache for modal access
@@ -2782,8 +2962,24 @@ async function fetchBotsData() {
         window.lastDashboardData = data;
 
         applyBotsData(data);
+        return data;
+    })();
+
+    try {
+        return await botsDashboardFetchPromise;
     } catch (error) {
-        console.error('[bots] Fetch error:', error);
+        if (error.name === 'AbortError') {
+            console.warn(`[bots] Dashboard fetch aborted after ${DASHBOARD_FETCH_TIMEOUT_MS}ms.`);
+        } else {
+            console.error('[bots] Fetch error:', error);
+        }
+        return false;
+    } finally {
+        if (fetchId === botsDashboardFetchId) {
+            window._isFetchingBotsData = false;
+            botsDashboardAbortController = null;
+            botsDashboardFetchPromise = null;
+        }
     }
 }
 
@@ -2993,7 +3189,7 @@ async function submitAlpacaConfig() {
         if (data.status === 'success') {
             alert("Connection Successful! Your Alpaca account is now linked.");
             closeAlpacaModal();
-            fetchBotsData();
+            fetchBotsData({ force: true });
         } else {
             alert("Connection Failed: " + data.message);
         }
@@ -3018,7 +3214,7 @@ async function unlinkAlpaca() {
         const data = await response.json();
         if (data.status === 'success') {
             alert(data.message);
-            fetchBotsData();
+            fetchBotsData({ force: true });
         } else {
             alert("Error unlinking account.");
         }
@@ -3125,6 +3321,7 @@ window.confirmAndDeployBot = async function () {
     }
 
     const mode = window.activeTradingMode || 'regular';
+    if (!requireValidOptionsDirectionForSave(mode)) return;
     const validation = window.validateStrategyPreflight(currentStrategySymbol, mode);
     if (!validation.valid) {
         alert(`${validation.title}\n\n${validation.message}`);
@@ -3207,7 +3404,7 @@ window.confirmAndDeployBot = async function () {
             enable_cooldown: document.getElementById(`strategyEnableCooldown_${mode}`)?.checked || false,
             cooldown_minutes: getCooldownMinutesValue(mode),
             options_trading: mode === 'options',
-            options_type: document.getElementById('strategyOptionsType')?.value || 'both',
+            options_type: document.getElementById('strategyOptionsType')?.value || 'calls_only',
             options_trade_amount: parseFloat(document.getElementById('strategyOptionsTradeAmount')?.value || 100),
             options_expiry_days: parseInt(document.getElementById('strategyOptionsExpiryDays')?.value || 7),
             options_strike_type: document.getElementById('strategyOptionsStrikeType')?.value || 'ATM',
@@ -3232,7 +3429,7 @@ window.confirmAndDeployBot = async function () {
 
         const data = await response.json().catch(() => ({}));
         if (response.ok && data.status !== 'error') {
-            await fetchBotsData();
+            await fetchBotsData({ force: true });
         } else {
             tempDiv.remove();
             alert(data.message || data.detail || "Failed to launch bot. Please try again.");
@@ -3312,20 +3509,61 @@ async function unlinkAlpaca() {
                 console.warn('[bots] Could not read bots cache:', e);
             }
 
-            // Always fetch fresh data — immediately if no cache, delayed if cache was used
-            fetchPortfolioHistory();
+            // Always fetch fresh data — immediately if no cache, delayed if cache was used.
+            fetchPortfolioHistory({ force: true });
             if (!usedCache) {
-                fetchBotsData(); // Full load if no cache
+                fetchBotsData({ force: true }); // Full load if no cache
             } else {
                 // Soft refresh after a short delay when cache was used
-                setTimeout(() => fetchBotsData(), 2000);
+                botsSoftRefreshTimerId = setTimeout(() => fetchBotsData({ force: true }), 2000);
             }
             loadOllamaModels();
 
-            setInterval(() => {
+            botsRefreshTimerId = setInterval(() => {
                 fetchBotsData();
                 fetchPortfolioHistory();
             }, REFRESH_INTERVAL);
+
+            // 1-second live countdown ticker for Bot Card Scan Logs (zero-drift architecture)
+            botsCountdownTimerId = setInterval(() => {
+                document.querySelectorAll('.scan-countdown').forEach(el => {
+                    const renderedAt = Number(el.getAttribute('data-rendered-at'));
+                    const initialRemaining = Number(el.getAttribute('data-initial-remaining'));
+                    if (!isNaN(renderedAt) && !isNaN(initialRemaining)) {
+                        const elapsedSec = Math.floor((Date.now() - renderedAt) / 1000);
+                        const currentRemaining = Math.max(0, initialRemaining - elapsedSec);
+                        if (currentRemaining > 0) {
+                            el.innerHTML = `⏱️ Refreshing in ${currentRemaining}s`;
+                        } else {
+                            el.innerHTML = `⏱️ Refreshing now...`;
+                        }
+                    }
+                });
+                document.querySelectorAll('.options-market-countdown').forEach(el => {
+                    const renderedAt = Number(el.getAttribute('data-rendered-at'));
+                    const initialPreOpen = Number(el.getAttribute('data-initial-pre-open'));
+                    const initialOpen = Number(el.getAttribute('data-initial-open'));
+                    if (!isNaN(renderedAt) && !isNaN(initialPreOpen)) {
+                        const elapsedSec = Math.floor((Date.now() - renderedAt) / 1000);
+                        const remPreOpen = Math.max(0, initialPreOpen - elapsedSec);
+                        const remOpen = Math.max(0, initialOpen - elapsedSec);
+                        if (remPreOpen > 0) {
+                            el.innerHTML = `⏱️ Starts scanning in ${formatDurationCompactJs(remPreOpen)} (2m prior to Market Open)`;
+                        } else if (remOpen > 0) {
+                            el.innerHTML = `🔥 Pre-Market Active! Scanning started (${formatDurationCompactJs(remOpen)} until Open)`;
+                        } else {
+                            el.innerHTML = `🔔 Market Open! Refreshing signals...`;
+                        }
+                    }
+                });
+            }, 1000);
+
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden) {
+                    fetchBotsData({ force: true });
+                    fetchPortfolioHistory({ force: true });
+                }
+            });
         }
     }, 200);
 })();
@@ -3552,6 +3790,7 @@ async function saveIndicatorSettings() {
             }
 
             closeIndicatorSettings();
+            await fetchBotsData({ force: true });
         } else {
             alert("Error saving indicator settings.");
         }
@@ -3605,19 +3844,38 @@ async function setChartPeriod(period) {
         }
     });
 
-    await fetchPortfolioHistory();
+    await fetchPortfolioHistory({ force: true });
 }
 
-async function fetchPortfolioHistory() {
+async function fetchPortfolioHistory(options = {}) {
+    const { force = false } = options;
     const canvas = document.getElementById('portfolioHistoryChart');
     if (!canvas) return;
+    if (!force && !shouldRunBotsVisualRefresh()) return;
+    const now = Date.now();
+    if (!force && now - lastPortfolioRefreshAt < PORTFOLIO_REFRESH_INTERVAL) return;
+    if (portfolioHistoryFetchInFlight) {
+        if (force && portfolioHistoryAbortController) {
+            portfolioHistoryAbortController.abort();
+        } else {
+            return;
+        }
+    }
 
+    const fetchId = ++portfolioHistoryFetchId;
+    portfolioHistoryFetchInFlight = true;
+    portfolioHistoryAbortController = new AbortController();
+    lastPortfolioRefreshAt = now;
     try {
         const headers = await getAuthHeaders();
         const tf = getChartTimeframe(currentChartPeriod);
         const url = `${API_BASE}/api/portfolio/history?period=${currentChartPeriod}&timeframe=${tf}`;
 
-        const response = await fetch(url, { headers });
+        const response = await fetchWithTimeout(
+            url,
+            { headers, cache: 'no-store', controller: portfolioHistoryAbortController },
+            PORTFOLIO_FETCH_TIMEOUT_MS
+        );
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
         const data = await response.json();
@@ -3860,7 +4118,16 @@ async function fetchPortfolioHistory() {
         });
 
     } catch (e) {
-        console.error("[chart] Error rendering portfolio history:", e);
+        if (e.name === 'AbortError') {
+            console.warn(`[chart] Portfolio history fetch aborted after ${PORTFOLIO_FETCH_TIMEOUT_MS}ms.`);
+        } else {
+            console.error("[chart] Error rendering portfolio history:", e);
+        }
+    } finally {
+        if (fetchId === portfolioHistoryFetchId) {
+            portfolioHistoryFetchInFlight = false;
+            portfolioHistoryAbortController = null;
+        }
     }
 }
 
@@ -3871,7 +4138,7 @@ window.ollamaModels = [];
 async function loadOllamaModels() {
     try {
         const headers = await getAuthHeaders();
-        const res = await fetch(`${API_BASE}/api/ollama/models`, { headers });
+        const res = await fetchWithTimeout(`${API_BASE}/api/ollama/models`, { headers }, 3000);
         if (res.ok) {
             const data = await res.json();
             if (data.status === 'online') {
@@ -3918,6 +4185,12 @@ async function fetchAIIndicator(ticker, timeframe, force = false) {
     if (!ticker) return;
     const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
     const key = `${ticker}|${timeframe}|${selectedModel}`;
+    if (!force && aiIndicatorInFlightKey === key && aiIndicatorInFlightPromise) {
+        return aiIndicatorInFlightPromise;
+    }
+    if (force && aiIndicatorAbortController) {
+        aiIndicatorAbortController.abort();
+    }
 
     // Check client-side session cache first (unless forced)
     if (!force) {
@@ -3932,10 +4205,12 @@ async function fetchAIIndicator(ticker, timeframe, force = false) {
     _showAIIndicatorLoading(ticker);
 
     const fetchId = ++_aiIndicatorFetchId;
-    try {
+    aiIndicatorInFlightKey = key;
+    aiIndicatorAbortController = new AbortController();
+    aiIndicatorInFlightPromise = (async () => {
         const headers = await getAuthHeaders();
         const url = `${API_BASE}/api/ai-indicator?ticker=${encodeURIComponent(ticker)}&timeframe=${encodeURIComponent(timeframe)}&model=${encodeURIComponent(selectedModel)}${force ? '&force=true' : ''}`;
-        const res = await fetch(url, { headers });
+        const res = await fetchWithTimeout(url, { headers, controller: aiIndicatorAbortController }, AI_FETCH_TIMEOUT_MS);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
 
@@ -3954,9 +4229,18 @@ async function fetchAIIndicator(ticker, timeframe, force = false) {
 
         setAICache(key, data);
         renderAIIndicatorCard(data, false);
+        return data;
+    })();
+
+    try {
+        return await aiIndicatorInFlightPromise;
     } catch (e) {
         if (fetchId === _aiIndicatorFetchId) {
-            console.error('[ai-indicator] Fetch error:', e);
+            if (e.name === 'AbortError') {
+                console.warn(`[ai-indicator] Fetch aborted after ${AI_FETCH_TIMEOUT_MS}ms.`);
+            } else {
+                console.error('[ai-indicator] Fetch error:', e);
+            }
             if (selectedModel !== 'llama-3.3-70b-versatile') {
                 console.warn(`[ai-indicator] Fetch failed for ${selectedModel}. Falling back to default Groq model.`);
                 localStorage.setItem('selected_ai_model', 'llama-3.3-70b-versatile');
@@ -3964,6 +4248,12 @@ async function fetchAIIndicator(ticker, timeframe, force = false) {
                 return;
             }
             _showAIIndicatorError('Could not load AI analysis', ticker);
+        }
+    } finally {
+        if (fetchId === _aiIndicatorFetchId) {
+            aiIndicatorInFlightKey = null;
+            aiIndicatorInFlightPromise = null;
+            aiIndicatorAbortController = null;
         }
     }
 }
@@ -4018,7 +4308,7 @@ window.changeAIIndicatorModel = async function (model) {
     const timeframe = currentBackendTf || '1Hour';
     _showAIIndicatorLoading(ticker);
     try {
-        await fetchAIIndicator(ticker, timeframe, false);
+        await fetchAIIndicator(ticker, timeframe, true);
     } catch (err) {
         console.error(err);
     }
@@ -4370,59 +4660,59 @@ const STRATEGY_HELPER_TEXTS = {
         indicator: "💡 Indicator (Signals) — Triggers buy order when active Bullish signals from your checked Indicator Pool meet or exceed the Buy Threshold.",
         custom_price: "💡 Custom Price (Limit/Dip Entry) — Executes buy immediately when live market price drops to or crosses below your specified Target Buy Price.",
         atr: "💡 ATR / Volatility Breakout — Buys when price confirms an upward breakout or pullback reversal above Average True Range (ATR) dynamic volatility bands.",
-        hybrid_atr: "💡 Hybrid (Indicator + ATR) — Dual-trigger entry: executes buy when EITHER your Indicator Pool threshold is met OR an ATR volatility breakout confirms.",
+        hybrid_atr: "💡 Hybrid (Indicator + ATR) — Pro quant entry rule: BOTH conditions must be true before opening risk. Your bullish Indicator Pool threshold must confirm AND the ATR volatility setup must confirm. This filters weak breakouts and avoids entering on structure alone.",
         percentage: "💡 Percentage Pullback — Executes buy when price pulls back by your fixed percentage drop from recent swing highs, catching dip reversals.",
-        hybrid_pct: "💡 Hybrid (Indicator + Pct) — Dual-trigger entry: buys on EITHER active Indicator Pool signals OR fixed percentage dip confirmation.",
+        hybrid_pct: "💡 Hybrid (Indicator + Pct) — Pro quant entry rule: BOTH conditions must be true. Bullish indicators must meet threshold AND the fixed percentage move must confirm. This avoids buying every dip unless momentum/confluence also agrees.",
         pivot_points: "💡 Pivot Points (Support Reclaim) — Buys when live price tests and confirms a bounce or reclaim above classic daily/weekly S1/S2/P support pivot levels.",
-        hybrid_pivot: "💡 Hybrid (Indicator + Pivots) — Dual-trigger entry: buys when EITHER Indicator signals trigger OR structural Pivot support bounce confirms.",
+        hybrid_pivot: "💡 Hybrid (Indicator + Pivots) — Pro quant entry rule: BOTH conditions must be true. Bullish indicators must confirm AND price must validate the pivot/support structure. This prevents entering just because price touches a level.",
         high_low: "💡 Daily High/Low Breakout — Momentum entry: buys when current price breaks and closes above the previous trading day's high.",
-        hybrid_high_low: "💡 Hybrid (Indicator + High/Low) — Dual-trigger momentum: buys on EITHER Indicator signal confirmation OR prior day high breakout.",
+        hybrid_high_low: "💡 Hybrid (Indicator + High/Low) — Pro quant entry rule: BOTH conditions must be true. Bullish indicators must confirm AND price must break/validate the prior-day structure. This reduces false breakouts.",
         swing_points: "💡 Swing Points (Structure) — Buys on confirmed structural price action: higher-low support bounce or resistance breakout confirmation.",
-        hybrid_swing: "💡 Hybrid (Indicator + Swing) — Dual-trigger entry: buys on EITHER Indicator Pool threshold OR confirmed structural Swing Point breakout."
+        hybrid_swing: "💡 Hybrid (Indicator + Swing) — Pro quant entry rule: BOTH conditions must be true. Bullish indicators must confirm AND swing support/breakout structure must confirm. This keeps entries aligned with trend structure, not just signals."
     },
     entry_options: {
         indicator: "💡 Indicator (Directional Options) — Buys CALL when Bullish Signals meet threshold; buys PUT when Bearish Signals meet threshold (respected by Options Direction filter).",
-        custom_price: "💡 Custom Underlying Price — Buys CALL contract when the underlying stock price dips to your target buy level.",
+        custom_price: "💡 Custom Underlying Price — CALL buys when the underlying drops to your target; PUT buys when the underlying rallies to or above your target.",
         atr: "💡 ATR / Volatility Breakout — Buys CALL on bullish ATR band breakout; buys PUT on bearish ATR band breakdown.",
-        hybrid_atr: "💡 Hybrid (Indicator + ATR) — Triggers CALL/PUT contract entry when EITHER Indicator signals confirm OR ATR volatility setup triggers.",
+        hybrid_atr: "💡 Hybrid (Indicator + ATR) — Pro quant options entry rule: BOTH conditions must be true before buying premium. CALLs need bullish indicators + bullish ATR structure; PUTs need bearish indicators + bearish ATR structure. This helps avoid paying option spread/theta on low-conviction moves.",
         percentage: "💡 Percentage Move — Buys CALL on fixed % pullback dip; buys PUT on fixed % extension rally from recent extremes.",
-        hybrid_pct: "💡 Hybrid (Indicator + Pct) — Dual-trigger options entry: opens contract on EITHER Indicator signal threshold OR fixed % move confirmation.",
+        hybrid_pct: "💡 Hybrid (Indicator + Pct) — Pro quant options entry rule: BOTH conditions must be true. CALLs require bullish indicators + bullish % setup; PUTs require bearish indicators + bearish % setup. This avoids chasing moves unless signal confluence agrees.",
         pivot_points: "💡 Pivot Points (S/R Levels) — Buys CALL on support pivot bounce/reclaim; buys PUT on resistance pivot rejection.",
-        hybrid_pivot: "💡 Hybrid (Indicator + Pivots) — Dual-trigger: opens contract when EITHER Indicator signals trigger OR Pivot S/R level setup confirms.",
+        hybrid_pivot: "💡 Hybrid (Indicator + Pivots) — Pro quant options entry rule: BOTH conditions must be true. CALLs need bullish indicators + support/reclaim; PUTs need bearish indicators + resistance rejection/breakdown. This keeps contract direction aligned with structure.",
         high_low: "💡 Daily High/Low Momentum — Buys CALL on breakout above prior day high; buys PUT on breakdown below prior day low.",
-        hybrid_high_low: "💡 Hybrid (Indicator + High/Low) — Opens contract on EITHER Indicator signal threshold OR prior day High/Low breakout/breakdown.",
+        hybrid_high_low: "💡 Hybrid (Indicator + High/Low) — Pro quant options entry rule: BOTH conditions must be true. CALLs need bullish indicators + prior-high breakout; PUTs need bearish indicators + prior-low breakdown. This reduces false intraday option entries.",
         swing_points: "💡 Swing Points (Structure) — Buys CALL on structural swing support bounce; buys PUT on structural swing resistance rejection/breakdown.",
-        hybrid_swing: "💡 Hybrid (Indicator + Swing) — Opens contract when EITHER Indicator Pool threshold OR Swing Point structural setup confirms."
+        hybrid_swing: "💡 Hybrid (Indicator + Swing) — Pro quant options entry rule: BOTH conditions must be true. CALLs need bullish indicators + bullish swing structure; PUTs need bearish indicators + bearish swing structure. This avoids buying options against the dominant swing setup."
     },
     exit: {
         indicator: "💡 Indicator (Signal Exit) — Closes position when active Bearish signals from your checked Indicator Pool meet or exceed the Sell Threshold.",
         custom_sltp: "💡 Custom SL/TP (Hard Limits) — Exits position immediately when live market price hits your exact Stop-Loss price OR Take-Profit price target.",
         custom_underlying_sltp: "💡 Custom Underlying SL/TP — Exits option when the underlying hits custom prices.",
         sltp: "💡 ATR / Volatility Multipliers — Dynamic exit: sets Stop-Loss, Take-Profit, and trailing stops based on multiples of Average True Range (ATR) volatility.",
-        hybrid: "💡 Hybrid (Indicator + ATR) — Whichever triggers first: exits on EITHER Bearish Indicator threshold OR dynamic ATR Stop-Loss / Take-Profit.",
+        hybrid: "💡 Hybrid (Indicator + ATR) — Pro quant exit rule: EITHER condition can close the trade. Bearish indicator reversal OR ATR stop/take-profit can trigger exit. Exits are risk control, so waiting for both can turn a good exit into a late exit.",
         percentage: "💡 Percentage (Fixed Pct) — Exits position when price hits your fixed % Take-Profit gain, fixed % Stop-Loss drop, OR trailing percentage stop.",
-        hybrid_pct: "💡 Hybrid (Indicator + Pct) — Whichever triggers first: closes position on EITHER Bearish Indicator signals OR fixed percentage SL/TP/Trail.",
+        hybrid_pct: "💡 Hybrid (Indicator + Pct) — Pro quant exit rule: EITHER condition can close the trade. Bearish indicator reversal OR fixed % SL/TP/trailing stop can trigger exit. This protects profit and limits drawdown without waiting for extra confirmation.",
         pivot_points: "💡 Pivot Points (Resistance Exit) — Sells to close when price rallies into structural R1/R2/R3 resistance or breaks below support pivots.",
-        hybrid_pivot: "💡 Hybrid (Indicator + Pivots) — Whichever triggers first: exits on EITHER Bearish Indicator signals OR structural Pivot resistance/support levels.",
+        hybrid_pivot: "💡 Hybrid (Indicator + Pivots) — Pro quant exit rule: EITHER condition can close the trade. Bearish indicator reversal OR pivot support/resistance invalidation can trigger exit. Structure-based exits should stay defensive.",
         high_low: "💡 Daily High/Low Exit — Sells position if price breaks down below prior day low (stop) or extends through prior day high target.",
-        hybrid_high_low: "💡 Hybrid (Indicator + High/Low) — Whichever triggers first: exits on EITHER Bearish Indicator signals OR Daily High/Low level breakdown.",
+        hybrid_high_low: "💡 Hybrid (Indicator + High/Low) — Pro quant exit rule: EITHER condition can close the trade. Bearish indicator reversal OR prior-day high/low target/stop can trigger exit. This avoids holding through a failed breakout.",
         swing_points: "💡 Swing Points (Structure) — Closes position when price hits structural swing resistance targets or violates lower-high/lower-low support.",
-        hybrid_swing: "💡 Hybrid (Indicator + Swing) — Whichever triggers first: exits on EITHER Bearish Indicator signals OR structural Swing Point violation."
+        hybrid_swing: "💡 Hybrid (Indicator + Swing) — Pro quant exit rule: EITHER condition can close the trade. Bearish indicator reversal OR swing support/resistance violation can trigger exit. Once structure breaks, risk should be reduced quickly."
     },
     exit_options: {
         indicator: "💡 Indicator (Opposite Signal Exit) — Sells contract to close when opposite signals hit threshold (Bearish threshold for CALLs; Bullish threshold for PUTs).",
         custom_sltp: "💡 Custom SL/TP (Option Premium) — Exits position when the option contract's live premium ($) hits your user-defined Stop-Loss or Take-Profit price.",
         custom_underlying_sltp: "💡 Custom Underlying SL/TP (Stock Price) — Exits option contract when the UNDERLYING stock's market price hits your custom stock SL/TP targets.",
-        sltp: "💡 ATR / Volatility Multipliers — Exits contract using dynamic ATR multiples for Stop-Loss, Take-Profit, and trailing stops on option premium.",
-        hybrid: "💡 Hybrid (Indicator + ATR) — Sells contract whichever triggers first: opposite Indicator signal threshold OR dynamic ATR stop/take-profit.",
+        sltp: "💡 ATR / Volatility Multipliers — Exits contract using UNDERLYING stock ATR levels. CALL: stop/trail below and target above. PUT: stop/trail above and target below.",
+        hybrid: "💡 Hybrid (Indicator + ATR) — Pro quant options exit rule: EITHER condition can sell-to-close. Opposite indicator reversal OR underlying ATR stop/take-profit can exit. CALL levels are below/above; PUT levels are above/below. Options decay fast, so exits prioritize risk control.",
         percentage: "💡 Percentage (Contract Pct) — Exits option contract based on fixed % gain (TP), fixed % loss (SL), or trailing percentage drop from contract high.",
-        hybrid_pct: "💡 Hybrid (Indicator + Pct) — Sells contract whichever triggers first: opposite Indicator signal threshold OR fixed percentage SL/TP/Trail.",
+        hybrid_pct: "💡 Hybrid (Indicator + Pct) — Pro quant options exit rule: EITHER condition can sell-to-close. Opposite indicator reversal OR premium % SL/TP/trailing stop can exit. This protects against theta decay, spread widening, and fast premium reversals.",
         pivot_points: "💡 Pivot Points (S/R Levels) — Closes option contract when underlying stock price reaches structural S1/R1 Support & Resistance levels.",
-        hybrid_pivot: "💡 Hybrid (Indicator + Pivots) — Sells contract whichever triggers first: opposite Indicator signals OR structural Pivot S/R levels.",
+        hybrid_pivot: "💡 Hybrid (Indicator + Pivots) — Pro quant options exit rule: EITHER condition can sell-to-close. Opposite indicator reversal OR pivot S/R target/stop can exit. CALL exits watch bearish reversal/resistance failure; PUT exits watch bullish reversal/support failure.",
         high_low: "💡 Daily High/Low Exit — Closes option position upon an underlying stock prior day high/low breakout or breakdown.",
-        hybrid_high_low: "💡 Hybrid (Indicator + High/Low) — Sells contract whichever triggers first: opposite Indicator signals OR underlying Daily High/Low break.",
+        hybrid_high_low: "💡 Hybrid (Indicator + High/Low) — Pro quant options exit rule: EITHER condition can sell-to-close. Opposite indicator reversal OR underlying prior-day high/low target/stop can exit. This keeps options from bleeding while waiting for perfect confirmation.",
         swing_points: "💡 Swing Points (Structure) — Exits option contract when underlying price hits confirmed structural swing support or resistance levels.",
-        hybrid_swing: "💡 Hybrid (Indicator + Swing) — Sells contract whichever triggers first: opposite Indicator signals OR structural Swing Point level."
+        hybrid_swing: "💡 Hybrid (Indicator + Swing) — Pro quant options exit rule: EITHER condition can sell-to-close. Opposite indicator reversal OR swing support/resistance target/stop can exit. For options, structure failure is enough reason to reduce risk."
     }
 };
 
@@ -4474,7 +4764,7 @@ window.updateRegularEntryFields = function() {
 
 window.updateOptionsEntryFields = function() {
     const mode = document.getElementById('strategyBuyMode_options')?.value || 'indicator';
-    const direction = document.getElementById('strategyOptionsType')?.value || 'both';
+    const direction = document.getElementById('strategyOptionsType')?.value || 'calls_only';
     const showIndicator = ['indicator', 'hybrid_atr', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'].includes(mode);
     const showCustom    = mode === 'custom_price';
     const showATR       = ['atr', 'hybrid_atr'].includes(mode);
@@ -4483,6 +4773,8 @@ window.updateOptionsEntryFields = function() {
     const showHL        = ['high_low', 'hybrid_high_low'].includes(mode);
     const showSwing     = ['swing_points', 'hybrid_swing'].includes(mode);
     if(document.getElementById('strategyBuyFields_options')) document.getElementById('strategyBuyFields_options').classList.toggle('hidden', !showIndicator);
+    if(document.getElementById('strategyCallEntryThresholdPanel_options')) document.getElementById('strategyCallEntryThresholdPanel_options').classList.toggle('hidden', direction === 'puts_only');
+    if(document.getElementById('strategyPutEntryThresholdPanel_options')) document.getElementById('strategyPutEntryThresholdPanel_options').classList.toggle('hidden', direction !== 'puts_only');
     if(document.getElementById('strategyCustomBuyFields_options')) document.getElementById('strategyCustomBuyFields_options').classList.toggle('hidden', !showCustom);
     if(document.getElementById('strategyEntryAtrFields_options')) document.getElementById('strategyEntryAtrFields_options').classList.toggle('hidden', !showATR);
     if(document.getElementById('strategyEntryPctFields_options')) document.getElementById('strategyEntryPctFields_options').classList.toggle('hidden', !showPct);
@@ -4491,19 +4783,57 @@ window.updateOptionsEntryFields = function() {
     if(document.getElementById('strategySwingEntrySettings_options')) document.getElementById('strategySwingEntrySettings_options').classList.toggle('hidden', !showSwing);
     const directionHint = document.getElementById('strategyOptionsDirectionHint');
     if (directionHint) {
-        directionHint.textContent = direction === 'calls_only'
+        const isLegacyBoth = document.getElementById('strategyOptionsType')?.dataset.legacyBoth === 'true';
+        directionHint.textContent = isLegacyBoth
+            ? 'Legacy Both direction is disabled. Choose CALL or PUT before saving this bot.'
+            : direction === 'calls_only'
             ? '⚡ Calls Only: Bot will ONLY open bullish CALL option contracts when bullish entry signals confirm. All bearish signals are ignored.'
             : direction === 'puts_only'
                 ? '⚡ Puts Only: Bot will ONLY open bearish PUT option contracts when bearish entry signals confirm. All bullish signals are ignored.'
-                : '⚡ Both Directions: Dynamic option selection — bullish entry signals open CALL contracts; bearish entry signals open PUT contracts.';
+                : '⚡ Legacy Both direction is disabled. Choose CALL or PUT.';
     }
     updateSwingSettingsVisibility('options');
     if (window.updateStrategyHelperText) window.updateStrategyHelperText('strategyBuyHelper_options', 'entry_options', mode);
+    const customTitle = document.getElementById('strategyCustomBuyTitle_options');
+    const customHint = document.getElementById('strategyCustomBuyHint_options');
+    if (customTitle) {
+        customTitle.textContent = direction === 'puts_only'
+            ? 'Underlying PUT Entry Target'
+            : 'Underlying CALL Entry Target';
+    }
+    if (customHint) {
+        customHint.textContent = direction === 'puts_only'
+            ? 'Custom price opens a PUT when the underlying rallies to or above this target.'
+            : 'Custom price opens a CALL when the underlying drops to this target.';
+    }
+    syncOptionsPutEntryThresholdLabel();
     if (window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry');
 };
 
+window.clearLegacyOptionsDirectionWarning = function() {
+    const directionEl = document.getElementById('strategyOptionsType');
+    if (directionEl) delete directionEl.dataset.legacyBoth;
+};
+
+function requireValidOptionsDirectionForSave(mode) {
+    if (mode !== 'options') return true;
+    const directionEl = document.getElementById('strategyOptionsType');
+    const value = directionEl?.value || 'calls_only';
+    if (directionEl?.dataset.legacyBoth === 'true') {
+        alert('Legacy Both direction is disabled. Please choose CALL or PUT before saving this bot.');
+        return false;
+    }
+    if (!['calls_only', 'puts_only'].includes(value)) {
+        alert('Options direction must be CALL or PUT.');
+        return false;
+    }
+    return true;
+}
+
 window.updateOptionsExitFields = function() {
     const mode = document.getElementById('strategySellMode_options')?.value || 'hybrid';
+    const optionsType = document.getElementById('strategyOptionsType')?.value || 'calls_only';
+    const isPut = optionsType === 'puts_only';
     
     const showIndicator = ['indicator', 'hybrid', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'].includes(mode);
     const showCustom    = mode === 'custom_sltp';
@@ -4518,6 +4848,92 @@ window.updateOptionsExitFields = function() {
     if(document.getElementById('exitFieldsPct_options')) document.getElementById('exitFieldsPct_options').classList.toggle('hidden', !showPct);
     updateSwingSettingsVisibility('options');
     if (window.updateStrategyHelperText) window.updateStrategyHelperText('strategySellHelper_options', 'exit_options', mode);
+
+    const helper = document.getElementById('strategySellHelper_options');
+    if (helper && helper.textContent) {
+        const directionNoteByMode = {
+            indicator: isPut
+                ? 'PUT-specific: sell-to-close on bullish reversal signals.'
+                : 'CALL-specific: sell-to-close on bearish reversal signals.',
+            custom_sltp: 'Premium-based: same logic for CALL and PUT, because it watches the option contract price.',
+            custom_underlying_sltp: isPut
+                ? 'PUT-specific: underlying stop is above entry/current; take-profit is below.'
+                : 'CALL-specific: underlying stop is below entry/current; take-profit is above.',
+            sltp: isPut
+                ? 'PUT-specific: ATR stop/trail is above the underlying; ATR take-profit is below.'
+                : 'CALL-specific: ATR stop/trail is below the underlying; ATR take-profit is above.',
+            hybrid: isPut
+                ? 'PUT-specific: bullish reversal OR ATR stop/target can close.'
+                : 'CALL-specific: bearish reversal OR ATR stop/target can close.',
+            percentage: 'Premium-percent based: same logic for CALL and PUT, because it watches option premium gain/loss.',
+            hybrid_pct: isPut
+                ? 'PUT-specific: bullish reversal OR premium % stop/target/trail can close.'
+                : 'CALL-specific: bearish reversal OR premium % stop/target/trail can close.',
+            pivot_points: isPut
+                ? 'PUT-specific: take-profit at support/S1; stop-loss at resistance/R1.'
+                : 'CALL-specific: take-profit at resistance/R1; stop-loss at support/S1.',
+            hybrid_pivot: isPut
+                ? 'PUT-specific: bullish reversal OR support target/resistance stop can close.'
+                : 'CALL-specific: bearish reversal OR resistance target/support stop can close.',
+            high_low: isPut
+                ? 'PUT-specific: take-profit at prior low; stop-loss at prior high.'
+                : 'CALL-specific: take-profit at prior high; stop-loss at prior low.',
+            hybrid_high_low: isPut
+                ? 'PUT-specific: bullish reversal OR prior-low target/prior-high stop can close.'
+                : 'CALL-specific: bearish reversal OR prior-high target/prior-low stop can close.',
+            swing_points: isPut
+                ? 'PUT-specific: take-profit at swing support; stop-loss at swing resistance.'
+                : 'CALL-specific: take-profit at swing resistance; stop-loss at swing support.',
+            hybrid_swing: isPut
+                ? 'PUT-specific: bullish reversal OR swing support/resistance exit can close.'
+                : 'CALL-specific: bearish reversal OR swing resistance/support exit can close.'
+        };
+        const note = directionNoteByMode[mode];
+        if (note) helper.textContent = `${helper.textContent} ${note}`;
+    }
+
+    const badge = document.getElementById('strategyExitSignalBadge_options');
+    const title = document.getElementById('strategyExitThresholdTitle_options');
+    const hint = document.getElementById('strategyExitThresholdHint_options');
+    const label = document.getElementById('strategySellLabel_options');
+    const stopLabel = document.getElementById('strategyCustomUnderlyingStopLabel_options');
+    const tpLabel = document.getElementById('strategyCustomUnderlyingTakeProfitLabel_options');
+
+    if (badge) {
+        badge.textContent = isPut ? 'B' : 'S';
+        badge.classList.toggle('bg-emerald-500', isPut);
+        badge.classList.toggle('bg-rose-500', !isPut);
+    }
+    if (title) {
+        title.textContent = isPut
+            ? 'Exit Threshold (Min Bullish Signals)'
+            : 'Exit Threshold (Min Bearish Signals)';
+    }
+    if (hint) {
+        hint.textContent = isPut
+            ? 'PUT exit waits for bullish reversal signals, or the selected risk target/stop.'
+            : 'CALL exit waits for bearish reversal signals, or the selected risk target/stop.';
+        hint.classList.toggle('text-emerald-700/80', isPut);
+        hint.classList.toggle('text-rose-700/80', !isPut);
+    }
+    if (label) {
+        label.classList.toggle('bg-emerald-100/80', isPut);
+        label.classList.toggle('text-emerald-700', isPut);
+        label.classList.toggle('border-emerald-200/55', isPut);
+        label.classList.toggle('bg-rose-100/80', !isPut);
+        label.classList.toggle('text-rose-700', !isPut);
+        label.classList.toggle('border-rose-200/55', !isPut);
+    }
+    if (stopLabel) {
+        stopLabel.textContent = isPut
+            ? 'Underlying Stop Loss Price (Above Entry)'
+            : 'Underlying Stop Loss Price (Below Entry)';
+    }
+    if (tpLabel) {
+        tpLabel.textContent = isPut
+            ? 'Underlying Take Profit Price (Below Entry)'
+            : 'Underlying Take Profit Price (Above Entry)';
+    }
 
     if (window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'exit');
 };
@@ -4843,6 +5259,8 @@ function getStrategyMarketSession(mode = 'regular') {
 
 function buildSwingEntryPreviewHtml(mode, isOptions, symbol, simPrice) {
     const buyMode = document.getElementById(isOptions ? 'strategyBuyMode_options' : 'strategyBuyMode_regular')?.value || 'indicator';
+    const optionsType = document.getElementById('strategyOptionsType')?.value || 'calls_only';
+    const isPutOption = isOptions && optionsType === 'puts_only';
     const entryMode = document.getElementById(`strategySwingEntryMode_${mode}`)?.value || 'bounce_retest';
     const lookbackDays = getSwingLookbackDaysValue(mode, 'entry');
     const marketSession = getStrategyMarketSession(mode);
@@ -4851,10 +5269,13 @@ function buildSwingEntryPreviewHtml(mode, isOptions, symbol, simPrice) {
     const support = swingCtx.nearest_support;
     const resistance = swingCtx.nearest_resistance;
     const modeLabel = buyMode === 'hybrid_swing' ? 'Hybrid (Indicator + Swing)' : 'Swing Points';
-    const parts = [modeLabel, `[Swing Entry] ${entryMode === 'breakout_retest' ? 'Breakout / Retest' : 'Bounce / Retest'} | ${lookbackDays}D`];
+    const directionLabel = isPutOption ? 'PUT Swing Entry' : isOptions ? 'CALL Swing Entry' : 'Long Swing Entry';
+    const parts = [modeLabel, `[${directionLabel}] ${entryMode === 'breakout_retest' ? 'Breakout / Retest' : 'Bounce / Retest'} | ${lookbackDays}D`];
 
     if (buyMode === 'hybrid_swing') {
-        parts.push('[Hybrid] Swing setup or indicator buy threshold');
+        parts.push(isPutOption
+            ? '[Hybrid] Bearish swing setup + bearish indicator threshold required'
+            : '[Hybrid] Bullish swing setup + bullish indicator threshold required');
     }
 
     if (!swingCtx.candles.length) {
@@ -4868,18 +5289,22 @@ function buildSwingEntryPreviewHtml(mode, isOptions, symbol, simPrice) {
     let reason = 'Awaiting confirmation';
 
     if (entryMode === 'breakout_retest') {
-        if (resistance && touchZone(latest, resistance.price, tolerance) && latest.close > resistance.price + tolerance && isBullishConfirmation(latest, prev)) {
+        if (!isPutOption && resistance && touchZone(latest, resistance.price, tolerance) && latest.close > resistance.price + tolerance && isBullishConfirmation(latest, prev)) {
             reason = `Breakout retest confirmed above ${formatSwingLevel(resistance.price)} (${resistance.touches} touches)`;
-        } else if (support && touchZone(latest, support.price, tolerance) && latest.close < support.price - tolerance && isBearishConfirmation(latest, prev)) {
+        } else if (isPutOption && support && touchZone(latest, support.price, tolerance) && latest.close < support.price - tolerance && isBearishConfirmation(latest, prev)) {
             reason = `Breakdown retest confirmed below ${formatSwingLevel(support.price)} (${support.touches} touches)`;
+        } else if (isPutOption && support) {
+            reason = `Waiting for breakdown retest near ${formatSwingLevel(support.price)}`;
         } else if (resistance) {
             reason = `Waiting for breakout retest near ${formatSwingLevel(resistance.price)}`;
         }
     } else {
-        if (support && touchZone(latest, support.price, tolerance) && latest.close > support.price + (tolerance * 0.1) && isBullishConfirmation(latest, prev)) {
+        if (!isPutOption && support && touchZone(latest, support.price, tolerance) && latest.close > support.price + (tolerance * 0.1) && isBullishConfirmation(latest, prev)) {
             reason = `Bounce confirmed from ${formatSwingLevel(support.price)} (${support.touches} touches)`;
-        } else if (resistance && touchZone(latest, resistance.price, tolerance) && latest.close < resistance.price - (tolerance * 0.1) && isBearishConfirmation(latest, prev)) {
+        } else if (isPutOption && resistance && touchZone(latest, resistance.price, tolerance) && latest.close < resistance.price - (tolerance * 0.1) && isBearishConfirmation(latest, prev)) {
             reason = `Rejection confirmed from ${formatSwingLevel(resistance.price)} (${resistance.touches} touches)`;
+        } else if (isPutOption && resistance) {
+            reason = `Waiting for rejection confirmation at ${formatSwingLevel(resistance.price)}`;
         } else if (support) {
             reason = `Waiting for bounce confirmation at ${formatSwingLevel(support.price)}`;
         }
@@ -4893,6 +5318,8 @@ function buildSwingEntryPreviewHtml(mode, isOptions, symbol, simPrice) {
 
 function buildSwingExitPreviewHtml(mode, isOptions, symbol, simPrice) {
     const sellMode = document.getElementById(isOptions ? 'strategySellMode_options' : 'strategySellMode_regular')?.value || 'hybrid';
+    const optionsType = document.getElementById('strategyOptionsType')?.value || 'calls_only';
+    const isPutOption = isOptions && optionsType === 'puts_only';
     const lookbackDays = getSwingLookbackDaysValue(mode, 'exit');
     const marketSession = getStrategyMarketSession(mode);
     const priceHistory = window.currentAtrPreviewData?.price_history || [];
@@ -4900,10 +5327,13 @@ function buildSwingExitPreviewHtml(mode, isOptions, symbol, simPrice) {
     const support = swingCtx.nearest_support;
     const resistance = swingCtx.nearest_resistance;
     const modeLabel = sellMode === 'hybrid_swing' ? 'Hybrid (Indicator + Swing)' : 'Swing Points';
-    const parts = [`[Exit Strategy] ${modeLabel}`, `[Swing Exit] ${lookbackDays}D`];
+    const directionLabel = isPutOption ? 'PUT Swing Exit' : isOptions ? 'CALL Swing Exit' : 'Long Swing Exit';
+    const parts = [`[Exit Strategy] ${modeLabel}`, `[${directionLabel}] ${lookbackDays}D`];
 
     if (sellMode === 'hybrid_swing') {
-        parts.push('[Hybrid] Swing setup or indicator sell threshold');
+        parts.push(isPutOption
+            ? '[Hybrid] EITHER bullish reversal signals OR swing support/target can close'
+            : '[Hybrid] EITHER bearish reversal signals OR swing resistance/stop can close');
     }
 
     if (!swingCtx.candles.length) {
@@ -4911,7 +5341,7 @@ function buildSwingExitPreviewHtml(mode, isOptions, symbol, simPrice) {
         return parts.join(' | ');
     }
 
-    const isLong = true;
+    const isLong = !isPutOption;
     const tpZone = isLong ? resistance : support;
     const slZone = isLong ? support : resistance;
     parts.push(tpZone ? `Take Profit: ${formatSwingLevel(tpZone.price)} (${tpZone.touches} touches)` : 'Take Profit: N/A');
@@ -4928,6 +5358,14 @@ window.fetchLiveAtrForPreview = async function(ticker, overrideTf) {
         const activeMode = window.activeTradingMode || 'regular';
         const tf = overrideTf || document.getElementById(`strategyTimeframe_${activeMode}`)?.value || '5Min';
         
+        if (window.currentAtrPreviewData && window.currentAtrPreviewData.symbol === ticker && window.currentAtrPreviewData.timeframe === tf && window.currentAtrPreviewData.isLive) {
+            if (window.updateLivePreview_bots) {
+                window.updateLivePreview_bots('regular', 'both');
+                window.updateLivePreview_bots('options', 'both');
+            }
+            return;
+        }
+
         const entryBoxRegular = document.getElementById('livePreviewEntryBox_regular');
         const exitBoxRegular = document.getElementById('livePreviewExitBox_regular');
         const entryBoxOptions = document.getElementById('livePreviewEntryBox_options');
@@ -4938,7 +5376,7 @@ window.fetchLiveAtrForPreview = async function(ticker, overrideTf) {
         if (entryBoxOptions && !entryBoxOptions.classList.contains('hidden')) entryBoxOptions.innerHTML = loadingHtml;
         if (exitBoxOptions && !exitBoxOptions.classList.contains('hidden')) exitBoxOptions.innerHTML = loadingHtml;
         
-        const res = await fetch(`${API_BASE}/api/chart/${ticker}?timeframe=${tf}&source=bots`, { headers });
+        const res = await fetchWithTimeout(`${API_BASE}/api/chart/${ticker}?timeframe=${tf}&source=bots`, { headers }, 10000);
         if (res.ok) {
             const data = await res.json();
             if (data && data.primaryScan) {
@@ -4961,7 +5399,13 @@ window.fetchLiveAtrForPreview = async function(ticker, overrideTf) {
             }
         }
     } catch (e) {
-        console.error("Failed to fetch preview data", e);
+        if (e.name !== 'AbortError') {
+            console.warn("[live-preview] Could not fetch fresh preview data; using cached preview if available.", e.message || e);
+        }
+        if (window.updateLivePreview_bots) {
+            window.updateLivePreview_bots('regular', 'both');
+            window.updateLivePreview_bots('options', 'both');
+        }
     }
 };
 
@@ -4975,8 +5419,14 @@ function buildEntryPreviewHtml(mode, isOptions, symbol, simPrice, simAtr, priorD
     if (buyMode === 'custom_price') {
         const targetEl = document.getElementById(`strategyCustomBuyPrice_${isOptions ? 'options' : 'regular'}`);
         const target = parseFloat(targetEl?.value || 0);
-        const targetLabel = isOptions ? 'CALL Target Entry' : 'Target Entry';
-        return `${basePrefix}<br/>${targetLabel}: $${target.toFixed(2)}`;
+        if (isOptions) {
+            const optionsType = document.getElementById('strategyOptionsType')?.value || 'calls_only';
+            const isPut = optionsType === 'puts_only';
+            const targetLabel = isPut ? 'PUT Entry At/Above' : 'CALL Entry At/Below';
+            const directionNote = isPut ? 'PUT custom entry waits for an upside rally/rejection zone' : 'CALL custom entry waits for a dip/reclaim zone';
+            return `${basePrefix}<br/>${targetLabel}: $${target.toFixed(2)}<br/>${directionNote}`;
+        }
+        return `${basePrefix}<br/>Target Entry: $${target.toFixed(2)}`;
     }
 
     if (['atr', 'hybrid_atr'].includes(buyMode)) {
@@ -4988,15 +5438,15 @@ function buildEntryPreviewHtml(mode, isOptions, symbol, simPrice, simAtr, priorD
         const styleLabel = style === 'breakout_momentum' ? 'Breakout / Momentum' : 'Pullback / Reclaim';
         const longLabel = style === 'breakout_momentum' ? 'Buy Above' : 'Buy Below';
         if (isOptions) {
-            const optionsType = document.getElementById('strategyOptionsType')?.value || 'both';
+            const optionsType = document.getElementById('strategyOptionsType')?.value || 'calls_only';
             const callLabel = style === 'breakout_momentum' ? 'CALL Above' : 'CALL Reclaim From';
             const putLabel = style === 'breakout_momentum' ? 'PUT Below' : 'PUT Rejection From';
             const triggerLines = [];
-            if (optionsType !== 'puts_only') triggerLines.push(`${callLabel}: $${longLevel.toFixed(2)}`);
-            if (optionsType !== 'calls_only') triggerLines.push(`${putLabel}: $${shortLevel.toFixed(2)}`);
-            return `${basePrefix}<br/>${triggerLines.join('<br/>')}<br/>${styleLabel} | ATR x ${mult.toFixed(1)}${buyMode.startsWith('hybrid_') ? ' | Hybrid fallback: indicator signals' : ''}`;
+            if (optionsType === 'puts_only') triggerLines.push(`${putLabel}: $${shortLevel.toFixed(2)}`);
+            else triggerLines.push(`${callLabel}: $${longLevel.toFixed(2)}`);
+            return `${basePrefix}<br/>${triggerLines.join('<br/>')}<br/>${styleLabel} | ATR x ${mult.toFixed(1)}${buyMode.startsWith('hybrid_') ? ' | Hybrid requires indicator + ATR' : ''}`;
         }
-        return `${basePrefix}<br/>${longLabel}: $${longLevel.toFixed(2)}<br/>${styleLabel} | ATR x ${mult.toFixed(1)}${buyMode.startsWith('hybrid_') ? ' | Hybrid fallback: indicator signals' : ''}`;
+        return `${basePrefix}<br/>${longLabel}: $${longLevel.toFixed(2)}<br/>${styleLabel} | ATR x ${mult.toFixed(1)}${buyMode.startsWith('hybrid_') ? ' | Hybrid requires indicator + ATR' : ''}`;
     }
 
     if (['percentage', 'hybrid_pct'].includes(buyMode)) {
@@ -5008,15 +5458,15 @@ function buildEntryPreviewHtml(mode, isOptions, symbol, simPrice, simAtr, priorD
         const styleLabel = style === 'breakout_momentum' ? 'Breakout / Momentum' : (isOptions ? 'Reversal / Reclaim' : 'Dip / Reclaim');
         const longLabel = style === 'breakout_momentum' ? 'Buy Above' : 'Buy Below';
         if (isOptions) {
-            const optionsType = document.getElementById('strategyOptionsType')?.value || 'both';
+            const optionsType = document.getElementById('strategyOptionsType')?.value || 'calls_only';
             const callLabel = style === 'breakout_momentum' ? 'CALL Above' : 'CALL Reclaim From';
             const putLabel = style === 'breakout_momentum' ? 'PUT Below' : 'PUT Rejection From';
             const triggerLines = [];
-            if (optionsType !== 'puts_only') triggerLines.push(`${callLabel}: $${longLevel.toFixed(2)}`);
-            if (optionsType !== 'calls_only') triggerLines.push(`${putLabel}: $${shortLevel.toFixed(2)}`);
-            return `${basePrefix}<br/>${triggerLines.join('<br/>')}<br/>${styleLabel} | ${pct.toFixed(1)}% move${buyMode.startsWith('hybrid_') ? ' | Hybrid fallback: indicator signals' : ''}`;
+            if (optionsType === 'puts_only') triggerLines.push(`${putLabel}: $${shortLevel.toFixed(2)}`);
+            else triggerLines.push(`${callLabel}: $${longLevel.toFixed(2)}`);
+            return `${basePrefix}<br/>${triggerLines.join('<br/>')}<br/>${styleLabel} | ${pct.toFixed(1)}% move${buyMode.startsWith('hybrid_') ? ' | Hybrid requires indicator + structure' : ''}`;
         }
-        return `${basePrefix}<br/>${longLabel}: $${longLevel.toFixed(2)}<br/>${styleLabel} | ${pct.toFixed(1)}% move${buyMode.startsWith('hybrid_') ? ' | Hybrid fallback: indicator signals' : ''}`;
+        return `${basePrefix}<br/>${longLabel}: $${longLevel.toFixed(2)}<br/>${styleLabel} | ${pct.toFixed(1)}% move${buyMode.startsWith('hybrid_') ? ' | Hybrid requires indicator + structure' : ''}`;
     }
 
     if (['pivot_points', 'hybrid_pivot'].includes(buyMode)) {
@@ -5027,14 +5477,28 @@ function buildEntryPreviewHtml(mode, isOptions, symbol, simPrice, simAtr, priorD
         const p = (h + l + c) / 3;
         const r1 = (p * 2) - l;
         const s1 = (p * 2) - h;
-        return `${basePrefix}<br/>Pivot: $${p.toFixed(2)}<br/>Support (S1): $${s1.toFixed(2)} &nbsp;|&nbsp; Resistance (R1): $${r1.toFixed(2)}${buyMode.startsWith('hybrid_') ? '<br/>Hybrid fallback: indicator signals' : ''}`;
+        if (isOptions) {
+            const optionsType = document.getElementById('strategyOptionsType')?.value || 'calls_only';
+            if (optionsType === 'puts_only') {
+                return `${basePrefix}<br/>PUT Pivot Entry: resistance rejection or pivot breakdown<br/>Pivot: $${p.toFixed(2)} &nbsp;|&nbsp; Resistance (R1): $${r1.toFixed(2)}${buyMode.startsWith('hybrid_') ? '<br/>Hybrid requires bearish indicators + pivot structure' : ''}`;
+            }
+            return `${basePrefix}<br/>CALL Pivot Entry: support reclaim or pivot breakout<br/>Pivot: $${p.toFixed(2)} &nbsp;|&nbsp; Support (S1): $${s1.toFixed(2)}${buyMode.startsWith('hybrid_') ? '<br/>Hybrid requires bullish indicators + pivot structure' : ''}`;
+        }
+        return `${basePrefix}<br/>Pivot: $${p.toFixed(2)}<br/>Support (S1): $${s1.toFixed(2)} &nbsp;|&nbsp; Resistance (R1): $${r1.toFixed(2)}${buyMode.startsWith('hybrid_') ? '<br/>Hybrid requires indicator + pivot structure' : ''}`;
     }
 
     if (['high_low', 'hybrid_high_low'].includes(buyMode)) {
         if (!priorDay) {
             return `${basePrefix}<br/>Awaiting prior day data...`;
         }
-        return `${basePrefix}<br/>Prior High: $${priorDay.high.toFixed(2)} &nbsp;|&nbsp; Prior Low: $${priorDay.low.toFixed(2)}${buyMode.startsWith('hybrid_') ? '<br/>Hybrid fallback: indicator signals' : ''}`;
+        if (isOptions) {
+            const optionsType = document.getElementById('strategyOptionsType')?.value || 'calls_only';
+            if (optionsType === 'puts_only') {
+                return `${basePrefix}<br/>PUT High/Low Entry: breakdown below prior low<br/>PUT Below: $${priorDay.low.toFixed(2)}${buyMode.startsWith('hybrid_') ? '<br/>Hybrid requires bearish indicators + prior-low breakdown' : ''}`;
+            }
+            return `${basePrefix}<br/>CALL High/Low Entry: breakout above prior high<br/>CALL Above: $${priorDay.high.toFixed(2)}${buyMode.startsWith('hybrid_') ? '<br/>Hybrid requires bullish indicators + prior-high breakout' : ''}`;
+        }
+        return `${basePrefix}<br/>Prior High: $${priorDay.high.toFixed(2)} &nbsp;|&nbsp; Prior Low: $${priorDay.low.toFixed(2)}${buyMode.startsWith('hybrid_') ? '<br/>Hybrid requires indicator + high/low structure' : ''}`;
     }
 
     if (['swing_points', 'hybrid_swing'].includes(buyMode)) {
@@ -5107,11 +5571,16 @@ window.updateLivePreview_bots = function (mode, scope = 'both') {
     }
 
     if (showCustomUnderlying) {
+        const optionsType = document.getElementById('strategyOptionsType')?.value || 'calls_only';
+        const isPutUnderlyingExit = optionsType === 'puts_only';
         const customSl = parseFloat(document.getElementById('strategyCustomUnderlyingStopLossPrice_options')?.value || 0);
         const customTp = parseFloat(document.getElementById('strategyCustomUnderlyingTakeProfitPrice_options')?.value || 0);
         const slText = customSl > 0 ? `$${customSl.toFixed(2)}` : 'Not set';
         const tpText = customTp > 0 ? `$${customTp.toFixed(2)}` : 'Not set';
-        exitBox.innerHTML = `&#128302; Live Preview: ${symbol} (Exit: Custom Underlying SL/TP) | Underlying Price: $${simPrice.toFixed(2)}<br/>Underlying Stop Loss: ${slText} &nbsp;|&nbsp; Underlying Take Profit: ${tpText}`;
+        const directionText = isPutUnderlyingExit
+            ? 'PUT underlying exit: stop above, target below'
+            : 'CALL underlying exit: stop below, target above';
+        exitBox.innerHTML = `&#128302; Live Preview: ${symbol} (Exit: Custom Underlying SL/TP) | Underlying Price: $${simPrice.toFixed(2)}<br/>${directionText}<br/>Underlying Stop Loss: ${slText} &nbsp;|&nbsp; Underlying Take Profit: ${tpText}`;
         exitBox.classList.remove('hidden');
         return;
     }
@@ -5138,12 +5607,25 @@ window.updateLivePreview_bots = function (mode, scope = 'both') {
                 const p = (h + l + c) / 3;
                 const r1 = (p * 2) - l;
                 const s1 = (p * 2) - h;
-                html = `&#128302; Live Preview: ${symbol} (Prior Day Pivots) | Price: $${simPrice.toFixed(2)}<br/>
+                const optionsType = document.getElementById('strategyOptionsType')?.value || 'calls_only';
+                if (isOptions && optionsType === 'puts_only') {
+                    html = `&#128302; Live Preview: ${symbol} (PUT Pivot Exit) | Price: $${simPrice.toFixed(2)}<br/>
                         Floor Pivot: $${p.toFixed(2)}<br/>
-                        Stop Loss (S1): $${s1.toFixed(2)} &nbsp;|&nbsp; Take Profit (R1): $${r1.toFixed(2)}`;
+                        Stop Loss (R1): $${r1.toFixed(2)} &nbsp;|&nbsp; Take Profit (S1): $${s1.toFixed(2)}`;
+                } else {
+                    html = `&#128302; Live Preview: ${symbol} (CALL/Long Pivot Exit) | Price: $${simPrice.toFixed(2)}<br/>
+                            Floor Pivot: $${p.toFixed(2)}<br/>
+                            Stop Loss (S1): $${s1.toFixed(2)} &nbsp;|&nbsp; Take Profit (R1): $${r1.toFixed(2)}`;
+                }
             } else if (showHL) {
-                html = `&#128302; Live Preview: ${symbol} (Prior Day High/Low) | Price: $${simPrice.toFixed(2)}<br/>
-                        Stop Loss (Prior Low): $${priorDay.low.toFixed(2)} &nbsp;|&nbsp; Take Profit (Prior High): $${priorDay.high.toFixed(2)}`;
+                const optionsType = document.getElementById('strategyOptionsType')?.value || 'calls_only';
+                if (isOptions && optionsType === 'puts_only') {
+                    html = `&#128302; Live Preview: ${symbol} (PUT Prior Day High/Low Exit) | Price: $${simPrice.toFixed(2)}<br/>
+                        Stop Loss (Prior High): $${priorDay.high.toFixed(2)} &nbsp;|&nbsp; Take Profit (Prior Low): $${priorDay.low.toFixed(2)}`;
+                } else {
+                    html = `&#128302; Live Preview: ${symbol} (CALL/Long Prior Day High/Low Exit) | Price: $${simPrice.toFixed(2)}<br/>
+                            Stop Loss (Prior Low): $${priorDay.low.toFixed(2)} &nbsp;|&nbsp; Take Profit (Prior High): $${priorDay.high.toFixed(2)}`;
+                }
             }
         }
     } else {
@@ -5192,8 +5674,10 @@ window.updateLivePreview_bots = function (mode, scope = 'both') {
             if (hasTrail) trailDist = simPrice * (trailPct / 100);
         }
 
-                const slPrice = simPrice - slDist;
-        const tpPrice = simPrice + tpDist;
+        const optionsType = document.getElementById('strategyOptionsType')?.value || 'calls_only';
+        const isPutUnderlyingAtr = isOptions && showATR && optionsType === 'puts_only';
+        const slPrice = isPutUnderlyingAtr ? simPrice + slDist : simPrice - slDist;
+        const tpPrice = isPutUnderlyingAtr ? simPrice - tpDist : simPrice + tpDist;
         
         const slPctCalc = simPrice > 0 ? ((slDist / simPrice) * 100).toFixed(2) : '0.00';
         const tpPctCalc = simPrice > 0 ? ((tpDist / simPrice) * 100).toFixed(2) : '0.00';
@@ -5202,11 +5686,15 @@ window.updateLivePreview_bots = function (mode, scope = 'both') {
             ? `&#128302; Live Preview: ${symbol} (${tf} Timeframe) &nbsp;|&nbsp; Price: $${simPrice.toFixed(2)}${showATR ? ` &nbsp;|&nbsp; ATR: $${simAtr.toFixed(2)}` : ''}` 
             : `&#128302; Example Preview (Assuming $100 Entry${showATR ? ' & $2 ATR' : ''})`;
             
-        html = `${label} <br/> Stop Loss: $${slPrice.toFixed(2)} (-${slPctCalc}%) &nbsp;|&nbsp; Take Profit: $${tpPrice.toFixed(2)} (+${tpPctCalc}%)`;
+        const directionLabel = isPutUnderlyingAtr ? 'PUT ATR Exit: stop/trail above, target below' : isOptions && showATR ? 'CALL ATR Exit: stop/trail below, target above' : '';
+        const slSign = isPutUnderlyingAtr ? '+' : '-';
+        const tpSign = isPutUnderlyingAtr ? '-' : '+';
+        html = `${label}${directionLabel ? `<br/>${directionLabel}` : ''} <br/> Stop Loss: $${slPrice.toFixed(2)} (${slSign}${slPctCalc}%) &nbsp;|&nbsp; Take Profit: $${tpPrice.toFixed(2)} (${tpSign}${tpPctCalc}%)`;
         
         if (hasTrail) {
             if (showATR) {
-                html += `<br/>Trail Distance: $${trailDist.toFixed(2)} (ATR * ${document.getElementById('strategyAtrTrailMult'+suffix)?.value || '0'})`;
+                const trailNote = isPutUnderlyingAtr ? 'PUT trail follows downward move from above' : 'Trail follows favorable move from below';
+                html += `<br/>Trail Distance: $${trailDist.toFixed(2)} (ATR * ${document.getElementById('strategyAtrTrailMult'+suffix)?.value || '0'}) | ${trailNote}`;
             } else {
                 html += `<br/>Trail Distance: $${trailDist.toFixed(2)} (${document.getElementById(isOptions ? 'strategyOptionsTrailPct' : 'strategyRegularTrailPct')?.value || '0'}%)`;
             }

@@ -12,9 +12,31 @@ var REFRESH_INTERVAL = 60000; // 60 seconds (1 minute)
 var LAST_VIEWED_TICKER_KEY = 'lastViewedTicker';
 var DASHBOARD_CHART_CONTEXT_KEY = 'dashboardChartContext';
 
+function isDashboardPageActive() {
+    const path = (window.location.pathname || '').toLowerCase();
+    return path.endsWith('/dashboard.html') || path === '/' || path.endsWith('/frontend/');
+}
+
+function shouldRunDashboardRefresh() {
+    return isDashboardPageActive() && !document.hidden;
+}
+
 function normalizeTicker(ticker) {
     const normalized = (ticker || '').toString().trim().toUpperCase();
     return normalized && normalized !== 'NULL' && normalized !== 'UNDEFINED' ? normalized : null;
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, {
+            ...options,
+            signal: controller.signal
+        });
+    } finally {
+        clearTimeout(timeoutId);
+    }
 }
 
 function readLastViewedTicker() {
@@ -194,14 +216,9 @@ function updateLastBarInfo(bars, ticker = selectedTicker) {
         return;
     }
 
-    const status = window._liveCandleStatus || {};
     let text = `${normalized} • Last completed: ${formatTimeOnlyCT(last.time)}`;
     if (currentBackendTf === '1Day') {
         text += ' • Daily chart uses completed candles';
-    } else if (status.key === activeChartStateKey(normalized) && status.state === 'delayed') {
-        text += ' • Live quote delayed';
-    } else if (status.key === activeChartStateKey(normalized) && status.state === 'forming') {
-        text += ' • Live candle forming';
     }
     info.textContent = text;
 }
@@ -249,18 +266,24 @@ let tvWidget = null;
 let currentLogTab = "all"; // 'all' or 'trades'
 let currentWatchlistTab = "all"; // 'all', 'stocks', or 'crypto'
 let latestTradesData = []; // Cached log data
+let pendingDashboardRefreshMode = null;
 const chartDataCache = new Map();
 let chartRequestSerial = 0;
 const CHART_CACHE_VERSION = 'v3';
 const CHART_CACHE_TTL_MS = 5 * 60 * 1000;
-const LIVE_QUOTE_POLL_MS = 10000;
-const LIVE_QUOTE_DELAY_SECONDS = 30;
-let liveChartHeartbeatId = null;
-let liveQuoteRequestSerial = 0;
+const COMPLETED_CANDLE_HEARTBEAT_MS = 10000;
+const COMPLETED_CANDLE_DELAY_MS = 15000;
+const LIVE_PRICE_HEARTBEAT_MS = 10000;
+const DASHBOARD_FETCH_TIMEOUT_MS = 12000;
+const CHART_FETCH_TIMEOUT_MS = 15000;
+const QUOTE_FETCH_TIMEOUT_MS = 8000;
+let completedCandleHeartbeatId = null;
 let lastCompletedChartFetchAt = 0;
+let lastCompletedChartBarTime = 0;
+let lastCompletedChartAttemptedCloseTime = 0;
 let activeChartRefreshInFlight = false;
-window._liveCandleStatus = { key: null, state: 'idle', provisional: null };
-window._confirmedChartKey = null;
+let livePriceRequestSerial = 0;
+let signalRefreshRequestSerial = 0;
 
 const CHART_INTERVALS = {
     "30Sec": { label: "30s", seconds: 30, backend: "30Sec" },
@@ -289,158 +312,11 @@ const CHART_RANGES = {
     "MAX": { label: "Max", days: null, preferredTf: "1Day" },
 };
 
-function activeChartStateKey(ticker = selectedTicker, timeframe = currentBackendTf, session = currentChartSession) {
-    return `${normalizeTicker(ticker) || ''}|${timeframe || ''}|${session || ''}`;
-}
-
-function clearLiveCandleState() {
-    window._liveCandleStatus = { key: activeChartStateKey(), state: 'idle', provisional: null };
-    window._visualPriceHistory = window._confirmedDisplayPriceHistory || [];
-    window._confirmedChartKey = null;
+function resetCompletedCandleState() {
+    lastCompletedChartFetchAt = 0;
+    lastCompletedChartBarTime = 0;
+    lastCompletedChartAttemptedCloseTime = 0;
     updateLastBarInfo(window._confirmedDisplayPriceHistory || [], selectedTicker);
-}
-
-function isLiveCandleTimeframe() {
-    return currentBackendTf !== '1Day' && Boolean(CHART_INTERVALS[currentBackendTf]?.seconds);
-}
-
-function completedChartRefreshMs() {
-    if (currentBackendTf === '1Day') return null;
-    const seconds = CHART_INTERVALS[currentBackendTf]?.seconds || 300;
-    if (seconds <= 60) return 60000;
-    if (seconds <= 1800) return 120000;
-    return 300000;
-}
-
-function bucketStartForTime(timeSec) {
-    const seconds = CHART_INTERVALS[currentBackendTf]?.seconds;
-    if (!seconds || seconds >= 86400) return null;
-    return Math.floor(timeSec / seconds) * seconds;
-}
-
-function quoteTimestampSeconds(serverTime) {
-    const parsed = Date.parse(serverTime || '');
-    return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : Math.floor(Date.now() / 1000);
-}
-
-function canFormLiveCandleAt(timeSec, ticker = selectedTicker) {
-    if (!isLiveCandleTimeframe()) return false;
-    if (isCryptoTicker(ticker) || currentChartSession === 'crypto24') return true;
-    const d = new Date(timeSec * 1000);
-    const parts = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'America/Chicago',
-        weekday: 'short',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false
-    }).formatToParts(d);
-    const values = Object.fromEntries(parts.map(p => [p.type, p.value]));
-    const weekday = values.weekday;
-    if (weekday === 'Sat' || weekday === 'Sun') return false;
-    if (currentChartSession === 'regular') return isRegularMarketBar({ time: timeSec });
-    if (currentChartSession !== 'extended') return false;
-    const mins = Number(values.hour) * 60 + Number(values.minute);
-    return mins >= (3 * 60) && mins <= (19 * 60);
-}
-
-function renderLiveChartStatus(state) {
-    window._liveCandleStatus = {
-        key: activeChartStateKey(),
-        state,
-        provisional: state === 'forming' ? window._liveCandleStatus?.provisional : null
-    };
-    updateLastBarInfo(window._confirmedDisplayPriceHistory || [], selectedTicker);
-}
-
-function applyLiveQuoteToActiveChart(quote) {
-    if (!candleSeries || !quote || normalizeTicker(quote.ticker) !== normalizeTicker(selectedTicker)) return;
-    const price = Number(quote.price);
-    if (!Number.isFinite(price) || price <= 0) return;
-
-    const cacheAge = Number(quote.cache_age_seconds || 0);
-    if (quote.stale || cacheAge > LIVE_QUOTE_DELAY_SECONDS) {
-        renderLiveChartStatus('delayed');
-        return;
-    }
-
-    const quoteTime = quoteTimestampSeconds(quote.server_time);
-    if (!canFormLiveCandleAt(quoteTime, selectedTicker)) {
-        renderLiveChartStatus('idle');
-        return;
-    }
-
-    const key = activeChartStateKey();
-    if (window._confirmedChartKey !== key) return;
-
-    const confirmed = window._confirmedDisplayPriceHistory || [];
-    if (!confirmed.length) return;
-    const bucketTime = bucketStartForTime(quoteTime);
-    if (!bucketTime) return;
-
-    const lastConfirmed = confirmed[confirmed.length - 1];
-    if (bucketTime < lastConfirmed.time) return;
-
-    const previousProvisional = window._liveCandleStatus?.key === key
-        ? window._liveCandleStatus.provisional
-        : null;
-    const baseBar = bucketTime === lastConfirmed.time
-        ? lastConfirmed
-        : (previousProvisional?.time === bucketTime ? previousProvisional : {
-            time: bucketTime,
-            open: lastConfirmed.close,
-            high: lastConfirmed.close,
-            low: lastConfirmed.close,
-            close: lastConfirmed.close,
-            volume: 0,
-            provisional: true
-        });
-
-    const liveBar = {
-        ...baseBar,
-        high: Math.max(Number(baseBar.high), price),
-        low: Math.min(Number(baseBar.low), price),
-        close: price,
-        provisional: true
-    };
-
-    window._visualPriceHistory = bucketTime === lastConfirmed.time
-        ? [...confirmed.slice(0, -1), liveBar]
-        : [...confirmed, liveBar];
-    window._liveCandleStatus = { key, state: 'forming', provisional: liveBar };
-
-    candleSeries.update({
-        time: liveBar.time,
-        open: liveBar.open,
-        high: liveBar.high,
-        low: liveBar.low,
-        close: liveBar.close
-    });
-    if (extHoursSeries && !isCryptoTicker(selectedTicker) && currentChartSession === 'extended') {
-        const isExt = !isRegularMarketBar(liveBar);
-        extHoursSeries.update({
-            time: liveBar.time,
-            value: isExt ? 9999999 : 0,
-            color: isExt ? 'rgba(100, 116, 139, 0.12)' : 'rgba(0,0,0,0)'
-        });
-    }
-    updateLastBarInfo(confirmed, selectedTicker);
-    _updateChartLiveHeader(price, confirmed);
-}
-
-function _updateChartLiveHeader(price, confirmedBars) {
-    const priceEl = document.getElementById('chartPrice');
-    const changeEl = document.getElementById('chartPriceChange');
-    const first = confirmedBars?.[0];
-    if (!priceEl || !first || !Number.isFinite(price)) return;
-    const change = price - Number(first.open);
-    const changePct = first.open ? (change / Number(first.open)) * 100 : 0;
-    priceEl.textContent = formatPrice(price, selectedTicker);
-    priceEl.className = `text-xl font-black ${change >= 0 ? 'text-emerald-600' : 'text-red-500'}`;
-    if (changeEl) {
-        const sign = change >= 0 ? '+' : '';
-        changeEl.textContent = `${sign}${formatPrice(Math.abs(change), selectedTicker)} (${sign}${changePct.toFixed(2)}%)`;
-        changeEl.className = `text-xs font-bold ${change >= 0 ? 'text-emerald-500' : 'text-red-400'}`;
-    }
 }
 
 /**
@@ -835,8 +711,7 @@ function updateChart(priceHistory, ticker) {
     if (!sorted.length) {
         window._confirmedPriceHistory = rawSorted;
         window._confirmedDisplayPriceHistory = [];
-        window._visualPriceHistory = [];
-        clearLiveCandleState();
+        resetCompletedCandleState();
         updateLastBarInfo(rawSorted, ticker);
         updateChartControlState(ticker);
         return;
@@ -844,9 +719,7 @@ function updateChart(priceHistory, ticker) {
     window._displayPriceHistory = sorted;
     window._confirmedPriceHistory = rawSorted;
     window._confirmedDisplayPriceHistory = sorted;
-    window._visualPriceHistory = sorted;
-    window._confirmedChartKey = activeChartStateKey(ticker);
-    window._liveCandleStatus = { key: activeChartStateKey(ticker), state: 'idle', provisional: null };
+    lastCompletedChartBarTime = Number(sorted[sorted.length - 1]?.time || 0);
     // Background highlight for Extended Hours
     if (extHoursSeries) {
         if (!isCryptoTicker(ticker) && currentChartSession === 'extended' && currentBackendTf !== '1Day') {
@@ -1448,6 +1321,40 @@ function renderFastChartPayload(data, requestedTicker) {
     }
 }
 
+async function refreshActiveTickerSignals(options = {}) {
+    const { force = true, showLoading = true } = options;
+    const requestedTicker = normalizeTicker(selectedTicker);
+    if (!requestedTicker || !shouldRunDashboardRefresh()) return;
+
+    const isAuthReady = window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true');
+    if (!isAuthReady) return;
+
+    if (showLoading) {
+        const grid = document.getElementById('signalGrid');
+        const premiumGrid = document.getElementById('premiumSignalGrid');
+        const loading = document.getElementById('gridLoading');
+        if (grid) grid.innerHTML = '';
+        if (premiumGrid) premiumGrid.innerHTML = '';
+        if (loading) loading.classList.remove('hidden');
+    }
+
+    const requestId = ++signalRefreshRequestSerial;
+    try {
+        const headers = await getAuthHeaders();
+        const url = `${API_BASE}/api/signals/${encodeURIComponent(requestedTicker)}?timeframe=${encodeURIComponent(currentBackendTf)}&source=dashboard&force=${force ? 'true' : 'false'}`;
+        const response = await fetchWithTimeout(url, { headers }, 12000);
+        if (!response.ok) {
+            console.error(`[signals] HTTP Error: ${response.status} - ${await response.text()}`);
+            return;
+        }
+        const data = await response.json();
+        if (requestId !== signalRefreshRequestSerial || normalizeTicker(selectedTicker) !== requestedTicker) return;
+        renderFastChartPayload(data, requestedTicker);
+    } catch (e) {
+        console.error('[signals] Refresh failed:', e);
+    }
+}
+
 async function loadSelectedTickerChart(options = {}) {
     return loadTickerChartFast(selectedTicker, options);
 }
@@ -1456,7 +1363,15 @@ async function loadTickerChartFast(ticker, options = {}) {
     const requestedTicker = normalizeTicker(ticker);
     if (!requestedTicker) return;
 
-    const { force = false, renderCached = true, fetchFresh = true } = options;
+    let { force = false, renderCached = true, fetchFresh = true } = options;
+    const chartContext = readDashboardChartContext();
+    const isForceRefresh = chartContext && chartContext.forceRefresh && normalizeTicker(chartContext.ticker) === requestedTicker;
+    if (isForceRefresh) {
+        force = true;
+        renderCached = false;
+        fetchFresh = true;
+    }
+
     const key = chartCacheKey(requestedTicker);
     let cached = chartDataCache.get(key);
 
@@ -1487,6 +1402,7 @@ async function loadTickerChartFast(ticker, options = {}) {
     }
 
     if (!fetchFresh) return;
+    if (!shouldRunDashboardRefresh()) return;
 
     // Check if auth is ready before fetching fresh data
     const isAuthReady = window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true');
@@ -1495,13 +1411,20 @@ async function loadTickerChartFast(ticker, options = {}) {
         return;
     }
 
+    if (isForceRefresh) {
+        try {
+            delete chartContext.forceRefresh;
+            sessionStorage.setItem(DASHBOARD_CHART_CONTEXT_KEY, JSON.stringify(chartContext));
+        } catch (e) {}
+    }
+
     const requestId = ++chartRequestSerial;
     lastCompletedChartFetchAt = Date.now();
     try {
         const headers = await getAuthHeaders();
         const chartSource = getChartSourceForTicker(requestedTicker);
         const url = `${API_BASE}/api/chart/${encodeURIComponent(requestedTicker)}?timeframe=${encodeURIComponent(currentBackendTf)}&force=${force ? 'true' : 'false'}&source=${encodeURIComponent(chartSource)}`;
-        const response = await fetch(url, { headers });
+        const response = await fetchWithTimeout(url, { headers }, CHART_FETCH_TIMEOUT_MS);
         if (!response.ok) {
             console.error(`[chart] HTTP Error: ${response.status} - ${await response.text()}`);
             return;
@@ -1547,37 +1470,20 @@ async function loadTickerChartFast(ticker, options = {}) {
     }
 }
 
-async function fetchLiveQuoteForActiveChart() {
-    const requestedTicker = normalizeTicker(selectedTicker);
-    if (!requestedTicker || !isLiveCandleTimeframe()) {
-        if (currentBackendTf === '1Day') renderLiveChartStatus('idle');
-        return;
-    }
-    if (document.hidden) return;
-    const isAuthReady = window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true');
-    if (!isAuthReady) return;
-
-    const keyAtStart = activeChartStateKey(requestedTicker);
-    const requestId = ++liveQuoteRequestSerial;
-    try {
-        const headers = await getAuthHeaders();
-        const response = await fetch(`${API_BASE}/api/quote/${encodeURIComponent(requestedTicker)}`, { headers });
-        if (!response.ok) return;
-        const quote = await response.json();
-        if (requestId !== liveQuoteRequestSerial || keyAtStart !== activeChartStateKey(requestedTicker)) return;
-        applyLiveQuoteToActiveChart(quote);
-    } catch (e) {
-        console.warn('[chart] Live quote update failed:', e);
-    }
-}
-
 async function refreshCompletedCandlesIfDue() {
-    if (document.hidden || activeChartRefreshInFlight) return;
-    const refreshMs = completedChartRefreshMs();
-    if (!refreshMs) return;
-    if (Date.now() - lastCompletedChartFetchAt < refreshMs) return;
+    if (!shouldRunDashboardRefresh() || activeChartRefreshInFlight) return;
+    const intervalSeconds = CHART_INTERVALS[currentBackendTf]?.seconds;
+    if (!intervalSeconds || intervalSeconds >= 86400) return;
+    if (Date.now() - lastCompletedChartFetchAt < COMPLETED_CANDLE_HEARTBEAT_MS) return;
+
+    const now = Date.now();
+    const latestSafeClosedBarTime = Math.floor(((now - COMPLETED_CANDLE_DELAY_MS) / 1000) / intervalSeconds) * intervalSeconds;
+    if (latestSafeClosedBarTime <= 0) return;
+    if (lastCompletedChartBarTime >= latestSafeClosedBarTime) return;
+    if (lastCompletedChartAttemptedCloseTime >= latestSafeClosedBarTime) return;
 
     activeChartRefreshInFlight = true;
+    lastCompletedChartAttemptedCloseTime = latestSafeClosedBarTime;
     try {
         await loadSelectedTickerChart({ renderCached: false, fetchFresh: true });
     } finally {
@@ -1585,15 +1491,59 @@ async function refreshCompletedCandlesIfDue() {
     }
 }
 
+function updateChartHeaderLivePrice(price) {
+    const priceEl = document.getElementById('chartPrice');
+    const changeEl = document.getElementById('chartPriceChange');
+    if (!priceEl || !Number.isFinite(price) || price <= 0) return;
+
+    const bars = window._confirmedDisplayPriceHistory || window._displayPriceHistory || [];
+    const first = bars?.[0];
+    const baseline = Number(first?.open || first?.close || 0);
+    const change = baseline > 0 ? price - baseline : 0;
+    const changePct = baseline > 0 ? (change / baseline) * 100 : 0;
+
+    priceEl.textContent = formatPrice(price, selectedTicker);
+    priceEl.className = `text-xl font-black ${change >= 0 ? 'text-emerald-600' : 'text-red-500'}`;
+    if (changeEl && baseline > 0) {
+        const sign = change >= 0 ? '+' : '';
+        changeEl.textContent = `${sign}${formatPrice(Math.abs(change), selectedTicker)} (${sign}${changePct.toFixed(2)}%)`;
+        changeEl.className = `text-xs font-bold ${change >= 0 ? 'text-emerald-500' : 'text-red-400'}`;
+    }
+}
+
+async function fetchLivePriceForActiveTicker() {
+    const requestedTicker = normalizeTicker(selectedTicker);
+    if (!requestedTicker || !shouldRunDashboardRefresh()) return;
+
+    const isAuthReady = window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true');
+    if (!isAuthReady) return;
+
+    const requestId = ++livePriceRequestSerial;
+    try {
+        const headers = await getAuthHeaders();
+        const response = await fetchWithTimeout(`${API_BASE}/api/quote/${encodeURIComponent(requestedTicker)}`, { headers }, QUOTE_FETCH_TIMEOUT_MS);
+        if (!response.ok) return;
+
+        const quote = await response.json();
+        if (requestId !== livePriceRequestSerial || normalizeTicker(selectedTicker) !== requestedTicker) return;
+        if (quote.stale) return;
+
+        const price = Number(quote.price);
+        updateChartHeaderLivePrice(price);
+    } catch (e) {
+        console.warn('[chart] Live price update failed:', e);
+    }
+}
+
 function startActiveChartHeartbeat() {
-    if (liveChartHeartbeatId) clearInterval(liveChartHeartbeatId);
+    if (completedCandleHeartbeatId) clearInterval(completedCandleHeartbeatId);
     const tick = () => {
-        if (document.hidden) return;
-        fetchLiveQuoteForActiveChart();
+        if (!shouldRunDashboardRefresh()) return;
+        fetchLivePriceForActiveTicker();
         refreshCompletedCandlesIfDue();
     };
     tick();
-    liveChartHeartbeatId = setInterval(tick, LIVE_QUOTE_POLL_MS);
+    completedCandleHeartbeatId = setInterval(tick, LIVE_PRICE_HEARTBEAT_MS);
 }
 
 // ──────────────────────────────────────────────
@@ -1637,15 +1587,58 @@ function clearChartVisuals() {
     }
 }
 
+function showTickerChangeLoadingState(ticker, options = {}) {
+    const normalized = normalizeTicker(ticker);
+    if (!normalized) return;
+
+    updateActiveTickerDisplay(normalized);
+    window._lastSignals = null;
+    livePriceRequestSerial++;
+    chartRequestSerial++;
+    _aiIndicatorFetchId++;
+    updateSizingPanel(null);
+
+    if (!options.keepChart) {
+        clearChartVisuals();
+    } else {
+        const priceEl = document.getElementById('chartPrice');
+        const changeEl = document.getElementById('chartPriceChange');
+        if (priceEl) {
+            priceEl.innerText = 'Refreshing...';
+            priceEl.className = 'text-xl font-black text-gray-400';
+        }
+        if (changeEl) {
+            changeEl.innerText = '';
+            changeEl.className = 'text-xs font-bold text-gray-500';
+        }
+    }
+
+    const grid = document.getElementById('signalGrid');
+    const premiumGrid = document.getElementById('premiumSignalGrid');
+    const loading = document.getElementById('gridLoading');
+    if (grid) grid.innerHTML = '';
+    if (premiumGrid) premiumGrid.innerHTML = '';
+    if (loading) loading.classList.remove('hidden');
+
+    const summaryEl = document.getElementById('aiSummary');
+    const cardSentSummary = document.getElementById('sentimentSummary');
+    const aiHeaderEl = document.getElementById('aiIndicatorHeader');
+    if (aiHeaderEl) aiHeaderEl.textContent = `BotBulls AI Analysis - ${normalized}`;
+    if (summaryEl) {
+        summaryEl.textContent = `Fetching latest scan analysis for ${normalized}...`;
+        summaryEl.classList.add('italic');
+    }
+    if (cardSentSummary) cardSentSummary.textContent = `Fetching latest news for ${normalized}...`;
+    _showAIIndicatorLoading(normalized);
+}
+
 // ──────────────────────────────────────────────
 // 1c. Timeframe button bar
 // ──────────────────────────────────────────────
 function setChartTimeframe(tf) {
     currentBackendTf = CHART_INTERVALS[tf]?.backend || tf;
     localStorage.setItem('lastChartTf', currentBackendTf);
-    liveQuoteRequestSerial++;
-    clearLiveCandleState();
-    lastCompletedChartFetchAt = 0;
+    resetCompletedCandleState();
 
     // If they choose a very small timeframe, check if the current range is too large.
     const smallTfs = ["1Min", "5Min", "15Min", "30Min"];
@@ -1671,8 +1664,7 @@ function setChartRange(range) {
     if (!CHART_RANGES[range]) return;
     currentChartRange = range;
     localStorage.setItem('lastChartRange', range);
-    liveQuoteRequestSerial++;
-    clearLiveCandleState();
+    resetCompletedCandleState();
 
     // Only force 1Y and 5Y (and MAX) to minimum timeframes if they are currently set to smaller ones.
     if (range === '1Y') {
@@ -1704,8 +1696,7 @@ function setChartSession(session) {
         currentChartSession = session === 'extended' ? 'extended' : 'regular';
     }
     localStorage.setItem('lastChartSession', currentChartSession);
-    liveQuoteRequestSerial++;
-    clearLiveCandleState();
+    resetCompletedCandleState();
     updateChartControlState(selectedTicker);
     if (window._lastPriceHistory) {
         updateChart(window._lastPriceHistory, window._lastTicker || selectedTicker);
@@ -1891,30 +1882,17 @@ function setGlobalIndicatorPref(indicatorName, enabled) {
             if (!wasDebouncing) window._indicatorToggleDebounce = setTimeout(() => { window._indicatorToggleDebounce = null; }, 2000);
 
             getAuthHeaders().then(headers => {
-                fetch(`${API_BASE}/api/settings/indicators?context=dashboard`, {
+                fetchWithTimeout(`${API_BASE}/api/settings/indicators?context=dashboard`, {
                     method: 'POST',
                     headers: headers,
                     body: JSON.stringify({ [toggleKey]: enabled })
-                }).catch(e => console.error('Error saving setting:', e));
+                }, 8000).catch(e => console.error('Error saving setting:', e));
             });
         }
     }
 }
 
 async function resetConfluenceIndicatorsToDefaults() {
-    const signals = window._lastSignals || {};
-    const configKeys = Array.from(new Set(Object.values(INDICATOR_CONFIG_MAP).flat()));
-    const updates = {};
-
-    Object.keys(signals).forEach(name => {
-        const toggleKey = signals[name]?.toggle_key;
-        if (toggleKey) updates[toggleKey] = false;
-    });
-
-    configKeys.forEach(key => {
-        updates[key] = "";
-    });
-
     try {
         localStorage.setItem(GLOBAL_INDICATOR_PREFS_KEY, JSON.stringify({}));
         localStorage.setItem('visibleIndicators', JSON.stringify(_defaultVisibleIndicators));
@@ -1928,6 +1906,11 @@ async function resetConfluenceIndicatorsToDefaults() {
             }
         });
 
+        if (window.lastDashboardData) {
+            window.lastDashboardData.indicator_overrides = {};
+            window.lastDashboardData.indicator_toggle_overrides = {};
+            window.lastDashboardData.indicator_parameters = { ...INDICATOR_DEFAULTS };
+        }
         recomputeConfluence();
     } catch (e) {
         console.warn('[confluence] Local reset prep failed:', e);
@@ -1935,21 +1918,31 @@ async function resetConfluenceIndicatorsToDefaults() {
 
     try {
         const headers = await getAuthHeaders();
-        await fetch(`${API_BASE}/api/settings/indicators?context=dashboard`, {
+        await fetchWithTimeout(`${API_BASE}/api/settings/indicators?context=dashboard`, {
             method: 'POST',
             headers: headers,
-            body: JSON.stringify(updates)
-        });
+            body: JSON.stringify({ reset_confluence: true })
+        }, 8000);
 
         clearTimeout(window._indicatorToggleDebounce);
-        window._indicatorToggleDebounce = setTimeout(() => {
-            fetchDashboard('fast');
+        window._indicatorToggleDebounce = null;
+        if (typeof loadSelectedTickerChart === 'function') {
             loadSelectedTickerChart({ force: true, renderCached: false });
-            window._indicatorToggleDebounce = null;
-        }, 250);
+        } else {
+            refreshActiveTickerSignals({ force: true });
+        }
     } catch (e) {
         console.error('[confluence] Reset failed:', e);
     }
+}
+
+function indicatorParamValue(key, fallback) {
+    const params = window.lastDashboardData?.indicator_parameters || {};
+    const raw = params[key] !== undefined && params[key] !== null && params[key] !== ''
+        ? params[key]
+        : fallback;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : fallback;
 }
 
 function recomputeConfluence() {
@@ -1967,11 +1960,13 @@ function recomputeConfluence() {
     }
 
     // Determine verdict
+    const minBullish = indicatorParamValue('MIN_BULLISH_SIGNALS', INDICATOR_DEFAULTS.MIN_BULLISH_SIGNALS || 4);
+    const minBearish = indicatorParamValue('MIN_BEARISH_SIGNALS', INDICATOR_DEFAULTS.MIN_BEARISH_SIGNALS || 4);
     let action = 'HOLD', reason = 'Waiting for scan...';
-    if (bullish >= (INDICATOR_DEFAULTS.MIN_BULLISH_SIGNALS || 4)) {
+    if (bullish >= minBullish) {
         action = 'BUY';
         reason = `BUY Triggered: ${bullish} bullish signals`;
-    } else if (bearish >= (INDICATOR_DEFAULTS.MIN_BEARISH_SIGNALS || 4)) {
+    } else if (bearish >= minBearish) {
         action = 'SELL';
         reason = `SELL Triggered: ${bearish} bearish signals`;
     }
@@ -2143,7 +2138,7 @@ window.changeAIIndicatorModel = async function (model) {
     const timeframe = currentBackendTf || (typeof selectedTimeframe !== 'undefined' ? selectedTimeframe : '') || '1Hour';
     _showAIIndicatorLoading(ticker);
     try {
-        await fetchAIIndicator(ticker, timeframe, false);
+        await fetchAIIndicator(ticker, timeframe, true);
     } catch (e) {
         console.error('[ai-indicator] Failed to reload indicator:', e);
     }
@@ -2834,31 +2829,24 @@ function selectTicker(ticker) {
         return;
     }
     rememberSelectedTicker(normalizedTicker);
-    liveQuoteRequestSerial++;
-    clearLiveCandleState();
-    lastCompletedChartFetchAt = 0;
+    resetCompletedCandleState();
 
     // Keep whatever timeframe and range were previously selected
 
-    // Update header and search box immediately for visual feedback
-    updateActiveTickerDisplay(selectedTicker);
+    // Update header/search immediately and clear stale ticker-specific UI.
+    showTickerChangeLoadingState(normalizedTicker);
     updateChartControlState(selectedTicker);
 
     const cachedChart = chartDataCache.get(chartCacheKey(normalizedTicker));
     if (cachedChart) {
         renderFastChartPayload(cachedChart, normalizedTicker);
-    } else {
-        clearChartVisuals();
-        const grid = document.getElementById('signalGrid');
-        const loading = document.getElementById('gridLoading');
-        if (grid) grid.innerHTML = '';
-        if (loading) loading.classList.remove('hidden');
     }
 
     syncChart();
-    loadSelectedTickerChart({ renderCached: true });
-    fetchDashboard('fast');
-    fetchAIIndicator(normalizedTicker, currentBackendTf);
+    fetchLivePriceForActiveTicker();
+    loadSelectedTickerChart({ force: true, renderCached: false });
+    fetchDashboard('heavy', { queueIfBusy: true });
+    fetchAIIndicator(normalizedTicker, currentBackendTf, true);
 }
 
 async function removeFromWatchlist(ticker) {
@@ -3067,8 +3055,14 @@ function updateSizingPanel(scan) {
 // ──────────────────────────────────────────────
 // 8. Main Fetch Loop
 // ──────────────────────────────────────────────
-async function fetchDashboard(mode = 'heavy') {
+async function fetchDashboard(mode = 'heavy', options = {}) {
+    if (!shouldRunDashboardRefresh()) {
+        return;
+    }
     if (window._dashboardRefreshInFlight) {
+        if (options.queueIfBusy) {
+            pendingDashboardRefreshMode = mode;
+        }
         return;
     }
     window._dashboardRefreshInFlight = true;
@@ -3081,7 +3075,7 @@ async function fetchDashboard(mode = 'heavy') {
         const headers = await getAuthHeaders();
         // Removed redundant header log
 
-        const response = await fetch(url, { headers });
+        const response = await fetchWithTimeout(url, { headers }, DASHBOARD_FETCH_TIMEOUT_MS);
         if (!response.ok) {
             const errText = await response.text();
             console.error(`[dashboard] HTTP Error: ${response.status} - ${errText}`);
@@ -3112,7 +3106,7 @@ async function fetchDashboard(mode = 'heavy') {
         const btnUnlink = document.getElementById('btnUnlinkAlpaca');
 
         if (redirectBtn && statusSpan && dotEl && textEl && btnUnlink) {
-            if (data.brokerConnected) {
+            if (data.brokerConnected || data.brokerStatus === 'connected') {
                 // Connected to Alpaca: Hide Connect redirect button and show active link pill
                 redirectBtn.classList.add('hidden');
                 statusSpan.classList.remove('hidden');
@@ -3124,14 +3118,15 @@ async function fetchDashboard(mode = 'heavy') {
                 btnUnlink.classList.remove('hidden');
             } else {
                 if (data.has_keys) {
-                    // Retrying state: Hide Connect redirect button and show retrying pill
+                    // Keys exist, but the latest account check did not confirm live connection.
                     redirectBtn.classList.add('hidden');
                     statusSpan.classList.remove('hidden');
                     statusSpan.style.display = 'flex';
 
                     statusSpan.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-amber-50 text-amber-600 border-2 border-amber-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
                     dotEl.className = "h-2 w-2 rounded-full mr-2 bg-amber-500 animate-pulse";
-                    textEl.textContent = "RETRYING...";
+                    textEl.textContent = data.brokerStatusReason ? "ALPACA CHECK" : "RETRYING...";
+                    statusSpan.title = data.brokerStatusReason || "Alpaca keys are saved, but the latest account check did not confirm a live connection yet.";
                     btnUnlink.classList.remove('hidden');
                 } else {
                     // Not connected / No keys: Show the original Connect Alpaca button
@@ -3344,6 +3339,11 @@ async function fetchDashboard(mode = 'heavy') {
         showGlobalError('Cannot connect to the trading backend.');
     } finally {
         window._dashboardRefreshInFlight = false;
+        const queuedMode = pendingDashboardRefreshMode;
+        pendingDashboardRefreshMode = null;
+        if (queuedMode && shouldRunDashboardRefresh()) {
+            setTimeout(() => fetchDashboard(queuedMode, { queueIfBusy: true }), 0);
+        }
     }
 }
 
@@ -3472,16 +3472,15 @@ window._dashboardRefreshInFlight = false;
 async function toggleIndicator(key, value) {
     try {
         const headers = await getAuthHeaders();
-        await fetch(`${API_BASE}/api/settings/indicators?context=dashboard`, {
+        await fetchWithTimeout(`${API_BASE}/api/settings/indicators?context=dashboard`, {
             method: 'POST',
             headers: headers,
             body: JSON.stringify({ [key]: value })
-        });
+        }, 8000);
 
         clearTimeout(window._indicatorToggleDebounce);
         window._indicatorToggleDebounce = setTimeout(() => {
-            fetchDashboard('fast');
-            loadSelectedTickerChart({ force: true, renderCached: false });
+            refreshActiveTickerSignals({ force: true });
             window._indicatorToggleDebounce = null; // Unblock the heartbeat
         }, 1000);
     } catch (e) {
@@ -3530,6 +3529,9 @@ async function updateStrategyTf(newTf) {
 // so bots.js can render instantly on navigation.
 // ──────────────────────────────────────────────
 async function prefetchBotsData() {
+    if (!shouldRunDashboardRefresh()) {
+        return;
+    }
     try {
         const headers = await getAuthHeaders();
         const url = `${API_BASE}/api/dashboard?mode=fast&source=bots`;
@@ -3578,25 +3580,49 @@ document.addEventListener('DOMContentLoaded', () => {
             // PHASE 1: Chart candles first — highest priority
             let chartWarmup = null;
             if (selectedTicker) {
-                console.log(`[dashboard] Phase 1 — Fetching live chart for: ${selectedTicker}`);
+                console.log(`[dashboard] Phase 1 — Fetching completed candles for: ${selectedTicker}`);
                 chartWarmup = loadSelectedTickerChart({ renderCached: true, fetchFresh: true });
             }
             startActiveChartHeartbeat();
 
-            // PHASE 2: Dashboard scan (signals, watchlist) — medium priority
-            console.log('[dashboard] Phase 2 — Loading fast dashboard scan...');
-            const dashboardWarmup = fetchDashboard('fast');
+            // PHASE 2: Dashboard shell/watchlist — give chart candles the first network lane.
+            console.log('[dashboard] Phase 2 — Scheduling fast dashboard scan after chart priority window...');
+            let dashboardWarmupStarted = false;
+            const startDashboardWarmup = () => {
+                if (dashboardWarmupStarted || !shouldRunDashboardRefresh()) return;
+                dashboardWarmupStarted = true;
+                fetchDashboard('fast');
+            };
+            const dashboardWarmupTimer = setTimeout(startDashboardWarmup, chartWarmup ? 1200 : 0);
+            if (chartWarmup && typeof chartWarmup.finally === 'function') {
+                chartWarmup.finally(() => {
+                    clearTimeout(dashboardWarmupTimer);
+                    startDashboardWarmup();
+                });
+            }
 
             // We intentionally do NOT await the warmups so the UI does not block if one of them hangs.
-            // PHASE 3: Bots data prefetch — fires immediately in background
-            console.log('[dashboard] Phase 3 — Prefetching bots data for instant bots page...');
-            prefetchBotsData();
+            // PHASE 3: Bots data prefetch — delayed/idle so it never competes with chart startup.
+            console.log('[dashboard] Phase 3 — Scheduling bots prefetch for idle time...');
+            const runBotsPrefetch = () => {
+                if (!shouldRunDashboardRefresh()) return;
+                prefetchBotsData();
+            };
+            setTimeout(() => {
+                if (window.requestIdleCallback) {
+                    window.requestIdleCallback(runBotsPrefetch, { timeout: 2000 });
+                } else {
+                    runBotsPrefetch();
+                }
+            }, 3000);
 
-            // PHASE 4: All remaining background data — lowest priority (delayed 500ms)
+            // PHASE 4: All remaining background data — lowest priority, after chart + dashboard shell.
             setTimeout(async () => {
+                if (!shouldRunDashboardRefresh()) return;
                 console.log('[dashboard] Phase 4 — Loading heavy background data...');
-                if (!window._dashboardRefreshInFlight) fetchDashboard('heavy');
+                fetchDashboard('heavy', { queueIfBusy: true });
                 const runBackground = async () => {
+                    if (!shouldRunDashboardRefresh()) return;
                     fetchMarketData();
                     fetchMacroEvents();
                     await loadOllamaModels();
@@ -3606,21 +3632,27 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else {
                     setTimeout(runBackground, 0);
                 }
-                if (selectedTicker) fetchAIIndicator(selectedTicker, currentBackendTf);
-            }, 500);
+                if (selectedTicker && shouldRunDashboardRefresh()) fetchAIIndicator(selectedTicker, currentBackendTf);
+            }, 2500);
 
             // Heartbeat refresh
             setInterval(() => {
+                if (!shouldRunDashboardRefresh()) return;
                 if (window._indicatorToggleDebounce || window._dashboardRefreshInFlight) return;
                 fetchDashboard('heavy');
             }, REFRESH_INTERVAL);
-            setInterval(fetchMarketData, 60000);
+            setInterval(() => {
+                if (!shouldRunDashboardRefresh()) return;
+                fetchMarketData();
+            }, 60000);
         }
     }, 50);
 
     document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) {
-            fetchLiveQuoteForActiveChart();
+        if (shouldRunDashboardRefresh()) {
+            fetchDashboard('fast');
+            fetchMarketData();
+            fetchLivePriceForActiveTicker();
             refreshCompletedCandlesIfDue();
         }
     });
@@ -4035,6 +4067,41 @@ function resetIndicatorSettingsToDefaults() {
     });
 }
 
+function applyIndicatorSettingUpdatesLocally(updates) {
+    if (!window.lastDashboardData) window.lastDashboardData = {};
+    const params = {
+        ...(window.lastDashboardData.indicator_parameters || {})
+    };
+    const overrides = {
+        ...(window.lastDashboardData.indicator_overrides || {})
+    };
+
+    Object.entries(updates || {}).forEach(([key, rawValue]) => {
+        if (rawValue === '' || rawValue === null || rawValue === undefined) {
+            delete overrides[key];
+            if (INDICATOR_DEFAULTS[key] !== undefined) {
+                params[key] = INDICATOR_DEFAULTS[key];
+            } else {
+                delete params[key];
+            }
+            return;
+        }
+
+        const defaultValue = INDICATOR_DEFAULTS[key];
+        const numericValue = Number(rawValue);
+        const value = Number.isFinite(numericValue) ? numericValue : rawValue;
+        params[key] = value;
+        if (defaultValue !== undefined && String(value) === String(defaultValue)) {
+            delete overrides[key];
+        } else {
+            overrides[key] = value;
+        }
+    });
+
+    window.lastDashboardData.indicator_parameters = params;
+    window.lastDashboardData.indicator_overrides = overrides;
+}
+
 async function saveIndicatorSettings() {
     const inputs = document.querySelectorAll('#indicatorModalContent input');
     const updates = {};
@@ -4053,18 +4120,22 @@ async function saveIndicatorSettings() {
 
     try {
         const headers = await getAuthHeaders();
-        const response = await fetch(`${API_BASE}/api/settings/indicators?context=dashboard`, {
+        const response = await fetchWithTimeout(`${API_BASE}/api/settings/indicators?context=dashboard`, {
             method: 'POST',
             headers: headers,
             body: JSON.stringify(updates)
-        });
+        }, 8000);
 
         if (response.ok) {
             console.log(`[settings] Updated settings for ${currentEditingIndicator}`);
+            applyIndicatorSettingUpdatesLocally(updates);
             closeIndicatorSettings();
-            // Recalculate the current chart/signals with the updated indicator parameters.
-            fetchDashboard('fast');
-            loadSelectedTickerChart({ force: true, renderCached: false });
+            // Recalculate current confluence and chart indicators without hitting broad dashboard/broker endpoints.
+            if (typeof loadSelectedTickerChart === 'function') {
+                loadSelectedTickerChart({ force: true, renderCached: false });
+            } else {
+                refreshActiveTickerSignals({ force: true });
+            }
         } else {
             alert("Error saving indicator settings.");
         }
@@ -4310,6 +4381,9 @@ function closeBreadthModal() {
 }
 
 async function fetchMarketData() {
+    if (!shouldRunDashboardRefresh()) {
+        return;
+    }
     try {
         const headers = await getAuthHeaders();
         const req = await fetch(`${API_BASE}/api/market-data`, {

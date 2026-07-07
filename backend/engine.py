@@ -6,6 +6,7 @@ import time
 from broker_factory import create_broker
 from trader import evaluate_trade
 from swing_strategy import build_swing_exit
+from options_direction import normalize_options_type, VALID_OPTION_DIRECTIONS, options_type_to_contract_type
 from firebase_admin import firestore
 import config as global_config
 from user_config import UserConfig, set_user_config
@@ -185,6 +186,7 @@ class UserEngine:
         self.bot_scans_by_tf = {}
         self.last_scan_timestamps = {}
         self.last_bot_scan_time = {}
+        self.last_history_save_ts = 0
         self.signal_locked_direction = {}
         self.exit_order_state = {}
         self.scan_log_state = {}
@@ -196,28 +198,41 @@ class UserEngine:
         self.dashboard_primary_ticker = None
         self.loaded_from_cloud = False
         self.load_lock = asyncio.Lock()
+        self.settings_save_lock = asyncio.Lock()
         
     def get_now(self):
         tz = pytz.timezone(self.config.TIMEZONE if hasattr(self.config, 'TIMEZONE') else 'US/Central')
         return datetime.now(tz)
         
     async def save_settings(self):
-        if not self.db: return
-        try:
-            data = {
-                "watchlist": self.config.WATCHLIST,
-                "tradelist": self.config.TRADELIST,
-                "strategy_timeframe": self.config.DEFAULT_TIMEFRAME,
-                "ticker_settings": self.config.TICKER_SETTINGS,
-                "toggles": self.config.toggles,
-                "parameters": self.config.parameters,
-                "contexts": getattr(self.config, 'contexts', {})
-            }
-            def _sync_save():
-                self.db.collection("users").document(self.uid).collection("settings").document("ui").set(data)
-            await asyncio.to_thread(_sync_save)
-        except Exception as e:
-            print(f"[engine-{self.uid}] Error saving settings: {e}")
+        async with self.settings_save_lock:
+            try:
+                import time, json, os
+                data = {
+                    "watchlist": self.config.WATCHLIST,
+                    "tradelist": self.config.TRADELIST,
+                    "strategy_timeframe": self.config.DEFAULT_TIMEFRAME,
+                    "ticker_settings": self.config.TICKER_SETTINGS,
+                    "toggles": self.config.toggles,
+                    "parameters": self.config.parameters,
+                    "contexts": getattr(self.config, 'contexts', {}),
+                    "saved_at": time.time()
+                }
+                try:
+                    os.makedirs("data", exist_ok=True)
+                    with open(f"data/user_settings_{self.uid}.json", "w") as f:
+                        json.dump(data, f, indent=2)
+                except Exception as ex_loc:
+                    print(f"[engine-{self.uid}] Failed writing local settings backup: {ex_loc}")
+
+                if not self.db: return
+                def _sync_save():
+                    self.db.collection("users").document(self.uid).collection("settings").document("ui").set(data)
+                await asyncio.wait_for(asyncio.to_thread(_sync_save), timeout=2.5)
+            except asyncio.TimeoutError:
+                print(f"[engine-{self.uid}] Firestore save_settings timed out (quota exceeded or network lag). Settings saved to local disk backup & active in memory.")
+            except Exception as e:
+                print(f"[engine-{self.uid}] Error saving settings to Firestore: {e} (Settings saved to local disk backup).")
 
     async def save_history(self):
         if not self.db: return
@@ -248,15 +263,25 @@ class UserEngine:
                 ref = self.db.collection("users").document(self.uid).collection("history")
                 ref.document("scans").set({"data": cloud_scans})
                 ref.document("bot_scans").set({"data": cloud_bot_scans})
-            await asyncio.to_thread(_sync_save)
+            await asyncio.wait_for(asyncio.to_thread(_sync_save), timeout=2.5)
+        except asyncio.TimeoutError:
+            print(f"[engine-{self.uid}] Firestore save_history timed out. History active in memory.")
         except Exception as e:
             print(f"[engine-{self.uid}] Error saving history: {e}")
+
+    async def save_history_throttled(self, force: bool = False, min_interval_seconds: int = 30):
+        """Persist scan history without making fast option loops write every heartbeat."""
+        now_ts = time.time()
+        if not force and (now_ts - self.last_history_save_ts) < min_interval_seconds:
+            return
+        await self.save_history()
+        self.last_history_save_ts = now_ts
 
     async def load_from_cloud(self):
         if not self.db: return
         try:
             # Load Alpaca Settings
-            doc_alpaca = self.db.collection("users").document(self.uid).collection("settings").document("alpaca").get()
+            doc_alpaca = self.db.collection("users").document(self.uid).collection("settings").document("alpaca").get(timeout=2.5)
             if doc_alpaca.exists:
                 data = doc_alpaca.to_dict()
                 from main import vault
@@ -273,9 +298,31 @@ class UserEngine:
                     self.broker.connect(self.config.ALPACA_API_KEY, self.config.ALPACA_SECRET_KEY, self.config.ALPACA_PAPER)
 
             # Load UI Settings
-            doc_ui = self.db.collection("users").document(self.uid).collection("settings").document("ui").get()
-            if doc_ui.exists:
-                ui = doc_ui.to_dict()
+            ui = {}
+            import json, os
+            local_ui = {}
+            local_path = f"data/user_settings_{self.uid}.json"
+            if os.path.exists(local_path):
+                try:
+                    with open(local_path, "r") as f:
+                        local_ui = json.load(f)
+                except Exception as ex_loc:
+                    print(f"[engine-{self.uid}] Failed reading local settings backup: {ex_loc}")
+
+            try:
+                doc_ui = self.db.collection("users").document(self.uid).collection("settings").document("ui").get(timeout=2.5)
+                if doc_ui.exists:
+                    ui = doc_ui.to_dict()
+            except Exception as ex_fs:
+                print(f"[engine-{self.uid}] Could not load UI settings from Firestore ({ex_fs}); checking local backup.")
+
+            if local_ui and (not ui or local_ui.get("saved_at", 0) >= ui.get("saved_at", 0)):
+                ui = local_ui
+                print(f"[engine-{self.uid}] Loaded latest settings from local disk backup (saved_at: {ui.get('saved_at')}).")
+            elif ui:
+                print(f"[engine-{self.uid}] Loaded latest settings from Firestore.")
+
+            if ui:
                 self.config.WATCHLIST = ui.get("watchlist", self.config.WATCHLIST)
                 self.config.TRADELIST = ui.get("tradelist", self.config.TRADELIST)
                 self.config.DEFAULT_TIMEFRAME = ui.get("strategy_timeframe", self.config.DEFAULT_TIMEFRAME)
@@ -295,7 +342,7 @@ class UserEngine:
                         self.config.contexts[ctx_name]["parameters"].update(ctx_data.get("parameters", {}))
                 
             # Load History
-            doc_scans = self.db.collection("users").document(self.uid).collection("history").document("scans").get()
+            doc_scans = self.db.collection("users").document(self.uid).collection("history").document("scans").get(timeout=2.5)
             if doc_scans.exists:
                 raw_logs = doc_scans.to_dict().get("data", [])
                 self.trade_log = []
@@ -311,7 +358,7 @@ class UserEngine:
                         self.trade_log.append(log)
 
                 
-            doc_bot = self.db.collection("users").document(self.uid).collection("history").document("bot_scans").get()
+            doc_bot = self.db.collection("users").document(self.uid).collection("history").document("bot_scans").get(timeout=2.5)
             if doc_bot.exists:
                 self.bot_scans.update(doc_bot.to_dict().get("data", {}))
                 
@@ -378,6 +425,118 @@ class UserEngine:
         if et_now < market_open or et_now > market_close or et_now.weekday() >= 5:
             return False
         return True
+
+    def get_options_market_status(self) -> dict:
+        import pytz
+        from datetime import datetime, timedelta
+        et_now = datetime.now(pytz.timezone("US/Eastern"))
+        
+        # RTH for options: 09:30 to 16:00 ET, Monday to Friday
+        # Scan window starts 2 minutes early at 09:28 ET
+        is_weekday = et_now.weekday() < 5
+        scan_start = et_now.replace(hour=9, minute=28, second=0, microsecond=0)
+        market_open = et_now.replace(hour=9, minute=30, second=0, microsecond=0)
+        market_close = et_now.replace(hour=16, minute=0, second=0, microsecond=0)
+        
+        is_active_window = is_weekday and (scan_start <= et_now <= market_close)
+        is_open = is_weekday and (market_open <= et_now <= market_close)
+        
+        next_open = market_open
+        next_scan = scan_start
+        if not is_weekday or et_now > market_close:
+            days_add = 1
+            if et_now.weekday() == 4:  # Friday after close -> Monday
+                days_add = 3
+            elif et_now.weekday() == 5:  # Saturday -> Monday
+                days_add = 2
+            elif et_now.weekday() == 6 and et_now > market_close:  # Sunday -> Monday
+                days_add = 1
+            next_open = (et_now + timedelta(days=days_add)).replace(hour=9, minute=30, second=0, microsecond=0)
+            next_scan = (et_now + timedelta(days=days_add)).replace(hour=9, minute=28, second=0, microsecond=0)
+        elif et_now < scan_start:
+            next_open = market_open
+            next_scan = scan_start
+            
+        seconds_to_open = max(0, int((next_open - et_now).total_seconds()))
+        seconds_to_pre_open = max(0, int((next_scan - et_now).total_seconds()))
+        
+        open_day_name = next_open.strftime("%A") if next_open.date() != et_now.date() else "Today"
+        next_open_str = f"{open_day_name} at 9:30 AM ET"
+        
+        return {
+            "is_active_window": is_active_window,
+            "is_open": is_open,
+            "seconds_to_open": seconds_to_open,
+            "seconds_to_pre_open": seconds_to_pre_open,
+            "next_open_str": next_open_str,
+        }
+
+    def get_stock_market_status(self, market_session: str = "Regular") -> dict:
+        import pytz
+        from datetime import datetime, timedelta
+        et_now = datetime.now(pytz.timezone("US/Eastern"))
+        
+        session = str(market_session or "Regular").strip().lower()
+        is_extended = session in {"extended", "24h", "crypto24", "all"}
+        
+        open_hour, open_minute = (4, 0) if is_extended else (9, 30)
+        scan_hour, scan_minute = (3, 58) if is_extended else (9, 28)
+        close_hour, close_minute = (20, 0) if is_extended else (16, 0)
+        
+        is_weekday = et_now.weekday() < 5
+        scan_start = et_now.replace(hour=scan_hour, minute=scan_minute, second=0, microsecond=0)
+        market_open = et_now.replace(hour=open_hour, minute=open_minute, second=0, microsecond=0)
+        market_close = et_now.replace(hour=close_hour, minute=close_minute, second=0, microsecond=0)
+        
+        is_active_window = is_weekday and (scan_start <= et_now <= market_close)
+        is_open = is_weekday and (market_open <= et_now <= market_close)
+        
+        next_open = market_open
+        next_scan = scan_start
+        if not is_weekday or et_now > market_close:
+            days_add = 1
+            if et_now.weekday() == 4:
+                days_add = 3
+            elif et_now.weekday() == 5:
+                days_add = 2
+            elif et_now.weekday() == 6 and et_now > market_close:
+                days_add = 1
+            next_open = (et_now + timedelta(days=days_add)).replace(hour=open_hour, minute=open_minute, second=0, microsecond=0)
+            next_scan = (et_now + timedelta(days=days_add)).replace(hour=scan_hour, minute=scan_minute, second=0, microsecond=0)
+        elif et_now < scan_start:
+            if not is_weekday:
+                days_add = 2 if et_now.weekday() == 5 else 1
+                next_open = (et_now + timedelta(days=days_add)).replace(hour=open_hour, minute=open_minute, second=0, microsecond=0)
+                next_scan = (et_now + timedelta(days=days_add)).replace(hour=scan_hour, minute=scan_minute, second=0, microsecond=0)
+            else:
+                next_open = market_open
+                next_scan = scan_start
+            
+        seconds_to_open = max(0, int((next_open - et_now).total_seconds()))
+        seconds_to_pre_open = max(0, int((next_scan - et_now).total_seconds()))
+        
+        open_day_name = next_open.strftime("%A") if next_open.date() != et_now.date() else "Today"
+        time_label = "4:00 AM ET" if is_extended else "9:30 AM ET"
+        next_open_str = f"{open_day_name} at {time_label}"
+        
+        return {
+            "is_active_window": is_active_window,
+            "is_open": is_open,
+            "seconds_to_open": seconds_to_open,
+            "seconds_to_pre_open": seconds_to_pre_open,
+            "next_open_str": next_open_str,
+            "market_session_label": "Extended" if is_extended else "Regular",
+        }
+
+    def _format_duration_compact(self, seconds: float) -> str:
+        remaining = max(0, int(seconds))
+        hours, rem = divmod(remaining, 3600)
+        minutes, secs = divmod(rem, 60)
+        if hours:
+            return f"{hours}h {minutes}m {secs}s"
+        if minutes:
+            return f"{minutes}m {secs}s"
+        return f"{secs}s"
 
     def _find_position(self, positions, ticker_norm: str):
         ticker_norm = ticker_norm.upper().replace("/", "")
@@ -485,6 +644,160 @@ class UserEngine:
         except Exception as exc:
             print(f"[options-exit] Latest quote unavailable for {option_symbol}: {exc}. Using position current_price={fallback_price:.2f}")
         return quote
+
+    def _buy_option_contract(
+        self,
+        ticker: str,
+        option_type: str,
+        result: dict,
+        t_settings: dict,
+        opt_expiry_days,
+        opt_strike_type,
+        opt_trade_amount: float,
+    ) -> tuple[bool, dict]:
+        option_type = str(option_type or "").upper()
+        if option_type not in {"CALL", "PUT"}:
+            result["reason"] = "Skipped: invalid option contract direction."
+            return False, result
+
+        from option_selector import get_option_chain, select_contract
+        chain = get_option_chain(
+            underlying=ticker,
+            expiration_limit_days=opt_expiry_days,
+            current_price=result['price_raw'],
+            client=self.broker.client
+        )
+        selection_data_client = None
+        if not self.broker.simulation_mode and self.config.ALPACA_API_KEY and self.config.ALPACA_SECRET_KEY:
+            try:
+                from alpaca.data.historical.option import OptionHistoricalDataClient
+                selection_data_client = OptionHistoricalDataClient(self.config.ALPACA_API_KEY, self.config.ALPACA_SECRET_KEY)
+            except Exception as data_client_err:
+                print(f"[options] Delta selection unavailable: {data_client_err}")
+        contract = select_contract(
+            contracts=chain,
+            current_underlying_price=result['price_raw'],
+            option_type=option_type,
+            strike_type=opt_strike_type,
+            target_expiry_days=opt_expiry_days,
+            data_client=selection_data_client
+        )
+        if not contract:
+            result['reason'] = f"Skipped: no suitable {option_type} contract found."
+            return False, result
+
+        import math
+        quote_bid = quote_ask = quote_spread = quote_spread_pct = None
+        if self.broker.simulation_mode:
+            from options_pricing import black_scholes
+            import datetime
+            days = (contract['expiration'] - datetime.date.today()).days
+            t_years = max(0.0001, days / 365.0)
+            est_premium = black_scholes(
+                result['price_raw'],
+                contract['strike'],
+                t_years,
+                r=0.05,
+                sigma=0.20,
+                option_type=option_type,
+            )
+            est_premium = max(0.05, est_premium)
+        else:
+            try:
+                from alpaca.data.historical.option import OptionHistoricalDataClient
+                from alpaca.data.requests import OptionLatestQuoteRequest
+                data_client = OptionHistoricalDataClient(self.config.ALPACA_API_KEY, self.config.ALPACA_SECRET_KEY)
+                req = OptionLatestQuoteRequest(symbol_or_symbols=[contract['symbol']])
+                quotes = data_client.get_option_latest_quote(req)
+                quote = quotes[contract['symbol']]
+                quote_bid = _safe_float(getattr(quote, 'bid_price', None), 0.0)
+                quote_ask = _safe_float(getattr(quote, 'ask_price', None), 0.0)
+                est_premium = quote_ask
+                if quote_bid > 0 and quote_ask > 0:
+                    quote_spread = quote_ask - quote_bid
+                    quote_mid = (quote_bid + quote_ask) / 2.0
+                    quote_spread_pct = (quote_spread / quote_mid) * 100.0 if quote_mid > 0 else None
+            except Exception as quote_err:
+                print(f"[options] Quote fetch failed (no OPRA?): {quote_err}. Falling back to theoretical pricing.")
+                from options_pricing import black_scholes
+                import datetime
+                days = (contract['expiration'] - datetime.date.today()).days
+                t_years = max(0.0001, days / 365.0)
+                est_premium_bs = black_scholes(
+                    result['price_raw'],
+                    contract['strike'],
+                    t_years,
+                    r=0.05,
+                    sigma=0.24,
+                    option_type=option_type,
+                    q=0.013,
+                )
+                est_premium = max(0.01, est_premium_bs + 0.015)
+
+        spread_limit_pct = _safe_float(
+            t_settings.get('options_max_entry_spread_pct'),
+            15.0 if str(opt_strike_type).upper() == 'OTM' else 12.0
+        )
+        if not self.broker.simulation_mode and (_safe_float(quote_bid, 0.0) <= 0 or _safe_float(quote_ask, 0.0) <= 0):
+            result['reason'] = f"Skipped: live option bid/ask unavailable for {contract['symbol']}."
+            return False, result
+        if not self.broker.simulation_mode and quote_spread_pct is not None and quote_spread_pct > spread_limit_pct:
+            result['reason'] = f"Skipped: option spread too wide for {contract['symbol']} ({quote_spread_pct:.1f}% > {spread_limit_pct:.1f}%)."
+            return False, result
+        if est_premium <= 0:
+            result['reason'] = "Skipped: option premium estimate could not be retrieved."
+            return False, result
+
+        allocated = opt_trade_amount
+        qty = math.floor(allocated / (est_premium * 100.0))
+        if qty <= 0:
+            result['reason'] = f"Skipped: single contract cost (${est_premium * 100:.2f}) exceeds allocation (${allocated:.2f})"
+            return False, result
+
+        order_result = self.broker.place_option_order(
+            option_symbol=contract['symbol'],
+            qty=qty,
+            side='buy',
+            limit_price=None
+        )
+        if not order_result.get('success'):
+            result['reason'] = f"Option buy failed: {order_result.get('error')}"
+            return False, result
+
+        result['order'] = order_result
+        result['order_id'] = order_result.get('order_id')
+        result['qty'] = qty
+        result['total_cost'] = qty * est_premium * 100.0
+        result['fees'] = 0.0
+        result['option_entry_quote'] = {
+            'bid': quote_bid,
+            'ask': quote_ask,
+            'spread': quote_spread,
+            'spread_pct': quote_spread_pct,
+            'limit_price': est_premium,
+        }
+        spread_note = f" | bid/ask ${quote_bid:.2f}/${quote_ask:.2f}, spread {quote_spread_pct:.1f}%" if quote_spread_pct is not None else ""
+        selection_note = f" | {contract.get('selection_reason')}" if contract.get('selection_reason') else ""
+        result['reason'] = f"BOUGHT {qty} {option_type} contracts ({contract['symbol']}) with limit ${est_premium:.2f}{spread_note}{selection_note}: {result['reason']}"
+        t_settings['options_underlying_entry_price'] = float(result.get('price_raw') or 0.0)
+        t_settings['options_active_contract'] = contract['symbol']
+        try:
+            fresh_positions = self.broker.get_positions()
+            fresh_option_pos = self._find_position(
+                fresh_positions,
+                contract['symbol'].replace("/", "").upper(),
+            )
+            if fresh_option_pos:
+                from main import _ensure_exit_forecast_snapshot
+                _ensure_exit_forecast_snapshot(
+                    t_settings,
+                    result,
+                    fresh_option_pos,
+                    ticker,
+                )
+        except Exception as snapshot_err:
+            print(f"[forecast] {ticker} {option_type} snapshot deferred until position fill is visible: {snapshot_err}")
+        return True, result
 
     def _build_exit_protection_targets(self, ticker: str, result: dict, pos_info: dict, t_settings: dict):
         sell_mode = t_settings.get('sell_mode', 'indicator')
@@ -711,6 +1024,68 @@ class UserEngine:
                             continue
                         self.last_bot_scan_time[ticker] = now_ts
 
+                        if is_opt_bot:
+                            opt_market_status = self.get_options_market_status()
+                            if not opt_market_status["is_active_window"] and not force_triggered:
+                                closed_log = {
+                                    "time": self.get_now().isoformat(),
+                                    "action": "HOLD",
+                                    "ticker": ticker,
+                                    "price": "$0.00",
+                                    "price_raw": 0.0,
+                                    "reason": f"🛑 Options Market Closed. Starts scanning 2m before market open ({opt_market_status['next_open_str']}).",
+                                    "summary": f"🛑 Options Market Closed. Starts scanning 2m before open ({opt_market_status['next_open_str']}).",
+                                    "detail": f"Starts scanning in {self._format_duration_compact(opt_market_status['seconds_to_pre_open'])} (2m prior to market opening).",
+                                    "status": "MARKET_CLOSED",
+                                    "is_options_market_closed": True,
+                                    "seconds_to_open": opt_market_status["seconds_to_open"],
+                                    "seconds_to_pre_open": opt_market_status["seconds_to_pre_open"],
+                                    "next_open_str": opt_market_status["next_open_str"],
+                                    "refresh_rate_sec": max(10, min(3600, opt_market_status["seconds_to_pre_open"])),
+                                    "signals": {},
+                                    "bullish_count": 0,
+                                    "bearish_count": 0,
+                                    "total_signals": 0,
+                                    "is_option": True,
+                                }
+                                self.scan_log_state[ticker] = closed_log
+                                self.bot_scans[ticker] = closed_log
+                                tf_bucket = self.bot_scans_by_tf.setdefault(t_settings.get('timeframe', self.config.DEFAULT_TIMEFRAME), {})
+                                tf_bucket[ticker] = closed_log
+                                continue
+                        elif not _is_crypto_symbol(ticker_norm):
+                            market_session = str(t_settings.get("market_session", "Regular")).strip().lower()
+                            stock_market_status = self.get_stock_market_status(market_session)
+                            if not stock_market_status["is_active_window"] and not force_triggered:
+                                session_label = stock_market_status["market_session_label"]
+                                closed_log = {
+                                    "time": self.get_now().isoformat(),
+                                    "action": "HOLD",
+                                    "ticker": ticker,
+                                    "price": "$0.00",
+                                    "price_raw": 0.0,
+                                    "reason": f"🛑 {session_label} Market Closed. Starts scanning 2m before market open ({stock_market_status['next_open_str']}).",
+                                    "summary": f"🛑 {session_label} Market Closed. Starts scanning 2m before open ({stock_market_status['next_open_str']}).",
+                                    "detail": f"Starts scanning in {self._format_duration_compact(stock_market_status['seconds_to_pre_open'])} (2m prior to market opening).",
+                                    "status": "MARKET_CLOSED",
+                                    "is_stock_market_closed": True,
+                                    "market_session": session_label,
+                                    "seconds_to_open": stock_market_status["seconds_to_open"],
+                                    "seconds_to_pre_open": stock_market_status["seconds_to_pre_open"],
+                                    "next_open_str": stock_market_status["next_open_str"],
+                                    "refresh_rate_sec": max(60, min(3600, stock_market_status["seconds_to_pre_open"])),
+                                    "signals": {},
+                                    "bullish_count": 0,
+                                    "bearish_count": 0,
+                                    "total_signals": 0,
+                                    "is_option": False,
+                                }
+                                self.scan_log_state[ticker] = closed_log
+                                self.bot_scans[ticker] = closed_log
+                                tf_bucket = self.bot_scans_by_tf.setdefault(t_settings.get('timeframe', self.config.DEFAULT_TIMEFRAME), {})
+                                tf_bucket[ticker] = closed_log
+                                continue
+
                         # --- Bot Loss Limit (Drawdown Limit on Allocated Bot Capital) ---
                         enable_risk = t_settings.get('enable_risk_management', True)
                         allocated_capital = self._allocation_amount(t_settings, 'options' if t_settings.get('options_trading') else 'regular') or float(t_settings.get('amount', 0.0))
@@ -782,7 +1157,7 @@ class UserEngine:
 
                         now = self.get_now()
                         if ticker in self.last_scan_timestamps:
-                            if (now - self.last_scan_timestamps[ticker]).total_seconds() < 55:
+                            if (now - self.last_scan_timestamps[ticker]).total_seconds() < max(1, required_interval - 1):
                                 continue
                         self.last_scan_timestamps[ticker] = now
 
@@ -866,7 +1241,6 @@ class UserEngine:
                                     "is_custom": True,
                                     "timeframe": tf_to_use
                                 }
-                                
                                 self._record_bot_scan(bot_result)
                                 result = bot_result
                             else:
@@ -876,7 +1250,8 @@ class UserEngine:
                                     account_equity=equity, 
                                     available_cash=avail_cash,
                                     timeframe=tf_to_use,
-                                    use_bot_settings=True
+                                    use_bot_settings=True,
+                                    ignore_cache=is_opt_bot or force_triggered
                                 )
                                 if bot_result:
                                     self._record_bot_scan(bot_result)
@@ -887,13 +1262,14 @@ class UserEngine:
 
                             if is_active:
                                 market_session = str(t_settings.get('market_session', 'Regular')).strip().lower()
-                                session_allows_outside_rth = market_session in {'extended', '24h', 'crypto24', 'all'}
-                                is_market_closed_skip = (
-                                    not is_crypto
-                                    and not session_allows_outside_rth
-                                    and self.config.get('MARKET_HOURS_ONLY', True)
-                                    and not self.is_market_open()
-                                )
+                                is_options_enabled = t_settings.get('options_trading', getattr(self.config, 'ENABLE_OPTIONS_TRADING', False)) or t_settings.get('is_option', False)
+                                if is_crypto:
+                                    is_market_closed_skip = False
+                                elif is_options_enabled:
+                                    is_market_closed_skip = self.config.get('MARKET_HOURS_ONLY', True) and not self.get_options_market_status()["is_open"]
+                                else:
+                                    is_market_closed_skip = self.config.get('MARKET_HOURS_ONLY', True) and not self.get_stock_market_status(market_session)["is_open"]
+                                
                                 if is_market_closed_skip:
                                     result['reason'] = "Market Closed. Trade execution skipped."
                                     if result['action'] in ['BUY', 'SELL']:
@@ -1018,6 +1394,14 @@ class UserEngine:
                                 
                                 # Sell Mode Logic
                                 if has_this_pos and pos_info:
+                                    # Ensure indicator exits trigger when holding open positions
+                                    if sell_mode in ['indicator', 'hybrid', 'hybrid_pct', 'hybrid_atr', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing']:
+                                        min_sell_req = int(t_settings.get('min_sell_signals', t_settings.get('sell_threshold', t_settings.get('threshold', getattr(self.config, 'MIN_BEARISH_SIGNALS', 1)))) or 1)
+                                        bearish_cnt = result.get('bearish_count', 0)
+                                        bullish_cnt = result.get('bullish_count', 0)
+                                        if bearish_cnt >= min_sell_req and bearish_cnt >= bullish_cnt and result.get('action') != 'SELL':
+                                            result['action'] = 'SELL'
+                                            result['reason'] = f"SELL Triggered (Indicator Exit): {bearish_cnt} bearish signals confirmed"
                                     if is_options_enabled:
                                         # Options Exits
                                         from option_selector import parse_occ_symbol
@@ -1079,23 +1463,37 @@ class UserEngine:
                                             atr_val = _safe_float(result.get('atr'), 0.0)
                                             entry_underlying = _safe_float(t_settings.get('options_underlying_entry_price'), current_price)
                                             stop_mult = _safe_float(t_settings.get('atr_stop_multiplier'), 2.0)
+                                            trail_mult = _safe_float(t_settings.get('atr_trail_multiplier'), 3.0)
                                             tp_mult = _safe_float(t_settings.get('take_profit_multiplier'), 4.0)
                                             if atr_val > 0 and entry_underlying > 0:
+                                                trail_key = pos_info.get('symbol', ticker)
                                                 if opt_type == 'CALL':
                                                     atr_sl = entry_underlying - (atr_val * stop_mult)
                                                     atr_tp = entry_underlying + (atr_val * tp_mult)
-                                                    if current_price <= atr_sl:
+                                                    effective_sl = atr_sl
+                                                    if t_settings.get('enable_atr_trail', True) and trail_mult > 0:
+                                                        candidate = current_price - (atr_val * trail_mult)
+                                                        previous = self.last_trailing_stops.get(trail_key, atr_sl)
+                                                        effective_sl = max(atr_sl, previous, candidate)
+                                                        self.last_trailing_stops[trail_key] = effective_sl
+                                                    if current_price <= effective_sl:
                                                         exit_triggered = True
-                                                        exit_reason = f"Option ATR SL Hit (Underlying {current_price:.2f} <= {atr_sl:.2f})"
+                                                        exit_reason = f"Option ATR SL Hit (Underlying {current_price:.2f} <= {effective_sl:.2f})"
                                                     elif current_price >= atr_tp:
                                                         exit_triggered = True
                                                         exit_reason = f"Option ATR TP Hit (Underlying {current_price:.2f} >= {atr_tp:.2f})"
                                                 else:
                                                     atr_sl = entry_underlying + (atr_val * stop_mult)
                                                     atr_tp = entry_underlying - (atr_val * tp_mult)
-                                                    if current_price >= atr_sl:
+                                                    effective_sl = atr_sl
+                                                    if t_settings.get('enable_atr_trail', True) and trail_mult > 0:
+                                                        candidate = current_price + (atr_val * trail_mult)
+                                                        previous = self.last_trailing_stops.get(trail_key, atr_sl)
+                                                        effective_sl = min(atr_sl, previous, candidate)
+                                                        self.last_trailing_stops[trail_key] = effective_sl
+                                                    if current_price >= effective_sl:
                                                         exit_triggered = True
-                                                        exit_reason = f"Option ATR SL Hit (Underlying {current_price:.2f} >= {atr_sl:.2f})"
+                                                        exit_reason = f"Option ATR SL Hit (Underlying {current_price:.2f} >= {effective_sl:.2f})"
                                                     elif current_price <= atr_tp:
                                                         exit_triggered = True
                                                         exit_reason = f"Option ATR TP Hit (Underlying {current_price:.2f} <= {atr_tp:.2f})"
@@ -1218,18 +1616,28 @@ class UserEngine:
                                                     
                                         # Technical Indicator exit
                                         if not exit_triggered and opt_exit_strategy in ['indicator', 'hybrid', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing']:
-                                            if opt_type == 'CALL' and result['action'] == 'SELL':
+                                            exit_signal_threshold = int(_safe_float(
+                                                t_settings.get('min_sell_signals', t_settings.get('sell_threshold', 1)),
+                                                1
+                                            ))
+                                            bullish_count = int(_safe_float(result.get('bullish_count'), 0))
+                                            bearish_count = int(_safe_float(result.get('bearish_count'), 0))
+                                            call_exit_signal = bearish_count >= exit_signal_threshold
+                                            put_exit_signal = bullish_count >= exit_signal_threshold
+                                            if opt_type == 'CALL' and call_exit_signal:
                                                 exit_triggered = True
-                                                exit_reason = f"Technical Signal reversal to BEARISH"
-                                            elif opt_type == 'PUT' and result['action'] == 'BUY':
+                                                exit_reason = f"Technical Signal reversal to BEARISH ({bearish_count}/{exit_signal_threshold})"
+                                            elif opt_type == 'PUT' and put_exit_signal:
                                                 exit_triggered = True
-                                                exit_reason = f"Technical Signal reversal to BULLISH"
+                                                exit_reason = f"Technical Signal reversal to BULLISH ({bullish_count}/{exit_signal_threshold})"
                                                 
                                         if exit_triggered:
                                             result['action'] = 'SELL'
+                                            result['option_intent'] = 'CLOSE_OPTION'
                                             result['reason'] = exit_reason
                                         else:
                                             result['action'] = 'HOLD'
+                                            result['option_intent'] = 'HOLD'
                                             result['reason'] = "Option position open. Checking exit criteria..."
                                             
                                     else:
@@ -1423,8 +1831,112 @@ class UserEngine:
                                         if protection:
                                             result['exit_protection'] = protection
 
+                                options_execution_handled = False
+                                if is_options_enabled and not is_market_closed_skip:
+                                    option_side = normalize_options_type(t_settings.get("options_type", "calls_only"), default="calls_only")
+                                    option_intent = result.get("option_intent", "HOLD")
+                                    if has_this_pos and result.get('action') == 'SELL':
+                                        option_intent = "CLOSE_OPTION"
+                                        result["option_intent"] = option_intent
+                                    if option_side not in VALID_OPTION_DIRECTIONS and not has_this_pos:
+                                        result['action'] = 'HOLD'
+                                        result['option_intent'] = 'DISABLED'
+                                        result['reason'] = "HOLD: Both direction is disabled. Choose CALL or PUT."
+                                        options_execution_handled = True
+
+                                    if option_intent in {"OPEN_CALL", "OPEN_PUT"}:
+                                        options_execution_handled = True
+                                        expected_contract = "CALL" if option_intent == "OPEN_CALL" else "PUT"
+                                        configured_contract = options_type_to_contract_type(option_side)
+                                        enable_risk = t_settings.get('enable_risk_management', True)
+                                        max_pos = getattr(self.config, 'MAX_OPEN_POSITIONS', 5) if enable_risk else 999999
+                                        if configured_contract != expected_contract:
+                                            result['action'] = 'HOLD'
+                                            result['reason'] = f"HOLD: {expected_contract} signal ignored because bot direction is {configured_contract or 'disabled'}."
+                                        elif portfolio_count >= max_pos and not has_this_pos:
+                                            result['action'] = 'HOLD'
+                                            result['reason'] = f"Max positions reached ({portfolio_count}/{max_pos})."
+                                        elif has_this_pos:
+                                            result['action'] = 'HOLD'
+                                            result['reason'] = "Options position already open."
+                                        elif has_open_order:
+                                            result['action'] = 'PENDING'
+                                            result['option_intent'] = 'PENDING'
+                                            result['reason'] = "Options buy order pending."
+                                        else:
+                                            success, result = self._buy_option_contract(
+                                                ticker=ticker,
+                                                option_type=expected_contract,
+                                                result=result,
+                                                t_settings=t_settings,
+                                                opt_expiry_days=opt_expiry_days,
+                                                opt_strike_type=opt_strike_type,
+                                                opt_trade_amount=opt_trade_amount,
+                                            )
+                                            if success:
+                                                trade_executed = True
+                                                portfolio_count += 1
+                                                result['action'] = 'BUY'
+                                                result['option_intent'] = option_intent
+                                                result['reason'] = f"✅ {result['reason']}"
+                                                self.last_trade_timestamps[ticker] = self.get_now()
+                                                await self._increment_trade_count(ticker)
+                                                await self.save_settings()
+
+                                    elif option_intent == "CLOSE_OPTION" and has_this_pos and pos_info:
+                                        options_execution_handled = True
+                                        order_result = self.broker.close_position(
+                                            pos_info['symbol'],
+                                            market_session=t_settings.get('market_session', 'Regular'),
+                                            current_price=result.get('price_raw')
+                                        )
+                                        if order_result.get('success'):
+                                            result['order'] = order_result
+                                            result['order_id'] = order_result.get('order_id')
+                                            trade_executed = True
+                                            portfolio_count -= 1
+
+                                            qty = float(pos_info['qty'])
+                                            exit_check_price = _safe_float(result.get('option_exit_check', {}).get('premium'), pos_info.get('current_price'))
+                                            val = qty * exit_check_price * 100.0
+                                            cost = qty * float(pos_info['avg_price']) * 100.0
+                                            pl = val - cost
+                                            pl_pct = (pl / cost * 100.0) if cost > 0 else 0.0
+
+                                            result['action'] = 'SELL'
+                                            result['option_intent'] = 'CLOSE_OPTION'
+                                            result['qty'] = qty
+                                            result['total_cost'] = val
+                                            result['fees'] = 0.0
+                                            result['pl'] = round(pl, 2)
+                                            result['pl_pct'] = round(pl_pct, 2)
+                                            result['reason'] = f"✅ CLOSED option position ({pos_info['symbol']}) at checked premium ${exit_check_price:.2f} (est. P/L: ${pl:+.2f}): {result['reason']}"
+                                            t_settings.pop('options_underlying_entry_price', None)
+                                            t_settings.pop('options_active_contract', None)
+                                            from main import _clear_forecast_exit_snapshots
+                                            _clear_forecast_exit_snapshots(t_settings)
+                                            self.last_trailing_stops.pop(pos_info['symbol'], None)
+                                            self.last_trade_timestamps[ticker] = self.get_now()
+                                            await self._increment_trade_count(ticker)
+
+                                            current_realized = t_settings.get('realized_pl', 0.0)
+                                            t_settings['realized_pl'] = round(current_realized + pl, 2)
+                                            self._apply_compound_pl(t_settings, pl, 'options')
+                                            await self.save_settings()
+
+                                            enable_signal_reset = t_settings.get('enable_signal_reset', getattr(self.config, 'ENABLE_SIGNAL_RESET', False))
+                                            if enable_signal_reset:
+                                                from option_selector import parse_occ_symbol
+                                                parsed_closed = parse_occ_symbol(pos_info['symbol'])
+                                                closed_type = parsed_closed['type'] if parsed_closed else 'CALL'
+                                                locked_dir = 'BUY' if closed_type == 'CALL' else 'SELL'
+                                                self.signal_locked_direction[ticker] = locked_dir
+                                                print(f"[engine-{self.uid}] Signal Reset Activated: Locked {locked_dir} re-entry for {ticker}")
+                                        else:
+                                            result['reason'] = f"Option sell failed: {order_result.get('error')}"
+
                                 # Buy Execution
-                                if result['action'] == 'BUY' and not is_market_closed_skip:
+                                if not options_execution_handled and result['action'] == 'BUY' and not is_market_closed_skip:
                                     if is_options_enabled:
                                         enable_risk = t_settings.get('enable_risk_management', True)
                                         max_pos = getattr(self.config, 'MAX_OPEN_POSITIONS', 5) if enable_risk else 999999
@@ -1437,7 +1949,7 @@ class UserEngine:
                                         elif has_open_order:
                                             result['action'] = 'PENDING'
                                             result['reason'] = "Options buy order pending."
-                                        elif t_settings.get("options_type", "both") == "puts_only":
+                                        elif t_settings.get("options_type", "calls_only") == "puts_only":
                                             result['reason'] = "Strategy is configured for Puts Only."
                                         else:
                                             # Option contract selection
@@ -1622,9 +2134,13 @@ class UserEngine:
                                                         print(f"[exit-protect] {ticker_norm} buy accepted; watcher and exit snapshot will be applied after position fill is visible")
                                                 except Exception as protect_err:
                                                     print(f"[exit-protect] {ticker_norm} post-buy protection error: {protect_err}")
+                                            else:
+                                                result['action'] = 'HOLD'
+                                                result['reason'] = f"Buy order failed: {order_result.get('error', 'Broker Error')}"
+                                                print(f"[engine] Buy order failed for {ticker}: {result['reason']}")
                                                 
                                 # Sell Execution (or PUT option entry)
-                                elif result['action'] == 'SELL' and not is_market_closed_skip:
+                                elif not options_execution_handled and result['action'] == 'SELL' and not is_market_closed_skip:
                                     if is_options_enabled:
                                         if has_this_pos:
                                             # Close active option position
@@ -1684,7 +2200,7 @@ class UserEngine:
                                             elif has_open_order:
                                                 result['action'] = 'PENDING'
                                                 result['reason'] = "Options buy order pending."
-                                            elif t_settings.get("options_type", "both") == "calls_only":
+                                            elif t_settings.get("options_type", "calls_only") == "calls_only":
                                                 result['reason'] = "Strategy is configured for Calls Only."
                                             else:
                                                 # Option contract selection (PUT)
@@ -1871,12 +2387,13 @@ class UserEngine:
                                             result['action'] = "HOLD"
                             
                             result['log_type'] = "Active Bot" if is_active else "Watchlist"
-                            log_time_min = self.get_now().strftime("%Y-%m-%dT%H:%M")
-                            log_key = f"{log_time_min}_{ticker}_{result['action']}"
+                            log_bucket_format = "%Y-%m-%dT%H:%M:%S" if is_opt_bot else "%Y-%m-%dT%H:%M"
+                            log_time_bucket = self.get_now().strftime(log_bucket_format)
+                            log_key = f"{log_time_bucket}_{ticker}_{result['action']}"
                             
                             def _get_log_key(log_entry):
                                 try:
-                                    t_str = datetime.fromisoformat(log_entry.get('time', '')).strftime('%Y-%m-%dT%H:%M')
+                                    t_str = datetime.fromisoformat(log_entry.get('time', '')).strftime(log_bucket_format)
                                     return f"{t_str}_{log_entry.get('ticker','')}_{log_entry.get('action','')}"
                                 except: return ""
                                 
@@ -1884,7 +2401,7 @@ class UserEngine:
                                 if is_active:
                                     self.trade_log.insert(0, result)
                                 if trade_executed and is_active:
-                                    await self.save_history()
+                                    await self.save_history_throttled(force=True)
 
                     except Exception as e:
                         print(f"[scheduler-{self.uid}] Error scanning {ticker}: {e}")
@@ -1893,7 +2410,7 @@ class UserEngine:
                     self.trade_log = self.trade_log[:200]
 
                 self.last_scan_time = self.get_now().isoformat()
-                await self.save_history()
+                await self.save_history_throttled()
 
             except Exception as e:
                 print(f"[scheduler-{self.uid}] Loop error: {e}")
@@ -1952,10 +2469,13 @@ class UserManager:
     async def start_all(self):
         print("[UserManager] Loading all user configurations...")
         if not self.db: return
-        users_ref = self.db.collection("users").stream()
-        for doc in users_ref:
-            uid = doc.id
-            await self.start_user(uid)
+        try:
+            users_ref = self.db.collection("users").stream(timeout=3.0)
+            for doc in users_ref:
+                uid = doc.id
+                await self.start_user(uid)
+        except Exception as e:
+            print(f"[UserManager] Error streaming users from Firestore: {e}")
         print(f"[UserManager] Started {len(self.engines)} user engines.")
         
     async def stop_all(self):

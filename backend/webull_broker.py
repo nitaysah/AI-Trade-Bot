@@ -54,7 +54,7 @@ def sync_token_from_firestore():
     if not db: return
     try:
         doc_ref = db.collection("system").document("webull_token")
-        doc = doc_ref.get()
+        doc = doc_ref.get(timeout=2.0)
         if doc.exists:
             data = doc.to_dict()
             token_content_enc = data.get("token_content", "")
@@ -74,28 +74,32 @@ def sync_token_from_firestore():
         print(f"[webull] Error restoring token from Firestore: {e}")
 
 def sync_token_to_firestore():
-    db = get_firestore_db()
-    if not db: return
-    try:
-        token_path = "conf/token.txt"
-        if os.path.exists(token_path):
-            with open(token_path, "r") as f:
-                content = f.read()
-            if content.strip():
-                try:
-                    f_net = get_vault()
-                    token_content_enc = f_net.encrypt(content.encode()).decode()
-                except Exception as e:
-                    print(f"[webull] Error encrypting token: {e}")
-                    token_content_enc = content
-                    
-                db.collection("system").document("webull_token").set({
-                    "token_content": token_content_enc,
-                    "updated_at": firestore.SERVER_TIMESTAMP
-                })
-                print("[webull] Saved encrypted Webull auth token to Firestore.")
-    except Exception as e:
-        print(f"[webull] Error saving token to Firestore: {e}")
+    import threading
+    def _run():
+        db = get_firestore_db()
+        if not db: return
+        try:
+            token_path = "conf/token.txt"
+            if os.path.exists(token_path):
+                with open(token_path, "r") as f:
+                    content = f.read()
+                if content.strip():
+                    try:
+                        f_net = get_vault()
+                        token_content_enc = f_net.encrypt(content.encode()).decode()
+                    except Exception as e:
+                        print(f"[webull] Error encrypting token: {e}")
+                        token_content_enc = content
+                        
+                    db.collection("system").document("webull_token").set({
+                        "token_content": token_content_enc,
+                        "updated_at": firestore.SERVER_TIMESTAMP
+                    }, timeout=2.0)
+                    print("[webull] Saved encrypted Webull auth token to Firestore.")
+        except Exception as e:
+            print(f"[webull] Error saving token to Firestore: {e}")
+    threading.Thread(target=_run, daemon=True).start()
+
 
 try:
     from webull.core.client import ApiClient
@@ -143,7 +147,7 @@ class WebullBroker:
             db = get_firestore_db()
             if db:
                 try:
-                    doc = db.collection("system").document("webull_api").get()
+                    doc = db.collection("system").document("webull_api").get(timeout=2.0)
                     if doc.exists:
                         data = doc.to_dict()
                         app_key = data.get("app_key", app_key)

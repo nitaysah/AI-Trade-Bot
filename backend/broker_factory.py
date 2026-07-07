@@ -12,6 +12,8 @@ Set BROKER_TYPE in config.py or .env to switch:
 
 import config
 
+_alpaca_data_client_cache = {}
+
 
 def create_broker():
     """Creates the appropriate broker based on config.BROKER_TYPE."""
@@ -30,13 +32,20 @@ def create_broker():
 def get_alpaca_clients():
     """Returns (StockHistoricalDataClient, CryptoHistoricalDataClient) for data fetching."""
     from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
+    from user_config import get_user_config
     
-    api_key = getattr(config, 'ALPACA_API_KEY', '').strip()
-    secret_key = getattr(config, 'ALPACA_SECRET_KEY', '').strip()
+    usr_cfg = get_user_config()
+    api_key = getattr(usr_cfg, 'ALPACA_API_KEY', '').strip()
+    secret_key = getattr(usr_cfg, 'ALPACA_SECRET_KEY', '').strip()
     
-    if not api_key or api_key == "your_alpaca_api_key_here":
+    if not api_key or api_key == "your_alpaca_api_key_here" or api_key == "your_alpaca_key_here":
         return None, None
-        
+
+    cache_key = (api_key, secret_key)
+    if cache_key in _alpaca_data_client_cache:
+        return _alpaca_data_client_cache[cache_key]
+
     s_client = StockHistoricalDataClient(api_key, secret_key)
     c_client = CryptoHistoricalDataClient(api_key, secret_key)
-    return s_client, c_client
+    _alpaca_data_client_cache[cache_key] = (s_client, c_client)
+    return _alpaca_data_client_cache[cache_key]
