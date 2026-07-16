@@ -26,6 +26,11 @@ const DASHBOARD_FETCH_TIMEOUT_MS = 15000;
 const PORTFOLIO_FETCH_TIMEOUT_MS = 15000;
 const AI_FETCH_TIMEOUT_MS = 20000;
 const PORTFOLIO_REFRESH_INTERVAL = 30000;
+const BOT_CHART_CACHE_VERSION = 'v6';
+const BOT_CHART_CACHE_TTL_MS = 10 * 60 * 1000;
+const BOT_CHART_IDB_NAME = 'aiTradeBotChartCache';
+const BOT_CHART_IDB_VERSION = 1;
+const BOT_CHART_IDB_STORE = 'chartPayloads';
 
 let selectedTicker = null;
 let currentBackendTf = "5Min";
@@ -47,6 +52,8 @@ let botsSoftRefreshTimerId = null;
 let aiIndicatorAbortController = null;
 let aiIndicatorInFlightKey = null;
 let aiIndicatorInFlightPromise = null;
+let botChartPreviewIndexedDbPromise = null;
+const botChartPreviewPayloadCache = new Map();
 
 function shouldRunBotsCardRefresh() {
     return !!document.getElementById('tradelistContainer');
@@ -188,7 +195,8 @@ const OPTIONS_DEFAULT_TRAIL_PCT = 10;
 
 function isCrypto(ticker) {
     if (!ticker) return false;
-    return ticker.includes('USD') || ['BTC', 'ETH', 'LTC', 'SOL', 'DOGE', 'ADA', 'DOT', 'SHIB', 'AVAX'].some(c => ticker.startsWith(c));
+    const clean = ticker.toString().toUpperCase().trim();
+    return clean.includes('USD') || ['BTC', 'ETH', 'LTC', 'SOL', 'DOGE', 'ADA', 'DOT', 'SHIB', 'AVAX', 'XRP'].some(c => clean.startsWith(c));
 }
 
 function getMarketSessionForStrategy(mode = 'regular') {
@@ -271,13 +279,16 @@ function setBotTab(tab) {
     const stocksBtn = document.getElementById('tabBotsStocks');
     const cryptoBtn = document.getElementById('tabBotsCrypto');
 
+    const inactiveClass = "flex-1 sm:flex-none px-3.5 py-1.5 text-xs font-black uppercase tracking-wider rounded-lg transition-all text-indigo-400 hover:text-indigo-600";
+    const activeClass = "flex-1 sm:flex-none px-3.5 py-1.5 text-xs font-black uppercase tracking-wider rounded-lg transition-all bg-white text-indigo-600 shadow-sm border border-indigo-100";
+
     [allBtn, stocksBtn, cryptoBtn].forEach(btn => {
-        if (btn) btn.className = "px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600";
+        if (btn) btn.className = inactiveClass;
     });
 
     const activeBtn = document.getElementById(`tabBots${tab.charAt(0).toUpperCase() + tab.slice(1)}`);
     if (activeBtn) {
-        activeBtn.className = "px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all bg-white text-indigo-600 shadow-sm border border-indigo-100";
+        activeBtn.className = activeClass;
     }
 
     if (window.lastBotsData) {
@@ -286,118 +297,9 @@ function setBotTab(tab) {
 }
 
 window.goToDashboardChart = async function (ticker) {
-    try {
-        if (window.lastBotsData && window.lastBotsData.ticker_settings) {
-            const settings = window.lastBotsData.ticker_settings[ticker];
-            if (settings) {
-                const headers = await getAuthHeaders();
-
-                // Update timeframe
-                if (settings.timeframe) {
-                    localStorage.setItem('lastChartTf', settings.timeframe);
-
-                    // Enforce chart ranges based on timeframes when coming from active bots
-                    const midTimeframes = ['15Min', '30Min', '1Hour', '2Hour', '4Hour'];
-                    const shortTimeframes = ['1Min', '2Min', '3Min', '5Min', '10Min'];
-
-                    if (midTimeframes.includes(settings.timeframe)) {
-                        localStorage.setItem('lastChartRange', '1M');
-                    } else if (shortTimeframes.includes(settings.timeframe)) {
-                        localStorage.setItem('lastChartRange', '5D');
-                    }
-
-                    await fetch(`${API_BASE}/api/settings/timeframe`, {
-                        method: 'POST',
-                        headers: headers,
-                        body: JSON.stringify({ timeframe: settings.timeframe })
-                    });
-                }
-
-                // Overwrite global dashboard indicators
-                const SIGNAL_TO_TOGGLE = {
-                    'RSI': 'ENABLE_RSI', 'MACD': 'ENABLE_MACD', 'EMA Cross': 'ENABLE_EMA',
-                    'Supertrend': 'ENABLE_SUPERTREND', 'Bollinger': 'ENABLE_BOLLINGER',
-                    'VWAP': 'ENABLE_VWAP', 'Mystic Pulse': 'ENABLE_MYSTIC_PULSE',
-                    'Botbulls4 News AI': 'ENABLE_AI_SENTIMENT', 'Candle Patterns': 'ENABLE_CANDLE_PATTERNS',
-                    'ADX Trend': 'ENABLE_ADX_TREND', 'SMA': 'ENABLE_SMA',
-                    'BotBulls1': 'ENABLE_BOTBULLS1', 'BotBulls2': 'ENABLE_BOTBULLS2', 'BotBulls3': 'ENABLE_BOTBULLS3'
-                };
-
-                const payload = {};
-                let newPrefs = null;
-
-                if (Array.isArray(settings.indicators) && settings.indicators.length > 0) {
-                    newPrefs = {};
-                    Object.values(SIGNAL_TO_TOGGLE).forEach(k => payload[k] = false); // Disable all
-                    Object.keys(SIGNAL_TO_TOGGLE).forEach(ind => newPrefs[ind] = false);
-
-                    settings.indicators.forEach(ind => {
-                        if (SIGNAL_TO_TOGGLE[ind]) {
-                            payload[SIGNAL_TO_TOGGLE[ind]] = true; // Enable bot's in backend
-                            newPrefs[ind] = true; // Enable in frontend
-                        }
-                    });
-
-                    // Save to local storage so the UI updates immediately
-                    localStorage.setItem('globalIndicatorPrefs', JSON.stringify(newPrefs));
-                }
-
-                // Inject bot's custom settings (overrides) into the payload
-                // so the global chart accurately reflects the bot's custom parameters
-                if (settings.indicator_overrides) {
-                    for (const [key, val] of Object.entries(settings.indicator_overrides)) {
-                        payload[key] = val;
-                    }
-                }
-
-                // Save the bot's threshold settings so the Dashboard Backtest modal can auto-load them
-                if (settings.min_buy_signals !== undefined) {
-                    localStorage.setItem('lastBotBuyThreshold', settings.min_buy_signals);
-                }
-                if (settings.min_sell_signals !== undefined) {
-                    localStorage.setItem('lastBotSellThreshold', settings.min_sell_signals);
-                }
-
-                try {
-                    sessionStorage.setItem('dashboardChartContext', JSON.stringify({
-                        ticker,
-                        source: 'bots',
-                        timeframe: settings.timeframe || null,
-                        indicatorPrefs: newPrefs || undefined,
-                        forceRefresh: true
-                    }));
-                } catch (contextErr) {
-                    console.warn('Failed to store dashboard chart context:', contextErr);
-                }
-
-                // Wipe old cached charts for this ticker so the dashboard loads fresh parameters
-                try {
-                    const cleanTicker = (ticker || '').toUpperCase().trim();
-                    for (let i = localStorage.length - 1; i >= 0; i--) {
-                        const k = localStorage.key(i);
-                        if (k && k.startsWith(`chart_cache_${cleanTicker}`)) {
-                            localStorage.removeItem(k);
-                        }
-                    }
-                } catch (e) {
-                    console.warn('Failed to clear old chart cache:', e);
-                }
-
-                if (Object.keys(payload).length > 0) {
-                    await fetch(`${API_BASE}/api/settings/indicators?context=dashboard`, {
-                        method: 'POST',
-                        headers: headers,
-                        body: JSON.stringify(payload)
-                    });
-                }
-            }
-        }
-    } catch (e) {
-        console.error("Failed to transfer settings:", e);
+    if (window.openBotCardChartPreview) {
+        await window.openBotCardChartPreview(ticker);
     }
-
-    localStorage.setItem('lastViewedTicker', ticker);
-    window.location.href = 'dashboard.html';
 };
 
 function updateBotArrangeToggleUI(totalCount = (window.lastBotsData?.tradelist || []).length) {
@@ -810,7 +712,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             }
 
             const entrySignalColor = indBadgeColor(entrySignal);
-            const entryLabelBadge = `<span class="px-1.5 py-0.5 rounded border ${entrySignalColor} font-black text-[0.5rem] tracking-widest uppercase" title="Entry indicator pool: ${buyMode} mode. ${entryProgressTitle}">${entryLabel} <span class="opacity-70">${entrySignal}</span></span>`;
+            const entryLabelBadge = `<span class="px-1.5 py-0.5 rounded border ${entrySignalColor} font-black text-[0.58rem] sm:text-[0.62rem] tracking-widest uppercase" title="Entry indicator pool: ${buyMode} mode. ${entryProgressTitle}">${entryLabel} <span class="opacity-75">${entrySignal}</span></span>`;
 
             entryIndHtml = entryLabelBadge + entryProgressBadges;
         }
@@ -872,7 +774,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
 
             const exitSignalColor = indBadgeColor(exitSignal);
             const exitModeTitle = `Exit indicator pool: ${sellMode} mode. ${exitProgressTitle}`;
-            const exitLabelBadge = `<span class="px-1.5 py-0.5 rounded border ${exitSignalColor} font-black text-[0.5rem] tracking-widest uppercase" title="${exitModeTitle}">${exitLabel} <span class="opacity-70">${exitSignal}</span></span>`;
+            const exitLabelBadge = `<span class="px-1.5 py-0.5 rounded border ${exitSignalColor} font-black text-[0.58rem] sm:text-[0.62rem] tracking-widest uppercase" title="${exitModeTitle}">${exitLabel} <span class="opacity-75">${exitSignal}</span></span>`;
 
             exitIndHtml = exitLabelBadge + exitProgressBadges;
         }
@@ -1000,7 +902,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             const cleanTitle = (scanLog.detail || cleanDetail).replace(/[🟢🟡🔴]\s*(Confirmed|Waiting|Opposing):/g, '$1:');
             const formattedDetail = cleanDetail.replace(/(?<!<strong[^>]*>)(Confirmed|Waiting|Opposing):/g, '<strong class="font-bold text-slate-500">$1:</strong>');
             const detailHtml = formattedDetail
-                ? `<span class="text-[0.48rem] sm:text-[0.52rem] text-slate-400 leading-normal whitespace-normal break-words w-full min-w-0" title="${sanitizePlainText(cleanTitle)}">${formattedDetail}</span>`
+                ? `<span class="text-[0.58rem] sm:text-[0.65rem] text-slate-600 font-medium leading-relaxed whitespace-normal break-words w-full min-w-0" title="${sanitizePlainText(cleanTitle)}">${formattedDetail}</span>`
                 : '';
 
             const isOptBot = scanLog.is_option || tickerSettings.options_trading || tickerSettings.is_option;
@@ -1197,11 +1099,11 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                     : `<span class="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-700 font-black text-[0.5rem] border border-indigo-500/20 uppercase tracking-widest">Stocks</span>`)
             }
                         <span class="px-1.5 py-0.5 rounded bg-indigo-50/50 text-indigo-500 font-mono font-black text-[0.55rem] border border-indigo-100/50 uppercase">${tfLabel}</span>
-                        <button class="px-1.5 py-0.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-600 font-black text-[0.5rem] border border-blue-200 transition-colors uppercase tracking-widest flex items-center gap-0.5" onclick="event.stopPropagation(); window.goToDashboardChart('${ticker}')">
+                        <button class="px-1.5 py-0.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-600 font-black text-[0.5rem] border border-blue-200 transition-colors uppercase tracking-widest flex items-center gap-0.5" onclick="event.stopPropagation(); window.openBotCardChartPreview('${ticker}')">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-2.5 w-2.5" viewBox="0 0 20 20" fill="currentColor">
                                 <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
                             </svg>
-                            GO TO CHART
+                            OPEN CHART
                         </button>
                     </div>
                     
@@ -1516,53 +1418,53 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
     if (thead) {
         if (currentLogTab === 'all') {
             thead.innerHTML = `
-                <tr class="border-b border-purple-200 text-purple-700 text-[10px] md:text-xs uppercase tracking-wider">
-                    <th class="pb-3 pr-4">Time</th>
-                    <th class="pb-3 pr-4">Action</th>
-                    <th class="pb-3 pr-4">Ticker</th>
-                    <th class="pb-3 pr-4 text-center">TF</th>
-                    <th class="pb-3 pr-4">Price</th>
-                    <th class="pb-3 pr-4">Signals</th>
-                    <th class="pb-3 pr-4">AI Reason</th>
+                <tr class="border-b border-purple-200 text-purple-700 text-[10px] sm:text-xs uppercase tracking-tight">
+                    <th class="py-2 pr-2">Time</th>
+                    <th class="py-2 pr-2">Action</th>
+                    <th class="py-2 pr-2">Ticker</th>
+                    <th class="py-2 pr-2 text-center">TF</th>
+                    <th class="py-2 pr-2">Price</th>
+                    <th class="py-2 pr-2">Signals</th>
+                    <th class="py-2 pr-2">Reason</th>
                 </tr>
             `;
         } else if (currentLogTab === 'trades') {
             thead.innerHTML = `
-                <tr class="border-b border-purple-200 text-purple-700 text-[10px] md:text-xs uppercase tracking-wider">
-                    <th class="pb-3 pr-4">Time Created</th>
-                    <th class="pb-3 pr-4">Ticker</th>
-                    <th class="pb-3 pr-4">Side</th>
-                    <th class="pb-3 pr-4 text-center">Qty Filled</th>
-                    <th class="pb-3 pr-4 text-center">Avg Price</th>
-                    <th class="pb-3 pr-4 text-center">Total Cost</th>
-                    <th class="pb-3 pr-4 text-center">P/L</th>
-                    <th class="pb-3 pr-4">AI Summary</th>
+                <tr class="border-b border-purple-200 text-purple-700 text-[10px] sm:text-xs uppercase tracking-tight">
+                    <th class="py-2 pr-2">Time</th>
+                    <th class="py-2 pr-2">Ticker</th>
+                    <th class="py-2 pr-2">Side</th>
+                    <th class="py-2 pr-2 text-center">Qty</th>
+                    <th class="py-2 pr-2 text-center">Avg Price</th>
+                    <th class="py-2 pr-2 text-center">Cost</th>
+                    <th class="py-2 pr-2 text-center">P/L</th>
+                    <th class="py-2 pr-2">Summary</th>
                 </tr>
             `;
         } else if (currentLogTab === 'pending') {
             thead.innerHTML = `
-                <tr class="border-b border-purple-200 text-purple-700 text-[10px] md:text-xs uppercase tracking-wider">
-                    <th class="pb-3 pr-4">Time Placed</th>
-                    <th class="pb-3 pr-4">Ticker</th>
-                    <th class="pb-3 pr-4">Side</th>
-                    <th class="pb-3 pr-4 text-center">TIF</th>
-                    <th class="pb-3 pr-4 text-center">Qty</th>
-                    <th class="pb-3 pr-4 text-center">Target Price</th>
-                    <th class="pb-3 pr-4 text-center">Total Value</th>
-                    <th class="pb-3 pr-4">AI Summary</th>
-                    <th class="pb-3 pr-4 text-center">Action</th>
+                <tr class="border-b border-purple-200 text-purple-700 text-[10px] sm:text-xs uppercase tracking-tight">
+                    <th class="py-2 pr-2">Time</th>
+                    <th class="py-2 pr-2">Ticker</th>
+                    <th class="py-2 pr-2">Side</th>
+                    <th class="py-2 pr-2 text-center">TIF</th>
+                    <th class="py-2 pr-2 text-center">Qty</th>
+                    <th class="py-2 pr-2 text-center">Target</th>
+                    <th class="py-2 pr-2 text-center">Value</th>
+                    <th class="py-2 pr-2">Summary</th>
+                    <th class="py-2 pr-2 text-center">Action</th>
                 </tr>
             `;
         } else if (currentLogTab === 'positions') {
             thead.innerHTML = `
-                <tr class="border-b border-purple-200 text-purple-700 text-[10px] md:text-xs uppercase tracking-wider">
-                    <th class="pb-3 pr-4">Ticker</th>
-                    <th class="pb-3 pr-4 text-center">Qty</th>
-                    <th class="pb-3 pr-4 text-center">Avg Price</th>
-                    <th class="pb-3 pr-4 text-center">Current Price</th>
-                    <th class="pb-3 pr-4 text-center">Market Value</th>
-                    <th class="pb-3 pr-4 text-center">Total P/L</th>
-                    <th class="pb-3 pr-4 text-center">Daily Change</th>
+                <tr class="border-b border-purple-200 text-purple-700 text-[10px] sm:text-xs uppercase tracking-tight">
+                    <th class="py-2 pr-2">Ticker</th>
+                    <th class="py-2 pr-2 text-center">Qty</th>
+                    <th class="py-2 pr-2 text-center">Avg Price</th>
+                    <th class="py-2 pr-2 text-center">Current</th>
+                    <th class="py-2 pr-2 text-center">Value</th>
+                    <th class="py-2 pr-2 text-center">Total P/L</th>
+                    <th class="py-2 pr-2 text-center">Daily Chg</th>
                 </tr>
             `;
         }
@@ -1621,22 +1523,24 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
                     ? 'text-red-500 font-bold'
                     : 'text-purple-500 font-medium';
 
-            const signalBadge = item.bullish_count !== undefined
+            const signalBadge = item.exit_monitoring && item.exit_signal_label
+                ? item.exit_signal_label
+                : item.bullish_count !== undefined
                 ? `${item.bullish_count}B / ${item.bearish_count}S`
                 : '—';
 
             row.innerHTML = `
-                <td class="py-2.5 pr-4 text-purple-600 text-xs">${formatLocalTime(item.time)}</td>
-                <td class="py-2.5 pr-4 ${actionColor} text-xs">${item.action}</td>
-                <td class="py-2.5 pr-4 text-indigo-950 font-semibold text-xs">${item.ticker}</td>
-                <td class="py-2.5 pr-4 text-center">
+                <td class="py-2 pr-2 text-purple-600 text-[10px] sm:text-xs whitespace-normal leading-tight max-w-[65px] sm:max-w-none">${formatLocalTime(item.time)}</td>
+                <td class="py-2 pr-2 ${actionColor} text-[10px] sm:text-xs">${item.action}</td>
+                <td class="py-2 pr-2 text-indigo-950 font-bold text-[10px] sm:text-xs">${item.ticker}</td>
+                <td class="py-2 pr-2 text-center">
                     <span class="px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-500 font-black text-[0.55rem] border border-indigo-100">${item.timeframe || '5M'}</span>
                 </td>
-                <td class="py-2.5 pr-4 text-indigo-700 font-medium text-xs">${item.price}</td>
-                <td class="py-2.5 pr-4 text-xs">
+                <td class="py-2 pr-2 text-indigo-700 font-medium text-[10px] sm:text-xs">${item.price}</td>
+                <td class="py-2 pr-2 text-[10px] sm:text-xs">
                     <span class="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-mono text-[0.6rem]">${signalBadge}</span>
                 </td>
-                <td class="py-2.5 pr-4 text-purple-500 italic text-xs min-w-[250px] max-w-[400px] whitespace-normal" title="${item.reason}">${item.reason}</td>
+                <td class="py-2 pr-2 text-purple-600 italic text-[10px] sm:text-xs min-w-[200px] sm:min-w-[280px] whitespace-normal leading-snug" title="${item.reason}">${item.reason}</td>
             `;
         } else if (currentLogTab === 'trades') {
             const sideColor = item.side === 'buy' ? 'text-emerald-600 font-bold' : 'text-rose-500 font-bold';
@@ -1667,14 +1571,14 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
             const aiReason = item.reason || 'AI Strategy: Execution criteria satisfied.';
 
             row.innerHTML = `
-                <td class="py-2.5 pr-4 text-purple-600 text-xs">${formatLocalTime(item.created_at)}</td>
-                <td class="py-2.5 pr-4 text-indigo-950 font-semibold text-xs">${item.symbol}</td>
-                <td class="py-2.5 pr-4 text-xs ${sideColor} uppercase">${item.side}</td>
-                <td class="py-2.5 pr-4 text-center text-[0.65rem] font-bold text-indigo-900">${item.filled_qty ? item.filled_qty.toFixed(4) : '0.0000'}</td>
-                <td class="py-2.5 pr-4 text-center text-xs text-indigo-700 font-medium">$${avgPriceStr}</td>
-                <td class="py-2.5 pr-4 text-center text-xs text-indigo-900 font-bold">$${totalCostStr}</td>
+                <td class="py-2 pr-2 text-purple-600 text-[10px] sm:text-xs whitespace-normal leading-tight max-w-[65px] sm:max-w-none">${formatLocalTime(item.created_at)}</td>
+                <td class="py-2 pr-2 text-indigo-950 font-bold text-[10px] sm:text-xs">${item.symbol}</td>
+                <td class="py-2 pr-2 text-[10px] sm:text-xs ${sideColor} uppercase">${item.side}</td>
+                <td class="py-2 pr-2 text-center text-[10px] sm:text-xs font-bold text-indigo-900">${item.filled_qty ? item.filled_qty.toFixed(4) : '0.0000'}</td>
+                <td class="py-2 pr-2 text-center text-[10px] sm:text-xs text-indigo-700 font-medium">$${avgPriceStr}</td>
+                <td class="py-2 pr-2 text-center text-[10px] sm:text-xs text-indigo-900 font-bold">$${totalCostStr}</td>
                 ${plHtml}
-                <td class="py-2.5 pr-4 text-purple-500 italic text-[11px] min-w-[250px] max-w-[400px] whitespace-normal" title="${aiReason}">${aiReason}</td>
+                <td class="py-2 pr-2 text-purple-600 italic text-[10px] sm:text-xs min-w-[200px] sm:min-w-[280px] whitespace-normal leading-snug" title="${aiReason}">${aiReason}</td>
             `;
         } else if (currentLogTab === 'pending') {
             const sideColor = item.side === 'buy' ? 'text-emerald-600 font-bold' : 'text-rose-500 font-bold';
@@ -1692,15 +1596,15 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
             const aiReason = item.reason || 'AI Strategy: Order pending execution.';
 
             row.innerHTML = `
-                <td class="py-2.5 pr-4 text-purple-600 text-xs">${formatLocalTime(item.created_at)}</td>
-                <td class="py-2.5 pr-4 text-indigo-950 font-semibold text-xs">${item.symbol}</td>
-                <td class="py-2.5 pr-4 text-xs ${sideColor} uppercase">${item.side}</td>
-                <td class="py-2.5 pr-4 text-center">${tifBadge}</td>
-                <td class="py-2.5 pr-4 text-center text-[0.65rem] font-bold text-indigo-900">${item.qty ? item.qty.toFixed(4) : '0.0000'}</td>
-                <td class="py-2.5 pr-4 text-center text-xs text-indigo-700 font-medium">${limitPriceStr}</td>
-                <td class="py-2.5 pr-4 text-center text-xs text-indigo-900 font-bold">${totalValueStr}</td>
-                <td class="py-2.5 pr-4 text-purple-500 italic text-[11px] min-w-[250px] max-w-[400px] whitespace-normal" title="${aiReason}">${aiReason}</td>
-                <td class="py-2.5 pr-4 text-center">
+                <td class="py-2 pr-2 text-purple-600 text-[10px] sm:text-xs whitespace-normal leading-tight max-w-[65px] sm:max-w-none">${formatLocalTime(item.created_at)}</td>
+                <td class="py-2 pr-2 text-indigo-950 font-bold text-[10px] sm:text-xs">${item.symbol}</td>
+                <td class="py-2 pr-2 text-[10px] sm:text-xs ${sideColor} uppercase">${item.side}</td>
+                <td class="py-2 pr-2 text-center">${tifBadge}</td>
+                <td class="py-2 pr-2 text-center text-[10px] sm:text-xs font-bold text-indigo-900">${item.qty ? item.qty.toFixed(4) : '0.0000'}</td>
+                <td class="py-2 pr-2 text-center text-[10px] sm:text-xs text-indigo-700 font-medium">${limitPriceStr}</td>
+                <td class="py-2 pr-2 text-center text-[10px] sm:text-xs text-indigo-900 font-bold">${totalValueStr}</td>
+                <td class="py-2 pr-2 text-purple-600 italic text-[10px] sm:text-xs min-w-[200px] sm:min-w-[280px] whitespace-normal leading-snug" title="${aiReason}">${aiReason}</td>
+                <td class="py-2 pr-2 text-center">
                     <button onclick="cancelOrder('${item.id}')"
                         class="px-2 py-1 bg-rose-500 text-white rounded hover:bg-rose-600 transition-all font-black text-[9px] uppercase tracking-wider">
                         Cancel
@@ -1726,16 +1630,16 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
             const daySign = dayPlVal >= 0 ? '+' : '';
 
             row.innerHTML = `
-                <td class="py-2.5 pr-4 text-indigo-950 font-semibold text-xs">${item.symbol}</td>
-                <td class="py-2.5 pr-4 text-center text-[0.65rem] font-bold text-indigo-900">${qtyStr}</td>
-                <td class="py-2.5 pr-4 text-center text-xs text-indigo-700 font-medium">${avgPriceStr}</td>
-                <td class="py-2.5 pr-4 text-center text-xs text-indigo-700 font-medium">${currentPriceStr}</td>
-                <td class="py-2.5 pr-4 text-center text-xs text-indigo-900 font-bold">${marketValueStr}</td>
-                <td class="py-2.5 pr-4 text-center ${plColor} text-[11px]">
+                <td class="py-2 pr-2 text-indigo-950 font-bold text-[10px] sm:text-xs">${item.symbol}</td>
+                <td class="py-2 pr-2 text-center text-[10px] sm:text-xs font-bold text-indigo-900">${qtyStr}</td>
+                <td class="py-2 pr-2 text-center text-[10px] sm:text-xs text-indigo-700 font-medium">${avgPriceStr}</td>
+                <td class="py-2 pr-2 text-center text-[10px] sm:text-xs text-indigo-700 font-medium">${currentPriceStr}</td>
+                <td class="py-2 pr-2 text-center text-[10px] sm:text-xs text-indigo-900 font-bold">${marketValueStr}</td>
+                <td class="py-2 pr-2 text-center ${plColor} text-[10px] sm:text-xs">
                     <div>${sign}$${plVal.toFixed(2)}</div>
                     <div class="text-[9px] opacity-80 font-semibold">${sign}${plPct.toFixed(2)}%</div>
                 </td>
-                <td class="py-2.5 pr-4 text-center ${dayPlColor} text-[11px]">
+                <td class="py-2 pr-2 text-center ${dayPlColor} text-[10px] sm:text-xs">
                     <div>${daySign}$${dayPlVal.toFixed(2)}</div>
                     <div class="text-[9px] opacity-80 font-semibold">${daySign}${dayPlPct.toFixed(2)}%</div>
                 </td>
@@ -1789,6 +1693,19 @@ function changeLogPage(delta) {
 let currentStrategySymbol = null;
     window.currentStrategySymbol = null;
 let strategyModalMode = 'deploy'; // 'deploy' or 'edit'
+let strategyDraftIndicatorOverrides = {};
+let botChartPreviewState = {
+    open: false,
+    mode: 'view',
+    source: 'card',
+    ticker: null,
+    tradingMode: 'regular',
+    settings: {},
+    signals: {},
+    priceHistory: [],
+    previewMeta: {},
+};
+let botChartPreviewIndicatorSettingsContext = false;
 
 function getTimeframeMinutes(tf) {
     switch (tf) {
@@ -1801,6 +1718,186 @@ function getTimeframeMinutes(tf) {
         case '1Day': return 1440;
         default: return 60;
     }
+}
+
+function clonePlainObject(value) {
+    if (!value || typeof value !== 'object') return {};
+    return JSON.parse(JSON.stringify(value));
+}
+
+function stablePreviewStringify(value) {
+    if (value === null || typeof value !== 'object') return JSON.stringify(value);
+    if (Array.isArray(value)) {
+        return `[${value.map(stablePreviewStringify).join(',')}]`;
+    }
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stablePreviewStringify(value[key])}`).join(',')}}`;
+}
+
+function hashStringDjb2(input) {
+    let hash = 5381;
+    const str = String(input || '');
+    for (let i = 0; i < str.length; i += 1) {
+        hash = ((hash << 5) + hash) + str.charCodeAt(i);
+        hash |= 0;
+    }
+    return (hash >>> 0).toString(36);
+}
+
+function normalizeBotChartPreviewCacheSettings(settings = {}) {
+    const normalized = clonePlainObject(settings);
+    delete normalized.last_signal_time;
+    delete normalized.last_trade_time;
+    delete normalized.runtime_state;
+    if (Array.isArray(normalized.indicators)) {
+        normalized.indicators = [...normalized.indicators].sort();
+    }
+    return normalized;
+}
+
+function getBotChartPreviewCacheKey(ticker, settings = {}) {
+    const cleanTicker = (ticker || '').toUpperCase().trim();
+    const normalizedSettings = normalizeBotChartPreviewCacheSettings(settings);
+    const timeframe = normalizedSettings.timeframe || '1Hour';
+    const session = isCrypto(cleanTicker)
+        ? '24h'
+        : (normalizedSettings.market_session || botChartPreviewSession || 'regular');
+    const mode = normalizedSettings.options_trading ? 'options' : 'regular';
+    const settingsHash = hashStringDjb2(stablePreviewStringify(normalizedSettings));
+    return `bot-preview|${cleanTicker}|${timeframe}|${mode}|${session}|${settingsHash}|${BOT_CHART_CACHE_VERSION}`;
+}
+
+function openBotChartIndexedDB() {
+    if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+    if (botChartPreviewIndexedDbPromise) return botChartPreviewIndexedDbPromise;
+    botChartPreviewIndexedDbPromise = new Promise(resolve => {
+        const request = indexedDB.open(BOT_CHART_IDB_NAME, BOT_CHART_IDB_VERSION);
+        request.onupgradeneeded = event => {
+            const db = event.target.result;
+            if (!db.objectStoreNames.contains(BOT_CHART_IDB_STORE)) {
+                const store = db.createObjectStore(BOT_CHART_IDB_STORE, { keyPath: 'key' });
+                store.createIndex('fetchedAt', 'fetchedAt', { unique: false });
+            }
+        };
+        request.onsuccess = event => resolve(event.target.result);
+        request.onerror = () => {
+            console.warn('[bot-chart] IndexedDB cache unavailable:', request.error);
+            resolve(null);
+        };
+        request.onblocked = () => {
+            console.warn('[bot-chart] IndexedDB cache upgrade blocked by another tab.');
+            resolve(null);
+        };
+    });
+    return botChartPreviewIndexedDbPromise;
+}
+
+async function readBotChartPreviewCache(key) {
+    const memoryHit = botChartPreviewPayloadCache.get(key);
+    if (memoryHit) return memoryHit;
+    const db = await openBotChartIndexedDB();
+    if (!db) return null;
+    return new Promise(resolve => {
+        try {
+            const tx = db.transaction(BOT_CHART_IDB_STORE, 'readonly');
+            const request = tx.objectStore(BOT_CHART_IDB_STORE).get(key);
+            request.onsuccess = () => {
+                const record = request.result || null;
+                if (record) botChartPreviewPayloadCache.set(key, record);
+                resolve(record);
+            };
+            request.onerror = () => {
+                console.warn('[bot-chart] Failed reading IndexedDB cache:', request.error);
+                resolve(null);
+            };
+        } catch (e) {
+            console.warn('[bot-chart] Failed opening IndexedDB read transaction:', e);
+            resolve(null);
+        }
+    });
+}
+
+async function pruneBotChartPreviewCache(maxEntries = 40) {
+    const db = await openBotChartIndexedDB();
+    if (!db) return;
+    return new Promise(resolve => {
+        try {
+            const tx = db.transaction(BOT_CHART_IDB_STORE, 'readwrite');
+            const store = tx.objectStore(BOT_CHART_IDB_STORE);
+            const request = store.getAll();
+            request.onsuccess = () => {
+                const rows = (Array.isArray(request.result) ? request.result : [])
+                    .filter(row => String(row?.key || '').startsWith('bot-preview|'));
+                rows
+                    .sort((a, b) => Number(b.fetchedAt || 0) - Number(a.fetchedAt || 0))
+                    .slice(maxEntries)
+                    .forEach(row => {
+                        if (row?.key) {
+                            store.delete(row.key);
+                            botChartPreviewPayloadCache.delete(row.key);
+                        }
+                    });
+            };
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+            tx.onabort = () => resolve();
+        } catch (e) {
+            resolve();
+        }
+    });
+}
+
+async function saveBotChartPreviewCache(key, payload, ticker, settings) {
+    if (!key || !payload) return false;
+    const db = await openBotChartIndexedDB();
+    if (!db) return false;
+    const record = {
+        key,
+        payload,
+        ticker: (ticker || '').toUpperCase().trim(),
+        timeframe: settings?.timeframe || '1Hour',
+        fetchedAt: Date.now(),
+        version: BOT_CHART_CACHE_VERSION,
+        cacheType: 'bot-preview',
+    };
+    botChartPreviewPayloadCache.set(key, record);
+    const writeRecord = () => new Promise((resolve, reject) => {
+        try {
+            const tx = db.transaction(BOT_CHART_IDB_STORE, 'readwrite');
+            tx.objectStore(BOT_CHART_IDB_STORE).put(record);
+            tx.oncomplete = () => resolve(true);
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
+        } catch (e) {
+            reject(e);
+        }
+    });
+    try {
+        await writeRecord();
+        pruneBotChartPreviewCache().catch(() => {});
+        return true;
+    } catch (e) {
+        await pruneBotChartPreviewCache(12);
+        try {
+            await writeRecord();
+            return true;
+        } catch (retryErr) {
+            console.warn('[bot-chart] IndexedDB cache write skipped:', retryErr);
+            return false;
+        }
+    }
+}
+
+function getSavedBotSettings(symbol) {
+    const ticker = (symbol || '').toUpperCase();
+    return clonePlainObject((window.lastBotsData?.ticker_settings || {})[ticker] || {});
+}
+
+function setStrategyDraftIndicatorOverrides(overrides = {}) {
+    strategyDraftIndicatorOverrides = clonePlainObject(overrides);
+}
+
+function getStrategyDraftIndicatorOverrides() {
+    return clonePlainObject(strategyDraftIndicatorOverrides);
 }
 
 function formatMinutes(min) {
@@ -1838,17 +1935,18 @@ function getDefaultSignalThreshold(type = 'buy') {
     return parseInt(INDICATOR_DEFAULTS[key] || 4, 10) || 4;
 }
 
-function normalizeSignalThreshold(value, checkedCount, type = 'buy') {
+function normalizeSignalThreshold(value, checkedCount, type = 'buy', minVal = 1) {
+    if (checkedCount <= 0 && minVal === 0) return 0;
     if (checkedCount <= 0) return 0;
 
     const defaultValue = getDefaultSignalThreshold(type);
     let normalized = parseInt(value, 10);
 
-    if (!Number.isFinite(normalized) || normalized <= 0) {
+    if (!Number.isFinite(normalized) || (minVal > 0 && normalized <= 0)) {
         normalized = Math.min(defaultValue, checkedCount);
     }
 
-    return Math.max(1, Math.min(normalized, checkedCount));
+    return Math.max(minVal, Math.min(normalized, checkedCount));
 }
 
 function getSwingLookbackDaysValue(mode = 'regular', kind = 'entry') {
@@ -1985,6 +2083,7 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
 
     // UI State based on Mode
     if (mode === 'deploy') {
+        setStrategyDraftIndicatorOverrides({});
         titleEl.textContent = `Deploy ${currentStrategySymbol}`;
         subtitleEl.textContent = name ? `Configure parameters for ${name}` : 'Set initial strategy parameters';
         actionBtn.textContent = 'Deploy Strategy 🚀';
@@ -2116,6 +2215,7 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
 
         // Load existing settings
         const settings = (window.lastBotsData?.ticker_settings || {})[currentStrategySymbol] || {};
+        setStrategyDraftIndicatorOverrides(settings.indicator_overrides || {});
         document.getElementById('strategyCapital').value = settings.amount || '';
         if (document.getElementById('strategyOptionsTradeAmount')) document.getElementById('strategyOptionsTradeAmount').value = settings.options_trade_amount !== undefined ? settings.options_trade_amount : 100;
         if (document.getElementById('strategyAllocationMode_regular')) document.getElementById('strategyAllocationMode_regular').value = settings.allocation_mode || 'fixed';
@@ -2342,6 +2442,10 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
 
 window.closeStrategyModal = function () {
     document.getElementById('botStrategyModal').classList.add('hidden');
+    if (botChartPreviewState.source === 'settings') {
+        closeBotChartPreview();
+    }
+    setStrategyDraftIndicatorOverrides({});
     currentStrategySymbol = null;
     window.currentStrategySymbol = null;
 };
@@ -2380,6 +2484,15 @@ window.updateStrategySignalLabels = function (mode = window.activeTradingMode ||
 
     if (!buyInput || !sellInput || !buyLabel || !sellLabel) return;
 
+    const indicatorModes = ['indicator', 'hybrid', 'hybrid_atr', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'];
+    const buyModeSelect = document.getElementById(`strategyBuyMode_${mode}`)?.value || 'indicator';
+    const sellModeSelect = document.getElementById(`strategySellMode_${mode}`)?.value || (mode === 'options' ? 'hybrid' : 'indicator');
+    const buyNeedsInd = indicatorModes.includes(buyModeSelect);
+    const sellNeedsInd = indicatorModes.includes(sellModeSelect);
+
+    const buyMin = (checkedCount > 0 && buyNeedsInd) ? 1 : 0;
+    const sellMin = (checkedCount > 0 && sellNeedsInd) ? 1 : 0;
+
     if (checkedCount === 0) {
         buyInput.min = 0;
         sellInput.min = 0;
@@ -2387,22 +2500,22 @@ window.updateStrategySignalLabels = function (mode = window.activeTradingMode ||
         sellInput.max = 0;
         buyInput.value = 0;
         sellInput.value = 0;
-        buyLabel.textContent = "0 of 0 Signals";
-        sellLabel.textContent = "0 of 0 Signals";
+        buyLabel.textContent = buyNeedsInd ? "0 of 0 Signals" : "0 of 0 Signals (Not Required)";
+        sellLabel.textContent = sellNeedsInd ? "0 of 0 Signals" : "0 of 0 Signals (Not Required)";
         if (mode === 'options') syncOptionsPutEntryThresholdLabel(checkedCount);
         return;
     }
 
-    buyInput.min = 1;
-    sellInput.min = 1;
+    buyInput.min = buyMin;
+    sellInput.min = sellMin;
     buyInput.max = checkedCount;
     sellInput.max = checkedCount;
 
-    buyInput.value = normalizeSignalThreshold(buyInput.value, checkedCount, 'buy');
-    sellInput.value = normalizeSignalThreshold(sellInput.value, checkedCount, 'sell');
+    buyInput.value = normalizeSignalThreshold(buyInput.value, checkedCount, 'buy', buyMin);
+    sellInput.value = normalizeSignalThreshold(sellInput.value, checkedCount, 'sell', sellMin);
 
-    buyLabel.textContent = `${buyInput.value} of ${checkedCount} Signals`;
-    sellLabel.textContent = `${sellInput.value} of ${checkedCount} Signals`;
+    buyLabel.textContent = (!buyNeedsInd && parseInt(buyInput.value) === 0) ? `0 of ${checkedCount} Signals (Not Required)` : `${buyInput.value} of ${checkedCount} Signals`;
+    sellLabel.textContent = (!sellNeedsInd && parseInt(sellInput.value) === 0) ? `0 of ${checkedCount} Signals (Not Required)` : `${sellInput.value} of ${checkedCount} Signals`;
     if (mode === 'options') syncOptionsPutEntryThresholdLabel(checkedCount);
 };
 
@@ -2420,7 +2533,10 @@ function syncOptionsPutEntryThresholdLabel(checkedCount = null) {
     putInput.min = sellInput.min;
     putInput.max = sellInput.max;
     putInput.value = sellInput.value;
-    putLabel.textContent = `${sellInput.value} of ${checkedCount} Signals`;
+    const indicatorModes = ['indicator', 'hybrid', 'hybrid_atr', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'];
+    const sellMode = document.getElementById('strategySellMode_options')?.value || 'hybrid';
+    const needsInd = indicatorModes.includes(sellMode);
+    putLabel.textContent = (!needsInd && parseInt(putInput.value) === 0) ? `0 of ${checkedCount} Signals (Not Required)` : `${sellInput.value} of ${checkedCount} Signals`;
 }
 
 window.syncOptionsPutEntryThreshold = function () {
@@ -2449,8 +2565,14 @@ window.adjustStrategyThreshold = function (mode, type, delta) {
     const input = type === 'buy' ? document.getElementById(`strategyBuyThreshold_${mode}`) : document.getElementById(`strategySellThreshold_${mode}`);
     if (!input) return;
 
-    let val = normalizeSignalThreshold(input.value, checkedCount, type) + delta;
-    val = Math.max(1, Math.min(val, checkedCount));
+    const indicatorModes = ['indicator', 'hybrid', 'hybrid_atr', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'];
+    const modeSelect = type === 'buy'
+        ? (document.getElementById(`strategyBuyMode_${mode}`)?.value || 'indicator')
+        : (document.getElementById(`strategySellMode_${mode}`)?.value || (mode === 'options' ? 'hybrid' : 'indicator'));
+    const minVal = indicatorModes.includes(modeSelect) ? 1 : 0;
+
+    let val = normalizeSignalThreshold(input.value, checkedCount, type, minVal) + delta;
+    val = Math.max(minVal, Math.min(val, checkedCount));
     input.value = val;
     window.updateStrategySignalLabels(mode);
 };
@@ -2816,6 +2938,7 @@ async function saveTickerSettings() {
             min_sell_signals: sellThresholdVal,
             sell_mode: document.getElementById(`strategySellMode_${mode}`)?.value || 'hybrid',
             indicators: indicators,
+            indicator_overrides: getStrategyDraftIndicatorOverrides(),
             paused: window._strategyPaused || false,
             ai_autopilot: document.getElementById('strategyAiAutopilot')?.checked || false,
             ai_model: document.getElementById('strategyAiModel')?.value || 'llama-3.3-70b-versatile',
@@ -3080,7 +3203,8 @@ function applyBotsData(data) {
         const globalAiStr = localStorage.getItem('latest_global_ai_analysis');
         if (globalAiStr) {
             const globalAi = JSON.parse(globalAiStr);
-            if ((Date.now() - globalAi.timestamp) < AI_INDICATOR_CACHE_TTL) {
+            const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+            if (isAICacheForContext(globalAi, selectedTicker, currentBackendTf, selectedModel)) {
                 renderAIIndicatorCard(globalAi.data, true);
                 mirrored = true;
             }
@@ -3236,7 +3360,1720 @@ const INDICATOR_META = {
     'VWAP': { key: 'ENABLE_VWAP', desc: 'Volume Weighted Avg', icon: '⚖️' },
     'Mystic Pulse': { key: 'ENABLE_MYSTIC_PULSE', desc: 'Trend Persistence', icon: '🔮' },
     'Candle Patterns': { key: 'ENABLE_CANDLE_PATTERNS', desc: 'Reversal Detection', icon: '🕯️' },
-    'Botbulls4 News AI': { key: 'ENABLE_AI_SENTIMENT', desc: 'AI News Analysis', icon: '🧠' },
+    'Botbulls4 News AI': { key: 'ENABLE_AI_SENTIMENT', desc: 'Premium AI News Sentiment', icon: '🧠' },
+    'ADX Trend': { key: 'ENABLE_ADX_TREND', desc: 'Trend Strength Filter', icon: '🧭' },
+    'SMA': { key: 'ENABLE_SMA', desc: 'Long-Term Trend Filter', icon: '📏' },
+    'Volume Profile': { key: 'ENABLE_VOLUME_PROFILE', desc: 'POC / Value Area', icon: 'VP' },
+    'Prior Day High/Low': { key: 'ENABLE_DAILY_HIGH_LOW', desc: 'Prior Session Breakout', icon: 'HL' },
+    'Pivot Points (S/R)': { key: 'ENABLE_PIVOT_POINTS', desc: 'Prior Session S/R', icon: 'P' },
+    'Swing Points': { key: 'ENABLE_SWING_POINTS', desc: 'Swing S/R Structure', icon: 'SW' },
+    'BotBulls1': { key: 'ENABLE_BOTBULLS1', desc: 'Premium Oscillator WaveTrend', icon: '🌊' },
+    'BotBulls2': { key: 'ENABLE_BOTBULLS2', desc: 'Premium Smart Trail', icon: '🛰️' },
+    'BotBulls3': { key: 'ENABLE_BOTBULLS3', desc: 'Premium Filtered Trail', icon: '🎯' },
+};
+
+const BOT_CHART_PREVIEW_INDICATORS = [
+    'RSI',
+    'MACD',
+    'EMA Cross',
+    'ADX Trend',
+    'Supertrend',
+    'Bollinger',
+    'VWAP',
+    'Volume Profile',
+    'SMA',
+    'Prior Day High/Low',
+    'Pivot Points (S/R)',
+    'Swing Points',
+    'Mystic Pulse',
+    'Candle Patterns',
+    'Botbulls4 News AI',
+    'BotBulls1',
+    'BotBulls2',
+    'BotBulls3',
+];
+
+const BOT_CHART_PREVIEW_OVERLAY_INDICATORS = new Set([
+    'EMA Cross',
+    'Supertrend',
+    'Bollinger',
+    'VWAP',
+    'Volume Profile',
+    'SMA',
+    'Prior Day High/Low',
+    'Pivot Points (S/R)',
+    'Swing Points',
+    'BotBulls2',
+    'BotBulls3',
+]);
+
+const BOT_CHART_PREVIEW_PREMIUM_INFO = {
+    'BotBulls1': 'WaveTrend momentum oscillator + Money Flow analysis. Detects reversals when momentum and institutional volume flow align.',
+    'BotBulls2': 'Adaptive ATR trailing stop with trend-smoothed EMA and reversal zone detection. Fires on trend flips confirmed by confluence scoring.',
+    'BotBulls3': 'Heikin-Ashi noise filter + ATR-based trailing stop. Generates buy/sell alerts on confirmed momentum flips.',
+    'Volume Profile': 'Prior-session volume-at-price profile. Draws POC, VAH, and VAL to identify institutional acceptance/rejection zones.',
+    'Prior Day High/Low': "Uses the previous completed trading session's high and low as breakout/breakdown levels. Buffer is entered as %, with dotted trigger lines when non-zero.",
+    'Pivot Points (S/R)': 'Classic prior-session floor pivot levels. Draws up to 5 support/resistance ladders; bullish on support/pivot reclaim, bearish on resistance rejection or pivot breakdown.',
+    'Swing Points': 'Rolling swing support/resistance clusters from recent local highs/lows. Draws structural bounce/rejection and reclaim/breakdown zones.',
+    'Botbulls4 News AI': 'AI news sentiment analysis. Parses current headlines and financial catalysts to determine market direction.',
+};
+
+function ensureDailyHighLowBotIndicatorCards() {
+    const cards = [
+        { name: 'Volume Profile', subtitle: 'POC / Value Area', settings: true },
+        { name: 'Prior Day High/Low', subtitle: 'Prior Session', settings: true },
+        { name: 'Pivot Points (S/R)', subtitle: 'Pivot S/R', settings: true },
+        { name: 'Swing Points', subtitle: 'Swing S/R', settings: true },
+    ];
+    ['regular', 'options'].forEach(mode => {
+        const container = document.getElementById(`indicatorChecksContainer_${mode}`);
+        if (!container) return;
+
+        cards.forEach(({ name, subtitle, settings }) => {
+            const existingInput = container.querySelector(`input[value="${name}"]`);
+            if (existingInput) {
+                return;
+            }
+            const escapedName = name.replace(/'/g, "\\'");
+            const settingsButton = settings ? `
+                <button onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('${escapedName}')" class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" title="${name} Settings">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                </button>` : '';
+            const card = document.createElement('div');
+            card.className = 'indicator-card group p-2.5 sm:p-3 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all';
+            card.setAttribute('onclick', 'toggleIndicatorCard(this, event)');
+            card.innerHTML = `
+            <div class="flex flex-col">
+                <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">${name}
+                    <div class="group/tooltip relative inline-flex items-center ml-1">
+                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('${escapedName}')" xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                    </div>
+                </span>
+                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">${subtitle}</span>
+            </div>
+            <div class="flex items-center gap-2">
+                ${settingsButton}
+                <input type="checkbox" class="strategy-indicator-check strategy-indicator-check-${mode} w-5 h-5 accent-indigo-600 rounded" value="${name}" onclick="event.stopPropagation()" onchange="updateStrategySignalLabels('${mode}')">
+            </div>
+        `;
+            container.appendChild(card);
+        });
+        placeDailyHighLowBotIndicatorCards(container);
+    });
+}
+
+function placeDailyHighLowBotIndicatorCards(container) {
+    if (!container) return;
+    const vpCard = container.querySelector('input[value="Volume Profile"]')?.closest('.indicator-card');
+    const vwapAnchor = container.querySelector('input[value="VWAP"]')?.closest('.indicator-card');
+    if (vpCard) {
+        if (vwapAnchor?.parentElement === container) {
+            container.insertBefore(vpCard, vwapAnchor.nextSibling);
+        } else {
+            container.appendChild(vpCard);
+        }
+    }
+    let anchor = container.querySelector('input[value="SMA"]')?.closest('.indicator-card');
+    ['Prior Day High/Low', 'Pivot Points (S/R)', 'Swing Points'].forEach(name => {
+        const card = container.querySelector(`input[value="${name}"]`)?.closest('.indicator-card');
+        if (!card) return;
+        if (anchor?.parentElement === container) {
+            container.insertBefore(card, anchor.nextSibling);
+        } else {
+            container.appendChild(card);
+        }
+        anchor = card;
+    });
+}
+
+const BOT_CHART_PREVIEW_RANGES = {
+    '1D': { days: 1 },
+    '5D': { days: 5 },
+    '1M': { days: 31 },
+    '3M': { days: 93 },
+    '6M': { days: 186 },
+    'YTD': { ytd: true },
+    '1Y': { days: 366 },
+    '5Y': { days: 365 * 5 },
+    'MAX': { days: null },
+};
+
+let botChartPreviewChart = null;
+let botChartPreviewCandleSeries = null;
+let botChartPreviewExtHoursSeries = null;
+let botChartPreviewOverlaySeries = {};
+let botChartPreviewOscCharts = {};
+let botChartPreviewOscSeries = {};
+let botChartPreviewResizeObserver = null;
+let botChartPreviewRefreshTimer = null;
+let botChartPreviewLiveRefreshTimer = null;
+let botChartPreviewCrosshairWired = false;
+let botChartPreviewDisplayHistory = [];
+let botChartPreviewRange = '1M';
+let botChartPreviewSession = 'regular';
+let botChartPreviewOverlayPriceLines = {};
+let botChartPreviewOverlayLabelMeta = {};
+
+function formatBotChartPreviewPrice(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return '---';
+    return number >= 1 ? number.toFixed(2) : number.toFixed(4);
+}
+
+function formatBotChartPreviewVolume(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return '—';
+    if (number >= 1e6) return `${(number / 1e6).toFixed(2)}M`;
+    if (number >= 1e3) return `${(number / 1e3).toFixed(1)}K`;
+    return String(Math.round(number));
+}
+
+function formatBotChartPreviewTimeCT(time) {
+    if (!time) return '—';
+    return new Date(Number(time) * 1000).toLocaleTimeString('en-US', {
+        timeZone: 'America/Chicago',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+    }) + ' CT';
+}
+
+function getBotChartPreviewTimeframeSeconds(timeframe = botChartPreviewState.settings?.timeframe || '1Hour') {
+    const tf = String(timeframe || '').toUpperCase();
+    if (tf.includes('DAY') || tf === '1D') return 86400;
+    const value = Number((tf.match(/\d+/) || ['1'])[0]);
+    if (tf.includes('HOUR') || tf.endsWith('H')) return value * 3600;
+    if (tf.includes('SEC') || tf.endsWith('S')) return value;
+    if (tf.includes('MIN') || tf.endsWith('M')) return value * 60;
+    return 300;
+}
+
+function isFiniteBotChartPreviewNumber(value) {
+    return Number.isFinite(Number(value));
+}
+
+function isValidBotChartPreviewTime(value) {
+    const time = Number(value);
+    return Number.isFinite(time) && time > 0;
+}
+
+function sanitizeBotChartPreviewLineData(data = []) {
+    const byTime = new Map();
+    (Array.isArray(data) ? data : []).forEach(point => {
+        if (!point || !isValidBotChartPreviewTime(point.time) || !isFiniteBotChartPreviewNumber(point.value)) return;
+        byTime.set(Number(point.time), {
+            ...point,
+            time: Number(point.time),
+            value: Number(point.value),
+        });
+    });
+    return Array.from(byTime.values()).sort((a, b) => Number(a.time) - Number(b.time));
+}
+
+function sanitizeBotChartPreviewCandles(data = []) {
+    const byTime = new Map();
+    (Array.isArray(data) ? data : []).forEach(bar => {
+        if (!bar || !isValidBotChartPreviewTime(bar.time)) return;
+        if (![bar.open, bar.high, bar.low, bar.close].every(isFiniteBotChartPreviewNumber)) return;
+        byTime.set(Number(bar.time), {
+            time: Number(bar.time),
+            open: Number(bar.open),
+            high: Number(bar.high),
+            low: Number(bar.low),
+            close: Number(bar.close),
+        });
+    });
+    return Array.from(byTime.values()).sort((a, b) => Number(a.time) - Number(b.time));
+}
+
+function sanitizeBotChartPreviewMarkers(markers = []) {
+    return (Array.isArray(markers) ? markers : [])
+        .filter(marker => marker && isValidBotChartPreviewTime(marker.time))
+        .map(marker => ({ ...marker, time: Number(marker.time) }))
+        .sort((a, b) => Number(a.time) - Number(b.time));
+}
+
+function toBotChartPreviewCloseTimeBar(bar, timeframe = botChartPreviewState.settings?.timeframe || '1Hour') {
+    const sourceTime = Number(bar?.time);
+    if (!Number.isFinite(sourceTime)) return bar;
+    const seconds = getBotChartPreviewTimeframeSeconds(timeframe);
+    const offset = seconds > 0 && seconds < 86400 ? seconds : 0;
+    return {
+        ...bar,
+        source_time: sourceTime,
+        time: sourceTime + offset,
+    };
+}
+
+function isBotChartPreviewRegularMarketBar(bar) {
+    if (!isValidBotChartPreviewTime(bar?.time)) return false;
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Chicago',
+        weekday: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+    }).formatToParts(new Date(Number(bar.time) * 1000));
+    const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+    if (values.weekday === 'Sat' || values.weekday === 'Sun') return false;
+    const mins = Number(values.hour) * 60 + Number(values.minute);
+    return mins >= (8 * 60 + 30) && mins <= (15 * 60);
+}
+
+function getBotChartPreviewDisplayHistory(rawHistory = [], settings = {}) {
+    const sorted = [...(rawHistory || [])]
+        .map(bar => toBotChartPreviewCloseTimeBar(bar, settings.timeframe || '1Hour'))
+        .filter(bar => bar && isValidBotChartPreviewTime(bar.time))
+        .sort((a, b) => Number(a.time || 0) - Number(b.time || 0));
+    const range = BOT_CHART_PREVIEW_RANGES[botChartPreviewRange] || BOT_CHART_PREVIEW_RANGES['1M'];
+    const last = sorted[sorted.length - 1];
+    let ranged = sorted;
+
+    if (last && range?.ytd) {
+        const d = new Date(Number(last.time) * 1000);
+        const start = Date.UTC(d.getUTCFullYear(), 0, 1) / 1000;
+        ranged = sorted.filter(bar => Number(bar.time || 0) >= start);
+    } else if (last && range?.days != null) {
+        const start = Number(last.time || 0) - (range.days * 86400);
+        ranged = sorted.filter(bar => Number(bar.time || 0) >= start);
+    }
+
+    if (isCrypto(tickerFromPreviewState()) || botChartPreviewSession === 'crypto24' || botChartPreviewSession === 'extended' || settings.timeframe === '1Day') {
+        return ranged;
+    }
+    return ranged.filter(isBotChartPreviewRegularMarketBar);
+}
+
+function tickerFromPreviewState() {
+    return (botChartPreviewState.ticker || '').toUpperCase().trim();
+}
+
+function updateBotChartPreviewRangeSessionState(settings = {}) {
+    const crypto = isCrypto(tickerFromPreviewState());
+    if (crypto) botChartPreviewSession = 'crypto24';
+
+    document.querySelectorAll('#botChartPreviewRangeBar .chart-range-btn').forEach(btn => {
+        btn.classList.toggle('chart-range-active', btn.dataset.range === botChartPreviewRange);
+    });
+    document.getElementById('botChartPreviewCryptoLiveBtn')?.classList.toggle('hidden', !crypto);
+    document.getElementById('botChartPreviewRegularHoursBtn')?.classList.toggle('hidden', crypto);
+    document.getElementById('botChartPreviewExtendedHoursBtn')?.classList.toggle('hidden', crypto);
+    document.getElementById('botChartPreviewRegularHoursBtn')?.classList.toggle('chart-session-active', !crypto && botChartPreviewSession === 'regular');
+    document.getElementById('botChartPreviewExtendedHoursBtn')?.classList.toggle('chart-session-active', !crypto && botChartPreviewSession === 'extended');
+    document.getElementById('botChartPreviewCryptoLiveBtn')?.classList.toggle('chart-session-active', crypto);
+
+    const sessionEl = document.getElementById('botChartPreviewSessionStatus');
+    if (sessionEl) {
+        sessionEl.textContent = crypto ? 'Crypto 24h live' : (botChartPreviewSession === 'extended' ? 'Extended Hours' : 'Regular Hours');
+    }
+
+    document.querySelectorAll('#botChartPreviewTfBar .chart-tf-btn').forEach(btn => {
+        btn.classList.toggle('chart-tf-active', btn.dataset.tf === (settings.timeframe || '1Hour'));
+    });
+}
+
+function setBotChartPreviewOhlcv(bar) {
+    const setText = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = value;
+    };
+    if (!bar) {
+        setText('botChartPreviewOhlcvO', '—');
+        setText('botChartPreviewOhlcvH', '—');
+        setText('botChartPreviewOhlcvL', '—');
+        setText('botChartPreviewOhlcvC', '—');
+        setText('botChartPreviewOhlcvV', '—');
+        return;
+    }
+    setText('botChartPreviewOhlcvO', formatBotChartPreviewPrice(bar.open));
+    setText('botChartPreviewOhlcvH', formatBotChartPreviewPrice(bar.high));
+    setText('botChartPreviewOhlcvL', formatBotChartPreviewPrice(bar.low));
+    setText('botChartPreviewOhlcvC', formatBotChartPreviewPrice(bar.close));
+    setText('botChartPreviewOhlcvV', formatBotChartPreviewVolume(bar.volume));
+}
+
+function updateBotChartPreviewHeader(priceHistory = [], settings = {}) {
+    const history = getBotChartPreviewDisplayHistory(priceHistory, settings);
+    botChartPreviewDisplayHistory = history;
+    const first = history.find(bar => Number.isFinite(Number(bar?.open || bar?.close)));
+    const last = [...history].reverse().find(bar => Number.isFinite(Number(bar?.close)));
+    const ticker = botChartPreviewState.ticker || 'Ticker';
+    const timeframe = settings.timeframe || '1Hour';
+
+    const tickerEl = document.getElementById('botChartPreviewTickerLabel');
+    const priceEl = document.getElementById('botChartPreviewPrice');
+    const changeEl = document.getElementById('botChartPreviewPriceChange');
+    const sessionEl = document.getElementById('botChartPreviewSessionStatus');
+    const lastInfoEl = document.getElementById('botChartPreviewLastBarInfo');
+
+    if (tickerEl) tickerEl.textContent = ticker;
+    if (priceEl) priceEl.textContent = last ? formatBotChartPreviewPrice(last.close) : '---';
+
+    const baseline = Number(first?.open || first?.close || 0);
+    const close = Number(last?.close || 0);
+    if (changeEl && baseline > 0 && close > 0) {
+        const change = close - baseline;
+        const changePct = (change / baseline) * 100;
+        const sign = change >= 0 ? '+' : '';
+        changeEl.textContent = `${sign}${formatBotChartPreviewPrice(Math.abs(change))} (${sign}${changePct.toFixed(2)}%)`;
+        changeEl.className = `text-xs font-bold ${change >= 0 ? 'text-emerald-500' : 'text-red-400'}`;
+    } else if (changeEl) {
+        changeEl.textContent = '---';
+        changeEl.className = 'text-xs font-bold text-slate-400';
+    }
+
+    updateBotChartPreviewRangeSessionState(settings);
+    if (sessionEl) {
+        sessionEl.textContent = isCrypto(ticker) ? 'Crypto 24h live' : (botChartPreviewSession === 'extended' ? 'Extended Hours' : 'Regular Hours');
+    }
+    if (lastInfoEl) {
+        lastInfoEl.textContent = last ? `${ticker} • Last completed: ${formatBotChartPreviewTimeCT(last.time)}` : `${ticker} • Last completed: —`;
+    }
+    setBotChartPreviewOhlcv(last);
+}
+
+function getEffectivePreviewIndicators(signals = {}, settings = {}) {
+    if (Array.isArray(settings.indicators)) return [...settings.indicators];
+    return Object.keys(signals || {}).filter(name => (signals[name] || {}).enabled !== false);
+}
+
+function getBotChartPreviewSettingsForCard(ticker) {
+    const settings = getSavedBotSettings(ticker);
+    if (Array.isArray(settings.indicators)) {
+        settings.indicators = [...settings.indicators];
+    }
+    settings.indicator_overrides = clonePlainObject(settings.indicator_overrides || {});
+    return settings;
+}
+
+function collectStrategyPreviewSettings(mode = window.activeTradingMode || 'regular') {
+    ensureDailyHighLowBotIndicatorCards();
+    const settings = {
+        ...getSavedBotSettings(currentStrategySymbol),
+        ...getStrategyModeSettings(mode),
+    };
+
+    const container = document.getElementById(`indicatorChecksContainer_${mode}`);
+    const indicators = [];
+    if (container) {
+        container.querySelectorAll('.strategy-indicator-check:checked').forEach(chk => {
+            indicators.push(chk.value);
+        });
+    }
+
+    settings.timeframe = document.getElementById(`strategyTimeframe_${mode}`)?.value || settings.timeframe || '1Hour';
+    settings.min_buy_signals = normalizeSignalThreshold(
+        document.getElementById(`strategyBuyThreshold_${mode}`)?.value,
+        indicators.length,
+        'buy'
+    );
+    settings.min_sell_signals = normalizeSignalThreshold(
+        document.getElementById(`strategySellThreshold_${mode}`)?.value,
+        indicators.length,
+        'sell'
+    );
+    settings.sell_mode = document.getElementById(`strategySellMode_${mode}`)?.value || settings.sell_mode || 'indicator';
+    settings.indicators = indicators;
+    settings.indicator_overrides = getStrategyDraftIndicatorOverrides();
+    settings.options_trading = mode === 'options';
+    settings.options_type = document.getElementById('strategyOptionsType')?.value || settings.options_type || 'calls_only';
+    settings.options_trade_amount = parseFloat(document.getElementById('strategyOptionsTradeAmount')?.value || settings.options_trade_amount || 100);
+    settings.options_expiry_days = parseInt(document.getElementById('strategyOptionsExpiryDays')?.value || settings.options_expiry_days || 7, 10);
+    settings.options_strike_type = document.getElementById('strategyOptionsStrikeType')?.value || settings.options_strike_type || 'ATM';
+    settings.options_exit_strategy = document.getElementById('strategySellMode_options')?.value || settings.options_exit_strategy || settings.sell_mode || 'hybrid';
+    settings.options_stop_loss_pct = parseFloat(document.getElementById('strategyOptionsSlPct')?.value || settings.options_stop_loss_pct || OPTIONS_DEFAULT_SL_PCT) / 100.0;
+    settings.options_take_profit_pct = parseFloat(document.getElementById('strategyOptionsTpPct')?.value || settings.options_take_profit_pct || OPTIONS_DEFAULT_TP_PCT) / 100.0;
+    settings.options_trailing_pct = parseFloat(document.getElementById('strategyOptionsTrailPct')?.value || settings.options_trailing_pct || OPTIONS_DEFAULT_TRAIL_PCT) / 100.0;
+    settings.enable_signal_reset = document.getElementById(mode === 'regular' ? 'strategyRegularSignalReset' : 'strategyOptionsSignalReset')?.checked || false;
+    settings.enable_smart_reentry = document.getElementById(mode === 'regular' ? 'strategyRegularSmartReentry' : 'strategyOptionsSmartReentry')?.checked || false;
+    settings.smart_reentry_type = document.getElementById(mode === 'regular' ? 'strategyRegularSmartReentryType' : 'strategyOptionsSmartReentryType')?.value || 'RSI';
+    settings.smart_reentry_rsi_call_max = parseInt(document.getElementById(mode === 'regular' ? 'strategyRegularRsiCallMax' : 'strategyOptionsRsiCallMax')?.value || 70, 10);
+    settings.smart_reentry_rsi_put_min = parseInt(document.getElementById(mode === 'regular' ? 'strategyRegularRsiPutMin' : 'strategyOptionsRsiPutMin')?.value || 30, 10);
+    settings.smart_reentry_vwap_call_max_dist_pct = parseFloat(document.getElementById(mode === 'regular' ? 'strategyRegularVwapCallMaxPct' : 'strategyOptionsVwapCallMaxPct')?.value || 0.5);
+    settings.smart_reentry_vwap_put_max_dist_pct = parseFloat(document.getElementById(mode === 'regular' ? 'strategyRegularVwapPutMaxPct' : 'strategyOptionsVwapPutMaxPct')?.value || 0.5);
+    return settings;
+}
+
+function applyPreviewSettingsToStrategyForm(settings, mode) {
+    ensureDailyHighLowBotIndicatorCards();
+    const container = document.getElementById(`indicatorChecksContainer_${mode}`);
+    const enabled = new Set(Array.isArray(settings.indicators) ? settings.indicators : []);
+    if (container) {
+        container.querySelectorAll('.strategy-indicator-check').forEach(chk => {
+            chk.checked = enabled.has(chk.value);
+        });
+    }
+
+    const buyInput = document.getElementById(`strategyBuyThreshold_${mode}`);
+    const sellInput = document.getElementById(`strategySellThreshold_${mode}`);
+    if (buyInput) buyInput.value = settings.min_buy_signals ?? 0;
+    if (sellInput) sellInput.value = settings.min_sell_signals ?? 0;
+    if (mode === 'options') {
+        const putInput = document.getElementById('strategyPutEntryThreshold_options');
+        if (putInput) putInput.value = settings.min_sell_signals ?? 0;
+    }
+
+    updateStrategySignalLabels(mode);
+    if (mode === 'options' && typeof syncOptionsPutEntryThresholdLabel === 'function') {
+        syncOptionsPutEntryThresholdLabel();
+    }
+    if (typeof window.updateRegularEntryFields === 'function') window.updateRegularEntryFields();
+    if (typeof window.updateRegularExitFields === 'function') window.updateRegularExitFields();
+    if (typeof window.updateOptionsEntryFields === 'function') window.updateOptionsEntryFields();
+    if (typeof window.updateOptionsExitFields === 'function') window.updateOptionsExitFields();
+    if (typeof window.updateLivePreview_bots === 'function') {
+        window.updateLivePreview_bots('regular', 'both');
+        window.updateLivePreview_bots('options', 'both');
+    }
+}
+
+function setBotChartPreviewLoading(message = 'Loading chart preview...') {
+    const boxLoading = document.getElementById('botChartPreviewBoxLoading');
+    const boxLoadingText = document.getElementById('botChartPreviewBoxLoadingText');
+    if (boxLoading) boxLoading.classList.remove('hidden');
+    if (boxLoadingText) boxLoadingText.textContent = message;
+
+    const tickerEl = document.getElementById('botChartPreviewTickerLabel');
+    const priceEl = document.getElementById('botChartPreviewPrice');
+    const changeEl = document.getElementById('botChartPreviewPriceChange');
+    const titleEl = document.getElementById('botChartPreviewTitle');
+    const lastInfoEl = document.getElementById('botChartPreviewLastBarInfo');
+
+    if (tickerEl) tickerEl.textContent = '';
+    if (priceEl) priceEl.textContent = '';
+    if (changeEl) changeEl.textContent = '';
+    if (titleEl) titleEl.textContent = '';
+    if (lastInfoEl) lastInfoEl.textContent = '';
+
+    ['botChartPreviewOhlcvO', 'botChartPreviewOhlcvH', 'botChartPreviewOhlcvL', 'botChartPreviewOhlcvC', 'botChartPreviewOhlcvV'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = '—';
+    });
+
+    const reasonEl = document.getElementById('botChartPreviewReason');
+    const grid = document.getElementById('botChartPreviewSignalGrid');
+    const premiumGrid = document.getElementById('botChartPreviewPremiumSignalGrid');
+    const loading = document.getElementById('botChartPreviewGridLoading');
+    if (reasonEl) reasonEl.textContent = message;
+    if (loading) loading.classList.remove('hidden');
+    if (premiumGrid) premiumGrid.innerHTML = '';
+    if (grid) {
+        grid.innerHTML = `
+            <div class="col-span-full signal-card neutral px-4 py-6 text-center text-sm text-slate-500">
+                ${message}
+            </div>
+        `;
+    }
+}
+
+function updateBotChartPreviewVisibleHighLow() {
+    const bars = botChartPreviewDisplayHistory || [];
+    if (!bars.length || !botChartPreviewChart || !botChartPreviewCandleSeries) return;
+    let visibleBars = bars;
+    try {
+        const range = botChartPreviewChart.timeScale().getVisibleRange();
+        if (range?.from && range?.to) {
+            visibleBars = bars.filter(b => b.time >= range.from && b.time <= range.to);
+        }
+    } catch (e) {}
+    if (!visibleBars.length) visibleBars = bars;
+
+    const highBar = visibleBars.reduce((max, b) => (b.high > max.high ? b : max), visibleBars[0]);
+    const lowBar = visibleBars.reduce((min, b) => (b.low < min.low ? b : min), visibleBars[0]);
+
+    if (window._botChartPreviewHlLines) {
+        window._botChartPreviewHlLines.forEach(l => {
+            try { botChartPreviewCandleSeries.removePriceLine(l); } catch (e) {}
+        });
+    }
+
+    if (highBar && lowBar && typeof botChartPreviewCandleSeries.createPriceLine === 'function') {
+        window._botChartPreviewHlLines = [
+            botChartPreviewCandleSeries.createPriceLine({
+                price: highBar.high,
+                color: 'rgba(16,185,129,0.75)',
+                lineWidth: 1,
+                lineStyle: 1,
+                axisLabelVisible: true,
+                title: `${formatBotChartPreviewPrice(highBar.high)}`
+            }),
+            botChartPreviewCandleSeries.createPriceLine({
+                price: lowBar.low,
+                color: 'rgba(239,68,68,0.75)',
+                lineWidth: 1,
+                lineStyle: 1,
+                axisLabelVisible: true,
+                title: `${formatBotChartPreviewPrice(lowBar.low)}`
+            }),
+        ];
+    }
+}
+
+function ensureBotChartPreviewChart() {
+    const container = document.getElementById('botChartPreviewChart');
+    if (!container || typeof LightweightCharts === 'undefined') return null;
+    if (botChartPreviewChart) return botChartPreviewChart;
+
+    botChartPreviewChart = LightweightCharts.createChart(container, {
+        width: Math.max(container.clientWidth, 280),
+        height: Math.max(container.clientHeight, 240),
+        layout: {
+            background: { color: 'transparent' },
+            textColor: '#64748b',
+        },
+        grid: {
+            vertLines: { color: 'rgba(148, 163, 184, 0.12)' },
+            horzLines: { color: 'rgba(148, 163, 184, 0.12)' },
+        },
+        rightPriceScale: {
+            borderColor: 'rgba(148, 163, 184, 0.28)',
+            minimumWidth: 75,
+        },
+        localization: {
+            timeFormatter: time => {
+                const d = new Date(time * 1000);
+                return d.toLocaleString('en-US', {
+                    timeZone: 'America/Chicago',
+                    month: 'short',
+                    day: '2-digit',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: false
+                }) + ' CT';
+            }
+        },
+        timeScale: {
+            borderColor: 'rgba(148, 163, 184, 0.28)',
+            timeVisible: true,
+            secondsVisible: false,
+            tickMarkFormatter: (time, tickMarkType) => {
+                const d = new Date(time * 1000);
+                if (tickMarkType <= 2) {
+                    return d.toLocaleDateString('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric' });
+                }
+                return d.toLocaleTimeString('en-US', { timeZone: 'America/Chicago', hour: '2-digit', minute: '2-digit', hour12: false });
+            }
+        },
+        crosshair: {
+            vertLine: { color: 'rgba(129, 140, 248, 0.35)' },
+            horzLine: { color: 'rgba(167, 139, 250, 0.28)' },
+        },
+    });
+
+    botChartPreviewExtHoursSeries = botChartPreviewChart.addHistogramSeries({
+        color: 'rgba(100, 116, 139, 0.1)',
+        priceFormat: { type: 'volume' },
+        priceScaleId: '',
+        scaleMargins: { top: 0, bottom: 0 },
+    });
+
+    botChartPreviewCandleSeries = botChartPreviewChart.addCandlestickSeries({
+        upColor: '#10b981',
+        downColor: '#ef4444',
+        borderVisible: false,
+        wickUpColor: '#10b981',
+        wickDownColor: '#ef4444',
+    });
+
+    const resizeChart = () => {
+        if (!botChartPreviewChart || !container) return;
+        botChartPreviewChart.applyOptions({
+            width: Math.max(container.clientWidth, 280),
+            height: Math.max(container.clientHeight, 240),
+        });
+    };
+
+    if (typeof ResizeObserver !== 'undefined') {
+        botChartPreviewResizeObserver = new ResizeObserver(() => resizeChart());
+        botChartPreviewResizeObserver.observe(container);
+    } else {
+        window.addEventListener('resize', resizeChart);
+    }
+
+    initBotChartPreviewOscPanes();
+
+    botChartPreviewChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+        if (range) {
+            Object.values(botChartPreviewOscCharts).forEach(chart => {
+                try {
+                    if (chart) chart.timeScale().setVisibleLogicalRange(range);
+                } catch (e) {}
+            });
+        }
+        updateBotChartPreviewVisibleHighLow();
+        refreshBotChartPreviewPriceLineLabels();
+    });
+
+    try {
+        botChartPreviewChart.timeScale().subscribeVisibleTimeRangeChange(() => {
+            updateBotChartPreviewVisibleHighLow();
+            refreshBotChartPreviewPriceLineLabels();
+        });
+    } catch (e) {}
+
+    return botChartPreviewChart;
+}
+
+function initBotChartPreviewOscPanes() {
+    const panes = [
+        { id: 'botChartPreviewOsc_rsi', key: 'rsi' },
+        { id: 'botChartPreviewOsc_macd', key: 'macd' },
+        { id: 'botChartPreviewOsc_mystic', key: 'mystic' },
+        { id: 'botChartPreviewOsc_adx', key: 'adx' },
+        { id: 'botChartPreviewOsc_botbulls1', key: 'botbulls1' }
+    ];
+    panes.forEach(({ id, key }) => {
+        const container = document.getElementById(id);
+        if (container && !botChartPreviewOscCharts[key]) {
+            container.innerHTML = '';
+            botChartPreviewOscCharts[key] = LightweightCharts.createChart(container, {
+                layout: { background: { color: '#fafbff' }, textColor: '#64748b' },
+                grid: { vertLines: { color: 'rgba(168,85,247,0.04)' }, horzLines: { color: 'rgba(168,85,247,0.04)' } },
+                rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)', minimumWidth: 75 },
+                localization: {
+                    timeFormatter: time => {
+                        const d = new Date(time * 1000);
+                        return d.toLocaleString('en-US', {
+                            timeZone: 'America/Chicago',
+                            month: 'short',
+                            day: '2-digit',
+                            year: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            hour12: false
+                        }) + ' CT';
+                    }
+                },
+                timeScale: { visible: false },
+            });
+            if (typeof ResizeObserver !== 'undefined') {
+                const ro = new ResizeObserver(entries => {
+                    if (!entries[0] || !botChartPreviewOscCharts[key]) return;
+                    botChartPreviewOscCharts[key].applyOptions({
+                        width: entries[0].contentRect.width,
+                        height: entries[0].contentRect.height
+                    });
+                });
+                ro.observe(container);
+            }
+        }
+    });
+}
+
+function clearBotChartPreviewSeries() {
+    if (!botChartPreviewChart) return;
+    Object.values(botChartPreviewOverlaySeries).forEach(series => {
+        try {
+            botChartPreviewChart.removeSeries(series);
+        } catch (err) {
+            console.warn('[bot-chart] Failed removing preview series:', err);
+        }
+    });
+    botChartPreviewOverlaySeries = {};
+    botChartPreviewOverlayPriceLines = {};
+    botChartPreviewOverlayLabelMeta = {};
+}
+
+function getBotChartPreviewRightVisiblePoint(data) {
+    if (!Array.isArray(data) || data.length === 0 || !botChartPreviewChart) return null;
+    let from = NaN;
+    let to = NaN;
+    try {
+        const range = botChartPreviewChart.timeScale().getVisibleRange();
+        from = Number(range?.from);
+        to = Number(range?.to);
+    } catch (e) {}
+    if (Number.isFinite(to)) {
+        for (let i = data.length - 1; i >= 0; i -= 1) {
+            const pointTime = Number(data[i]?.time);
+            if (pointTime <= to && (!Number.isFinite(from) || pointTime >= from)) {
+                return data[i];
+            }
+        }
+        for (let i = data.length - 1; i >= 0; i -= 1) {
+            if (Number(data[i]?.time) <= to) return data[i];
+        }
+    }
+    return data[data.length - 1];
+}
+
+function refreshBotChartPreviewPriceLineLabel(seriesKey) {
+    const meta = botChartPreviewOverlayLabelMeta[seriesKey];
+    const series = botChartPreviewOverlaySeries[seriesKey];
+    if (!meta || !series) return;
+    if (botChartPreviewOverlayPriceLines[seriesKey]) {
+        try { series.removePriceLine(botChartPreviewOverlayPriceLines[seriesKey]); } catch (e) {}
+        delete botChartPreviewOverlayPriceLines[seriesKey];
+    }
+    const point = getBotChartPreviewRightVisiblePoint(meta.data);
+    const price = Number(point?.value);
+    if (Number.isFinite(price)) {
+        botChartPreviewOverlayPriceLines[seriesKey] = series.createPriceLine({
+            price,
+            color: meta.color,
+            lineWidth: 1,
+            lineStyle: meta.lineStyle,
+            axisLabelVisible: true,
+            lineVisible: false,
+            title: meta.title,
+        });
+    }
+}
+
+function refreshBotChartPreviewPriceLineLabels() {
+    Object.keys(botChartPreviewOverlayLabelMeta).forEach(refreshBotChartPreviewPriceLineLabel);
+}
+
+function setBotChartPreviewLineSeries(seriesKey, data, options = {}) {
+    if (!botChartPreviewChart) return;
+    const { priceLineTitle, ...seriesOptions } = options;
+    const safeData = sanitizeBotChartPreviewLineData(data);
+    if (!botChartPreviewOverlaySeries[seriesKey]) {
+        botChartPreviewOverlaySeries[seriesKey] = botChartPreviewChart.addLineSeries({
+            lineWidth: 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+            ...seriesOptions,
+        });
+    }
+    botChartPreviewOverlaySeries[seriesKey].setData(safeData);
+    if (priceLineTitle && safeData.length) {
+        botChartPreviewOverlayLabelMeta[seriesKey] = {
+            data: safeData,
+            title: priceLineTitle,
+            color: seriesOptions.color || '#64748b',
+            lineStyle: seriesOptions.lineStyle ?? 0,
+        };
+        refreshBotChartPreviewPriceLineLabel(seriesKey);
+    } else {
+        delete botChartPreviewOverlayLabelMeta[seriesKey];
+    }
+}
+
+function updateBotChartPreviewChart(priceHistory, settings) {
+    const chart = ensureBotChartPreviewChart();
+    if (!chart || !botChartPreviewCandleSeries) return;
+
+    const rawHistory = Array.isArray(priceHistory) ? [...priceHistory] : [];
+    rawHistory.sort((a, b) => Number(a.time || 0) - Number(b.time || 0));
+    const history = getBotChartPreviewDisplayHistory(rawHistory, settings);
+
+    if (botChartPreviewExtHoursSeries) {
+        if (!isCrypto(botChartPreviewState.ticker) && botChartPreviewSession === 'extended' && settings.timeframe !== '1Day') {
+            const extData = sanitizeBotChartPreviewLineData(history.map(b => {
+                const isExt = !isBotChartPreviewRegularMarketBar(b);
+                return {
+                    time: Number(b.time),
+                    value: isExt ? 9999999 : 0,
+                    color: isExt ? 'rgba(100, 116, 139, 0.12)' : 'rgba(0,0,0,0)'
+                };
+            }));
+            botChartPreviewExtHoursSeries.setData(extData);
+        } else {
+            botChartPreviewExtHoursSeries.setData([]);
+        }
+    }
+
+    const candles = sanitizeBotChartPreviewCandles(history);
+
+    botChartPreviewCandleSeries.setData(candles);
+    updateBotChartPreviewHeader(rawHistory, settings);
+    clearBotChartPreviewSeries();
+
+    if (!botChartPreviewCrosshairWired) {
+        botChartPreviewCrosshairWired = true;
+        chart.subscribeCrosshairMove(param => {
+            if (!param || !param.seriesData || !botChartPreviewCandleSeries) return;
+            const bar = param.seriesData.get(botChartPreviewCandleSeries);
+            if (!bar) return;
+            const volumeBar = botChartPreviewDisplayHistory.find(item => Number(item.time) === Number(param.time));
+            setBotChartPreviewOhlcv({ ...bar, volume: volumeBar?.volume });
+        });
+    }
+
+    const enabled = new Set(getEffectivePreviewIndicators(botChartPreviewState.signals, settings));
+    const toLineData = key => history
+        .filter(bar => bar && isValidBotChartPreviewTime(bar.time) && isFiniteBotChartPreviewNumber(bar[key]))
+        .map(bar => ({ time: Number(bar.time), value: Number(bar[key]) }));
+
+    const activeMarkers = [];
+
+    if (enabled.has('EMA Cross')) {
+        setBotChartPreviewLineSeries('ema_fast', toLineData('ema_fast'), { color: '#3b82f6', lineWidth: 1.5 });
+        setBotChartPreviewLineSeries('ema_slow', toLineData('ema_slow'), { color: '#ef4444', lineWidth: 1.5 });
+    }
+    if (enabled.has('VWAP')) {
+        setBotChartPreviewLineSeries('vwap', toLineData('vwap'), { color: '#f59e0b', lineWidth: 2.5 });
+    }
+    if (enabled.has('Volume Profile')) {
+        setBotChartPreviewLineSeries('volume_profile_poc', toLineData('volume_profile_poc'), { color: '#7c2d12', lineWidth: 3, lineStyle: 0, priceLineTitle: 'POC' });
+        setBotChartPreviewLineSeries('volume_profile_vah', toLineData('volume_profile_vah'), { color: '#ea580c', lineWidth: 2, lineStyle: 2, priceLineTitle: 'VAH' });
+        setBotChartPreviewLineSeries('volume_profile_val', toLineData('volume_profile_val'), { color: '#0f766e', lineWidth: 2, lineStyle: 2, priceLineTitle: 'VAL' });
+    }
+    if (enabled.has('Swing Points')) {
+        const swingLevelCount = Math.min(5, Math.max(1, Math.round(getBotIndicatorParam(settings, 'SWING_POINTS_LEVEL_COUNT', 1))));
+        for (let level = 1; level <= swingLevelCount; level += 1) {
+            setBotChartPreviewLineSeries(`swing_support_${level}`, toLineData(`swing_support_${level}`), {
+                color: level === 1 ? '#16a34a' : 'rgba(22, 163, 74, 0.72)',
+                lineWidth: level === 1 ? 3 : 2,
+                lineStyle: level === 1 ? 1 : 2,
+                priceLineTitle: `SW S${level}`,
+            });
+            setBotChartPreviewLineSeries(`swing_resistance_${level}`, toLineData(`swing_resistance_${level}`), {
+                color: level === 1 ? '#dc2626' : 'rgba(220, 38, 38, 0.72)',
+                lineWidth: level === 1 ? 3 : 2,
+                lineStyle: level === 1 ? 1 : 2,
+                priceLineTitle: `SW R${level}`,
+            });
+        }
+    }
+    if (enabled.has('SMA')) {
+        setBotChartPreviewLineSeries('sma', toLineData('sma'), { color: '#8b5cf6', lineWidth: 2.5 });
+    }
+    if (enabled.has('Supertrend')) {
+        const stData = history
+            .filter(bar => bar && isValidBotChartPreviewTime(bar.time) && isFiniteBotChartPreviewNumber(bar.supertrend))
+            .map(bar => ({
+                time: Number(bar.time),
+                value: Number(bar.supertrend),
+                color: bar.supertrend_up ? '#10b981' : '#ef4444'
+            }));
+        setBotChartPreviewLineSeries('supertrend', stData, { lineWidth: 2, lineType: 0 });
+    }
+    if (enabled.has('Bollinger')) {
+        setBotChartPreviewLineSeries('boll_upper', toLineData('boll_upper'), { color: '#f97316', lineWidth: 1.5 });
+        setBotChartPreviewLineSeries('boll_middle', toLineData('boll_middle'), { color: '#3b82f6', lineWidth: 1, lineStyle: 2 });
+        setBotChartPreviewLineSeries('boll_lower', toLineData('boll_lower'), { color: '#a855f7', lineWidth: 1.5 });
+    }
+    if (enabled.has('Prior Day High/Low')) {
+        setBotChartPreviewLineSeries('daily_high_low_high', toLineData('daily_high_low_high'), { color: '#d97706', lineWidth: 3, lineStyle: 1, priceLineTitle: 'PDH' });
+        setBotChartPreviewLineSeries('daily_high_low_low', toLineData('daily_high_low_low'), { color: '#0891b2', lineWidth: 3, lineStyle: 1, priceLineTitle: 'PDL' });
+        setBotChartPreviewLineSeries('daily_high_low_high_trigger', toLineData('daily_high_low_high_trigger'), { color: 'rgba(217, 119, 6, 0.75)', lineWidth: 2, lineStyle: 1 });
+        setBotChartPreviewLineSeries('daily_high_low_low_trigger', toLineData('daily_high_low_low_trigger'), { color: 'rgba(8, 145, 178, 0.75)', lineWidth: 2, lineStyle: 1 });
+    }
+    if (enabled.has('Pivot Points (S/R)')) {
+        const pivotLevelCount = Math.min(5, Math.max(1, Math.round(getBotIndicatorParam(settings, 'PIVOT_LEVEL_COUNT', 1))));
+        setBotChartPreviewLineSeries('pivot_p', toLineData('pivot_p'), { color: '#1f2937', lineWidth: 3, lineStyle: 2, priceLineTitle: 'P' });
+        for (let level = 1; level <= pivotLevelCount; level += 1) {
+            setBotChartPreviewLineSeries(`pivot_r${level}`, toLineData(`pivot_r${level}`), {
+                color: level === 1 ? '#dc2626' : 'rgba(220, 38, 38, 0.78)',
+                lineWidth: 2,
+                lineStyle: level === 1 ? 1 : 2,
+                priceLineTitle: `R${level}`,
+            });
+            setBotChartPreviewLineSeries(`pivot_s${level}`, toLineData(`pivot_s${level}`), {
+                color: level === 1 ? '#059669' : 'rgba(5, 150, 105, 0.78)',
+                lineWidth: 2,
+                lineStyle: level === 1 ? 1 : 2,
+                priceLineTitle: `S${level}`,
+            });
+        }
+    }
+    if (enabled.has('BotBulls2')) {
+        const lxTrailData = history
+            .filter(bar => bar && isValidBotChartPreviewTime(bar.time) && isFiniteBotChartPreviewNumber(bar.lx_smart_trail))
+            .map(bar => ({
+                time: Number(bar.time),
+                value: Number(bar.lx_smart_trail),
+                color: bar.lx_smart_trend ? '#10b981' : '#ef4444'
+            }));
+        setBotChartPreviewLineSeries('lx_smart_trail', lxTrailData, { lineWidth: 2.5 });
+        setBotChartPreviewLineSeries('lx_trend_tracer', toLineData('lx_trend_tracer'), { color: '#8b5cf6', lineWidth: 1.5 });
+        setBotChartPreviewLineSeries('lx_rz_upper', toLineData('lx_rz_upper'), { color: '#f59e0b', lineWidth: 1, lineStyle: 1 });
+        setBotChartPreviewLineSeries('lx_rz_lower', toLineData('lx_rz_lower'), { color: '#ec4899', lineWidth: 1, lineStyle: 1 });
+    }
+    if (enabled.has('BotBulls3')) {
+        const utTrailData = history
+            .filter(bar => bar && isValidBotChartPreviewTime(bar.time) && isFiniteBotChartPreviewNumber(bar.ut_trail))
+            .map(bar => ({
+                time: Number(bar.time),
+                value: Number(bar.ut_trail),
+                color: bar.ut_above ? '#0ea5e9' : '#f43f5e'
+            }));
+        setBotChartPreviewLineSeries('ut_trail', utTrailData, { lineWidth: 2.5 });
+    }
+
+    for (let i = 1; i < history.length; i++) {
+        const curr = history[i];
+        const prev = history[i - 1];
+        if (!curr || !prev || !isValidBotChartPreviewTime(curr.time)) continue;
+
+        if (enabled.has('Supertrend') && isFiniteBotChartPreviewNumber(curr.supertrend) && isFiniteBotChartPreviewNumber(prev.supertrend)) {
+            if (curr.supertrend_up && !prev.supertrend_up) {
+                activeMarkers.push({ time: Number(curr.time), position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: 'ST Buy', size: 1 });
+            } else if (!curr.supertrend_up && prev.supertrend_up) {
+                activeMarkers.push({ time: Number(curr.time), position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: 'ST Sell', size: 1 });
+            }
+        }
+        if (enabled.has('BotBulls2') && isFiniteBotChartPreviewNumber(curr.lx_smart_trail) && isFiniteBotChartPreviewNumber(prev.lx_smart_trail)) {
+            if (curr.lx_smart_trend && !prev.lx_smart_trend) {
+                activeMarkers.push({ time: Number(curr.time), position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: 'BB2 BUY', size: 1 });
+            } else if (!curr.lx_smart_trend && prev.lx_smart_trend) {
+                activeMarkers.push({ time: Number(curr.time), position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: 'BB2 SELL', size: 1 });
+            }
+        }
+        if (enabled.has('BotBulls3') && isFiniteBotChartPreviewNumber(curr.ut_trail) && isFiniteBotChartPreviewNumber(prev.ut_trail)) {
+            if (curr.ut_above && !prev.ut_above) {
+                activeMarkers.push({ time: Number(curr.time), position: 'belowBar', color: '#0ea5e9', shape: 'arrowUp', text: 'BB3 BUY', size: 1.2 });
+            } else if (!curr.ut_above && prev.ut_above) {
+                activeMarkers.push({ time: Number(curr.time), position: 'aboveBar', color: '#f43f5e', shape: 'arrowDown', text: 'BB3 SELL', size: 1.2 });
+            }
+        }
+    }
+
+    if (enabled.has('BotBulls1')) {
+        for (let i = 0; i < history.length; i++) {
+            const b = history[i];
+            if (!b || !isValidBotChartPreviewTime(b.time)) continue;
+            if (b.ba1_buy) {
+                activeMarkers.push({ time: Number(b.time), position: 'belowBar', color: '#06b6d4', shape: 'arrowUp', text: 'BB1 BUY', size: 1 });
+            } else if (b.ba1_sell) {
+                activeMarkers.push({ time: Number(b.time), position: 'aboveBar', color: '#f43f5e', shape: 'arrowDown', text: 'BB1 SELL', size: 1 });
+            }
+        }
+    }
+
+    if (enabled.has('Candle Patterns')) {
+        const b = history[history.length - 1];
+        if (b?.cdl_name && b.cdl_name !== 'Neutral' && isValidBotChartPreviewTime(b.time)) {
+            if (b.cdl_bullish) {
+                activeMarkers.push({ time: Number(b.time), position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: b.cdl_name, size: 1.1 });
+            } else if (b.cdl_bearish) {
+                activeMarkers.push({ time: Number(b.time), position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: b.cdl_name, size: 1.1 });
+            } else {
+                activeMarkers.push({ time: Number(b.time), position: 'aboveBar', color: '#f59e0b', shape: 'circle', text: b.cdl_name, size: 1.1 });
+            }
+        }
+    }
+
+    botChartPreviewCandleSeries.setMarkers(sanitizeBotChartPreviewMarkers(activeMarkers));
+
+    refreshBotChartPreviewOscillators(history, enabled, settings);
+
+    try {
+        chart.timeScale().fitContent();
+    } catch (err) {
+        console.warn('[bot-chart] Failed fitting content:', err);
+    }
+}
+
+function _getOrCreateBotPreviewSeries(seriesMap, key, chart, options, type = 'line') {
+    if (!seriesMap[key]) {
+        if (type === 'histogram') {
+            seriesMap[key] = chart.addHistogramSeries(options);
+        } else {
+            seriesMap[key] = chart.addLineSeries(options);
+        }
+    } else {
+        seriesMap[key].applyOptions(options);
+    }
+    return seriesMap[key];
+}
+
+function getBotIndicatorParam(settings, key, fallback) {
+    if (settings && settings[key] !== undefined && settings[key] !== null && settings[key] !== '') {
+        const val = Number(settings[key]);
+        if (Number.isFinite(val)) return val;
+    }
+    if (settings && settings.indicator_overrides && settings.indicator_overrides[key] !== undefined && settings.indicator_overrides[key] !== null && settings.indicator_overrides[key] !== '') {
+        const val = Number(settings.indicator_overrides[key]);
+        if (Number.isFinite(val)) return val;
+    }
+    if (settings && settings.indicator_parameters && settings.indicator_parameters[key] !== undefined && settings.indicator_parameters[key] !== null && settings.indicator_parameters[key] !== '') {
+        const val = Number(settings.indicator_parameters[key]);
+        if (Number.isFinite(val)) return val;
+    }
+    const globalOverrides = window.lastBotsData?.indicator_overrides || {};
+    if (globalOverrides[key] !== undefined && globalOverrides[key] !== null && globalOverrides[key] !== '') {
+        const val = Number(globalOverrides[key]);
+        if (Number.isFinite(val)) return val;
+    }
+    const globalParams = window.lastBotsData?.indicator_parameters || {};
+    if (globalParams[key] !== undefined && globalParams[key] !== null && globalParams[key] !== '') {
+        const val = Number(globalParams[key]);
+        if (Number.isFinite(val)) return val;
+    }
+    return fallback;
+}
+
+function getPriorDayHighLowPreviewLevels(priorDay, settings = null) {
+    if (!priorDay || !Number.isFinite(Number(priorDay.high)) || !Number.isFinite(Number(priorDay.low))) {
+        return null;
+    }
+    const draftOverrides = typeof getStrategyDraftIndicatorOverrides === 'function' ? getStrategyDraftIndicatorOverrides() : {};
+    const sourceSettings = settings || botChartPreviewState?.settings || { indicator_overrides: draftOverrides };
+    const bufferPct = Math.max(0, Number(getBotIndicatorParam(sourceSettings, 'DAILY_HIGH_LOW_BUFFER_PCT', 0)) || 0);
+    const high = Number(priorDay.high);
+    const low = Number(priorDay.low);
+    return {
+        high,
+        low,
+        bufferPct,
+        highTrigger: high * (1 + bufferPct / 100),
+        lowTrigger: low * (1 - bufferPct / 100),
+    };
+}
+
+function refreshBotChartPreviewOscillators(bars = [], enabledSet = new Set(), settings = {}) {
+    const clean = data => sanitizeBotChartPreviewLineData(data);
+
+    // RSI
+    const rsiCont = document.getElementById('botChartPreviewOsc_rsi');
+    const rsiLabel = document.getElementById('botChartPreviewRsiLabel');
+    const hasRsi = enabledSet.has('RSI');
+    if (rsiCont) rsiCont.style.display = hasRsi ? 'block' : 'none';
+    if (rsiLabel) rsiLabel.style.display = hasRsi ? 'block' : 'none';
+    const oscRsi = botChartPreviewOscCharts['rsi'];
+    if (hasRsi && oscRsi) {
+        _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'rsi', oscRsi, { color: '#818cf8', lineWidth: 1 })
+            .setData(clean(bars.filter(b => b.rsi != null).map(b => ({ time: b.time, value: b.rsi }))));
+        const ob = _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'rsi_ob', oscRsi, { color: 'rgba(239,68,68,0.4)', lineWidth: 1, lineStyle: 2 });
+        const os = _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'rsi_os', oscRsi, { color: 'rgba(16,185,129,0.4)', lineWidth: 1, lineStyle: 2 });
+        const rsiPeriod = getBotIndicatorParam(settings, 'RSI_PERIOD', 14);
+        const obVal = getBotIndicatorParam(settings, 'RSI_OVERBOUGHT', 70);
+        const osVal = getBotIndicatorParam(settings, 'RSI_OVERSOLD', 30);
+        if (rsiLabel) {
+            rsiLabel.textContent = `RSI (${rsiPeriod})  •  OB: ${obVal} / OS: ${osVal}`;
+        }
+        if (bars.length) {
+            ob.setData(clean([{ time: bars[0].time, value: obVal }, { time: bars[bars.length - 1].time, value: obVal }]));
+            os.setData(clean([{ time: bars[0].time, value: osVal }, { time: bars[bars.length - 1].time, value: osVal }]));
+        }
+        try { oscRsi.timeScale().fitContent(); } catch (e) {}
+    }
+
+    // MACD
+    const macdCont = document.getElementById('botChartPreviewOsc_macd');
+    const macdLabel = document.getElementById('botChartPreviewMacdLabel');
+    const hasMacd = enabledSet.has('MACD');
+    if (macdCont) macdCont.style.display = hasMacd ? 'block' : 'none';
+    if (macdLabel) macdLabel.style.display = hasMacd ? 'block' : 'none';
+    const oscMacd = botChartPreviewOscCharts['macd'];
+    if (hasMacd && oscMacd) {
+        const macdFast = getBotIndicatorParam(settings, 'MACD_FAST', 12);
+        const macdSlow = getBotIndicatorParam(settings, 'MACD_SLOW', 26);
+        const macdSig = getBotIndicatorParam(settings, 'MACD_SIGNAL', 9);
+        if (macdLabel) {
+            macdLabel.textContent = `MACD (${macdFast}, ${macdSlow}, ${macdSig})`;
+        }
+        _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'macd_hist', oscMacd, {
+            base: 0,
+            priceFormat: { type: 'price', precision: 4, minMove: 0.0001 }
+        }, 'histogram').setData(clean(bars.filter(b => b.macd_hist != null).map(b => ({
+            time: b.time,
+            value: b.macd_hist,
+            color: b.macd_hist >= 0 ? 'rgba(16, 185, 129, 0.5)' : 'rgba(239, 68, 68, 0.5)'
+        }))));
+        _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'macd_line', oscMacd, {
+            color: '#06b6d4',
+            lineWidth: 1,
+            priceFormat: { type: 'price', precision: 4, minMove: 0.0001 }
+        }).setData(clean(bars.filter(b => b.macd_line != null).map(b => ({ time: b.time, value: b.macd_line }))));
+        _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'macd_signal', oscMacd, {
+            color: '#f97316',
+            lineWidth: 1,
+            priceFormat: { type: 'price', precision: 4, minMove: 0.0001 }
+        }).setData(clean(bars.filter(b => b.macd_signal != null).map(b => ({ time: b.time, value: b.macd_signal }))));
+        try { oscMacd.timeScale().fitContent(); } catch (e) {}
+    }
+
+    // Mystic Pulse
+    const mysticCont = document.getElementById('botChartPreviewOsc_mystic');
+    const mysticLabel = document.getElementById('botChartPreviewMysticLabel');
+    const hasMystic = enabledSet.has('Mystic Pulse');
+    if (mysticCont) mysticCont.style.display = hasMystic ? 'block' : 'none';
+    if (mysticLabel) mysticLabel.style.display = hasMystic ? 'block' : 'none';
+    const oscMystic = botChartPreviewOscCharts['mystic'];
+    if (hasMystic && oscMystic) {
+        const mysticThresh = getBotIndicatorParam(settings, 'MYSTIC_PULSE_THRESHOLD', 5);
+        if (mysticLabel) {
+            mysticLabel.textContent = `Mystic Pulse  •  Threshold: ${mysticThresh}`;
+        }
+        _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'mystic_hist', oscMystic, { base: 0 }, 'histogram')
+            .setData(clean(bars.filter(b => b.mystic_bull != null || b.mystic_bear != null).map(b => {
+                let val = 0, col = 'rgba(168,85,247,0.2)';
+                if (b.mystic_bull > 0) { val = b.mystic_bull; col = b.mystic_bull >= mysticThresh ? 'rgba(16, 185, 129, 0.9)' : 'rgba(16, 185, 129, 0.4)'; }
+                else if (b.mystic_bear > 0) { val = -b.mystic_bear; col = b.mystic_bear >= mysticThresh ? 'rgba(239, 68, 68, 0.9)' : 'rgba(239, 68, 68, 0.4)'; }
+                return { time: b.time, value: val, color: col };
+            })));
+        if (bars.length) {
+            const ob = _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'mystic_ob', oscMystic, { color: 'rgba(16,185,129,0.35)', lineWidth: 1, lineStyle: 2 });
+            const os = _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'mystic_os', oscMystic, { color: 'rgba(239,68,68,0.35)', lineWidth: 1, lineStyle: 2 });
+            ob.setData(clean([{ time: bars[0].time, value: mysticThresh }, { time: bars[bars.length - 1].time, value: mysticThresh }]));
+            os.setData(clean([{ time: bars[0].time, value: -mysticThresh }, { time: bars[bars.length - 1].time, value: -mysticThresh }]));
+        }
+        try { oscMystic.timeScale().fitContent(); } catch (e) {}
+    }
+
+    // ADX
+    const adxCont = document.getElementById('botChartPreviewOsc_adx');
+    const adxLabel = document.getElementById('botChartPreviewAdxLabel');
+    const hasAdx = enabledSet.has('ADX Trend') || enabledSet.has('ADX');
+    if (adxCont) adxCont.style.display = hasAdx ? 'block' : 'none';
+    if (adxLabel) adxLabel.style.display = hasAdx ? 'block' : 'none';
+    const oscAdx = botChartPreviewOscCharts['adx'];
+    if (hasAdx && oscAdx) {
+        _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'adx', oscAdx, { color: '#6366f1', lineWidth: 2 })
+            .setData(clean(bars.filter(b => b.adx != null).map(b => ({ time: b.time, value: b.adx }))));
+        _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'di_plus', oscAdx, { color: '#10b981', lineWidth: 1 })
+            .setData(clean(bars.filter(b => b.di_plus != null).map(b => ({ time: b.time, value: b.di_plus }))));
+        _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'di_minus', oscAdx, { color: '#ef4444', lineWidth: 1 })
+            .setData(clean(bars.filter(b => b.di_minus != null).map(b => ({ time: b.time, value: b.di_minus }))));
+        const adxPeriod = getBotIndicatorParam(settings, 'ADX_PERIOD', 14);
+        const adxThreshVal = getBotIndicatorParam(settings, 'ADX_TRENDING_THRESHOLD', 25);
+        if (adxLabel) {
+            adxLabel.textContent = `ADX (${adxPeriod})  •  Trend Thresh: ${adxThreshVal}`;
+        }
+        _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'adx_threshold', oscAdx, { color: 'rgba(99,102,241,0.25)', lineWidth: 1, lineStyle: 2 })
+            .setData(clean(bars.map(b => ({ time: b.time, value: adxThreshVal }))));
+        try { oscAdx.timeScale().fitContent(); } catch (e) {}
+    }
+
+    // BotBulls1
+    const bb1Cont = document.getElementById('botChartPreviewOsc_botbulls1');
+    const bb1Label = document.getElementById('botChartPreviewBotbulls1Label');
+    const hasBb1 = enabledSet.has('BotBulls1');
+    if (bb1Cont) bb1Cont.style.display = hasBb1 ? 'block' : 'none';
+    if (bb1Label) bb1Label.style.display = hasBb1 ? 'block' : 'none';
+    const oscBb1 = botChartPreviewOscCharts['botbulls1'];
+    if (hasBb1 && oscBb1) {
+        const wtChannel = getBotIndicatorParam(settings, 'BOTBULLS1_WT_CHANNEL', 10);
+        const wtAvg = getBotIndicatorParam(settings, 'BOTBULLS1_WT_AVERAGE', 21);
+        const mfiConfirm = getBotIndicatorParam(settings, 'BOTBULLS1_MFI_CONFIRM', 30);
+        if (bb1Label) {
+            bb1Label.textContent = `BotBulls1 (WT: ${wtChannel}, ${wtAvg} | MFI: ${mfiConfirm})`;
+        }
+        _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'wt1', oscBb1, { color: '#0ea5e9', lineWidth: 1.5 })
+            .setData(clean(bars.filter(b => b.wt1 != null).map(b => ({ time: b.time, value: b.wt1 }))));
+        _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'wt2', oscBb1, { color: '#f43f5e', lineWidth: 1, lineStyle: 2 })
+            .setData(clean(bars.filter(b => b.wt2 != null).map(b => ({ time: b.time, value: b.wt2 }))));
+        try { oscBb1.timeScale().fitContent(); } catch (e) {}
+    }
+
+    updateBotChartPreviewVisibleHighLow();
+    const boxLoading = document.getElementById('botChartPreviewBoxLoading');
+    if (boxLoading) boxLoading.classList.add('hidden');
+}
+
+function renderBotChartPreviewSignals(signals = {}, settings = {}) {
+    const grid = document.getElementById('botChartPreviewSignalGrid');
+    const premiumGrid = document.getElementById('botChartPreviewPremiumSignalGrid');
+    const loading = document.getElementById('botChartPreviewGridLoading');
+    if (!grid) return;
+    if (loading) loading.classList.add('hidden');
+    if (premiumGrid) premiumGrid.innerHTML = '';
+
+    const previewOrder = new Map(BOT_CHART_PREVIEW_INDICATORS.map((name, index) => [name, index]));
+    const signalEntries = Object.entries(signals || {}).sort(([nameA], [nameB]) => {
+        const rankA = previewOrder.has(nameA) ? previewOrder.get(nameA) : Number.MAX_SAFE_INTEGER;
+        const rankB = previewOrder.has(nameB) ? previewOrder.get(nameB) : Number.MAX_SAFE_INTEGER;
+        if (rankA !== rankB) return rankA - rankB;
+        return nameA.localeCompare(nameB);
+    });
+    if (signalEntries.length === 0) {
+        grid.innerHTML = `
+            <div class="col-span-full signal-card neutral px-4 py-6 text-center text-sm text-slate-500">
+                No signal data available for this preview.
+            </div>
+        `;
+        return;
+    }
+
+    const activeSet = new Set(getEffectivePreviewIndicators(signals, settings));
+    const standardCards = [];
+    const premiumCards = [];
+    signalEntries.forEach(([name, signal]) => {
+        if (name === 'Botbulls4 News AI') {
+            signal = applyCachedNewsAISignal({ ...(signal || {}) }, {
+                ticker: botChartPreviewState?.ticker || selectedTicker,
+                timeframe: settings.timeframe || currentBackendTf,
+                params: settings.indicator_overrides || settings.indicator_parameters || {},
+            });
+        }
+        const signalType = signal?.signal || 'NEUTRAL';
+        const enabled = Array.isArray(settings.indicators)
+            ? activeSet.has(name)
+            : activeSet.has(name) || signal?.enabled === true;
+        const isPremium = signal?.premium === true;
+        const cardClass = !enabled
+            ? 'disabled-signal'
+            : isPremium
+                ? (signalType === 'BULLISH' ? 'premium-bullish' : signalType === 'BEARISH' ? 'premium-bearish' : 'premium-neutral')
+                : (signalType === 'BULLISH' ? 'bullish' : signalType === 'BEARISH' ? 'bearish' : 'neutral');
+        const icon = signalType === 'BULLISH' ? '▲' : signalType === 'BEARISH' ? '▼' : '●';
+        const iconColor = signalType === 'BULLISH' ? 'text-emerald-600' : signalType === 'BEARISH' ? 'text-red-500' : 'text-purple-400';
+        const escapedName = name.replace(/'/g, "\\'");
+        const settingAction = `openBotChartPreviewIndicatorSettings('${escapedName}')`;
+        const cardClick = `onclick="toggleBotChartPreviewIndicator('${escapedName}')"`;
+        let reasonHtml = signal?.reason || 'No reason available.';
+
+        if (name === 'Botbulls4 News AI' && signal?.value != null && enabled) {
+            const scoreVal = parseFloat(signal.value);
+            if (!Number.isNaN(scoreVal)) {
+                const sentPct = Math.round(((scoreVal + 1.0) / 2.0) * 100);
+                const overrides = settings.indicator_overrides || {};
+                const bullishThresh = overrides.SENTIMENT_BULLISH_PERCENTAGE ?? INDICATOR_DEFAULTS.SENTIMENT_BULLISH_PERCENTAGE ?? 70;
+                const bearishThresh = overrides.SENTIMENT_BEARISH_PERCENTAGE ?? INDICATOR_DEFAULTS.SENTIMENT_BEARISH_PERCENTAGE ?? 30;
+                const scoreColor = sentPct >= bullishThresh
+                    ? 'text-emerald-600'
+                    : sentPct <= bearishThresh
+                        ? 'text-rose-600'
+                        : 'text-slate-500';
+                const reasonText = String(signal.reason || 'Evaluating market sentiment').replace(/catalysts/i, 'catalyst');
+                reasonHtml = `${reasonText}: <span class="${scoreColor} font-black">${sentPct}%</span>`;
+            }
+        }
+
+        const card = isPremium
+            ? `
+                <div class="signal-card group ${cardClass} fade-in cursor-pointer transition-all duration-300" ${cardClick}>
+                    <div class="flex items-center justify-between mb-1">
+                        <div class="flex items-center gap-1.5 min-w-0">
+                            <span class="font-bold text-xs text-amber-800 ${!enabled ? 'opacity-50' : ''} transition-opacity duration-300 truncate">${name}</span>
+                            <div class="group/tooltip relative inline-flex items-center shrink-0">
+                                <svg onclick="event.stopPropagation(); event.preventDefault(); typeof openInfoModal === 'function' ? openInfoModal('${name}') : null" xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                    Click to read guide
+                                    <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900"></div>
+                                </div>
+                            </div>
+                            <button class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-100/50"
+                                    onclick="event.stopPropagation(); ${settingAction}"
+                                    title="Indicator Settings">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </button>
+                        </div>
+                        <span class="${iconColor} text-sm font-bold ${!enabled ? 'opacity-50 grayscale' : ''} transition-all duration-300">${icon}</span>
+                    </div>
+                    <p class="text-[0.6rem] text-amber-700 leading-tight line-clamp-1 ${!enabled ? 'opacity-50' : ''} transition-opacity duration-300">${reasonHtml}</p>
+                </div>
+            `
+            : `
+                <div class="signal-card group ${cardClass} fade-in cursor-pointer transition-all duration-300" ${cardClick}>
+                    <div class="flex items-center justify-between mb-1">
+                        <div class="flex items-center gap-1.5 min-w-0">
+                            <span class="font-bold text-xs text-indigo-900 ${!enabled ? 'opacity-50' : ''} transition-opacity duration-300 truncate">${name}</span>
+                            <div class="group/tooltip relative inline-flex items-center shrink-0">
+                                <svg onclick="event.stopPropagation(); event.preventDefault(); typeof openInfoModal === 'function' ? openInfoModal('${name}') : null" xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                    Click to read guide
+                                    <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-2 shrink-0">
+                            <button class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50"
+                                    onclick="event.stopPropagation(); ${settingAction}"
+                                    title="Indicator Settings">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </button>
+                            <span class="${iconColor} text-sm font-bold ${!enabled ? 'opacity-50 grayscale' : ''} transition-all duration-300">${icon}</span>
+                        </div>
+                    </div>
+                    <p class="text-[0.6rem] text-purple-600 leading-tight line-clamp-1 ${!enabled ? 'opacity-50' : ''} transition-opacity duration-300">${reasonHtml}</p>
+                </div>
+            `;
+
+        if (isPremium) premiumCards.push(card);
+        else standardCards.push(card);
+    });
+
+    const isMobileView = typeof window !== 'undefined' && window.innerWidth <= 640;
+
+    if (standardCards.length > 0) {
+        if (isMobileView) {
+            grid.style.gridTemplateColumns = 'repeat(2, minmax(0, 1fr))';
+        } else {
+            const cols = Math.max(Math.ceil(standardCards.length / 3), 2);
+            grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+        }
+        grid.innerHTML = standardCards.join('');
+    } else {
+        grid.style.gridTemplateColumns = '';
+        grid.innerHTML = `
+            <div class="col-span-full signal-card neutral px-4 py-6 text-center text-sm text-slate-500">
+                No standard signal data available for this preview.
+            </div>
+        `;
+    }
+
+    if (premiumGrid) {
+        if (premiumCards.length > 0) {
+            if (isMobileView) {
+                premiumGrid.style.gridTemplateColumns = 'repeat(2, minmax(0, 1fr))';
+            } else {
+                const cols = Math.max(premiumCards.length, 1);
+                premiumGrid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+            }
+            premiumGrid.innerHTML = premiumCards.join('');
+        } else {
+            premiumGrid.style.gridTemplateColumns = '';
+            premiumGrid.innerHTML = '';
+        }
+    }
+}
+
+function renderBotChartPreview(payload) {
+    const settings = botChartPreviewState.settings || {};
+    const previewMeta = payload?.preview_meta || {};
+    const signals = payload?.signals || payload?.primaryScan?.signals || {};
+    const bullCount = payload?.bullish_count ?? payload?.primaryScan?.bullish_count ?? 0;
+    const bearCount = payload?.bearish_count ?? payload?.primaryScan?.bearish_count ?? 0;
+    const reason = payload?.reason || payload?.primaryScan?.reason || 'Preview ready.';
+    const aiBadge = document.getElementById('botChartPreviewAiBadge');
+    const banner = document.getElementById('botChartPreviewBanner');
+    const modeBadge = document.getElementById('botChartPreviewModeBadge');
+    const openSettingsBtn = document.getElementById('botChartPreviewOpenSettingsButton');
+    const applyBtn = document.getElementById('botChartPreviewApplyButton');
+    const reasonEl = document.getElementById('botChartPreviewReason');
+
+    if (modeBadge) modeBadge.textContent = botChartPreviewState.mode === 'edit' ? 'Edit' : 'View';
+    if (document.getElementById('botChartPreviewTitle')) {
+        document.getElementById('botChartPreviewTitle').textContent = `${botChartPreviewState.ticker} Chart Preview`;
+    }
+    if (document.getElementById('botChartPreviewSubtitle')) {
+        document.getElementById('botChartPreviewSubtitle').textContent = botChartPreviewState.mode === 'edit'
+            ? 'Draft-safe preview of the bot settings you are editing right now.'
+            : 'Saved bot chart preview from the Bots page.';
+    }
+    if (reasonEl) reasonEl.textContent = reason;
+    if (document.getElementById('botChartPreviewBullCount')) {
+        document.getElementById('botChartPreviewBullCount').textContent = `${bullCount} Bullish`;
+    }
+    if (document.getElementById('botChartPreviewBearCount')) {
+        document.getElementById('botChartPreviewBearCount').textContent = `${bearCount} Bearish`;
+    }
+
+    if (aiBadge) {
+        const aiStatus = previewMeta.ai_status || 'disabled';
+        if (aiStatus === 'disabled') {
+            aiBadge.classList.add('hidden');
+        } else {
+            aiBadge.classList.remove('hidden');
+            aiBadge.textContent = aiStatus === 'available' ? 'AI Ready' : 'AI Neutral';
+        }
+    }
+
+    if (banner) {
+        const bannerText = botChartPreviewState.mode === 'edit'
+            ? 'Changes here stay draft-only until you hit Save Settings or Deploy Strategy.'
+            : 'Viewing active bot configuration. Click "Open Bot Settings" below to edit indicators or adjust strategy parameters.';
+        banner.textContent = bannerText;
+        banner.classList.remove('hidden');
+    }
+
+    if (openSettingsBtn) openSettingsBtn.classList.toggle('hidden', botChartPreviewState.mode !== 'view');
+    if (applyBtn) applyBtn.classList.toggle('hidden', botChartPreviewState.mode !== 'edit');
+
+    renderBotChartPreviewSignals(signals, settings);
+    updateBotChartPreviewChart(payload?.priceHistory || payload?.price_history || [], settings);
+}
+
+async function requestBotChartPreviewPayload(ticker, settings, force = true) {
+    const headers = await getAuthHeaders();
+    const requestSettings = clonePlainObject(settings || {});
+    if (isCrypto((ticker || '').toUpperCase())) {
+        requestSettings.market_session = '24h';
+    }
+    const response = await fetchWithTimeout(`${API_BASE}/api/bots/chart-preview`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+            ticker,
+            timeframe: requestSettings.timeframe,
+            settings: requestSettings,
+            force,
+        }),
+    }, 15000);
+
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.detail || err.message || `Chart preview failed (${response.status})`);
+    }
+
+    return response.json();
+}
+
+function applyBotChartPreviewPayload(payload) {
+    const settings = botChartPreviewState.settings || {};
+    botChartPreviewState.signals = payload?.signals || {};
+    botChartPreviewState.priceHistory = payload?.priceHistory || payload?.price_history || [];
+    botChartPreviewState.previewMeta = payload?.preview_meta || {};
+    const effectiveIndicators = getEffectivePreviewIndicators(botChartPreviewState.signals, settings);
+    if (!Array.isArray(botChartPreviewState.settings.indicators)) {
+        botChartPreviewState.settings.indicators = effectiveIndicators;
+    }
+    renderBotChartPreview(payload);
+}
+
+function getBotChartPreviewLiveRefreshMs(settings = {}) {
+    const minutes = getTimeframeMinutes(settings.timeframe || '1Hour');
+    if (minutes <= 5) return 30000;
+    if (minutes <= 30) return 60000;
+    if (minutes <= 60) return 120000;
+    if (minutes <= 240) return 180000;
+    return 300000;
+}
+
+function scheduleBotChartPreviewLiveRefresh() {
+    clearTimeout(botChartPreviewLiveRefreshTimer);
+    if (!botChartPreviewState.open) return;
+    const delay = getBotChartPreviewLiveRefreshMs(botChartPreviewState.settings || {});
+    botChartPreviewLiveRefreshTimer = setTimeout(() => {
+        if (!botChartPreviewState.open || document.hidden) {
+            scheduleBotChartPreviewLiveRefresh();
+            return;
+        }
+        refreshOpenBotChartPreview(false, { showLoading: false, allowCachedRender: false, forceNetwork: true });
+    }, delay);
+}
+
+async function refreshOpenBotChartPreview(force = false, options = {}) {
+    if (!botChartPreviewState.open || !botChartPreviewState.ticker) return;
+    const { showLoading = true, allowCachedRender = !force, forceNetwork = force } = options;
+    const ticker = botChartPreviewState.ticker;
+    const settings = clonePlainObject(botChartPreviewState.settings || {});
+    const cacheKey = getBotChartPreviewCacheKey(ticker, settings);
+    let renderedCached = false;
+
+    if (allowCachedRender) {
+        const cached = await readBotChartPreviewCache(cacheKey);
+        const isFresh = cached?.fetchedAt && (Date.now() - cached.fetchedAt) <= BOT_CHART_CACHE_TTL_MS;
+        if (cached?.payload && isFresh && botChartPreviewState.open && botChartPreviewState.ticker === ticker) {
+            applyBotChartPreviewPayload(cached.payload);
+            renderedCached = true;
+        }
+    }
+
+    if (!renderedCached && showLoading) {
+        setBotChartPreviewLoading(force ? 'Refreshing bot chart preview...' : 'Loading bot chart preview...');
+    }
+    try {
+        const payload = await requestBotChartPreviewPayload(ticker, settings, forceNetwork);
+        const currentKey = getBotChartPreviewCacheKey(botChartPreviewState.ticker, botChartPreviewState.settings || {});
+        if (!botChartPreviewState.open || botChartPreviewState.ticker !== ticker || currentKey !== cacheKey) return;
+        applyBotChartPreviewPayload(payload);
+        saveBotChartPreviewCache(cacheKey, payload, ticker, settings).catch(err => {
+            console.warn('[bot-chart] Preview cache save failed:', err);
+        });
+        scheduleBotChartPreviewLiveRefresh();
+    } catch (err) {
+        console.error('[bot-chart] Preview refresh failed:', err);
+        scheduleBotChartPreviewLiveRefresh();
+        const loading = document.getElementById('botChartPreviewGridLoading');
+        const boxLoading = document.getElementById('botChartPreviewBoxLoading');
+        const signalsEl = document.getElementById('botChartPreviewSignalGrid');
+        const premiumSignalsEl = document.getElementById('botChartPreviewPremiumSignalGrid');
+        const reasonEl = document.getElementById('botChartPreviewReason');
+        if (loading) loading.classList.add('hidden');
+        if (boxLoading) boxLoading.classList.add('hidden');
+        if (reasonEl) reasonEl.textContent = err.message || 'Could not load chart preview.';
+        if (premiumSignalsEl) premiumSignalsEl.innerHTML = '';
+        if (signalsEl) {
+            signalsEl.innerHTML = `
+                <div class="col-span-full rounded-2xl border border-rose-200 bg-rose-50 px-4 py-6 text-center text-sm text-rose-600">
+                    ${err.message || 'Could not load chart preview.'}
+                </div>
+            `;
+        }
+    }
+}
+
+function queueBotChartPreviewRefresh(force = true) {
+    clearTimeout(botChartPreviewRefreshTimer);
+    clearTimeout(botChartPreviewLiveRefreshTimer);
+    if (!botChartPreviewState.open) return;
+    botChartPreviewRefreshTimer = setTimeout(() => {
+        if (botChartPreviewState.open) {
+            refreshOpenBotChartPreview(force);
+        }
+    }, 180);
+}
+
+function openBotChartPreview(statePatch) {
+    clearTimeout(botChartPreviewRefreshTimer);
+    clearTimeout(botChartPreviewLiveRefreshTimer);
+    botChartPreviewState = {
+        ...botChartPreviewState,
+        ...statePatch,
+        open: true,
+    };
+    botChartPreviewRange = '1M';
+    botChartPreviewSession = isCrypto(tickerFromPreviewState())
+        ? 'crypto24'
+        : (botChartPreviewState.settings?.market_session === 'extended' ? 'extended' : 'regular');
+    if (botChartPreviewSession === 'crypto24') {
+        botChartPreviewState.settings = {
+            ...(botChartPreviewState.settings || {}),
+            market_session: '24h',
+        };
+    }
+    document.getElementById('botChartPreviewModal')?.classList.remove('hidden');
+    setBotChartPreviewLoading('Loading bot chart preview...');
+    updateBotChartPreviewRangeSessionState(botChartPreviewState.settings || {});
+    refreshOpenBotChartPreview(false, { forceNetwork: true });
+}
+
+window.openBotCardChartPreview = async function (ticker) {
+    const cleanTicker = (ticker || '').toUpperCase().trim();
+    if (!cleanTicker) return;
+    const settings = getBotChartPreviewSettingsForCard(cleanTicker);
+    openBotChartPreview({
+        mode: 'view',
+        source: 'card',
+        ticker: cleanTicker,
+        tradingMode: settings.options_trading ? 'options' : 'regular',
+        settings,
+        signals: {},
+        priceHistory: [],
+        previewMeta: {},
+    });
+};
+
+window.openStrategyChartPreview = function (mode = window.activeTradingMode || 'regular') {
+    if (!currentStrategySymbol) return;
+    openBotChartPreview({
+        mode: 'edit',
+        source: 'settings',
+        ticker: currentStrategySymbol,
+        tradingMode: mode,
+        settings: collectStrategyPreviewSettings(mode),
+        signals: {},
+        priceHistory: [],
+        previewMeta: {},
+    });
+};
+
+window.closeBotChartPreview = function () {
+    clearTimeout(botChartPreviewRefreshTimer);
+    clearTimeout(botChartPreviewLiveRefreshTimer);
+    document.getElementById('botChartPreviewModal')?.classList.add('hidden');
+    botChartPreviewState.open = false;
+};
+
+window.openBotChartPreviewSettings = function () {
+    const ticker = botChartPreviewState.ticker;
+    const mode = botChartPreviewState.tradingMode || 'regular';
+    closeBotChartPreview();
+    openStrategyModal(ticker, 'edit');
+    window.toggleModeActive(mode);
+};
+
+window.resetBotChartPreviewIndicatorsToDefaults = function () {
+    if (!botChartPreviewState.open) return;
+    const settings = clonePlainObject(botChartPreviewState.settings || {});
+    settings.indicator_overrides = {};
+    settings.indicator_toggle_overrides = {};
+    settings.indicator_parameters = typeof INDICATOR_DEFAULTS !== 'undefined' ? { ...INDICATOR_DEFAULTS } : {};
+
+    settings.indicators = [];
+    settings.min_buy_signals = 0;
+    settings.min_sell_signals = 0;
+    botChartPreviewState.settings = settings;
+
+    if (typeof setStrategyDraftIndicatorOverrides === 'function') {
+        setStrategyDraftIndicatorOverrides({});
+    }
+
+    renderBotChartPreviewSignals(botChartPreviewState.signals, settings);
+    queueBotChartPreviewRefresh(true);
+};
+
+window.openBotChartPreviewIndicatorSettings = function (indicatorName) {
+    if (!botChartPreviewState.ticker) return;
+    botChartPreviewIndicatorSettingsContext = botChartPreviewState.source === 'card';
+    currentStrategySymbol = botChartPreviewState.ticker;
+    window.currentStrategySymbol = currentStrategySymbol;
+    setStrategyDraftIndicatorOverrides(botChartPreviewState.settings?.indicator_overrides || {});
+    openIndicatorSettings(indicatorName);
+};
+
+window.applyBotChartPreviewToSettings = function () {
+    if (botChartPreviewState.mode !== 'edit') return;
+    applyPreviewSettingsToStrategyForm(botChartPreviewState.settings, botChartPreviewState.tradingMode || 'regular');
+    closeBotChartPreview();
+};
+
+window.toggleBotChartPreviewIndicator = function (indicatorName) {
+    const settings = clonePlainObject(botChartPreviewState.settings);
+    const indicators = Array.isArray(settings.indicators) ? [...settings.indicators] : [];
+    const idx = indicators.indexOf(indicatorName);
+    if (idx >= 0) indicators.splice(idx, 1);
+    else indicators.push(indicatorName);
+    settings.indicators = indicators;
+    settings.min_buy_signals = normalizeSignalThreshold(settings.min_buy_signals, indicators.length, 'buy');
+    settings.min_sell_signals = normalizeSignalThreshold(settings.min_sell_signals, indicators.length, 'sell');
+    botChartPreviewState.settings = settings;
+    renderBotChartPreviewSignals(botChartPreviewState.signals, settings);
+    queueBotChartPreviewRefresh(true);
+};
+
+window.setBotChartPreviewTimeframe = function (timeframe) {
+    if (!timeframe || !botChartPreviewState.open) return;
+    const settings = clonePlainObject(botChartPreviewState.settings || {});
+    settings.timeframe = timeframe;
+    botChartPreviewState.settings = settings;
+    updateBotChartPreviewHeader(botChartPreviewState.priceHistory, settings);
+    queueBotChartPreviewRefresh(true);
+};
+
+window.setBotChartPreviewRange = function (range) {
+    if (!BOT_CHART_PREVIEW_RANGES[range] || !botChartPreviewState.open) return;
+    botChartPreviewRange = range;
+    updateBotChartPreviewChart(botChartPreviewState.priceHistory || [], botChartPreviewState.settings || {});
+};
+
+window.setBotChartPreviewSession = function (session) {
+    if (!botChartPreviewState.open) return;
+    botChartPreviewSession = (session === 'crypto24' || isCrypto(tickerFromPreviewState()))
+        ? 'crypto24'
+        : (session === 'extended' ? 'extended' : 'regular');
+    updateBotChartPreviewChart(botChartPreviewState.priceHistory || [], botChartPreviewState.settings || {});
+};
+
+window.adjustBotChartPreviewThreshold = function (kind, delta) {
+    if (botChartPreviewState.mode !== 'edit') return;
+    const settings = clonePlainObject(botChartPreviewState.settings);
+    const count = Array.isArray(settings.indicators) ? settings.indicators.length : 0;
+    if (count <= 0) {
+        settings.min_buy_signals = 0;
+        settings.min_sell_signals = 0;
+    } else {
+        const key = kind === 'sell' ? 'min_sell_signals' : 'min_buy_signals';
+        const nextValue = normalizeSignalThreshold(settings[key], count, kind) + delta;
+        settings[key] = Math.max(1, Math.min(nextValue, count));
+    }
+    botChartPreviewState.settings = settings;
+    renderBotChartPreviewSignals(botChartPreviewState.signals, settings);
+    queueBotChartPreviewRefresh(true);
+};
+
+window.changeBotChartPreviewThreshold = function (kind, value) {
+    if (botChartPreviewState.mode !== 'edit') return;
+    const settings = clonePlainObject(botChartPreviewState.settings);
+    const count = Array.isArray(settings.indicators) ? settings.indicators.length : 0;
+    const key = kind === 'sell' ? 'min_sell_signals' : 'min_buy_signals';
+    settings[key] = normalizeSignalThreshold(value, count, kind);
+    botChartPreviewState.settings = settings;
+    renderBotChartPreviewSignals(botChartPreviewState.signals, settings);
+    queueBotChartPreviewRefresh(true);
 };
 
 
@@ -3391,6 +5228,7 @@ window.confirmAndDeployBot = async function () {
             sell_threshold: normalizedSellThreshold,
             sell_mode: sellMode,
             indicators: indicators,
+            indicator_overrides: getStrategyDraftIndicatorOverrides(),
             timeframe: timeframe,
             paused: window._strategyPaused || false,
             ai_autopilot: document.getElementById('strategyAiAutopilot')?.checked || false,
@@ -3562,6 +5400,9 @@ async function unlinkAlpaca() {
                 if (!document.hidden) {
                     fetchBotsData({ force: true });
                     fetchPortfolioHistory({ force: true });
+                    if (botChartPreviewState.open) {
+                        refreshOpenBotChartPreview(false, { showLoading: false, allowCachedRender: false, forceNetwork: true });
+                    }
                 }
             });
         }
@@ -3583,10 +5424,14 @@ const INDICATOR_TOOLTIPS = {
     "Candle patterns": "Candlestick Patterns identify specific OHLC price formations. Purpose: Provides visual clues about market psychology and potential reversals.",
     "ADX Trend": "Average Directional Index (ADX) quantifies trend strength. Purpose: Determines if the market is trending strongly (ADX > 25) or ranging.",
     "VWAP": "Volume Weighted Average Price (VWAP) is the ratio of value traded to total volume. Purpose: Provides the true average price a security traded at throughout the day.",
+    "Volume Profile": "Prior-session volume-at-price profile using POC, VAH, and VAL. Purpose: Finds institutional acceptance/rejection zones where the most volume traded.",
+    "Swing Points": "Rolling swing support/resistance clusters from recent local highs/lows. Purpose: Finds structural bounce, rejection, reclaim, and breakdown zones.",
     "Strategy Confidence": "Strategy Confidence combines multiple indicator signals into a single probability score. Purpose: Measures the overall conviction of a bullish or bearish trend.",
     "BotBulls1": "WaveTrend momentum oscillator + Money Flow analysis. Detects reversals when momentum and institutional volume flow align at oversold/overbought extremes.",
     "BotBulls2": "Adaptive ATR trailing stop with trend-smoothed EMA and reversal zone detection. Fires on trend flips confirmed by multi-condition confluence scoring (1-4 strength rating).",
     "BotBulls3": "Heikin-Ashi noise filter + ATR-based trailing stop. Generates buy/sell alerts only on confirmed momentum flips — removing false signals from choppy markets.",
+    "Prior Day High/Low": "Uses the previous completed trading session's high and low as breakout/breakdown levels. Buffer is entered as %, with dotted trigger lines when non-zero.",
+    "Pivot Points (S/R)": "Classic prior-session floor pivot levels. Draws up to 5 support/resistance ladders; bullish on support/pivot reclaim, bearish on resistance rejection or pivot breakdown.",
     "Botbulls4 News AI": "Analyzes current news headlines and assigns a bullish/bearish score based on natural language processing of market sentiment."
 };
 
@@ -3599,6 +5444,10 @@ const INDICATOR_CONFIG_MAP = {
     'Mystic Pulse': ['MYSTIC_PULSE_THRESHOLD'],
     'ADX Trend': ['ADX_PERIOD', 'ADX_TRENDING_THRESHOLD'],
     'SMA': ['SMA_PERIOD'],
+    'Volume Profile': ['VOLUME_PROFILE_ROWS', 'VOLUME_PROFILE_VALUE_AREA_PCT', 'VOLUME_PROFILE_TOLERANCE_PCT', 'VOLUME_PROFILE_CONFIRMATION_CANDLES'],
+    'Swing Points': ['SWING_POINTS_LOOKBACK_DAYS', 'SWING_POINTS_ENTRY_MODE', 'SWING_POINTS_LEVEL_COUNT'],
+    'Prior Day High/Low': ['DAILY_HIGH_LOW_BUFFER_PCT'],
+    'Pivot Points (S/R)': ['PIVOT_LEVEL_COUNT', 'PIVOT_TOLERANCE_PCT'],
     'ATR Volatility': ['ATR_PERIOD', 'ATR_STOP_MULTIPLIER', 'ATR_TRAIL_MULTIPLIER', 'ATR_TAKE_PROFIT_MULTIPLIER'],
     'Strategy Confidence': ['MIN_BULLISH_SIGNALS', 'MIN_BEARISH_SIGNALS'],
     'Botbulls4 News AI': ['SENTIMENT_BULLISH_PERCENTAGE', 'SENTIMENT_BEARISH_PERCENTAGE'],
@@ -3632,6 +5481,16 @@ const INDICATOR_DEFAULTS = {
     'ADX_PERIOD': 14,
     'ADX_TRENDING_THRESHOLD': 25,
     'SMA_PERIOD': 200,
+    'VOLUME_PROFILE_ROWS': 48,
+    'VOLUME_PROFILE_VALUE_AREA_PCT': 70.0,
+    'VOLUME_PROFILE_TOLERANCE_PCT': 0.15,
+    'VOLUME_PROFILE_CONFIRMATION_CANDLES': 1,
+    'SWING_POINTS_LOOKBACK_DAYS': 20,
+    'SWING_POINTS_ENTRY_MODE': 'bounce_retest',
+    'SWING_POINTS_LEVEL_COUNT': 1,
+    'DAILY_HIGH_LOW_BUFFER_PCT': 0.0,
+    'PIVOT_LEVEL_COUNT': 1,
+    'PIVOT_TOLERANCE_PCT': 0.0,
     'ATR_PERIOD': 14,
     'ATR_STOP_MULTIPLIER': 2.0,
     'ATR_TRAIL_MULTIPLIER': 3.0,
@@ -3651,13 +5510,12 @@ function openIndicatorSettings(indicatorName) {
     const title = document.getElementById('indicatorModalTitle');
 
 
-    const desc = INDICATOR_TOOLTIPS[indicatorName] || "Adjust parameters for this indicator.";
     const tooltipHtml = `<div class="group/tooltip relative inline-flex items-center ml-2 align-middle">
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-indigo-200 hover:text-white cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <svg onclick="event.stopPropagation(); event.preventDefault(); typeof openInfoModal === 'function' ? openInfoModal('${indicatorName}') : null" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-indigo-200 hover:text-white cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
-        <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute top-full left-1/2 -translate-x-1/2 mt-2 w-56 p-2.5 bg-white text-indigo-900 text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal border border-indigo-100">
-            ${desc}
+        <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute top-full left-1/2 -translate-x-1/2 mt-2 px-3 py-1.5 bg-white text-indigo-900 text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal border border-indigo-100">
+            Click to read guide
             <div class="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-white"></div>
         </div>
     </div>`;
@@ -3673,8 +5531,7 @@ function openIndicatorSettings(indicatorName) {
     let overrides = {};
 
     if (currentStrategySymbol) {
-        const tickerSettings = (window.lastBotsData?.ticker_settings || {})[currentStrategySymbol] || {};
-        const tickerOverrides = tickerSettings.indicator_overrides || {};
+        const tickerOverrides = getStrategyDraftIndicatorOverrides();
         overrides = tickerOverrides;
         // Do NOT merge with global indicator_parameters. Fall back to pure system defaults.
         currentParams = { ...tickerOverrides };
@@ -3682,21 +5539,55 @@ function openIndicatorSettings(indicatorName) {
         currentParams = window.lastBotsData?.indicator_parameters || {};
         overrides = window.lastBotsData?.indicator_overrides || {};
     }
+    const paramLabels = {
+        DAILY_HIGH_LOW_BUFFER_PCT: 'Breakout Buffer (%)',
+        PIVOT_LEVEL_COUNT: 'S/R Levels To Draw (1-5)',
+        PIVOT_TOLERANCE_PCT: 'Reclaim/Rejection Tolerance (%)',
+        VOLUME_PROFILE_ROWS: 'Profile Rows / Price Bins',
+        VOLUME_PROFILE_VALUE_AREA_PCT: 'Value Area (%)',
+        VOLUME_PROFILE_TOLERANCE_PCT: 'Signal Tolerance (%)',
+        VOLUME_PROFILE_CONFIRMATION_CANDLES: 'Acceptance Confirmation Candles',
+        SWING_POINTS_LOOKBACK_DAYS: 'Swing Lookback Days',
+        SWING_POINTS_ENTRY_MODE: 'Swing Entry Mode',
+        SWING_POINTS_LEVEL_COUNT: 'S/R Levels To Draw (1-5)',
+    };
 
     configKeys.forEach(key => {
         const hasOverride = overrides[key] !== undefined && overrides[key] !== null && overrides[key] !== '';
         const val = currentParams[key] !== undefined ? currentParams[key] : (INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : '');
-        const label = key.replace(/_/g, ' ').toLowerCase();
+        const label = paramLabels[key] || key.replace(/_/g, ' ').toLowerCase();
+        const isPercent = key.endsWith('_PCT') || key.endsWith('_PERCENTAGE');
+        const inputAttrs = key === 'PIVOT_LEVEL_COUNT'
+            ? 'min="1" max="5" step="1"'
+            : key === 'SWING_POINTS_LEVEL_COUNT'
+                ? 'min="1" max="5" step="1"'
+                : key === 'SWING_POINTS_LOOKBACK_DAYS'
+                    ? 'min="1" max="365" step="1"'
+            : key === 'VOLUME_PROFILE_ROWS'
+                ? 'min="12" max="120" step="1"'
+                : key === 'VOLUME_PROFILE_CONFIRMATION_CANDLES'
+                    ? 'min="1" max="5" step="1"'
+                    : 'step="any"';
 
         const div = document.createElement('div');
         div.className = 'flex flex-col gap-1.5';
+        const controlHtml = key === 'SWING_POINTS_ENTRY_MODE'
+            ? `<select data-key="${key}" data-default="${INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : ''}"
+                    class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-bold text-indigo-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all">
+                    <option value="bounce_retest" ${val === 'bounce_retest' ? 'selected' : ''}>Bounce / Retest</option>
+                    <option value="breakout_retest" ${val === 'breakout_retest' ? 'selected' : ''}>Breakout / Retest</option>
+                </select>`
+            : `<input type="number" ${inputAttrs} data-key="${key}" value="${val}" placeholder="${INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : ''}"
+                    class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 ${isPercent ? 'pr-8' : ''} py-2 text-sm font-bold text-indigo-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all">
+                ${isPercent ? '<span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-black text-indigo-400">%</span>' : ''}`;
         div.innerHTML = `
             <div class="flex justify-between items-center mb-0.5">
                 <label class="text-[0.65rem] font-black text-indigo-950 uppercase tracking-widest opacity-60">${label}</label>
                 ${!hasOverride ? '<span class="text-[0.55rem] font-extrabold text-emerald-500 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded-md">System Default</span>' : ''}
             </div>
-            <input type="number" step="any" data-key="${key}" value="${val}" placeholder="${INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : ''}" 
-                class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-bold text-indigo-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all">
+            <div class="relative">
+                ${controlHtml}
+            </div>
         `;
         container.appendChild(div);
     });
@@ -3707,13 +5598,18 @@ function openIndicatorSettings(indicatorName) {
 function closeIndicatorSettings() {
     document.getElementById('indicatorSettingsModal').classList.add('hidden');
     currentEditingIndicator = null;
+    if (botChartPreviewIndicatorSettingsContext) {
+        currentStrategySymbol = null;
+        window.currentStrategySymbol = null;
+        botChartPreviewIndicatorSettingsContext = false;
+    }
 }
 
 function resetIndicatorSettingsToDefaults() {
     if (!currentEditingIndicator) return;
-    const inputs = document.querySelectorAll('#indicatorModalContent input');
+    const inputs = document.querySelectorAll('#indicatorModalContent input, #indicatorModalContent select');
     inputs.forEach(input => {
-        input.value = input.placeholder; // Revert to system default (visible value)
+        input.value = input.tagName === 'SELECT' ? (input.dataset.default || '') : input.placeholder; // Revert to system default
         const container = input.closest('.flex-col');
         if (container) {
             const header = container.querySelector('.flex.justify-between.items-center');
@@ -3728,10 +5624,11 @@ function resetIndicatorSettingsToDefaults() {
 }
 
 async function saveIndicatorSettings() {
-    const inputs = document.querySelectorAll('#indicatorModalContent input');
+    const inputs = document.querySelectorAll('#indicatorModalContent input, #indicatorModalContent select');
     const updates = {};
     inputs.forEach(input => {
-        if (input.value === input.placeholder || input.value === "") {
+        const defaultValue = input.tagName === 'SELECT' ? input.dataset.default : input.placeholder;
+        if (input.value === defaultValue || input.value === "") {
             updates[input.dataset.key] = "";
         } else {
             updates[input.dataset.key] = input.value;
@@ -3743,12 +5640,32 @@ async function saveIndicatorSettings() {
         return;
     }
 
+    if (currentStrategySymbol) {
+        const nextOverrides = getStrategyDraftIndicatorOverrides();
+        for (const [k, v] of Object.entries(updates)) {
+            if (v === "" || v === null) {
+                delete nextOverrides[k];
+            } else {
+                nextOverrides[k] = v;
+            }
+        }
+        setStrategyDraftIndicatorOverrides(nextOverrides);
+        if (botChartPreviewState.open) {
+            botChartPreviewState.settings = {
+                ...(botChartPreviewState.settings || {}),
+                indicator_overrides: clonePlainObject(nextOverrides),
+            };
+        }
+        closeIndicatorSettings();
+        if (botChartPreviewState.open) {
+            await refreshOpenBotChartPreview(true);
+        }
+        return;
+    }
+
     try {
         const headers = await getAuthHeaders();
         let url = `${API_BASE}/api/settings/indicators?context=bots`;
-        if (currentStrategySymbol) {
-            url += `&ticker=${encodeURIComponent(currentStrategySymbol)}`;
-        }
 
         const response = await fetch(url, {
             method: 'POST',
@@ -3790,6 +5707,41 @@ async function saveIndicatorSettings() {
             }
 
             closeIndicatorSettings();
+            const chartPreviewSettingKeys = [
+                'DAILY_HIGH_LOW_BUFFER_PCT',
+                'PIVOT_LEVEL_COUNT',
+                'PIVOT_TOLERANCE_PCT',
+                'VOLUME_PROFILE_ROWS',
+                'VOLUME_PROFILE_VALUE_AREA_PCT',
+                'VOLUME_PROFILE_TOLERANCE_PCT',
+                'VOLUME_PROFILE_CONFIRMATION_CANDLES',
+                'SWING_POINTS_LOOKBACK_DAYS',
+                'SWING_POINTS_ENTRY_MODE',
+                'SWING_POINTS_LEVEL_COUNT',
+            ];
+            const shouldRefreshPreview = botChartPreviewState.open && chartPreviewSettingKeys.some(key => updates[key] !== undefined);
+            if (shouldRefreshPreview) {
+                const nextPreviewOverrides = clonePlainObject(botChartPreviewState.settings?.indicator_overrides || {});
+                const nextPreviewParams = clonePlainObject(botChartPreviewState.settings?.indicator_parameters || {});
+                chartPreviewSettingKeys.forEach(key => {
+                    if (updates[key] === undefined) return;
+                    const value = updates[key];
+                    if (value === "" || value === null) {
+                        delete nextPreviewOverrides[key];
+                        delete nextPreviewParams[key];
+                    } else {
+                        nextPreviewOverrides[key] = value;
+                        nextPreviewParams[key] = value;
+                    }
+                });
+                botChartPreviewState.settings = {
+                    ...(botChartPreviewState.settings || {}),
+                    indicator_overrides: nextPreviewOverrides,
+                    indicator_parameters: nextPreviewParams,
+                };
+                await refreshOpenBotChartPreview(true);
+                return;
+            }
             await fetchBotsData({ force: true });
         } else {
             alert("Error saving indicator settings.");
@@ -4153,15 +6105,38 @@ async function loadOllamaModels() {
     }
 }
 
-const AI_INDICATOR_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+const AI_INDICATOR_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 let _aiIndicatorFetchId = 0; // prevents stale response rendering
+
+function normalizeAIIndicatorTicker(ticker) {
+    return (ticker || '').toString().trim().toUpperCase();
+}
+
+function getAIIndicatorCacheKey(ticker, timeframe, model) {
+    return `${normalizeAIIndicatorTicker(ticker)}|${timeframe}|${model}`;
+}
+
+function isAICacheFresh(cached) {
+    return cached && cached.timestamp && (Date.now() - cached.timestamp) < AI_INDICATOR_CACHE_TTL;
+}
+
+function isAICacheForContext(cached, ticker, timeframe, model) {
+    if (!isAICacheFresh(cached)) return false;
+    const expectedKey = getAIIndicatorCacheKey(ticker, timeframe, model);
+    if (cached.key) return cached.key === expectedKey;
+    return (
+        normalizeAIIndicatorTicker(cached.ticker) === normalizeAIIndicatorTicker(ticker) &&
+        cached.timeframe === timeframe &&
+        cached.model === model
+    );
+}
 
 function getAICache(key) {
     try {
         const cachedStr = localStorage.getItem(`ai_cache_${key}`);
         if (cachedStr) {
             const cached = JSON.parse(cachedStr);
-            if ((Date.now() - cached.timestamp) < AI_INDICATOR_CACHE_TTL) {
+            if (isAICacheFresh(cached)) {
                 return cached;
             }
             localStorage.removeItem(`ai_cache_${key}`);
@@ -4170,11 +6145,84 @@ function getAICache(key) {
     return null;
 }
 
-function setAICache(key, data) {
+function normalizeCachedAISentimentScore(rawScore) {
+    const value = Number(rawScore);
+    if (!Number.isFinite(value)) return null;
+    if (value >= -1 && value <= 1) return value;
+    if (value >= 0 && value <= 100) return (value / 100) * 2 - 1;
+    return Math.max(-1, Math.min(1, value));
+}
+
+function getCachedAIAnalysisForTicker(ticker, timeframe = currentBackendTf) {
+    const normalizedTicker = normalizeAIIndicatorTicker(ticker);
+    if (!normalizedTicker) return null;
+    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const exact = getAICache(getAIIndicatorCacheKey(normalizedTicker, timeframe, selectedModel));
+    if (exact?.data?.sentiment_score != null) return exact;
+
+    try {
+        const globalAi = JSON.parse(localStorage.getItem('latest_global_ai_analysis') || 'null');
+        if (
+            globalAi?.data?.sentiment_score != null &&
+            isAICacheFresh(globalAi) &&
+            normalizeAIIndicatorTicker(globalAi.ticker || globalAi.data?.ticker) === normalizedTicker
+        ) {
+            return globalAi;
+        }
+    } catch (e) {}
+
+    try {
+        const prefix = `ai_cache_${normalizedTicker}|`;
+        for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+            const key = localStorage.key(i);
+            if (!key || !key.startsWith(prefix)) continue;
+            const cached = JSON.parse(localStorage.getItem(key) || 'null');
+            if (cached?.data?.sentiment_score != null && isAICacheFresh(cached)) return cached;
+        }
+    } catch (e) {}
+    return null;
+}
+
+function getCachedNewsAISentiment(ticker, timeframe = currentBackendTf) {
+    const cached = getCachedAIAnalysisForTicker(ticker, timeframe);
+    const data = cached?.data;
+    if (!data) return null;
+    const score = normalizeCachedAISentimentScore(data.sentiment_score);
+    if (score === null) return null;
+    return {
+        score,
+        pct: Math.round(((score + 1.0) / 2.0) * 100),
+        reason: data.sentiment_key_factor || data.key_catalyst || 'Mixed Catalysts',
+        summary: data.sentiment_summary || data.summary || '',
+        confidence: Number(data.sentiment_confidence ?? data.confidence ?? 0),
+    };
+}
+
+function applyCachedNewsAISignal(signal, options = {}) {
+    if (!signal) return signal;
+    const sentiment = getCachedNewsAISentiment(options.ticker || selectedTicker, options.timeframe || currentBackendTf);
+    if (!sentiment) return signal;
+    signal.value = sentiment.score;
+    signal.reason = sentiment.reason;
+    signal.cached = true;
+    signal.sentiment_summary = sentiment.summary;
+    signal.sentiment_confidence = sentiment.confidence;
+    const params = options.params || {};
+    const bullishThresh = params.SENTIMENT_BULLISH_PERCENTAGE ?? INDICATOR_DEFAULTS?.SENTIMENT_BULLISH_PERCENTAGE ?? 70;
+    const bearishThresh = params.SENTIMENT_BEARISH_PERCENTAGE ?? INDICATOR_DEFAULTS?.SENTIMENT_BEARISH_PERCENTAGE ?? 30;
+    signal.signal = sentiment.pct >= bullishThresh ? 'BULLISH' : sentiment.pct <= bearishThresh ? 'BEARISH' : 'NEUTRAL';
+    return signal;
+}
+
+function setAICache(key, data, meta = {}) {
     try {
         const payload = {
             data: data,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            key,
+            ticker: normalizeAIIndicatorTicker(meta.ticker || data?.ticker),
+            timeframe: meta.timeframe,
+            model: meta.model
         };
         localStorage.setItem(`ai_cache_${key}`, JSON.stringify(payload));
         localStorage.setItem(`latest_global_ai_analysis`, JSON.stringify(payload));
@@ -4183,8 +6231,9 @@ function setAICache(key, data) {
 
 async function fetchAIIndicator(ticker, timeframe, force = false) {
     if (!ticker) return;
+    const normalizedTicker = normalizeAIIndicatorTicker(ticker);
     const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
-    const key = `${ticker}|${timeframe}|${selectedModel}`;
+    const key = getAIIndicatorCacheKey(normalizedTicker, timeframe, selectedModel);
     if (!force && aiIndicatorInFlightKey === key && aiIndicatorInFlightPromise) {
         return aiIndicatorInFlightPromise;
     }
@@ -4197,19 +6246,22 @@ async function fetchAIIndicator(ticker, timeframe, force = false) {
         const cached = getAICache(key);
         if (cached) {
             renderAIIndicatorCard(cached.data, true);
+            if (botChartPreviewState?.open && botChartPreviewState.signals) {
+                renderBotChartPreviewSignals(botChartPreviewState.signals, botChartPreviewState.settings || {});
+            }
             return;
         }
     }
 
     // Show loading skeleton
-    _showAIIndicatorLoading(ticker);
+    _showAIIndicatorLoading(normalizedTicker);
 
     const fetchId = ++_aiIndicatorFetchId;
     aiIndicatorInFlightKey = key;
     aiIndicatorAbortController = new AbortController();
     aiIndicatorInFlightPromise = (async () => {
         const headers = await getAuthHeaders();
-        const url = `${API_BASE}/api/ai-indicator?ticker=${encodeURIComponent(ticker)}&timeframe=${encodeURIComponent(timeframe)}&model=${encodeURIComponent(selectedModel)}${force ? '&force=true' : ''}`;
+        const url = `${API_BASE}/api/ai-indicator?ticker=${encodeURIComponent(normalizedTicker)}&timeframe=${encodeURIComponent(timeframe)}&model=${encodeURIComponent(selectedModel)}${force ? '&force=true' : ''}`;
         const res = await fetchWithTimeout(url, { headers, controller: aiIndicatorAbortController }, AI_FETCH_TIMEOUT_MS);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
@@ -4227,8 +6279,11 @@ async function fetchAIIndicator(ticker, timeframe, force = false) {
             return;
         }
 
-        setAICache(key, data);
+        setAICache(key, data, { ticker: normalizedTicker, timeframe, model: selectedModel });
         renderAIIndicatorCard(data, false);
+        if (botChartPreviewState?.open && botChartPreviewState.signals) {
+            renderBotChartPreviewSignals(botChartPreviewState.signals, botChartPreviewState.settings || {});
+        }
         return data;
     })();
 
@@ -4665,7 +6720,7 @@ const STRATEGY_HELPER_TEXTS = {
         hybrid_pct: "💡 Hybrid (Indicator + Pct) — Pro quant entry rule: BOTH conditions must be true. Bullish indicators must meet threshold AND the fixed percentage move must confirm. This avoids buying every dip unless momentum/confluence also agrees.",
         pivot_points: "💡 Pivot Points (Support Reclaim) — Buys when live price tests and confirms a bounce or reclaim above classic daily/weekly S1/S2/P support pivot levels.",
         hybrid_pivot: "💡 Hybrid (Indicator + Pivots) — Pro quant entry rule: BOTH conditions must be true. Bullish indicators must confirm AND price must validate the pivot/support structure. This prevents entering just because price touches a level.",
-        high_low: "💡 Daily High/Low Breakout — Momentum entry: buys when current price breaks and closes above the previous trading day's high.",
+        high_low: "💡 Prior Day High/Low Breakout — Momentum entry: buys when current price breaks and closes above the previous trading day's high.",
         hybrid_high_low: "💡 Hybrid (Indicator + High/Low) — Pro quant entry rule: BOTH conditions must be true. Bullish indicators must confirm AND price must break/validate the prior-day structure. This reduces false breakouts.",
         swing_points: "💡 Swing Points (Structure) — Buys on confirmed structural price action: higher-low support bounce or resistance breakout confirmation.",
         hybrid_swing: "💡 Hybrid (Indicator + Swing) — Pro quant entry rule: BOTH conditions must be true. Bullish indicators must confirm AND swing support/breakout structure must confirm. This keeps entries aligned with trend structure, not just signals."
@@ -4679,7 +6734,7 @@ const STRATEGY_HELPER_TEXTS = {
         hybrid_pct: "💡 Hybrid (Indicator + Pct) — Pro quant options entry rule: BOTH conditions must be true. CALLs require bullish indicators + bullish % setup; PUTs require bearish indicators + bearish % setup. This avoids chasing moves unless signal confluence agrees.",
         pivot_points: "💡 Pivot Points (S/R Levels) — Buys CALL on support pivot bounce/reclaim; buys PUT on resistance pivot rejection.",
         hybrid_pivot: "💡 Hybrid (Indicator + Pivots) — Pro quant options entry rule: BOTH conditions must be true. CALLs need bullish indicators + support/reclaim; PUTs need bearish indicators + resistance rejection/breakdown. This keeps contract direction aligned with structure.",
-        high_low: "💡 Daily High/Low Momentum — Buys CALL on breakout above prior day high; buys PUT on breakdown below prior day low.",
+        high_low: "💡 Prior Day High/Low Momentum — Buys CALL on breakout above prior day high; buys PUT on breakdown below prior day low.",
         hybrid_high_low: "💡 Hybrid (Indicator + High/Low) — Pro quant options entry rule: BOTH conditions must be true. CALLs need bullish indicators + prior-high breakout; PUTs need bearish indicators + prior-low breakdown. This reduces false intraday option entries.",
         swing_points: "💡 Swing Points (Structure) — Buys CALL on structural swing support bounce; buys PUT on structural swing resistance rejection/breakdown.",
         hybrid_swing: "💡 Hybrid (Indicator + Swing) — Pro quant options entry rule: BOTH conditions must be true. CALLs need bullish indicators + bullish swing structure; PUTs need bearish indicators + bearish swing structure. This avoids buying options against the dominant swing setup."
@@ -4694,7 +6749,7 @@ const STRATEGY_HELPER_TEXTS = {
         hybrid_pct: "💡 Hybrid (Indicator + Pct) — Pro quant exit rule: EITHER condition can close the trade. Bearish indicator reversal OR fixed % SL/TP/trailing stop can trigger exit. This protects profit and limits drawdown without waiting for extra confirmation.",
         pivot_points: "💡 Pivot Points (Resistance Exit) — Sells to close when price rallies into structural R1/R2/R3 resistance or breaks below support pivots.",
         hybrid_pivot: "💡 Hybrid (Indicator + Pivots) — Pro quant exit rule: EITHER condition can close the trade. Bearish indicator reversal OR pivot support/resistance invalidation can trigger exit. Structure-based exits should stay defensive.",
-        high_low: "💡 Daily High/Low Exit — Sells position if price breaks down below prior day low (stop) or extends through prior day high target.",
+        high_low: "💡 Prior Day High/Low Exit — Sells position if price breaks down below prior day low (stop) or extends through prior day high target.",
         hybrid_high_low: "💡 Hybrid (Indicator + High/Low) — Pro quant exit rule: EITHER condition can close the trade. Bearish indicator reversal OR prior-day high/low target/stop can trigger exit. This avoids holding through a failed breakout.",
         swing_points: "💡 Swing Points (Structure) — Closes position when price hits structural swing resistance targets or violates lower-high/lower-low support.",
         hybrid_swing: "💡 Hybrid (Indicator + Swing) — Pro quant exit rule: EITHER condition can close the trade. Bearish indicator reversal OR swing support/resistance violation can trigger exit. Once structure breaks, risk should be reduced quickly."
@@ -4709,7 +6764,7 @@ const STRATEGY_HELPER_TEXTS = {
         hybrid_pct: "💡 Hybrid (Indicator + Pct) — Pro quant options exit rule: EITHER condition can sell-to-close. Opposite indicator reversal OR premium % SL/TP/trailing stop can exit. This protects against theta decay, spread widening, and fast premium reversals.",
         pivot_points: "💡 Pivot Points (S/R Levels) — Closes option contract when underlying stock price reaches structural S1/R1 Support & Resistance levels.",
         hybrid_pivot: "💡 Hybrid (Indicator + Pivots) — Pro quant options exit rule: EITHER condition can sell-to-close. Opposite indicator reversal OR pivot S/R target/stop can exit. CALL exits watch bearish reversal/resistance failure; PUT exits watch bullish reversal/support failure.",
-        high_low: "💡 Daily High/Low Exit — Closes option position upon an underlying stock prior day high/low breakout or breakdown.",
+        high_low: "💡 Prior Day High/Low Exit — Closes option position upon an underlying stock prior day high/low breakout or breakdown.",
         hybrid_high_low: "💡 Hybrid (Indicator + High/Low) — Pro quant options exit rule: EITHER condition can sell-to-close. Opposite indicator reversal OR underlying prior-day high/low target/stop can exit. This keeps options from bleeding while waiting for perfect confirmation.",
         swing_points: "💡 Swing Points (Structure) — Exits option contract when underlying price hits confirmed structural swing support or resistance levels.",
         hybrid_swing: "💡 Hybrid (Indicator + Swing) — Pro quant options exit rule: EITHER condition can sell-to-close. Opposite indicator reversal OR swing support/resistance target/stop can exit. For options, structure failure is enough reason to reduce risk."
@@ -4737,7 +6792,7 @@ window.updateRegularExitFields = function() {
     if(document.getElementById('exitFieldsPct')) document.getElementById('exitFieldsPct').classList.toggle('hidden', !showPct);
     updateSwingSettingsVisibility('regular');
     if (window.updateStrategyHelperText) window.updateStrategyHelperText('strategySellHelper_regular', 'exit', mode);
-
+    window.updateStrategySignalLabels('regular');
     if (window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'exit');
 };
 
@@ -4759,6 +6814,7 @@ window.updateRegularEntryFields = function() {
     if(document.getElementById('strategySwingEntrySettings_regular')) document.getElementById('strategySwingEntrySettings_regular').classList.toggle('hidden', !showSwing);
     updateSwingSettingsVisibility('regular');
     if (window.updateStrategyHelperText) window.updateStrategyHelperText('strategyBuyHelper_regular', 'entry', mode);
+    window.updateStrategySignalLabels('regular');
     if (window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'entry');
 };
 
@@ -4807,6 +6863,7 @@ window.updateOptionsEntryFields = function() {
             : 'Custom price opens a CALL when the underlying drops to this target.';
     }
     syncOptionsPutEntryThresholdLabel();
+    window.updateStrategySignalLabels('options');
     if (window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry');
 };
 
@@ -4935,6 +6992,7 @@ window.updateOptionsExitFields = function() {
             : 'Underlying Take Profit Price (Above Entry)';
     }
 
+    window.updateStrategySignalLabels('options');
     if (window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'exit');
 };
 
@@ -5352,7 +7410,7 @@ function buildSwingExitPreviewHtml(mode, isOptions, symbol, simPrice) {
 }
 
 window.fetchLiveAtrForPreview = async function(ticker, overrideTf) {
-    if (!ticker) return;
+    if (!ticker || !botChartPreviewState.open) return;
     try {
         const headers = await getAuthHeaders();
         const activeMode = window.activeTradingMode || 'regular';
@@ -5491,14 +7549,19 @@ function buildEntryPreviewHtml(mode, isOptions, symbol, simPrice, simAtr, priorD
         if (!priorDay) {
             return `${basePrefix}<br/>Awaiting prior day data...`;
         }
+        const levels = getPriorDayHighLowPreviewLevels(priorDay);
+        if (!levels) {
+            return `${basePrefix}<br/>Awaiting valid prior day data...`;
+        }
+        const bufferLine = levels.bufferPct > 0 ? `<br/>Buffer: ${levels.bufferPct.toFixed(2)}% | PDH/PDL: $${levels.high.toFixed(2)} / $${levels.low.toFixed(2)}` : `<br/>PDH/PDL: $${levels.high.toFixed(2)} / $${levels.low.toFixed(2)}`;
         if (isOptions) {
             const optionsType = document.getElementById('strategyOptionsType')?.value || 'calls_only';
             if (optionsType === 'puts_only') {
-                return `${basePrefix}<br/>PUT High/Low Entry: breakdown below prior low<br/>PUT Below: $${priorDay.low.toFixed(2)}${buyMode.startsWith('hybrid_') ? '<br/>Hybrid requires bearish indicators + prior-low breakdown' : ''}`;
+                return `${basePrefix}<br/>PUT High/Low Entry: breakdown below prior low trigger<br/>PUT Below: $${levels.lowTrigger.toFixed(2)}${bufferLine}${buyMode.startsWith('hybrid_') ? '<br/>Hybrid requires bearish indicators + prior-low breakdown' : ''}`;
             }
-            return `${basePrefix}<br/>CALL High/Low Entry: breakout above prior high<br/>CALL Above: $${priorDay.high.toFixed(2)}${buyMode.startsWith('hybrid_') ? '<br/>Hybrid requires bullish indicators + prior-high breakout' : ''}`;
+            return `${basePrefix}<br/>CALL High/Low Entry: breakout above prior high trigger<br/>CALL Above: $${levels.highTrigger.toFixed(2)}${bufferLine}${buyMode.startsWith('hybrid_') ? '<br/>Hybrid requires bullish indicators + prior-high breakout' : ''}`;
         }
-        return `${basePrefix}<br/>Prior High: $${priorDay.high.toFixed(2)} &nbsp;|&nbsp; Prior Low: $${priorDay.low.toFixed(2)}${buyMode.startsWith('hybrid_') ? '<br/>Hybrid requires indicator + high/low structure' : ''}`;
+        return `${basePrefix}<br/>Buy Above Trigger: $${levels.highTrigger.toFixed(2)}<br/>Breakdown Below Trigger: $${levels.lowTrigger.toFixed(2)}${bufferLine}${buyMode.startsWith('hybrid_') ? '<br/>Hybrid requires indicator + high/low structure' : ''}`;
     }
 
     if (['swing_points', 'hybrid_swing'].includes(buyMode)) {
@@ -5619,12 +7682,17 @@ window.updateLivePreview_bots = function (mode, scope = 'both') {
                 }
             } else if (showHL) {
                 const optionsType = document.getElementById('strategyOptionsType')?.value || 'calls_only';
-                if (isOptions && optionsType === 'puts_only') {
+                const levels = getPriorDayHighLowPreviewLevels(priorDay);
+                if (!levels) {
+                    html = `&#128302; Live Preview (${symbol}) | Price: $${simPrice.toFixed(2)}<br/>Awaiting valid prior day data...`;
+                } else if (isOptions && optionsType === 'puts_only') {
                     html = `&#128302; Live Preview: ${symbol} (PUT Prior Day High/Low Exit) | Price: $${simPrice.toFixed(2)}<br/>
-                        Stop Loss (Prior High): $${priorDay.high.toFixed(2)} &nbsp;|&nbsp; Take Profit (Prior Low): $${priorDay.low.toFixed(2)}`;
+                        Stop Loss (High Trigger): $${levels.highTrigger.toFixed(2)} &nbsp;|&nbsp; Take Profit (Low Trigger): $${levels.lowTrigger.toFixed(2)}<br/>
+                        Buffer: ${levels.bufferPct.toFixed(2)}% | PDH/PDL: $${levels.high.toFixed(2)} / $${levels.low.toFixed(2)}`;
                 } else {
                     html = `&#128302; Live Preview: ${symbol} (CALL/Long Prior Day High/Low Exit) | Price: $${simPrice.toFixed(2)}<br/>
-                            Stop Loss (Prior Low): $${priorDay.low.toFixed(2)} &nbsp;|&nbsp; Take Profit (Prior High): $${priorDay.high.toFixed(2)}`;
+                            Stop Loss (Low Trigger): $${levels.lowTrigger.toFixed(2)} &nbsp;|&nbsp; Take Profit (High Trigger): $${levels.highTrigger.toFixed(2)}<br/>
+                            Buffer: ${levels.bufferPct.toFixed(2)}% | PDH/PDL: $${levels.high.toFixed(2)} / $${levels.low.toFixed(2)}`;
                 }
             }
         }
@@ -5773,6 +7841,7 @@ async function saveGlobalRiskSettings() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    ensureDailyHighLowBotIndicatorCards();
     const dd = document.getElementById('globalMaxDrawdown');
     const hs = document.getElementById('globalHardStop');
     if (dd) dd.addEventListener('change', saveGlobalRiskSettings);

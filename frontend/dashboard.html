@@ -89,7 +89,7 @@
     <main class="max-w-5xl mx-auto px-4 py-4">
 
         <!-- ═══════════════ HEADER ═══════════════ -->
-        <header class="flex flex-col items-center text-center mb-6 gap-4 border-b border-purple-200/80 pb-4">
+        <header class="flex flex-col items-center text-center mb-3 gap-2 border-b border-purple-200/80 pb-2.5">
             <div class="space-y-1">
                 <h1
                     class="text-2xl md:text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 leading-tight">
@@ -160,8 +160,8 @@
 
 
         <!-- ═══════════════ PORTFOLIO CARDS ═══════════════ -->
-        <div id="dashboardContent" class="space-y-4 animate-in fade-in duration-700">
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-6">
+        <div id="dashboardContent" class="flex flex-col gap-3 animate-in fade-in duration-700">
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
                 <!-- Market Sentiment -->
                 <div class="card-glass group flex flex-col items-center p-5 cursor-pointer hover:ring-2 hover:ring-indigo-400 transition-all overflow-hidden"
                     id="cardSentiment" onclick="openFngModal()">
@@ -315,15 +315,50 @@
                 </div>
             </div>
 
-            <!-- ═══════════════ MAIN GRID ═══════════════ -->
-            <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+            <!-- ═══════════════ FULL-WIDTH MAIN DASHBOARD STACK ═══════════════ -->
+            <div class="flex flex-col gap-3 mb-4 w-full">
 
-                <!-- LEFT: Chart + Signals (2 cols) -->
-                <div class="lg:col-span-2 space-y-4 order-2 lg:order-1">
+                <!-- 1. WATCHLIST PANEL (ABOVE CHART, 3 COLUMNS, COLLAPSED BY DEFAULT) -->
+                <div class="panel-glass relative w-full" id="watchlistPanel">
+                    <div class="panel-top-bar bg-gradient-to-r from-cyan-400 to-blue-400"></div>
 
-                    <!-- Price Chart — Webull Style -->
-                    <div class="panel-glass relative">
-                        <div class="panel-top-bar bg-gradient-to-r from-indigo-400 to-purple-500"></div>
+                    <div class="flex justify-between items-center cursor-pointer group py-1" onclick="toggleWatchlistCollapse()">
+                        <div class="flex items-center gap-2">
+                            <h2 class="text-lg font-bold text-indigo-900 group-hover:text-indigo-600 transition-colors">My Watchlist</h2>
+                            <span class="text-[0.65rem] font-bold text-slate-500 bg-slate-100 px-2.5 py-0.5 rounded-full border border-slate-200 shadow-sm">Click to expand</span>
+                        </div>
+                        <svg id="watchlistChevron" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500 transition-transform duration-300 transform rotate-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
+                        </svg>
+                    </div>
+
+                    <div id="watchlistCollapsibleArea" class="transition-all duration-300 overflow-hidden" style="max-height: 0px; opacity: 0; pointer-events: none; margin-top: 0px;">
+                        <div class="flex flex-col mb-4">
+                            <div class="flex bg-slate-100/60 backdrop-blur-sm p-1 rounded-lg border border-purple-100/50 w-full sm:w-80 text-xs">
+                                <button id="wlTabAll" onclick="setWatchlistTab('all')"
+                                    class="flex-1 py-1.5 text-center rounded-md font-bold transition-all text-indigo-900 bg-white shadow-sm">
+                                    All
+                                </button>
+                                <button id="wlTabStocks" onclick="setWatchlistTab('stocks')"
+                                    class="flex-1 py-1.5 text-center rounded-md font-bold transition-all text-slate-500 hover:text-indigo-900">
+                                    Stocks
+                                </button>
+                                <button id="wlTabCrypto" onclick="setWatchlistTab('crypto')"
+                                    class="flex-1 py-1.5 text-center rounded-md font-bold transition-all text-slate-500 hover:text-indigo-900">
+                                    Crypto
+                                </button>
+                            </div>
+                        </div>
+                        <!-- 3 Column Responsive Grid -->
+                        <div id="watchlistContainer" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-1.5">
+                            <!-- Watchlist items injected by JS -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 2. PRICE CHART — FULL SCREEN WIDTH -->
+                <div class="panel-glass relative w-full" id="mainChartPanel">
+                    <div class="panel-top-bar bg-gradient-to-r from-indigo-400 to-purple-500"></div>
 
                         <!-- Chart Header: Ticker + Search + Star -->
                         <div class="flex items-start justify-between mb-1">
@@ -378,6 +413,8 @@
                                 data-tf="1Hour">1h</button>
                             <button class="chart-tf-btn" onclick="setChartTimeframe('4Hour')"
                                 data-tf="4Hour">4h</button>
+                            <button class="chart-tf-btn" onclick="setChartTimeframe('1Day')"
+                                data-tf="1Day">1D</button>
                         </div>
 
                         <!-- OHLCV Crosshair Bar -->
@@ -400,73 +437,41 @@
                         </div>
                         <!-- Oscillator sub-panes -->
                         <div class="relative">
-                            <div class="chart-osc-label" id="rsiLabel">RSI (14)<div class="group/tooltip relative inline-flex items-center ml-1">
-    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-    </svg>
-    <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-        Relative Strength Index (RSI) is a momentum oscillator. Purpose: Identifies overbought (>70) or oversold (<30) conditions.
-        <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900"></div>
-    </div>
-</div></div>
-                            <div class="chart-osc-pane" id="oscChart_rsi"></div>
-                        </div>
-                        <div class="relative group">
-                            <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
-                                onclick="openIndicatorSettings('MACD')" id="macdLabel">
-                                MACD (12, 26, 9)<div class="group/tooltip relative inline-flex items-center ml-1">
-    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-    </svg>
-    <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-        Moving Average Convergence Divergence (MACD) shows the relationship between two moving averages. Purpose: Detects changes in trend momentum.
-        <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900"></div>
-    </div>
-</div>
-                                <svg class="w-3 h-3 opacity-70 hover:opacity-100 transition-opacity" fill="none"
-                                    stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
-                                    </path>
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                                </svg>
-                            </div>
-                            <div class="chart-osc-pane" id="oscChart_macd"></div>
-                        </div>
-                        <div class="relative group">
-                            <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
-                                onclick="openIndicatorSettings('Mystic Pulse')" id="mysticPulseLabel">
-                                Mystic Pulse<div class="group/tooltip relative inline-flex items-center ml-1">
-    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-    </svg>
-    <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-        Mystic Pulse is a custom proprietary oscillator. Purpose: Combines multi-timeframe momentum, volatility, and volume flow to detect early trend reversals.
-        <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900"></div>
-    </div>
-</div>
-                                <svg class="w-3 h-3 opacity-70 hover:opacity-100 transition-opacity" fill="none"
-                                    stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
-                                    </path>
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                                </svg>
-                            </div>
-                            <div class="chart-osc-pane" id="oscChart_mystic"></div>
-                        </div>
-                        <div class="relative group">
-                            <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
-                                onclick="openIndicatorSettings('ADX')" id="adxLabel">
-                                ADX (14) / DI+ / DI-<div class="group/tooltip relative inline-flex items-center ml-1">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            <div class="chart-osc-label" id="rsiLabel" style="display: none;">RSI (14)<div class="group/tooltip relative inline-flex items-center ml-1">
+                                    <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('RSI')"
+                                        xmlns="http://www.w3.org/2000/svg"
+                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                     </svg>
-                                    <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                        Average Directional Index (ADX) measures trend strength (regardless of direction). DI+ (Green) and DI- (Red) indicate trend direction.
-                                        <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900"></div>
+                                    <div
+                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                        Click to read guide
+                                        <div
+                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                        </div>
+                                    </div>
+                                </div></div>
+                            <div class="chart-osc-pane" id="oscChart_rsi" style="display: none;"></div>
+                        </div>
+                        <div class="relative group">
+                            <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
+                                onclick="openIndicatorSettings('MACD')" id="macdLabel" style="display: none;">
+                                MACD (12, 26, 9)<div class="group/tooltip relative inline-flex items-center ml-1">
+                                    <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('MACD')"
+                                        xmlns="http://www.w3.org/2000/svg"
+                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    <div
+                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                        Click to read guide
+                                        <div
+                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                        </div>
                                     </div>
                                 </div>
                                 <svg class="w-3 h-3 opacity-70 hover:opacity-100 transition-opacity" fill="none"
@@ -478,34 +483,100 @@
                                         d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
                                 </svg>
                             </div>
-                            <div class="chart-osc-pane" id="oscChart_adx"></div>
+                            <div class="chart-osc-pane" id="oscChart_macd" style="display: none;"></div>
                         </div>
                         <div class="relative group">
                             <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
-                                onclick="openIndicatorSettings('BotBulls1')" id="botbulls1Label">
+                                onclick="openIndicatorSettings('Mystic Pulse')" id="mysticPulseLabel" style="display: none;">
+                                Mystic Pulse<div class="group/tooltip relative inline-flex items-center ml-1">
+                                    <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('Mystic Pulse')"
+                                        xmlns="http://www.w3.org/2000/svg"
+                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    <div
+                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                        Click to read guide
+                                        <div
+                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                        </div>
+                                    </div>
+                                </div>
+                                <svg class="w-3 h-3 opacity-70 hover:opacity-100 transition-opacity" fill="none"
+                                    stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
+                                    </path>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                </svg>
+                            </div>
+                            <div class="chart-osc-pane" id="oscChart_mystic" style="display: none;"></div>
+                        </div>
+                        <div class="relative group">
+                            <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
+                                onclick="openIndicatorSettings('ADX')" id="adxLabel" style="display: none;">
+                                ADX (14) / DI+ / DI-<div class="group/tooltip relative inline-flex items-center ml-1">
+                                    <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('ADX Trend')"
+                                        xmlns="http://www.w3.org/2000/svg"
+                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    <div
+                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                        Click to read guide
+                                        <div
+                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                        </div>
+                                    </div>
+                                </div>
+                                <svg class="w-3 h-3 opacity-70 hover:opacity-100 transition-opacity" fill="none"
+                                    stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
+                                    </path>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                </svg>
+                            </div>
+                            <div class="chart-osc-pane" id="oscChart_adx" style="display: none;"></div>
+                        </div>
+                        <div class="relative group">
+                            <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
+                                onclick="openIndicatorSettings('BotBulls1')" id="botbulls1Label" style="display: none;">
                                 BotBulls1 (WaveTrend + MFI)
                                 <div class="group/tooltip relative inline-flex items-center ml-1">
-                                    <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('BotBulls1')" xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('BotBulls1')"
+                                        xmlns="http://www.w3.org/2000/svg"
+                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                     </svg>
-                                    <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                        WaveTrend Momentum Oscillator + Money Flow analysis. Detects reversals when momentum and institutional volume flow align at oversold/overbought extremes.
-                                        <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900"></div>
+                                    <div
+                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                        Click to read guide
+                                        <div
+                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                        </div>
                                     </div>
                                 </div>
                                 <svg class="w-3 h-3 opacity-70 hover:opacity-100 transition-opacity" fill="none"
                                     stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z">
+                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
                                     </path>
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                         d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
                                 </svg>
                             </div>
-                            <div class="chart-osc-pane" id="oscChart_botbulls1"></div>
+                            <div class="chart-osc-pane" id="oscChart_botbulls1" style="display: none;"></div>
                         </div>
 
-                        <!-- Webull-style range/session/footer row -->
                         <div class="chart-bottom-bar">
                             <div class="chart-control-row chart-range-row" id="chartRangeBar">
                                 <button class="chart-range-btn chart-range-active" onclick="setChartRange('1D')"
@@ -536,6 +607,7 @@
                                     onclick="setChartSession('crypto24')">24h Live</button>
                             </div>
                         </div>
+
                     </div>
 
                     <!-- Signal Confluence Panel -->
@@ -543,7 +615,7 @@
                         <div class="panel-top-bar bg-gradient-to-r from-fuchsia-400 to-pink-400"></div>
                         <div class="flex justify-between items-center mb-4">
                             <div class="flex items-center gap-3">
-                                <h2 class="text-lg font-bold text-indigo-900">Signal Confluence</h2>
+                                <h2 class="text-lg font-bold text-indigo-900">Indicator Signal Confluence</h2>
                             </div>
                             <div class="flex items-center gap-2">
                                 <button type="button"
@@ -619,48 +691,6 @@
                             <div id="aiSummary" class="text-[0.65rem] font-medium text-amber-800/80 relative z-10">Select a ticker to load AI analysis…</div>
                         </div>
                     </div>
-
-                </div>
-
-
-                <!-- RIGHT: Sidebar (1 col) -->
-                <div class="space-y-4 order-1 lg:order-2">
-
-                    <!-- Watchlist -->
-                    <div class="panel-glass relative" id="watchlistPanel">
-                        <div class="panel-top-bar bg-gradient-to-r from-cyan-400 to-blue-400"></div>
-                        
-                        <div class="flex justify-between items-center mb-4 cursor-pointer group" onclick="toggleWatchlistCollapse()">
-                            <h2 class="text-lg font-bold text-indigo-900 group-hover:text-indigo-600 transition-colors">My Watchlist</h2>
-                            <svg id="watchlistChevron" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500 transition-transform duration-300 transform rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
-                            </svg>
-                        </div>
-                        
-                        <div id="watchlistCollapsibleArea" class="transition-all duration-300 overflow-hidden" style="max-height: 1000px; opacity: 1;">
-                            <div class="flex flex-col mb-4">
-                                <div class="flex bg-slate-100/60 backdrop-blur-sm p-1 rounded-lg border border-purple-100/50 w-full text-xs">
-                                    <button id="wlTabAll" onclick="setWatchlistTab('all')"
-                                        class="flex-1 py-1.5 text-center rounded-md font-bold transition-all text-indigo-900 bg-white shadow-sm">
-                                        All
-                                    </button>
-                                    <button id="wlTabStocks" onclick="setWatchlistTab('stocks')"
-                                        class="flex-1 py-1.5 text-center rounded-md font-bold transition-all text-slate-500 hover:text-indigo-900">
-                                        Stocks
-                                    </button>
-                                    <button id="wlTabCrypto" onclick="setWatchlistTab('crypto')"
-                                        class="flex-1 py-1.5 text-center rounded-md font-bold transition-all text-slate-500 hover:text-indigo-900">
-                                        Crypto
-                                    </button>
-                                </div>
-                            </div>
-                            <div id="watchlistContainer" class="space-y-2">
-                                <!-- Watchlist items injected by JS -->
-                            </div>
-                        </div>
-                    </div>
-
-                </div>
             </div>
 
             <!-- Execution Log moved to Active Bots page -->
@@ -687,7 +717,7 @@
 
 
 
-    <script src="app.js?v=61"></script>
+    <script src="app.js?v=62"></script>
 
     <!-- Fear & Greed Sub-Components Modal -->
     <div id="fngModal"
@@ -714,7 +744,7 @@
             <div class="p-6 overflow-y-auto custom-scrollbar">
                 <p class="text-sm text-slate-500 mb-6 font-medium">This grid represents the core market components used
                     to calculate the overall Fear & Greed index.</p>
-                <div id="fngComponentsGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div id="fngComponentsGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                     <!-- Populated by JS -->
                 </div>
                 <div class="mt-6 pt-4 border-t border-slate-100 flex items-center justify-center">
@@ -742,7 +772,7 @@
                 </button>
             </div>
 
-            <div class="p-6 space-y-4" id="indicatorModalContent">
+            <div class="p-6 space-y-3 overflow-y-auto max-h-[60vh] custom-scrollbar" id="indicatorModalContent">
                 <!-- Inputs injected by JS -->
             </div>
 
@@ -863,7 +893,7 @@
 
     <!-- Market Breadth Modal -->
     <div id="breadthModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[200] hidden flex flex-col items-center justify-center p-4">
-        <div class="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-3xl border border-white/50 flex flex-col h-[700px] max-h-[90vh] overflow-hidden">
+        <div class="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-3xl border border-white/50 flex flex-col max-h-[88vh] overflow-hidden">
             <div class="px-6 py-5 border-b border-slate-100 flex items-center justify-between bg-white/95 backdrop-blur-xl z-10">
                 <h3 class="text-xl font-black text-slate-800 tracking-tight flex items-center gap-2">
                     Internal Market Breadth
@@ -879,7 +909,7 @@
             <div class="p-6 overflow-y-auto custom-scrollbar bg-slate-50/50 flex-1">
                 <p class="text-sm text-slate-500 mb-6 font-medium">Metrics tracking underlying participation for your active portfolio (Watchlist & Bots).</p>
                 
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <!-- Metric 1: A/D Line -->
                     <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
                         <div class="flex items-center justify-between mb-4">
@@ -998,7 +1028,7 @@
                     </svg>
                 </button>
             </div>
-            <div class="p-6 space-y-4 text-xs text-slate-600 leading-relaxed overflow-y-auto max-h-[70vh]">
+            <div class="p-6 space-y-3 text-xs text-slate-600 leading-relaxed overflow-y-auto max-h-[70vh]">
                 <p>
                     The <strong>BotBulls AI Analysis</strong> is an institutional-grade quantitative trading advisor powered by advanced LLMs on <strong>Groq</strong> (utilizing <code>llama-3.3-70b-versatile</code> for standard market briefings and <code>llama-3.1-8b-instant</code> for dynamic news feeds).
                 </p>
@@ -1043,7 +1073,7 @@
                     </svg>
                 </button>
             </div>
-            <div id="infoModalContent" class="p-6 space-y-4 text-xs text-slate-600 leading-relaxed overflow-y-auto max-h-[70vh]">
+            <div id="infoModalContent" class="p-6 space-y-3 text-xs text-slate-600 leading-relaxed overflow-y-auto max-h-[70vh]">
                 <!-- Content injected here -->
             </div>
         </div>
@@ -1051,10 +1081,26 @@
 
     <script>
         const indicatorInfoMap = {
-            'BotBulls1': `<b>BotBulls 1 (WaveTrend + MFI)</b><br><br>BotBulls 1 is an advanced momentum oscillator modeled after famous premium "Sniper" indicators (like Market Cipher B).<br><br><b class="text-slate-800">How it works:</b><br>It combines a smoothed WaveTrend momentum oscillator with a 14-period Money Flow Index (MFI).<br><br><b class="text-slate-800">The Strategy:</b><br>It looks for precise reversal points. A <b class="text-emerald-500">BUY</b> signal fires when the fast momentum wave crosses the slow wave upwards while deep in the oversold zone (-53), but <i>only</i> if the Money Flow Index confirms institutional money is entering the asset (MFI < 30).`,
-            'BotBulls2': `<b>BotBulls 2 (Smart Trail + Trend Tracer)</b><br><br>BotBulls 2 is a powerful trend-following and dynamic stop-loss suite modeled after premium indicators like LuxAlgo Premium.<br><br><b class="text-slate-800">How it works:</b><br>It calculates an adaptive ATR trailing stop (Smart Trail), an institutional double-smoothed EMA (Trend Tracer), and extreme statistical deviation bands (Reversal Zones).<br><br><b class="text-slate-800">The Strategy:</b><br>It waits for a full confluence of momentum. It fires a signal when the asset flips bullish on the Smart Trail, holds above the Trend Tracer, and the RSI is in a healthy 40-70 range. It filters out false breakouts effectively.`,
-            'BotBulls3': `<b>BotBulls 3 (Heikin-Ashi Volatility)</b><br><br>BotBulls 3 is a pure volatility breakout momentum engine designed for fast scalping (such as 0-DTE options strategies).<br><br><b class="text-slate-800">How it works:</b><br>It converts standard price action into smoothed Heikin-Ashi candles to remove noise, then applies a hyper-sensitive Average True Range (ATR) trailing stop-loss directly to those smoothed candles.<br><br><b class="text-slate-800">The Strategy:</b><br>When sudden volatility expands and price breaks above the trailing ATR channel on the Heikin-Ashi chart, it fires a high-probability breakout signal. Best used for quick momentum scalps.`,
-            'Botbulls4 News AI': `<b>Botbulls 4 News AI (Fundamental Sentiment)</b><br><br>BotBulls 4 relies entirely on artificial intelligence and macro-fundamental data rather than price action.<br><br><b class="text-slate-800">How it works:</b><br>It continuously fetches real-time financial news, SEC filings, and macro-economic data, then feeds it through Groq's blazing-fast LLM to analyze the sentiment.<br><br><b class="text-slate-800">The Strategy:</b><br>If the AI determines the news is overwhelmingly bullish (e.g., strong earnings beat, massive new contract), it fires a buy signal. This indicator acts as an ultimate filter against trading into bad news.`
+            'RSI': `<b>RSI (Relative Strength Index)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>RSI is a classic momentum oscillator that measures the speed and magnitude of recent price changes on a 0 to 100 scale. It helps identify overbought or oversold conditions before trend reversals occur.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Values above 70 typically signal overbought conditions (potential pullback), while values below 30 signal oversold conditions (potential bounce).<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>RSI Period (Default 14):</b> Number of bars used in calculation. Smaller periods react faster.<br>• <b>Overbought Threshold (Default 70):</b> Upper boundary for overbought detection.<br>• <b>Oversold Threshold (Default 30):</b> Lower boundary for oversold detection.`,
+            'MACD': `<b>MACD (Moving Average Convergence Divergence)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>MACD is a trend-following momentum indicator that reveals the relationship between two moving averages of price.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>A bullish signal occurs when the MACD line crosses above the Signal line or histogram turns positive. A bearish signal occurs when MACD crosses below the Signal line.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Fast EMA (Default 12):</b> Lookback for short-term moving average.<br>• <b>Slow EMA (Default 26):</b> Lookback for long-term moving average.<br>• <b>Signal Period (Default 9):</b> Lookback for smoothing line.`,
+            'EMA Cross': `<b>EMA Cross (Exponential Moving Average Crossover)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Exponential Moving Averages place greater weight on recent price data to catch trend shifts earlier than simple averages.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>A Golden Cross (fast EMA crossing above slow EMA) confirms a bullish trend. A Death Cross (fast EMA crossing below slow EMA) confirms a bearish trend.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Fast Period (Default 9):</b> Shorter EMA reacting quickly to momentum shifts.<br>• <b>Slow Period (Default 21):</b> Baseline EMA defining the trend.`,
+            'SMA': `<b>SMA (Simple Moving Average)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>SMA calculates the unweighted mean of closing prices over a specified period to smooth out noise and establish macro trend direction.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Trading above the SMA indicates macro bullish bias; trading below indicates bearish bias.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>SMA Period (Default 200):</b> Lookback window for baseline trend identification.`,
+            'Bollinger': `<b>Bollinger Bands</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Bollinger Bands consist of a middle moving average surrounded by upper and lower standard deviation bands that expand and contract with market volatility.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Price touching the lower band signals potential oversold bounce opportunities; touching the upper band signals potential overbought conditions.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Period (Default 20):</b> Moving average lookback window.<br>• <b>Standard Deviation (Default 2.0):</b> Bandwidth multiplier controlling sensitivity.`,
+            'Supertrend': `<b>Supertrend</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Supertrend is a trend-following overlay based on Average True Range (ATR) that dynamically plots trailing support or resistance levels.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Fires a buy signal when price crosses above the upper Supertrend band; fires a sell signal when price crosses below.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Period (Default 10):</b> ATR lookback window.<br>• <b>Multiplier (Default 3.0):</b> Distance multiplier controlling stop width.`,
+            'Mystic Pulse': `<b>Mystic Pulse</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Mystic Pulse is a custom proprietary oscillator combining multi-timeframe momentum, volatility expansion, and institutional volume flow.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Detects early trend reversals before standard oscillators by analyzing volume convergence at cycle extremes.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Pulse Threshold (Default 5):</b> Sensitivity setting for triggering pulse alerts.`,
+            'Candle Patterns': `<b>Candlestick Patterns (Institutional Price Action & Reversals)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Our institutional candlestick recognition engine automatically scans real-time price action to identify powerful single and multi-bar reversal and continuation formations (e.g., Bullish/Bearish Engulfing, Hammer, Shooting Star, Morning/Evening Star, Doji). It acts as an instant visual footprint of order flow, revealing exactly when institutional buyers or sellers are stepping in at key decision zones.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>To maintain lightning-fast calculation and clean, actionable charting without historical clutter, the engine evaluates the rolling 5-bar window but isolates and displays the detected pattern strictly on the latest forming candle (new candle).<br>• <b>Bullish Patterns (Green Arrow Up):</b> Formations such as Bullish Engulfing, Hammer, or Morning Star indicate strong demand absorption and potential upside bounces.<br>• <b>Bearish Patterns (Red Arrow Down):</b> Formations such as Bearish Engulfing, Shooting Star, or Evening Star indicate distribution and potential downward pressure.<br>• <b>Neutral / Indecision (Orange Circle):</b> Formations such as Doji or Spinning Top indicate equilibrium between buyers and sellers prior to a breakout.<br><br><b class="text-slate-800">Settings & Confluence Guide:</b><br>• <b>Single-Bar Isolation:</b> Chart markers and indicator sub-text strictly report the exact formation on the newest forming bar (<code>[-1]</code>) across Dashboard, Bots, and Backtest modes.<br>• <b>Confluence Integration:</b> When enabled in the confluence grid, confirmed bullish or bearish candlestick formations contribute directly to overall strategy confirmation score.`,
+            'Candle patterns': `<b>Candlestick Patterns (Institutional Price Action & Reversals)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Our institutional candlestick recognition engine automatically scans real-time price action to identify powerful single and multi-bar reversal and continuation formations (e.g., Bullish/Bearish Engulfing, Hammer, Shooting Star, Morning/Evening Star, Doji). It acts as an instant visual footprint of order flow, revealing exactly when institutional buyers or sellers are stepping in at key decision zones.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>To maintain lightning-fast calculation and clean, actionable charting without historical clutter, the engine evaluates the rolling 5-bar window but isolates and displays the detected pattern strictly on the latest forming candle (new candle).<br>• <b>Bullish Patterns (Green Arrow Up):</b> Formations such as Bullish Engulfing, Hammer, or Morning Star indicate strong demand absorption and potential upside bounces.<br>• <b>Bearish Patterns (Red Arrow Down):</b> Formations such as Bearish Engulfing, Shooting Star, or Evening Star indicate distribution and potential downward pressure.<br>• <b>Neutral / Indecision (Orange Circle):</b> Formations such as Doji or Spinning Top indicate equilibrium between buyers and sellers prior to a breakout.<br><br><b class="text-slate-800">Settings & Confluence Guide:</b><br>• <b>Single-Bar Isolation:</b> Chart markers and indicator sub-text strictly report the exact formation on the newest forming bar (<code>[-1]</code>) across Dashboard, Bots, and Backtest modes.<br>• <b>Confluence Integration:</b> When enabled in the confluence grid, confirmed bullish or bearish candlestick formations contribute directly to overall strategy confirmation score.`,
+            'ADX Trend': `<b>ADX (Average Directional Index)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>ADX quantifies the strength of a trend regardless of its direction, paired with Directional Indicators (+DI / -DI) to identify direction.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>ADX above 25 confirms a strong trending market. When +DI is above -DI, the trend is bullish; when -DI is above +DI, the trend is bearish.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Period (Default 14):</b> Lookback window for trend strength.<br>• <b>Trending Threshold (Default 25):</b> Minimum ADX value required to classify the market as trending.`,
+            'VWAP': `<b>VWAP (Volume Weighted Average Price)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>VWAP calculates the true average price a security traded at throughout the session weighted by volume — a primary benchmark for institutional algorithms.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Trading above VWAP reflects bullish intraday momentum; trading below indicates bearish selling pressure.`,
+            'Prior Day High/Low': `<b>Prior Day High/Low (PDH/PDL Breakout)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Uses the previous completed trading session's high and low as breakout/breakdown levels. These levels often act as institutional reference points for liquidity sweeps, continuation breaks, and failed-break reversals.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>A bullish signal fires when price breaks above the prior day high. A bearish signal fires when price breaks below the prior day low. The chart draws both prior-day levels so you can visually confirm whether price is inside yesterday's range or escaping it. When buffer is above 0, lighter dotted trigger lines show the actual buffered breakout levels.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Breakout Buffer (%) (Default 0.0):</b> Enter as percent points. Example: 0.5 means price must break 0.5% beyond PDH/PDL before a signal triggers. Higher values reduce false breaks but may enter later.`,
+            'Pivot Points (S/R)': `<b>Pivot Points (Support / Resistance)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Uses the previous completed trading session's high, low, and close to calculate classic floor-trader pivot levels: Pivot (P), supports (S1-S5), and resistances (R1-R5). These levels often act as intraday decision zones for liquidity, rejection, continuation, and profit-taking.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>A bullish signal fires when price reclaims S1 support or crosses back above the main Pivot. A bearish signal fires when price rejects R1 resistance or loses the main Pivot. The chart draws P plus your selected number of S/R ladders so you can see whether price is reclaiming support, stuck around fair value, or rejecting resistance.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>S/R Levels To Draw (1-5) (Default 1):</b> Controls how many support and resistance ladders are drawn. Example: 3 draws P, S1-S3, and R1-R3. The value is clamped to max 5.<br>• <b>Reclaim/Rejection Tolerance (%) (Default 0):</b> Percent buffer used when detecting support reclaims and resistance rejections. At 0, price must touch/cross the pivot level directly. Higher values allow a wider test zone; lower values require cleaner touches.<br><br><b class="text-slate-800">Formula:</b><br>P = (High + Low + Close) / 3. R1/S1 use the classic 2P formulas. R2/S2 use the prior session range. R3-S5 extend the ladder by range-based projection.`,
+            'Volume Profile': `<b>Volume Profile (POC / Value Area)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Builds a prior-session volume-at-price profile from completed candles and draws the Point of Control (POC), Value Area High (VAH), and Value Area Low (VAL). Institutions watch these zones because they show where the most accepted volume traded, not just where price briefly touched.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>A bullish signal fires when price reclaims POC, accepts above VAH, or bounces from VAL. A bearish signal fires when price loses POC, accepts below VAL, or rejects VAH. Inside the value area, the indicator stays neutral because price is still rotating around prior accepted value.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Profile Rows / Price Bins (Default 48):</b> Number of price buckets used to approximate volume-at-price. Higher values are more granular but noisier.<br>• <b>Value Area (%) (Default 70):</b> Percent of prior-session volume used to calculate VAH and VAL. 70% is the common market-profile standard.<br>• <b>Signal Tolerance (%) (Default 0.15):</b> Percent buffer around POC/VAH/VAL before reclaim/rejection signals trigger.<br>• <b>Acceptance Confirmation Candles (Default 1):</b> Number of consecutive completed candles required beyond VAH/VAL for acceptance.`,
+            'Swing Points': `<b>Swing Points (Structural Support / Resistance)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Finds rolling swing support and resistance clusters from local highs/lows, then scores them by wick rejection, volume, range expansion, recency, and repeated touches. This mirrors the Swing Points entry/exit strategy so confluence, bots, and backtests read the same structure.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>In Bounce / Retest mode, bullish signals fire on confirmed support bounces and bearish signals fire on resistance rejections. In Breakout / Retest mode, bullish signals fire when resistance is reclaimed and bearish signals fire when support is lost. The chart draws selected swing S/R levels as dotted structural zones.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Swing Lookback Days (Default 20):</b> How far back to search for structural swing levels.<br>• <b>Swing Entry Mode (Default Bounce / Retest):</b> Bounce / Retest favors reversals at support/resistance. Breakout / Retest favors continuation after reclaim or breakdown.<br>• <b>S/R Levels To Draw (1-5) (Default 1):</b> Number of nearest swing supports and resistances drawn on the chart.`,
+            'Strategy Confidence': `<b>Strategy Confidence Score</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Strategy Confidence aggregates all active indicators into a unified conviction rating.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Fires a confirmed overall signal only when the minimum required number of independent bullish or bearish indicators agree.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Min Bullish Signals (Default 4):</b> Minimum number of bullish indicators required.<br>• <b>Min Bearish Signals (Default 4):</b> Minimum number of bearish indicators required.`,
+            'BotBulls1': `<b>BotBulls 1 (Premium Oscillator WaveTrend + Institutional MFI)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 1 is a professional cyclical momentum oscillator paired with institutional Money Flow Index (MFI) confirmation. It helps traders pinpoint high-probability reversal zones while filtering out fake bottoms where institutional volume is absent.<br><br><b class="text-slate-800">How it works:</b><br>It combines a double-smoothed WaveTrend momentum cycle curve with a 14-period Money Flow Index (MFI). A confirmed <b class="text-emerald-500">BUY</b> signal fires when the fast momentum curve crosses above the slow curve in deep oversold territory (-53 or below), provided MFI verifies that institutional money flow is actively accumulating.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>WaveTrend Channel Period (Default 10):</b> Lookback window for measuring price momentum cycles. Lower values make the oscillator faster and more sensitive.<br>• <b>WaveTrend Average Period (Default 21):</b> Exponential smoothing length applied to the WaveTrend curves to eliminate jagged noise.<br>• <b>MFI Confirm Threshold (Default 30):</b> Maximum Money Flow Index level allowed for buy confirmation. Lower values (e.g., 20–25) enforce stricter oversold volume requirements.`,
+            'BotBulls2': `<b>BotBulls 2 (UT Bot — Universal Trailing Stop + Trend Tracer)</b><br><br><b class="text-amber-700">UT</b> stands for <b>Universal Trailing Stop</b> — a dynamic ATR-based trailing stop band that adapts to market volatility in real time, generating high-probability buy/sell signals when price crosses it.<br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 2 is a comprehensive multi-confluence trend and dynamic risk management suite. It protects capital by adapting trailing stop levels to real-time market volatility while filtering out choppy false breakouts through institutional momentum confirmation.<br><br><b class="text-slate-800">How it works:</b><br>It combines an adaptive Universal Trailing (UT) stop band, an institutional double-smoothed Trend Tracer EMA, and extreme statistical Reversal Zones.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>ATR Multiplier (Sensitivity):</b> Controls how tightly the trailing stop hugs price action. Lower values (e.g., 1.5–2.0) react faster for scalping; higher values (e.g., 2.5–3.0) give trades breathing room to ride extended trend swings without early shakeouts.<br>• <b>Trend Tracer Period:</b> Lookback window (default 50) for double-smoothed exponential trend alignment.<br>• <b>Reversal Zone Period:</b> Lookback window (default 50) for statistical deviation bands identifying overstretched extremes.`,
+            'BotBulls3': `<b>BotBulls 3 (HA + UT — Heikin-Ashi Filtered Trail)</b><br><br><b class="text-amber-700">HA</b> stands for <b>Heikin-Ashi</b> (Japanese for “Average Bar”) — a technique that mathematically smooths candlestick data to eliminate market noise, making true trend direction far clearer.<br><br><b class="text-amber-700">UT</b> stands for <b>Universal Trailing Stop</b> — an adaptive ATR-based trailing stop band that tracks volatility and signals momentum flips.<br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 3 is a pure volatility breakout momentum engine designed for fast scalping and intraday momentum. By running an adaptive Universal Trailing stop directly on noise-filtered Heikin-Ashi candles, it eliminates false whipsaws seen on standard price action charts.<br><br><b class="text-slate-800">How it works:</b><br>It converts standard price action into Heikin-Ashi smoothed candles, then applies a hyper-sensitive Universal Trailing stop band. When volatility expands and price breaks above the trailing channel on the HA chart, a high-probability breakout signal is generated.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>ATR Period (Default 10):</b> Lookback window for measuring true range volatility on Heikin-Ashi candles.<br>• <b>ATR Multiplier / Sensitivity (Default 1.0):</b> Trailing stop sensitivity threshold. Lower values (e.g., 1.0) react immediately to breakout momentum for scalping; higher values (e.g., 1.5–2.0) provide a wider buffer against intraday noise.`,
+            'Botbulls4 News AI': `<b>BotBulls 4 News AI (Premium AI News Sentiment)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 4 is an AI-powered fundamental sentiment intelligence engine. While technical indicators analyze price action, BotBulls 4 reads market news, macro catalysts, and earnings reports in real time, acting as a crucial fundamental guardrail against trading into negative news.<br><br><b class="text-slate-800">How it works:</b><br>It continuously fetches live financial headlines and macro-economic data, processing them through large language models (LLMs) to calculate an objective sentiment score (0–100%). When news is overwhelmingly positive, it fires a bullish sentiment confirmation.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Sentiment Bullish Percentage (Default 70%):</b> Minimum AI confidence threshold required to confirm a bullish news catalyst. Higher values (e.g., 75–80%) require overwhelmingly positive news before signaling.<br>• <b>Sentiment Bearish Percentage (Default 30%):</b> Score threshold below which news is classified as bearish. Values below this trigger defensive alerts or short confirmation.`
         };
 
         function openInfoModal(indicator) {

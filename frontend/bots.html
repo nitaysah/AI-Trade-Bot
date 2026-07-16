@@ -11,6 +11,7 @@
         href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
@@ -88,7 +89,7 @@
     <main class="max-w-5xl mx-auto px-4 py-4">
 
         <!-- ═══════════════ HEADER ═══════════════ -->
-        <header class="flex flex-col items-center text-center mb-6 gap-4 border-b border-purple-200/80 pb-4">
+        <header class="flex flex-col items-center text-center mb-3 gap-2 border-b border-purple-200/80 pb-2.5">
             <div class="space-y-1">
                 <h1
                     class="text-2xl md:text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-600 via-teal-600 to-indigo-600 leading-tight">
@@ -174,23 +175,23 @@
 
         <div id="dashboardContent" class="hidden space-y-4 animate-in fade-in duration-700">
             <!-- ═══════════════ BOT STATUS CARDS ═══════════════ -->
-            <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 md:gap-4 mb-6">
+            <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2 md:gap-2.5 mb-3">
                 <!-- 1. Total Equity -->
-                <div class="card-glass group">
+                <div class="card-glass group !p-3 sm:!p-3.5 flex flex-col justify-between">
                     <div class="card-glow"></div>
                     <h3 class="card-label">Total Equity</h3>
-                    <p class="card-value text-indigo-900 animate-pulse" id="totalCapital">---</p>
+                    <p class="card-value text-indigo-900 animate-pulse !my-1" id="totalCapital">---</p>
                     <span class="card-sub" id="cashDisplay">Cash: ---</span>
                 </div>
 
                 <!-- 2. Global Risk Settings -->
-                <div class="card-glass group !p-3 flex flex-col justify-between" id="globalRiskCard">
+                <div class="card-glass group !p-3 sm:!p-3.5 flex flex-col justify-between" id="globalRiskCard">
                     <div class="card-glow"></div>
                     <div class="flex justify-between items-center mb-1">
                         <h3 class="card-label !mb-0 text-[0.6rem] sm:text-[0.65rem] tracking-tight">Global Risk <span
                                 class="text-indigo-400/80 font-normal ml-0.5 tracking-normal">(Equity)</span></h3>
                     </div>
-                    <div class="space-y-1.5 flex-1 flex flex-col justify-center relative z-10">
+                    <div class="space-y-1 flex-1 flex flex-col justify-center relative z-10">
                         <div class="flex items-center justify-between gap-1">
                             <label
                                 class="text-[0.45rem] font-black text-indigo-900 uppercase tracking-widest leading-tight"
@@ -217,34 +218,34 @@
                 </div>
 
                 <!-- 3. Active Bots -->
-                <div class="card-glass group">
+                <div class="card-glass group !p-3 sm:!p-3.5 flex flex-col justify-between">
                     <div class="card-glow"></div>
                     <h3 class="card-label">Active Bots</h3>
-                    <p class="card-value text-emerald-600 animate-pulse" id="activeBotCount">0</p>
+                    <p class="card-value text-emerald-600 animate-pulse !my-1" id="activeBotCount">0</p>
                     <span class="card-sub" id="botStatusSub">No bots running</span>
                 </div>
 
                 <!-- 4. Open Positions -->
-                <div class="card-glass group">
+                <div class="card-glass group !p-3 sm:!p-3.5 flex flex-col justify-between">
                     <div class="card-glow"></div>
                     <h3 class="card-label">Open Positions</h3>
-                    <p class="card-value text-indigo-600 animate-pulse" id="openPositions">---</p>
+                    <p class="card-value text-indigo-600 animate-pulse !my-1" id="openPositions">---</p>
                     <span class="card-sub" id="positionsList">No positions</span>
                 </div>
 
                 <!-- 5. Daily Change -->
-                <div class="card-glass group">
+                <div class="card-glass group !p-3 sm:!p-3.5 flex flex-col justify-between">
                     <div class="card-glow"></div>
                     <h3 class="card-label">Daily Change</h3>
-                    <p class="card-value animate-pulse" id="dailyPL">---</p>
+                    <p class="card-value animate-pulse !my-1" id="dailyPL">---</p>
                     <span class="card-sub">Daily performance</span>
                 </div>
 
                 <!-- 6. Total P/L -->
-                <div class="card-glass group">
+                <div class="card-glass group !p-3 sm:!p-3.5 flex flex-col justify-between">
                     <div class="card-glow"></div>
                     <h3 class="card-label">Total P/L</h3>
-                    <p class="card-value animate-pulse" id="totalProfit">---</p>
+                    <p class="card-value animate-pulse !my-1" id="totalProfit">---</p>
                     <span class="card-sub" id="totalProfitSub">All-time performance</span>
                 </div>
             </div>
@@ -289,7 +290,7 @@
                     <div class="relative w-full z-50">
                         <input type="text" id="botSearchInput" autocomplete="off"
                             placeholder="Search symbol or company (e.g. AAPL, Bitcoin)"
-                            class="w-full bg-white border-2 border-indigo-100 rounded-xl px-2 sm:px-4 py-2 sm:py-3 text-indigo-900 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all shadow-sm">
+                            class="w-full bg-white border-2 border-indigo-100 rounded-xl px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm md:text-base text-indigo-900 font-bold placeholder:text-[10.5px] placeholder:sm:text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all shadow-sm">
                         <!-- Dropdown Results -->
                         <div id="botSearchResults"
                             class="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-2xl border border-indigo-100 overflow-hidden hidden max-h-60 overflow-y-auto z-50">
@@ -316,15 +317,15 @@
                         </div>
                         <div class="flex bg-indigo-50/50 p-1 rounded-xl border border-indigo-100 w-full sm:w-auto">
                             <button id="tabBotsAll" onclick="setBotTab('all')"
-                                class="flex-1 sm:flex-none px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all bg-white text-indigo-600 shadow-sm border border-indigo-100">
+                                class="flex-1 sm:flex-none px-3.5 py-1.5 text-xs font-black uppercase tracking-wider rounded-lg transition-all bg-white text-indigo-600 shadow-sm border border-indigo-100">
                                 All
                             </button>
                             <button id="tabBotsStocks" onclick="setBotTab('stocks')"
-                                class="flex-1 sm:flex-none px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600">
+                                class="flex-1 sm:flex-none px-3.5 py-1.5 text-xs font-black uppercase tracking-wider rounded-lg transition-all text-indigo-400 hover:text-indigo-600">
                                 Stocks
                             </button>
                             <button id="tabBotsCrypto" onclick="setBotTab('crypto')"
-                                class="flex-1 sm:flex-none px-3 py-1.5 text-[0.6rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600">
+                                class="flex-1 sm:flex-none px-3.5 py-1.5 text-xs font-black uppercase tracking-wider rounded-lg transition-all text-indigo-400 hover:text-indigo-600">
                                 Crypto
                             </button>
                         </div>
@@ -388,20 +389,20 @@
                         </div>
                     </div>
                     <div class="overflow-x-auto -mx-2 px-2 pb-2">
-                        <table class="w-full text-left border-collapse min-w-[800px]">
+                        <table class="w-full text-left border-collapse text-[10px] sm:text-xs">
                             <thead id="tradeLogHeader">
                                 <tr
-                                    class="border-b border-purple-200 text-purple-700 text-[10px] md:text-xs uppercase tracking-wider">
-                                    <th class="pb-3 pr-4">Time</th>
-                                    <th class="pb-3 pr-4">Action</th>
-                                    <th class="pb-3 pr-4">Ticker</th>
-                                    <th class="pb-3 pr-4 text-center">TF</th>
-                                    <th class="pb-3 pr-4">Price</th>
-                                    <th class="pb-3 pr-4">Signals</th>
-                                    <th class="pb-3 pr-4">AI Reason</th>
+                                    class="border-b border-purple-200 text-purple-700 text-[10px] sm:text-xs uppercase tracking-tight">
+                                    <th class="py-2 pr-2">Time</th>
+                                    <th class="py-2 pr-2">Action</th>
+                                    <th class="py-2 pr-2">Ticker</th>
+                                    <th class="py-2 pr-2 text-center">TF</th>
+                                    <th class="py-2 pr-2">Price</th>
+                                    <th class="py-2 pr-2">Signals</th>
+                                    <th class="py-2 pr-2">Reason</th>
                                 </tr>
                             </thead>
-                            <tbody id="tradeLogBody" class="text-[11px] md:text-sm">
+                            <tbody id="tradeLogBody" class="text-[10px] sm:text-xs">
                             </tbody>
                         </table>
                         <p id="noTradesMsg" class="text-center text-purple-400 text-xs md:text-sm py-6">Waiting for
@@ -465,7 +466,7 @@
                     </svg>
                 </button>
             </div>
-            <div class="p-8 space-y-6">
+            <div class="p-6 space-y-3">
                 <div class="space-y-2">
                     <label class="text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Alpaca API
                         Key</label>
@@ -655,7 +656,7 @@
             </div>
 
             <!-- Modal Body -->
-            <div class="p-8 overflow-y-auto space-y-8 custom-scrollbar">
+            <div class="p-6 overflow-y-auto space-y-3 custom-scrollbar">
 
                 <!-- Mini Chart Container -->
                 <div id="strategyPreviewChart"
@@ -727,7 +728,7 @@
                                 </div>
                             </div>
                         </div>
-                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div class="space-y-2">
                                 <label
                                     class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Trading
@@ -852,7 +853,7 @@
                         </div>
                         <div id="riskControlsContentWrapper_regular">
                             <div id="riskControlsContent"
-                                class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 transition-all duration-300">
+                                class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 transition-all duration-300">
                                 <div class="space-y-1">
                                     <label
                                         class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Risk
@@ -883,12 +884,18 @@
 
                     <!-- Indicators Selection -->
                     <div class="space-y-4">
-                        <div class="flex items-center gap-3">
-                            <div class="h-5 w-1.5 bg-gradient-to-b from-indigo-400 to-purple-500 rounded-full">
+                        <div class="flex items-center justify-between gap-3 flex-wrap">
+                            <div class="flex items-center gap-3">
+                                <div class="h-5 w-1.5 bg-gradient-to-b from-indigo-400 to-purple-500 rounded-full">
+                                </div>
+                                <label class="text-sm font-black text-indigo-900 uppercase tracking-widest">Enable
+                                    Strategy
+                                    Indicators</label>
                             </div>
-                            <label class="text-sm font-black text-indigo-900 uppercase tracking-widest">Enable
-                                Strategy
-                                Indicators</label>
+                            <button type="button" onclick="openStrategyChartPreview('regular')"
+                                class="px-3 py-1.5 rounded-xl bg-white/60 hover:bg-white/80 text-indigo-700 border border-indigo-200/80 text-[0.65rem] font-black uppercase tracking-[0.18em] shadow-sm transition-all">
+                                OPEN CHART PREVIEW
+                            </button>
                         </div>
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3" id="indicatorChecksContainer_regular">
                             <!-- Dynamic checkboxes will go here -->
@@ -897,21 +904,21 @@
                                 <div class="flex flex-col">
                                     <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">RSI<div
                                             class="group/tooltip relative inline-flex items-center ml-1">
-                                            <svg xmlns="http://www.w3.org/2000/svg"
-                                                class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
-                                                fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                            </svg>
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('RSI')"
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                        <div
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
                                             <div
-                                                class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                                Relative Strength Index (RSI) is a momentum oscillator. Purpose:
-                                                Identifies
-                                                overbought (>70) or oversold (<30) conditions. <div
-                                                    class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
                                             </div>
                                         </div>
-                                </div></span>
+                                    </div></span>
                                 <span
                                     class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Momentum</span>
                             </div>
@@ -939,17 +946,16 @@
                             <div class="flex flex-col">
                                 <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">MACD<div
                                         class="group/tooltip relative inline-flex items-center ml-1">
-                                        <svg xmlns="http://www.w3.org/2000/svg"
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('MACD')"
+                                            xmlns="http://www.w3.org/2000/svg"
                                             class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
                                             fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                                 d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                         </svg>
                                         <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                            Moving Average Convergence Divergence (MACD) shows the relationship
-                                            between two
-                                            moving averages. Purpose: Detects changes in trend momentum.
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
                                             <div
                                                 class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
                                             </div>
@@ -982,17 +988,16 @@
                             <div class="flex flex-col">
                                 <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">EMA Cross<div
                                         class="group/tooltip relative inline-flex items-center ml-1">
-                                        <svg xmlns="http://www.w3.org/2000/svg"
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('EMA Cross')"
+                                            xmlns="http://www.w3.org/2000/svg"
                                             class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
                                             fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                                 d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                         </svg>
                                         <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                            Exponential Moving Average (EMA) places greater weight on recent
-                                            prices.
-                                            Purpose: Reacts faster to price changes to catch trends early.
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
                                             <div
                                                 class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
                                             </div>
@@ -1025,19 +1030,16 @@
                             <div class="flex flex-col">
                                 <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">Supertrend<div
                                         class="group/tooltip relative inline-flex items-center ml-1">
-                                        <svg xmlns="http://www.w3.org/2000/svg"
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('Supertrend')"
+                                            xmlns="http://www.w3.org/2000/svg"
                                             class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
                                             fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                                 d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                         </svg>
                                         <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                            Supertrend is a trend-following indicator based on Average True
-                                            Range (ATR).
-                                            Purpose: Identifies the current market trend and provides dynamic
-                                            stop-loss
-                                            levels.
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
                                             <div
                                                 class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
                                             </div>
@@ -1070,18 +1072,16 @@
                             <div class="flex flex-col">
                                 <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">Bollinger<div
                                         class="group/tooltip relative inline-flex items-center ml-1">
-                                        <svg xmlns="http://www.w3.org/2000/svg"
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('Bollinger')"
+                                            xmlns="http://www.w3.org/2000/svg"
                                             class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
                                             fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                                 d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                         </svg>
                                         <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                            Bollinger Bands are volatility bands placed above and below a moving
-                                            average.
-                                            Purpose: Measures market volatility and potential
-                                            overbought/oversold levels.
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
                                             <div
                                                 class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
                                             </div>
@@ -1114,19 +1114,16 @@
                             <div class="flex flex-col">
                                 <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">VWAP<div
                                         class="group/tooltip relative inline-flex items-center ml-1">
-                                        <svg xmlns="http://www.w3.org/2000/svg"
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('VWAP')"
+                                            xmlns="http://www.w3.org/2000/svg"
                                             class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
                                             fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                                 d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                         </svg>
                                         <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                            Volume Weighted Average Price (VWAP) is the ratio of value traded to
-                                            total
-                                            volume. Purpose: Provides the true average price a security traded
-                                            at throughout
-                                            the day.
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
                                             <div
                                                 class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
                                             </div>
@@ -1145,18 +1142,16 @@
                             <div class="flex flex-col">
                                 <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">Mystic Pulse<div
                                         class="group/tooltip relative inline-flex items-center ml-1">
-                                        <svg xmlns="http://www.w3.org/2000/svg"
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('Mystic Pulse')"
+                                            xmlns="http://www.w3.org/2000/svg"
                                             class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
                                             fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                                 d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                         </svg>
                                         <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                            Mystic Pulse is a custom proprietary oscillator. Purpose: Combines
-                                            multi-timeframe momentum, volatility, and volume flow to detect
-                                            early trend
-                                            reversals.
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
                                             <div
                                                 class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
                                             </div>
@@ -1187,31 +1182,60 @@
                         <div class="indicator-card group p-2.5 sm:p-3 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
                             onclick="toggleIndicatorCard(this, event)">
                             <div class="flex flex-col">
-                                <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">Candle Patterns</span>
-                                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Price
-                                    Action</span>
-                            </div>
-                            <input type="checkbox"
-                                class="strategy-indicator-check strategy-indicator-check-regular w-5 h-5 accent-indigo-600 rounded"
-                                value="Candle Patterns" onclick="event.stopPropagation()"
-                                onchange="updateStrategySignalLabels('regular')">
-                        </div>
-                        <div class="indicator-card group p-2.5 sm:p-3 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
-                            onclick="toggleIndicatorCard(this, event)">
-                            <div class="flex flex-col">
-                                <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">ADX Trend<div
+                                <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">Candle Patterns<div
                                         class="group/tooltip relative inline-flex items-center ml-1">
-                                        <svg xmlns="http://www.w3.org/2000/svg"
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('Candle Patterns')"
+                                            xmlns="http://www.w3.org/2000/svg"
                                             class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
                                             fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                                 d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                         </svg>
                                         <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                            Average Directional Index (ADX) quantifies trend strength. Purpose:
-                                            Determines
-                                            if the market is trending strongly (ADX > 25) or ranging.
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
+                                            <div
+                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                            </div>
+                                        </div>
+                                    </div></span>
+                                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Price
+                                    Action</span>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <button
+                                    onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('Candle Patterns')"
+                                    class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50"
+                                    title="Candle Patterns Settings">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500"
+                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                            d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                    </svg>
+                                </button>
+                                <input type="checkbox"
+                                    class="strategy-indicator-check strategy-indicator-check-regular w-5 h-5 accent-indigo-600 rounded"
+                                    value="Candle Patterns" onclick="event.stopPropagation()"
+                                    onchange="updateStrategySignalLabels('regular')">
+                            </div>
+                        </div>
+                        <div class="indicator-card group p-2.5 sm:p-3 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
+                            onclick="toggleIndicatorCard(this, event)">
+                            <div class="flex flex-col">
+                                <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">ADX Trend<div
+                                        class="group/tooltip relative inline-flex items-center ml-1">
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('ADX Trend')"
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                        <div
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
                                             <div
                                                 class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
                                             </div>
@@ -1244,17 +1268,16 @@
                             <div class="flex flex-col">
                                 <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">SMA<div
                                         class="group/tooltip relative inline-flex items-center ml-1">
-                                        <svg xmlns="http://www.w3.org/2000/svg"
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('SMA')"
+                                            xmlns="http://www.w3.org/2000/svg"
                                             class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
                                             fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                                 d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                         </svg>
                                         <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                            Simple Moving Average (SMA) is the unweighted mean of previous
-                                            prices. Purpose:
-                                            Smooths out price data to identify trend direction.
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
                                             <div
                                                 class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
                                             </div>
@@ -1284,6 +1307,13 @@
                         </div>
 
                         <!-- Premium Indicators -->
+                        <div class="col-span-full mt-3 pt-3 border-t border-amber-200/60">
+                            <div class="flex items-center gap-2">
+                                <h3 class="text-xs font-black text-amber-700 uppercase tracking-widest">✦ Premium Indicators</h3>
+                                <span class="px-1.5 py-0.5 text-[9px] font-black bg-gradient-to-r from-amber-400 to-orange-500 text-white rounded-md uppercase tracking-wider shadow-sm">PRO</span>
+                            </div>
+                            <p class="mt-1 text-[0.6rem] font-bold text-amber-600 uppercase tracking-wider">Advanced BotBulls confluence modules</p>
+                        </div>
                         <div class="col-span-2 indicator-card group p-2.5 sm:p-3 border border-amber-300/30 bg-amber-50/5 hover:bg-amber-50/15 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
                             onclick="toggleIndicatorCard(this, event)">
                             <div class="flex flex-col">
@@ -1297,17 +1327,14 @@
                                                 d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                         </svg>
                                         <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                            WaveTrend momentum oscillator + Money Flow analysis. Detects
-                                            reversals when momentum and institutional volume flow align at
-                                            oversold/overbought extremes.
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
                                             <div
                                                 class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
                                             </div>
                                         </div>
                                     </div></span>
-                                <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium
-                                    Trend</span>
+                                <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium Oscillator WaveTrend</span>
                             </div>
                             <div class="flex items-center gap-2">
                                 <button
@@ -1342,17 +1369,14 @@
                                                 d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                         </svg>
                                         <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                            Adaptive ATR trailing stop with trend-smoothed EMA and reversal zone
-                                            detection. Fires on trend flips confirmed by multi-condition
-                                            confluence scoring (1-4 strength rating).
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
                                             <div
                                                 class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
                                             </div>
                                         </div>
                                     </div></span>
-                                <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium
-                                    Stop</span>
+                                <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium Smart Trail</span>
                             </div>
                             <div class="flex items-center gap-2">
                                 <button
@@ -1387,17 +1411,14 @@
                                                 d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                         </svg>
                                         <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                            Heikin-Ashi noise filter + ATR-based trailing stop. Generates
-                                            buy/sell alerts only on confirmed momentum flips — removing false
-                                            signals from choppy markets.
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
                                             <div
                                                 class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
                                             </div>
                                         </div>
                                     </div></span>
-                                <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium
-                                    HA</span>
+                                <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium Filtered Trail</span>
                             </div>
                             <div class="flex items-center gap-2">
                                 <button
@@ -1432,16 +1453,14 @@
                                                 d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                         </svg>
                                         <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                            Analyzes current news headlines and assigns a bullish/bearish score
-                                            based on natural language processing of market sentiment.
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
                                             <div
                                                 class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
                                             </div>
                                         </div>
                                     </div></span>
-                                <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium
-                                    AI</span>
+                                <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium AI News Sentiment</span>
                             </div>
                             <div class="flex items-center gap-2">
                                 <button
@@ -1484,7 +1503,7 @@
                             <option value="hybrid_pct">Hybrid (Indicator + Pct)</option>
 	                        <option value="pivot_points">Pivot Points (S/R Entry)</option>
                             <option value="hybrid_pivot">Hybrid (Indicator + Pivots)</option>
-	                        <option value="high_low">Daily High/Low (Directional Break)</option>
+	                        <option value="high_low">Prior Day High/Low (Directional Break)</option>
                             <option value="hybrid_high_low">Hybrid (Indicator + H/L)</option>
                             <option value="swing_points">Swing Points (Structure)</option>
                             <option value="hybrid_swing">Hybrid (Indicator + Swing)</option>
@@ -1664,7 +1683,7 @@
                             <option value="hybrid_pct">Hybrid (Indicator + Pct)</option>
                             <option value="pivot_points">Pivot Points (Resistance)</option>
                             <option value="hybrid_pivot">Hybrid (Indicator + Pivots)</option>
-                            <option value="high_low">Daily High/Low (Breakout)</option>
+                            <option value="high_low">Prior Day High/Low (Breakout)</option>
                             <option value="hybrid_high_low">Hybrid (Indicator + H/L)</option>
                             <option value="swing_points">Swing Points (Structure)</option>
                             <option value="hybrid_swing">Hybrid (Indicator + Swing)</option>
@@ -2022,7 +2041,7 @@
                             </div>
                         </div>
                     </div>
-                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <div class="space-y-2">
                             <label
                                 class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Trading
@@ -2072,7 +2091,7 @@
                 </div>
 
                 <!-- Contract Config -->
-                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div class="space-y-2">
                         <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Trade
                             Direction</label>
@@ -2141,7 +2160,7 @@
                     </div>
                     <div id="riskControlsContentWrapper_options">
                         <div id="riskControlsContent_options"
-                            class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 transition-all duration-300">
+                            class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 transition-all duration-300">
                             <div class="space-y-1">
                                 <label
                                     class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Risk
@@ -2169,12 +2188,18 @@
 
                 <!-- Indicators Selection -->
                 <div class="space-y-4">
-                    <div class="flex items-center gap-3">
-                        <div class="h-5 w-1.5 bg-gradient-to-b from-indigo-400 to-purple-500 rounded-full">
+                    <div class="flex items-center justify-between gap-3 flex-wrap">
+                        <div class="flex items-center gap-3">
+                            <div class="h-5 w-1.5 bg-gradient-to-b from-indigo-400 to-purple-500 rounded-full">
+                            </div>
+                            <label class="text-sm font-black text-indigo-900 uppercase tracking-widest">Enable
+                                Strategy
+                                Indicators</label>
                         </div>
-                        <label class="text-sm font-black text-indigo-900 uppercase tracking-widest">Enable
-                            Strategy
-                            Indicators</label>
+                        <button type="button" onclick="openStrategyChartPreview('options')"
+                            class="px-3 py-1.5 rounded-xl bg-white/60 hover:bg-white/80 text-indigo-700 border border-indigo-200/80 text-[0.65rem] font-black uppercase tracking-[0.18em] shadow-sm transition-all">
+                            OPEN CHART PREVIEW
+                        </button>
                     </div>
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3" id="indicatorChecksContainer_options">
                         <!-- Dynamic checkboxes will go here -->
@@ -2183,21 +2208,21 @@
                             <div class="flex flex-col">
                                 <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">RSI<div
                                         class="group/tooltip relative inline-flex items-center ml-1">
-                                        <svg xmlns="http://www.w3.org/2000/svg"
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('RSI')"
+                                            xmlns="http://www.w3.org/2000/svg"
                                             class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
                                             fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                                 d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                         </svg>
                                         <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                            Relative Strength Index (RSI) is a momentum oscillator. Purpose:
-                                            Identifies
-                                            overbought (>70) or oversold (<30) conditions. <div
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
+                                            <div
                                                 class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                            </div>
                                         </div>
-                                    </div>
-                            </div></span>
+                                    </div></span>
                             <span
                                 class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Momentum</span>
                         </div>
@@ -2225,22 +2250,21 @@
                         <div class="flex flex-col">
                             <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">MACD<div
                                     class="group/tooltip relative inline-flex items-center ml-1">
-                                    <svg xmlns="http://www.w3.org/2000/svg"
-                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
-                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    <div
-                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                        Moving Average Convergence Divergence (MACD) shows the relationship
-                                        between two
-                                        moving averages. Purpose: Detects changes in trend momentum.
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('MACD')"
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
                                         <div
-                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
+                                            <div
+                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                            </div>
                                         </div>
-                                    </div>
-                                </div></span>
+                                    </div></span>
                             <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Trend</span>
                         </div>
                         <div class="flex items-center gap-2">
@@ -2267,22 +2291,21 @@
                         <div class="flex flex-col">
                             <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">EMA Cross<div
                                     class="group/tooltip relative inline-flex items-center ml-1">
-                                    <svg xmlns="http://www.w3.org/2000/svg"
-                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
-                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    <div
-                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                        Exponential Moving Average (EMA) places greater weight on recent
-                                        prices.
-                                        Purpose: Reacts faster to price changes to catch trends early.
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('EMA Cross')"
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
                                         <div
-                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
+                                            <div
+                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                            </div>
                                         </div>
-                                    </div>
-                                </div></span>
+                                    </div></span>
                             <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Moving
                                 Avg</span>
                         </div>
@@ -2310,24 +2333,21 @@
                         <div class="flex flex-col">
                             <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">Supertrend<div
                                     class="group/tooltip relative inline-flex items-center ml-1">
-                                    <svg xmlns="http://www.w3.org/2000/svg"
-                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
-                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    <div
-                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                        Supertrend is a trend-following indicator based on Average True
-                                        Range (ATR).
-                                        Purpose: Identifies the current market trend and provides dynamic
-                                        stop-loss
-                                        levels.
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('Supertrend')"
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
                                         <div
-                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
+                                            <div
+                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                            </div>
                                         </div>
-                                    </div>
-                                </div></span>
+                                    </div></span>
                             <span
                                 class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Volatility</span>
                         </div>
@@ -2355,23 +2375,21 @@
                         <div class="flex flex-col">
                             <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">Bollinger<div
                                     class="group/tooltip relative inline-flex items-center ml-1">
-                                    <svg xmlns="http://www.w3.org/2000/svg"
-                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
-                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    <div
-                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                        Bollinger Bands are volatility bands placed above and below a moving
-                                        average.
-                                        Purpose: Measures market volatility and potential
-                                        overbought/oversold levels.
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('Bollinger')"
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
                                         <div
-                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
+                                            <div
+                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                            </div>
                                         </div>
-                                    </div>
-                                </div></span>
+                                    </div></span>
                             <span
                                 class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Deviation</span>
                         </div>
@@ -2399,24 +2417,21 @@
                         <div class="flex flex-col">
                             <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">VWAP<div
                                     class="group/tooltip relative inline-flex items-center ml-1">
-                                    <svg xmlns="http://www.w3.org/2000/svg"
-                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
-                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    <div
-                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                        Volume Weighted Average Price (VWAP) is the ratio of value traded to
-                                        total
-                                        volume. Purpose: Provides the true average price a security traded
-                                        at throughout
-                                        the day.
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('VWAP')"
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
                                         <div
-                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
+                                            <div
+                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                            </div>
                                         </div>
-                                    </div>
-                                </div></span>
+                                    </div></span>
                             <span
                                 class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Volume</span>
                         </div>
@@ -2430,23 +2445,21 @@
                         <div class="flex flex-col">
                             <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">Mystic Pulse<div
                                     class="group/tooltip relative inline-flex items-center ml-1">
-                                    <svg xmlns="http://www.w3.org/2000/svg"
-                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
-                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    <div
-                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                        Mystic Pulse is a custom proprietary oscillator. Purpose: Combines
-                                        multi-timeframe momentum, volatility, and volume flow to detect
-                                        early trend
-                                        reversals.
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('Mystic Pulse')"
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
                                         <div
-                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
+                                            <div
+                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                            </div>
                                         </div>
-                                    </div>
-                                </div></span>
+                                    </div></span>
                             <span
                                 class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Proprietary</span>
                         </div>
@@ -2472,36 +2485,65 @@
                     <div class="indicator-card group p-2.5 sm:p-3 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
                         onclick="toggleIndicatorCard(this, event)">
                         <div class="flex flex-col">
-                            <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">Candle Patterns</span>
-                            <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Price
-                                Action</span>
-                        </div>
-                        <input type="checkbox"
-                            class="strategy-indicator-check strategy-indicator-check-options w-5 h-5 accent-indigo-600 rounded"
-                            value="Candle Patterns" onclick="event.stopPropagation()"
-                            onchange="updateStrategySignalLabels('options')">
-                    </div>
-                    <div class="indicator-card group p-2.5 sm:p-3 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
-                        onclick="toggleIndicatorCard(this, event)">
-                        <div class="flex flex-col">
-                            <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">ADX Trend<div
+                            <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">Candle Patterns<div
                                     class="group/tooltip relative inline-flex items-center ml-1">
-                                    <svg xmlns="http://www.w3.org/2000/svg"
+                                    <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('Candle Patterns')"
+                                        xmlns="http://www.w3.org/2000/svg"
                                         class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
                                         fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                             d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                     </svg>
                                     <div
-                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                        Average Directional Index (ADX) quantifies trend strength. Purpose:
-                                        Determines
-                                        if the market is trending strongly (ADX > 25) or ranging.
+                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                        Click to read guide
                                         <div
                                             class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
                                         </div>
                                     </div>
                                 </div></span>
+                            <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Price
+                                Action</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button
+                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('Candle Patterns')"
+                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50"
+                                title="Candle Patterns Settings">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500"
+                                    fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                            </button>
+                            <input type="checkbox"
+                                class="strategy-indicator-check strategy-indicator-check-options w-5 h-5 accent-indigo-600 rounded"
+                                value="Candle Patterns" onclick="event.stopPropagation()"
+                                onchange="updateStrategySignalLabels('options')">
+                        </div>
+                    </div>
+                    <div class="indicator-card group p-2.5 sm:p-3 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
+                        onclick="toggleIndicatorCard(this, event)">
+                        <div class="flex flex-col">
+                            <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">ADX Trend<div
+                                    class="group/tooltip relative inline-flex items-center ml-1">
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('ADX Trend')"
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                        <div
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
+                                            <div
+                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                            </div>
+                                        </div>
+                                    </div></span>
                             <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Trend
                                 Filter</span>
                         </div>
@@ -2529,22 +2571,21 @@
                         <div class="flex flex-col">
                             <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">SMA<div
                                     class="group/tooltip relative inline-flex items-center ml-1">
-                                    <svg xmlns="http://www.w3.org/2000/svg"
-                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
-                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    <div
-                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                        Simple Moving Average (SMA) is the unweighted mean of previous
-                                        prices. Purpose:
-                                        Smooths out price data to identify trend direction.
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('SMA')"
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
                                         <div
-                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
+                                            <div
+                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                            </div>
                                         </div>
-                                    </div>
-                                </div></span>
+                                    </div></span>
                             <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">Trend
                                 Filter</span>
                         </div>
@@ -2569,30 +2610,34 @@
                     </div>
 
                     <!-- Premium Indicators -->
+                    <div class="col-span-full mt-3 pt-3 border-t border-amber-200/60">
+                        <div class="flex items-center gap-2">
+                            <h3 class="text-xs font-black text-amber-700 uppercase tracking-widest">✦ Premium Indicators</h3>
+                            <span class="px-1.5 py-0.5 text-[9px] font-black bg-gradient-to-r from-amber-400 to-orange-500 text-white rounded-md uppercase tracking-wider shadow-sm">PRO</span>
+                        </div>
+                        <p class="mt-1 text-[0.6rem] font-bold text-amber-600 uppercase tracking-wider">Advanced BotBulls confluence modules</p>
+                    </div>
                     <div class="col-span-2 indicator-card group p-2.5 sm:p-3 border border-amber-300/30 bg-amber-50/5 hover:bg-amber-50/15 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
                         onclick="toggleIndicatorCard(this, event)">
                         <div class="flex flex-col">
                             <span class="font-black text-amber-800 uppercase">✦ BotBulls1<div
                                     class="group/tooltip relative inline-flex items-center ml-1">
-                                    <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('BotBulls1')"
-                                        xmlns="http://www.w3.org/2000/svg"
-                                        class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors"
-                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    <div
-                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                        WaveTrend momentum oscillator + Money Flow analysis. Detects
-                                        reversals when momentum and institutional volume flow align at
-                                        oversold/overbought extremes.
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('BotBulls1')"
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
                                         <div
-                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
+                                            <div
+                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
+                                            </div>
                                         </div>
-                                    </div>
-                                </div></span>
-                            <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium
-                                Trend</span>
+                                    </div></span>
+                            <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium Oscillator WaveTrend</span>
                         </div>
                         <div class="flex items-center gap-2">
                             <button
@@ -2619,25 +2664,22 @@
                         <div class="flex flex-col">
                             <span class="font-black text-amber-800 uppercase">✦ BotBulls2<div
                                     class="group/tooltip relative inline-flex items-center ml-1">
-                                    <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('BotBulls2')"
-                                        xmlns="http://www.w3.org/2000/svg"
-                                        class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors"
-                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    <div
-                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                        Adaptive ATR trailing stop with trend-smoothed EMA and reversal zone
-                                        detection. Fires on trend flips confirmed by multi-condition
-                                        confluence scoring (1-4 strength rating).
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('BotBulls2')"
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
                                         <div
-                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
+                                            <div
+                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
+                                            </div>
                                         </div>
-                                    </div>
-                                </div></span>
-                            <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium
-                                Stop</span>
+                                    </div></span>
+                            <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium Smart Trail</span>
                         </div>
                         <div class="flex items-center gap-2">
                             <button
@@ -2664,25 +2706,22 @@
                         <div class="flex flex-col">
                             <span class="font-black text-amber-800 uppercase">✦ BotBulls3<div
                                     class="group/tooltip relative inline-flex items-center ml-1">
-                                    <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('BotBulls3')"
-                                        xmlns="http://www.w3.org/2000/svg"
-                                        class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors"
-                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    <div
-                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                        Heikin-Ashi noise filter + ATR-based trailing stop. Generates
-                                        buy/sell alerts only on confirmed momentum flips — removing false
-                                        signals from choppy markets.
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('BotBulls3')"
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
                                         <div
-                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
+                                            <div
+                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
+                                            </div>
                                         </div>
-                                    </div>
-                                </div></span>
-                            <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium
-                                HA</span>
+                                    </div></span>
+                            <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium Filtered Trail</span>
                         </div>
                         <div class="flex items-center gap-2">
                             <button
@@ -2709,24 +2748,22 @@
                         <div class="flex flex-col">
                             <span class="font-black text-amber-800 uppercase">✦ Botbulls4 News AI<div
                                     class="group/tooltip relative inline-flex items-center ml-1">
-                                    <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('Botbulls4 News AI')"
-                                        xmlns="http://www.w3.org/2000/svg"
-                                        class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors"
-                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    <div
-                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal">
-                                        Analyzes current news headlines and assigns a bullish/bearish score
-                                        based on natural language processing of market sentiment.
+                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('Botbulls4 News AI')"
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors"
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
                                         <div
-                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
+                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                            Click to read guide
+                                            <div
+                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
+                                            </div>
                                         </div>
-                                    </div>
-                                </div></span>
-                            <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium
-                                AI</span>
+                                    </div></span>
+                            <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium AI News Sentiment</span>
                         </div>
                         <div class="flex items-center gap-2">
                             <button
@@ -2769,7 +2806,7 @@
                         <option value="hybrid_pct">Hybrid (Indicator + Pct)</option>
                         <option value="pivot_points">Pivot Points (S/R Entry)</option>
                         <option value="hybrid_pivot">Hybrid (Indicator + Pivots)</option>
-                        <option value="high_low">Daily High/Low (Directional Break)</option>
+                        <option value="high_low">Prior Day High/Low (Directional Break)</option>
                         <option value="hybrid_high_low">Hybrid (Indicator + H/L)</option>
                         <option value="swing_points">Swing Points (Structure)</option>
                         <option value="hybrid_swing">Hybrid (Indicator + Swing)</option>
@@ -2978,7 +3015,7 @@
                         <option value="hybrid_pct">Hybrid (Indicator + Pct)</option>
                         <option value="pivot_points">Pivot Points (S/R Target/Stop)</option>
                         <option value="hybrid_pivot">Hybrid (Indicator + Pivots)</option>
-                        <option value="high_low">Daily High/Low (Target/Stop)</option>
+                        <option value="high_low">Prior Day High/Low (Target/Stop)</option>
                         <option value="hybrid_high_low">Hybrid (Indicator + H/L)</option>
                         <option value="swing_points">Swing Points (Structure)</option>
                         <option value="hybrid_swing">Hybrid (Indicator + Swing)</option>
@@ -3369,6 +3406,228 @@
     </div>
     </div>
 
+    <!-- Bot Chart Preview Modal -->
+    <div id="botChartPreviewModal"
+        class="fixed inset-0 bg-[radial-gradient(circle_at_top,_rgba(167,139,250,0.28),_rgba(15,23,42,0.48)_58%,_rgba(15,23,42,0.72)_100%)] backdrop-blur-md z-[190] hidden flex items-center justify-center p-3 sm:p-5">
+        <div
+            class="w-full max-w-4xl max-h-[92vh] overflow-hidden rounded-[2rem] border border-white/30 bg-[linear-gradient(135deg,rgba(255,255,255,0.88),rgba(245,243,255,0.84)_46%,rgba(237,233,254,0.8)_100%)] shadow-[0_30px_90px_rgba(76,29,149,0.28)] flex flex-col">
+            <div class="px-5 sm:px-7 py-4 sm:py-5 border-b border-purple-100/70 flex items-start justify-between gap-4">
+                <div class="min-w-0">
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <p id="botChartPreviewTitle" class="text-indigo-950 text-lg sm:text-xl font-black tracking-tight">Bot Chart Preview</p>
+                        <span id="botChartPreviewModeBadge"
+                            class="px-2.5 py-1 rounded-full bg-indigo-100/80 text-indigo-700 border border-indigo-200 text-[0.6rem] font-black uppercase tracking-[0.2em]">View</span>
+                        <span id="botChartPreviewAiBadge"
+                            class="hidden px-2.5 py-1 rounded-full bg-amber-100 text-amber-700 border border-amber-200 text-[0.6rem] font-black uppercase tracking-[0.16em]"></span>
+                    </div>
+                    <p id="botChartPreviewSubtitle" class="text-slate-600 text-sm mt-1">Review bot chart signals without leaving the Bots page.</p>
+                </div>
+                <button type="button" onclick="closeBotChartPreview()"
+                    class="shrink-0 text-slate-400 hover:text-indigo-700 transition-colors rounded-xl p-2 hover:bg-white/60">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd"
+                            d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                            clip-rule="evenodd" />
+                    </svg>
+                </button>
+            </div>
+
+            <div class="flex-1 overflow-y-auto px-4 sm:px-6 py-4 sm:py-5">
+                <div id="botChartPreviewBanner"
+                    class="hidden mb-4 rounded-2xl border border-indigo-200/80 bg-white/70 px-4 py-3 text-sm text-indigo-700 shadow-sm"></div>
+
+                <div class="grid grid-cols-1 gap-4 sm:gap-5">
+                    <div class="min-w-0 space-y-4">
+                        <div class="panel-glass relative overflow-hidden">
+                            <div id="botChartPreviewBoxLoading"
+                                class="hidden absolute inset-0 z-30 flex flex-col items-center justify-center bg-white/85 backdrop-blur-[2px] rounded-[1.5rem] transition-all duration-300">
+                                <div class="w-12 h-12 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mb-3"></div>
+                                <span id="botChartPreviewBoxLoadingText" class="text-xs font-black text-indigo-600 uppercase tracking-widest">Loading Chart...</span>
+                            </div>
+                            <div class="panel-top-bar bg-gradient-to-r from-indigo-400 to-purple-500"></div>
+                            <div class="flex items-start justify-between gap-3 flex-wrap mb-1">
+                                <div>
+                                    <div class="flex items-baseline gap-2">
+                                        <span id="botChartPreviewTickerLabel" class="text-xl font-black text-indigo-900">---</span>
+                                        <span id="botChartPreviewPrice" class="text-xl font-black text-emerald-600">---</span>
+                                    </div>
+                                    <div class="mt-0.5">
+                                        <span id="botChartPreviewPriceChange" class="text-xs font-bold text-emerald-500">Bot chart preview</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="chart-control-row chart-interval-row" id="botChartPreviewTfBar">
+                                <button class="chart-tf-btn" onclick="setBotChartPreviewTimeframe('1Min')"
+                                    data-tf="1Min">1m</button>
+                                <button class="chart-tf-btn" onclick="setBotChartPreviewTimeframe('5Min')"
+                                    data-tf="5Min">5m</button>
+                                <button class="chart-tf-btn" onclick="setBotChartPreviewTimeframe('15Min')"
+                                    data-tf="15Min">15m</button>
+                                <button class="chart-tf-btn" onclick="setBotChartPreviewTimeframe('30Min')"
+                                    data-tf="30Min">30m</button>
+                                <button class="chart-tf-btn" onclick="setBotChartPreviewTimeframe('1Hour')"
+                                    data-tf="1Hour">1h</button>
+                                <button class="chart-tf-btn" onclick="setBotChartPreviewTimeframe('4Hour')"
+                                    data-tf="4Hour">4h</button>
+                            </div>
+
+                            <div id="botChartPreviewOhlcvBar"
+                                class="chart-ohlcv-bar mb-1 text-[0.65rem] font-mono text-slate-500 flex gap-3 flex-wrap">
+                                <span>O: <span id="botChartPreviewOhlcvO" class="text-slate-700 font-bold">—</span></span>
+                                <span>H: <span id="botChartPreviewOhlcvH" class="text-emerald-600 font-bold">—</span></span>
+                                <span>L: <span id="botChartPreviewOhlcvL" class="text-red-500 font-bold">—</span></span>
+                                <span>C: <span id="botChartPreviewOhlcvC" class="text-slate-700 font-bold">—</span></span>
+                                <span>Vol: <span id="botChartPreviewOhlcvV" class="text-purple-600 font-bold">—</span></span>
+                            </div>
+
+                            <div class="chart-stage rounded-xl">
+                                <div class="chart-meta-strip">
+                                    <span id="botChartPreviewSessionStatus">Regular Hours</span>
+                                    <span id="botChartPreviewLastBarInfo">Last ticker/day: —</span>
+                                </div>
+                                <div id="botChartPreviewChart" class="h-[260px] sm:h-[320px] w-full webull-main-chart"></div>
+                            </div>
+
+                            <!-- Oscillator sub-panes for Bot Chart Preview -->
+                            <div class="relative">
+                                <div class="chart-osc-pane" id="botChartPreviewOsc_rsi" style="display: none;"></div>
+                                <div class="chart-osc-label" id="botChartPreviewRsiLabel" style="display: none;">RSI (14)</div>
+                            </div>
+                            <div class="relative group">
+                                <div class="chart-osc-pane" id="botChartPreviewOsc_macd" style="display: none;"></div>
+                                <div class="chart-osc-label" id="botChartPreviewMacdLabel" style="display: none;">MACD (12, 26, 9)</div>
+                            </div>
+                            <div class="relative group">
+                                <div class="chart-osc-pane" id="botChartPreviewOsc_mystic" style="display: none;"></div>
+                                <div class="chart-osc-label" id="botChartPreviewMysticLabel" style="display: none;">Mystic Pulse</div>
+                            </div>
+                            <div class="relative group">
+                                <div class="chart-osc-pane" id="botChartPreviewOsc_adx" style="display: none;"></div>
+                                <div class="chart-osc-label" id="botChartPreviewAdxLabel" style="display: none;">ADX (14) / DI+ / DI-</div>
+                            </div>
+                            <div class="relative group">
+                                <div class="chart-osc-pane" id="botChartPreviewOsc_botbulls1" style="display: none;"></div>
+                                <div class="chart-osc-label" id="botChartPreviewBotbulls1Label" style="display: none;">BotBulls1 (WaveTrend + MFI)</div>
+                            </div>
+
+                            <div class="chart-bottom-bar">
+                                <div class="chart-control-row chart-range-row" id="botChartPreviewRangeBar">
+                                    <button class="chart-range-btn chart-range-active"
+                                        onclick="setBotChartPreviewRange('1D')" data-range="1D">1D</button>
+                                    <button class="chart-range-btn" onclick="setBotChartPreviewRange('5D')"
+                                        data-range="5D">5D</button>
+                                    <button class="chart-range-btn" onclick="setBotChartPreviewRange('1M')"
+                                        data-range="1M">1M</button>
+                                    <button class="chart-range-btn" onclick="setBotChartPreviewRange('3M')"
+                                        data-range="3M">3M</button>
+                                    <button class="chart-range-btn" onclick="setBotChartPreviewRange('6M')"
+                                        data-range="6M">6M</button>
+                                    <button class="chart-range-btn" onclick="setBotChartPreviewRange('YTD')"
+                                        data-range="YTD">YTD</button>
+                                    <button class="chart-range-btn" onclick="setBotChartPreviewRange('1Y')"
+                                        data-range="1Y">1Y</button>
+                                    <button class="chart-range-btn" onclick="setBotChartPreviewRange('5Y')"
+                                        data-range="5Y">5Y</button>
+                                    <button class="chart-range-btn" onclick="setBotChartPreviewRange('MAX')"
+                                        data-range="MAX">Max</button>
+                                </div>
+                                <div class="chart-session-controls">
+                                    <button id="botChartPreviewRegularHoursBtn"
+                                        class="chart-session-btn chart-session-active"
+                                        onclick="setBotChartPreviewSession('regular')">Regular</button>
+                                    <button id="botChartPreviewExtendedHoursBtn" class="chart-session-btn"
+                                        onclick="setBotChartPreviewSession('extended')">Ext.</button>
+                                    <button id="botChartPreviewCryptoLiveBtn" class="chart-session-btn hidden"
+                                        onclick="setBotChartPreviewSession('crypto24')">24h Live</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="panel-glass relative">
+                            <div class="panel-top-bar bg-gradient-to-r from-fuchsia-400 to-pink-400"></div>
+                            <div class="flex justify-between items-center mb-4 gap-3 flex-wrap">
+                                <div class="flex items-center gap-3 min-w-0">
+                                    <h2 class="text-lg font-bold text-indigo-900">Indicator Signal Confluence</h2>
+                                    <p id="botChartPreviewReason" class="hidden"></p>
+                                </div>
+                                <div class="flex items-center gap-2 flex-wrap">
+                                    <button type="button"
+                                        onclick="resetBotChartPreviewIndicatorsToDefaults()"
+                                        title="Reset bot preview indicators"
+                                        aria-label="Reset bot preview indicators"
+                                        class="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full border border-slate-200 bg-white text-slate-500 hover:text-indigo-700 hover:border-indigo-200 hover:bg-indigo-50 transition-colors shadow-sm">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none"
+                                            viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.25"
+                                                d="M3 7.5l8.5-4.5 9 9-4.5 8.5H10l-7-7V7.5z" />
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.25"
+                                                d="M10 20l6.5-6.5" />
+                                        </svg>
+                                        <span class="text-[0.6rem] font-black uppercase tracking-widest">Reset</span>
+                                    </button>
+                                    <span
+                                        class="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700"
+                                        id="botChartPreviewBullCount">0 Bullish</span>
+                                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700"
+                                        id="botChartPreviewBearCount">0 Bearish</span>
+                                </div>
+                            </div>
+
+                            <div class="relative min-h-[120px]">
+                                <div id="botChartPreviewGridLoading"
+                                    class="hidden absolute inset-0 z-10 flex flex-col items-center justify-center bg-white/40 backdrop-blur-[2px] rounded-xl transition-all duration-300">
+                                    <div
+                                        class="w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mb-2">
+                                    </div>
+                                    <span
+                                        class="text-[0.65rem] font-bold text-indigo-600 uppercase tracking-widest">Fetching
+                                        Signals</span>
+                                </div>
+                                <div id="botChartPreviewSignalGrid" class="grid grid-cols-2 md:grid-cols-3 gap-3">
+                                    <!-- Signals injected by JS -->
+                                </div>
+
+                                <div class="mt-4 pt-3 border-t border-amber-200/60">
+                                    <div class="flex items-center gap-2 mb-3">
+                                        <h3 class="text-xs font-black text-amber-700 uppercase tracking-widest">
+                                            Premium Indicators
+                                        </h3>
+                                        <span
+                                            class="px-1.5 py-0.5 text-[9px] font-black bg-gradient-to-r from-amber-400 to-orange-500 text-white rounded-md uppercase tracking-wider shadow-sm">PRO</span>
+                                    </div>
+                                    <div id="botChartPreviewPremiumSignalGrid" class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                        <!-- Premium signals injected by JS -->
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+
+            <div class="px-4 sm:px-6 py-4 border-t border-purple-100/70 bg-white/60 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3">
+                <div class="flex items-stretch sm:items-center gap-3 w-full sm:w-auto justify-end sm:ml-auto">
+                    <button type="button" onclick="closeBotChartPreview()"
+                        class="px-4 py-3 rounded-2xl border border-purple-200 text-indigo-700 text-sm font-black uppercase tracking-[0.18em] hover:bg-white/80 transition-all">
+                        Close
+                    </button>
+                    <button type="button" id="botChartPreviewOpenSettingsButton"
+                        onclick="openBotChartPreviewSettings()"
+                        class="hidden px-4 py-3 rounded-2xl border border-sky-200 bg-sky-50 text-sky-700 text-sm font-black uppercase tracking-[0.18em] hover:bg-sky-100 transition-all">
+                        Open Bot Settings
+                    </button>
+                    <button type="button" id="botChartPreviewApplyButton"
+                        onclick="applyBotChartPreviewToSettings()"
+                        class="hidden px-4 py-3 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-sm font-black uppercase tracking-[0.18em] shadow-lg shadow-emerald-950/20 hover:shadow-emerald-950/40 transition-all">
+                        Apply To Bot Settings
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Indicator Settings Modal -->
     <div id="indicatorSettingsModal"
         class="fixed inset-0 bg-purple-950/15 backdrop-blur-md z-[200] hidden flex items-center justify-center p-4">
@@ -3385,7 +3644,7 @@
                 </button>
             </div>
 
-            <div class="p-6 space-y-4" id="indicatorModalContent">
+            <div class="p-6 space-y-3 overflow-y-auto max-h-[60vh] custom-scrollbar" id="indicatorModalContent">
                 <!-- Inputs injected by JS -->
             </div>
 
@@ -3427,7 +3686,7 @@
                     </svg>
                 </button>
             </div>
-            <div class="p-6 space-y-4 text-xs text-slate-600 leading-relaxed overflow-y-auto max-h-[70vh]">
+            <div class="p-6 space-y-3 text-xs text-slate-600 leading-relaxed overflow-y-auto max-h-[70vh]">
                 <p>
                     The <strong>BotBulls AI Analysis</strong> is an institutional-grade quantitative trading advisor
                     powered by advanced LLMs on <strong>Groq</strong> (utilizing <code>llama-3.3-70b-versatile</code>
@@ -3487,7 +3746,7 @@
                 </button>
             </div>
 
-            <div class="p-6 overflow-y-auto grow text-sm text-slate-700 space-y-4">
+            <div class="p-6 overflow-y-auto grow text-sm text-slate-700 space-y-3">
                 <div class="p-4 bg-rose-50 rounded-xl border border-rose-100 text-rose-800 font-medium">
                     Please read this agreement carefully before deploying any algorithmic trading bot.
                 </div>
@@ -3556,7 +3815,7 @@
                 </button>
             </div>
             <div id="infoModalContent"
-                class="p-6 space-y-4 text-xs text-slate-600 leading-relaxed overflow-y-auto max-h-[70vh]">
+                class="p-6 space-y-3 text-xs text-slate-600 leading-relaxed overflow-y-auto max-h-[70vh]">
                 <!-- Content injected here -->
             </div>
         </div>
@@ -3564,10 +3823,26 @@
 
     <script>
         const indicatorInfoMap = {
-            'BotBulls1': `<b>BotBulls 1 (WaveTrend + MFI)</b><br><br>BotBulls 1 is an advanced momentum oscillator modeled after famous premium "Sniper" indicators (like Market Cipher B).<br><br><b class="text-slate-800">How it works:</b><br>It combines a smoothed WaveTrend momentum oscillator with a 14-period Money Flow Index (MFI).<br><br><b class="text-slate-800">The Strategy:</b><br>It looks for precise reversal points. A <b class="text-emerald-500">BUY</b> signal fires when the fast momentum wave crosses the slow wave upwards while deep in the oversold zone (-53), but <i>only</i> if the Money Flow Index confirms institutional money is entering the asset (MFI < 30).`,
-            'BotBulls2': `<b>BotBulls 2 (Smart Trail + Trend Tracer)</b><br><br>BotBulls 2 is a powerful trend-following and dynamic stop-loss suite modeled after premium indicators like LuxAlgo Premium.<br><br><b class="text-slate-800">How it works:</b><br>It calculates an adaptive ATR trailing stop (Smart Trail), an institutional double-smoothed EMA (Trend Tracer), and extreme statistical deviation bands (Reversal Zones).<br><br><b class="text-slate-800">The Strategy:</b><br>It waits for a full confluence of momentum. It fires a signal when the asset flips bullish on the Smart Trail, holds above the Trend Tracer, and the RSI is in a healthy 40-70 range. It filters out false breakouts effectively.`,
-            'BotBulls3': `<b>BotBulls 3 (Heikin-Ashi Volatility)</b><br><br>BotBulls 3 is a pure volatility breakout momentum engine designed for fast scalping (such as 0-DTE options strategies).<br><br><b class="text-slate-800">How it works:</b><br>It converts standard price action into smoothed Heikin-Ashi candles to remove noise, then applies a hyper-sensitive Average True Range (ATR) trailing stop-loss directly to those smoothed candles.<br><br><b class="text-slate-800">The Strategy:</b><br>When sudden volatility expands and price breaks above the trailing ATR channel on the Heikin-Ashi chart, it fires a high-probability breakout signal. Best used for quick momentum scalps.`,
-            'Botbulls4 News AI': `<b>Botbulls 4 News AI (Fundamental Sentiment)</b><br><br>BotBulls 4 relies entirely on artificial intelligence and macro-fundamental data rather than price action.<br><br><b class="text-slate-800">How it works:</b><br>It continuously fetches real-time financial news, SEC filings, and macro-economic data, then feeds it through Groq's blazing-fast LLM to analyze the sentiment.<br><br><b class="text-slate-800">The Strategy:</b><br>If the AI determines the news is overwhelmingly bullish (e.g., strong earnings beat, massive new contract), it fires a buy signal. This indicator acts as an ultimate filter against trading into bad news.`
+            'RSI': `<b>RSI (Relative Strength Index)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>RSI is a classic momentum oscillator that measures the speed and magnitude of recent price changes on a 0 to 100 scale. It helps identify overbought or oversold conditions before trend reversals occur.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Values above 70 typically signal overbought conditions (potential pullback), while values below 30 signal oversold conditions (potential bounce).<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>RSI Period (Default 14):</b> Number of bars used in calculation. Smaller periods react faster.<br>• <b>Overbought Threshold (Default 70):</b> Upper boundary for overbought detection.<br>• <b>Oversold Threshold (Default 30):</b> Lower boundary for oversold detection.`,
+            'MACD': `<b>MACD (Moving Average Convergence Divergence)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>MACD is a trend-following momentum indicator that reveals the relationship between two moving averages of price.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>A bullish signal occurs when the MACD line crosses above the Signal line or histogram turns positive. A bearish signal occurs when MACD crosses below the Signal line.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Fast EMA (Default 12):</b> Lookback for short-term moving average.<br>• <b>Slow EMA (Default 26):</b> Lookback for long-term moving average.<br>• <b>Signal Period (Default 9):</b> Lookback for smoothing line.`,
+            'EMA Cross': `<b>EMA Cross (Exponential Moving Average Crossover)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Exponential Moving Averages place greater weight on recent price data to catch trend shifts earlier than simple averages.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>A Golden Cross (fast EMA crossing above slow EMA) confirms a bullish trend. A Death Cross (fast EMA crossing below slow EMA) confirms a bearish trend.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Fast Period (Default 9):</b> Shorter EMA reacting quickly to momentum shifts.<br>• <b>Slow Period (Default 21):</b> Baseline EMA defining the trend.`,
+            'SMA': `<b>SMA (Simple Moving Average)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>SMA calculates the unweighted mean of closing prices over a specified period to smooth out noise and establish macro trend direction.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Trading above the SMA indicates macro bullish bias; trading below indicates bearish bias.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>SMA Period (Default 200):</b> Lookback window for baseline trend identification.`,
+            'Bollinger': `<b>Bollinger Bands</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Bollinger Bands consist of a middle moving average surrounded by upper and lower standard deviation bands that expand and contract with market volatility.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Price touching the lower band signals potential oversold bounce opportunities; touching the upper band signals potential overbought conditions.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Period (Default 20):</b> Moving average lookback window.<br>• <b>Standard Deviation (Default 2.0):</b> Bandwidth multiplier controlling sensitivity.`,
+            'Supertrend': `<b>Supertrend</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Supertrend is a trend-following overlay based on Average True Range (ATR) that dynamically plots trailing support or resistance levels.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Fires a buy signal when price crosses above the upper Supertrend band; fires a sell signal when price crosses below.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Period (Default 10):</b> ATR lookback window.<br>• <b>Multiplier (Default 3.0):</b> Distance multiplier controlling stop width.`,
+            'Mystic Pulse': `<b>Mystic Pulse</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Mystic Pulse is a custom proprietary oscillator combining multi-timeframe momentum, volatility expansion, and institutional volume flow.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Detects early trend reversals before standard oscillators by analyzing volume convergence at cycle extremes.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Pulse Threshold (Default 5):</b> Sensitivity setting for triggering pulse alerts.`,
+            'Candle Patterns': `<b>Candlestick Patterns (Institutional Price Action & Reversals)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Our institutional candlestick recognition engine automatically scans real-time price action to identify powerful single and multi-bar reversal and continuation formations (e.g., Bullish/Bearish Engulfing, Hammer, Shooting Star, Morning/Evening Star, Doji). It acts as an instant visual footprint of order flow, revealing exactly when institutional buyers or sellers are stepping in at key decision zones.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>To maintain lightning-fast calculation and clean, actionable charting without historical clutter, the engine evaluates the rolling 5-bar window but isolates and displays the detected pattern strictly on the latest forming candle (new candle).<br>• <b>Bullish Patterns (Green Arrow Up):</b> Formations such as Bullish Engulfing, Hammer, or Morning Star indicate strong demand absorption and potential upside bounces.<br>• <b>Bearish Patterns (Red Arrow Down):</b> Formations such as Bearish Engulfing, Shooting Star, or Evening Star indicate distribution and potential downward pressure.<br>• <b>Neutral / Indecision (Orange Circle):</b> Formations such as Doji or Spinning Top indicate equilibrium between buyers and sellers prior to a breakout.<br><br><b class="text-slate-800">Settings & Confluence Guide:</b><br>• <b>Single-Bar Isolation:</b> Chart markers and indicator sub-text strictly report the exact formation on the newest forming bar (<code>[-1]</code>) across Dashboard, Bots, and Backtest modes.<br>• <b>Confluence Integration:</b> When enabled in the confluence grid, confirmed bullish or bearish candlestick formations contribute directly to overall strategy confirmation score.`,
+            'Candle patterns': `<b>Candlestick Patterns (Institutional Price Action & Reversals)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Our institutional candlestick recognition engine automatically scans real-time price action to identify powerful single and multi-bar reversal and continuation formations (e.g., Bullish/Bearish Engulfing, Hammer, Shooting Star, Morning/Evening Star, Doji). It acts as an instant visual footprint of order flow, revealing exactly when institutional buyers or sellers are stepping in at key decision zones.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>To maintain lightning-fast calculation and clean, actionable charting without historical clutter, the engine evaluates the rolling 5-bar window but isolates and displays the detected pattern strictly on the latest forming candle (new candle).<br>• <b>Bullish Patterns (Green Arrow Up):</b> Formations such as Bullish Engulfing, Hammer, or Morning Star indicate strong demand absorption and potential upside bounces.<br>• <b>Bearish Patterns (Red Arrow Down):</b> Formations such as Bearish Engulfing, Shooting Star, or Evening Star indicate distribution and potential downward pressure.<br>• <b>Neutral / Indecision (Orange Circle):</b> Formations such as Doji or Spinning Top indicate equilibrium between buyers and sellers prior to a breakout.<br><br><b class="text-slate-800">Settings & Confluence Guide:</b><br>• <b>Single-Bar Isolation:</b> Chart markers and indicator sub-text strictly report the exact formation on the newest forming bar (<code>[-1]</code>) across Dashboard, Bots, and Backtest modes.<br>• <b>Confluence Integration:</b> When enabled in the confluence grid, confirmed bullish or bearish candlestick formations contribute directly to overall strategy confirmation score.`,
+            'ADX Trend': `<b>ADX (Average Directional Index)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>ADX quantifies the strength of a trend regardless of its direction, paired with Directional Indicators (+DI / -DI) to identify direction.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>ADX above 25 confirms a strong trending market. When +DI is above -DI, the trend is bullish; when -DI is above +DI, the trend is bearish.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Period (Default 14):</b> Lookback window for trend strength.<br>• <b>Trending Threshold (Default 25):</b> Minimum ADX value required to classify the market as trending.`,
+            'VWAP': `<b>VWAP (Volume Weighted Average Price)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>VWAP calculates the true average price a security traded at throughout the session weighted by volume — a primary benchmark for institutional algorithms.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Trading above VWAP reflects bullish intraday momentum; trading below indicates bearish selling pressure.`,
+            'Prior Day High/Low': `<b>Prior Day High/Low (PDH/PDL Breakout)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Uses the previous completed trading session's high and low as breakout/breakdown levels. These levels often act as institutional reference points for liquidity sweeps, continuation breaks, and failed-break reversals.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>A bullish signal fires when price breaks above the prior day high. A bearish signal fires when price breaks below the prior day low. The chart draws both prior-day levels so you can visually confirm whether price is inside yesterday's range or escaping it. When buffer is above 0, lighter dotted trigger lines show the actual buffered breakout levels.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Breakout Buffer (%) (Default 0.0):</b> Enter as percent points. Example: 0.5 means price must break 0.5% beyond PDH/PDL before a signal triggers. Higher values reduce false breaks but may enter later.`,
+            'Pivot Points (S/R)': `<b>Pivot Points (Support / Resistance)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Uses the previous completed trading session's high, low, and close to calculate classic floor-trader pivot levels: Pivot (P), supports (S1-S5), and resistances (R1-R5). These levels often act as intraday decision zones for liquidity, rejection, continuation, and profit-taking.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>A bullish signal fires when price reclaims S1 support or crosses back above the main Pivot. A bearish signal fires when price rejects R1 resistance or loses the main Pivot. The chart draws P plus your selected number of S/R ladders so you can see whether price is reclaiming support, stuck around fair value, or rejecting resistance.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>S/R Levels To Draw (1-5) (Default 1):</b> Controls how many support and resistance ladders are drawn. Example: 3 draws P, S1-S3, and R1-R3. The value is clamped to max 5.<br>• <b>Reclaim/Rejection Tolerance (%) (Default 0):</b> Percent buffer used when detecting support reclaims and resistance rejections. At 0, price must touch/cross the pivot level directly. Higher values allow a wider test zone; lower values require cleaner touches.<br><br><b class="text-slate-800">Formula:</b><br>P = (High + Low + Close) / 3. R1/S1 use the classic 2P formulas. R2/S2 use the prior session range. R3-S5 extend the ladder by range-based projection.`,
+            'Volume Profile': `<b>Volume Profile (POC / Value Area)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Builds a prior-session volume-at-price profile from completed candles and draws the Point of Control (POC), Value Area High (VAH), and Value Area Low (VAL). Institutions watch these zones because they show where the most accepted volume traded, not just where price briefly touched.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>A bullish signal fires when price reclaims POC, accepts above VAH, or bounces from VAL. A bearish signal fires when price loses POC, accepts below VAL, or rejects VAH. Inside the value area, the indicator stays neutral because price is still rotating around prior accepted value.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Profile Rows / Price Bins (Default 48):</b> Number of price buckets used to approximate volume-at-price. Higher values are more granular but noisier.<br>• <b>Value Area (%) (Default 70):</b> Percent of prior-session volume used to calculate VAH and VAL. 70% is the common market-profile standard.<br>• <b>Signal Tolerance (%) (Default 0.15):</b> Percent buffer around POC/VAH/VAL before reclaim/rejection signals trigger.<br>• <b>Acceptance Confirmation Candles (Default 1):</b> Number of consecutive completed candles required beyond VAH/VAL for acceptance.`,
+            'Swing Points': `<b>Swing Points (Structural Support / Resistance)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Finds rolling swing support and resistance clusters from local highs/lows, then scores them by wick rejection, volume, range expansion, recency, and repeated touches. This mirrors the Swing Points entry/exit strategy so confluence, bots, and backtests read the same structure.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>In Bounce / Retest mode, bullish signals fire on confirmed support bounces and bearish signals fire on resistance rejections. In Breakout / Retest mode, bullish signals fire when resistance is reclaimed and bearish signals fire when support is lost. The chart draws selected swing S/R levels as dotted structural zones.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Swing Lookback Days (Default 20):</b> How far back to search for structural swing levels.<br>• <b>Swing Entry Mode (Default Bounce / Retest):</b> Bounce / Retest favors reversals at support/resistance. Breakout / Retest favors continuation after reclaim or breakdown.<br>• <b>S/R Levels To Draw (1-5) (Default 1):</b> Number of nearest swing supports and resistances drawn on the chart.`,
+            'Strategy Confidence': `<b>Strategy Confidence Score</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Strategy Confidence aggregates all active indicators into a unified conviction rating.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Fires a confirmed overall signal only when the minimum required number of independent bullish or bearish indicators agree.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Min Bullish Signals (Default 4):</b> Minimum number of bullish indicators required.<br>• <b>Min Bearish Signals (Default 4):</b> Minimum number of bearish indicators required.`,
+            'BotBulls1': `<b>BotBulls 1 (Premium Oscillator WaveTrend + Institutional MFI)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 1 is a professional cyclical momentum oscillator paired with institutional Money Flow Index (MFI) confirmation. It helps traders pinpoint high-probability reversal zones while filtering out fake bottoms where institutional volume is absent.<br><br><b class="text-slate-800">How it works:</b><br>It combines a double-smoothed WaveTrend momentum cycle curve with a 14-period Money Flow Index (MFI). A confirmed <b class="text-emerald-500">BUY</b> signal fires when the fast momentum curve crosses above the slow curve in deep oversold territory (-53 or below), provided MFI verifies that institutional money flow is actively accumulating.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>WaveTrend Channel Period (Default 10):</b> Lookback window for measuring price momentum cycles. Lower values make the oscillator faster and more sensitive.<br>• <b>WaveTrend Average Period (Default 21):</b> Exponential smoothing length applied to the WaveTrend curves to eliminate jagged noise.<br>• <b>MFI Confirm Threshold (Default 30):</b> Maximum Money Flow Index level allowed for buy confirmation. Lower values (e.g., 20–25) enforce stricter oversold volume requirements.`,
+            'BotBulls2': `<b>BotBulls 2 (UT Bot — Universal Trailing Stop + Trend Tracer)</b><br><br><b class="text-amber-700">UT</b> stands for <b>Universal Trailing Stop</b> — a dynamic ATR-based trailing stop band that adapts to market volatility in real time, generating high-probability buy/sell signals when price crosses it.<br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 2 is a comprehensive multi-confluence trend and dynamic risk management suite. It protects capital by adapting trailing stop levels to real-time market volatility while filtering out choppy false breakouts through institutional momentum confirmation.<br><br><b class="text-slate-800">How it works:</b><br>It combines an adaptive Universal Trailing (UT) stop band, an institutional double-smoothed Trend Tracer EMA, and extreme statistical Reversal Zones.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>ATR Multiplier (Sensitivity):</b> Controls how tightly the trailing stop hugs price action. Lower values (e.g., 1.5–2.0) react faster for scalping; higher values (e.g., 2.5–3.0) give trades breathing room to ride extended trend swings without early shakeouts.<br>• <b>Trend Tracer Period:</b> Lookback window (default 50) for double-smoothed exponential trend alignment.<br>• <b>Reversal Zone Period:</b> Lookback window (default 50) for statistical deviation bands identifying overstretched extremes.`,
+            'BotBulls3': `<b>BotBulls 3 (HA + UT — Heikin-Ashi Filtered Trail)</b><br><br><b class="text-amber-700">HA</b> stands for <b>Heikin-Ashi</b> (Japanese for “Average Bar”) — a technique that mathematically smooths candlestick data to eliminate market noise, making true trend direction far clearer.<br><br><b class="text-amber-700">UT</b> stands for <b>Universal Trailing Stop</b> — an adaptive ATR-based trailing stop band that tracks volatility and signals momentum flips.<br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 3 is a pure volatility breakout momentum engine designed for fast scalping and intraday momentum. By running an adaptive Universal Trailing stop directly on noise-filtered Heikin-Ashi candles, it eliminates false whipsaws seen on standard price action charts.<br><br><b class="text-slate-800">How it works:</b><br>It converts standard price action into Heikin-Ashi smoothed candles, then applies a hyper-sensitive Universal Trailing stop band. When volatility expands and price breaks above the trailing channel on the HA chart, a high-probability breakout signal is generated.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>ATR Period (Default 10):</b> Lookback window for measuring true range volatility on Heikin-Ashi candles.<br>• <b>ATR Multiplier / Sensitivity (Default 1.0):</b> Trailing stop sensitivity threshold. Lower values (e.g., 1.0) react immediately to breakout momentum for scalping; higher values (e.g., 1.5–2.0) provide a wider buffer against intraday noise.`,
+            'Botbulls4 News AI': `<b>BotBulls 4 News AI (Premium AI News Sentiment)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 4 is an AI-powered fundamental sentiment intelligence engine. While technical indicators analyze price action, BotBulls 4 reads market news, macro catalysts, and earnings reports in real time, acting as a crucial fundamental guardrail against trading into negative news.<br><br><b class="text-slate-800">How it works:</b><br>It continuously fetches live financial headlines and macro-economic data, processing them through large language models (LLMs) to calculate an objective sentiment score (0–100%). When news is overwhelmingly positive, it fires a bullish sentiment confirmation.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Sentiment Bullish Percentage (Default 70%):</b> Minimum AI confidence threshold required to confirm a bullish news catalyst. Higher values (e.g., 75–80%) require overwhelmingly positive news before signaling.<br>• <b>Sentiment Bearish Percentage (Default 30%):</b> Score threshold below which news is classified as bearish. Values below this trigger defensive alerts or short confirmation.`
         };
 
         function openInfoModal(indicator) {

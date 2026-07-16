@@ -48,6 +48,10 @@ GROQ_API_KEY=your_groq_api_key_here
 ALPACA_API_KEY=your_alpaca_key_here
 ALPACA_SECRET_KEY=your_alpaca_secret_here
 ALPACA_PAPER=true
+
+# Massive API Credentials
+MASSIVE_API_KEY=your_massive_api_key_here
+MASSIVE_BASE_URL=https://api.massive.com
 EOT
     echo "✅ .env file created. Please fill in your API keys."
 else

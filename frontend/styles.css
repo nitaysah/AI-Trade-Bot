@@ -162,6 +162,11 @@
     box-shadow: 0 4px 16px rgba(251, 191, 36, 0.18);
 }
 
+#botChartPreviewModal .signal-card {
+    padding: 0.45rem 0.55rem;
+    border-radius: 0.6rem;
+}
+
 /* ── Verdict Bar ── */
 .verdict-buy {
     background: rgba(16, 185, 129, 0.08);
@@ -181,8 +186,8 @@
 /* ── Watchlist Items ── */
 .watchlist-item {
     display: block;
-    padding: 0.625rem 0.75rem;
-    border-radius: 0.625rem;
+    padding: 0.35rem 0.6rem;
+    border-radius: 0.5rem;
     background: rgba(255, 255, 255, 0.5);
     border: 1px solid rgba(192, 132, 252, 0.15);
     cursor: pointer;
@@ -190,17 +195,16 @@
 }
 
 .watchlist-item:hover {
-    background: rgba(255, 255, 255, 0.8);
-    border-color: rgba(139, 92, 246, 0.3);
-    transform: translateX(2px);
+    background: rgba(255, 255, 255, 0.85);
+    border-color: rgba(139, 92, 246, 0.4);
 }
 
 .watchlist-item.active {
-    background: rgba(139, 92, 246, 0.15);
-    border-color: rgba(139, 92, 246, 0.6);
-    box-shadow: 0 0 20px rgba(139, 92, 246, 0.4), inset 0 0 10px rgba(139, 92, 246, 0.1);
-    transform: scale(1.02);
-    z-index: 10;
+    background: rgba(139, 92, 246, 0.14);
+    border-color: rgba(139, 92, 246, 0.8);
+    box-shadow: 0 4px 14px rgba(139, 92, 246, 0.15), inset 0 0 0 1px rgba(139, 92, 246, 0.4);
+    transform: none;
+    z-index: 5;
 }
 
 .watchlist-delete {
@@ -522,18 +526,48 @@
     background: #fafbff;
 }
 
+#botChartPreviewModal .chart-osc-pane {
+    height: 85px;
+    min-height: 85px;
+    max-height: 85px;
+}
+
 .chart-osc-label {
     position: absolute;
-    top: 4px;
+    top: 5px;
     left: 8px;
-    z-index: 10;
-    font-size: 0.6rem;
+    z-index: 100 !important;
+    font-size: 0.68rem;
     font-weight: 800;
-    color: #94a3b8;
+    color: #1e293b;
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid rgba(148, 163, 184, 0.45);
+    padding: 2px 7px;
+    border-radius: 6px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.04em;
     pointer-events: none;
     display: none; /* Hidden by default, same as pane */
+}
+
+@media (max-width: 640px) {
+    .chart-osc-label {
+        top: 3px;
+        left: 4px;
+        font-size: 0.65rem;
+        padding: 2px 6px;
+        background: rgba(255, 255, 255, 0.96);
+        border-color: rgba(100, 116, 139, 0.5);
+        color: #0f172a;
+        z-index: 100 !important;
+    }
+    #botChartPreviewSignalGrid,
+    #botChartPreviewPremiumSignalGrid,
+    #signalGrid,
+    #premiumSignalGrid {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    }
 }
 
 /* Show labels when panes are active */
@@ -543,7 +577,12 @@
 .relative:has(#oscChart_macd:not([style*="display: none"])) .chart-osc-label,
 .relative:has(#oscChart_mystic:not([style*="display: none"])) .chart-osc-label,
 .relative:has(#oscChart_adx:not([style*="display: none"])) .chart-osc-label,
-.relative:has(#oscChart_botbulls1:not([style*="display: none"])) .chart-osc-label {
+.relative:has(#oscChart_botbulls1:not([style*="display: none"])) .chart-osc-label,
+.relative:has(#botChartPreviewOsc_rsi:not([style*="display: none"])) .chart-osc-label,
+.relative:has(#botChartPreviewOsc_macd:not([style*="display: none"])) .chart-osc-label,
+.relative:has(#botChartPreviewOsc_mystic:not([style*="display: none"])) .chart-osc-label,
+.relative:has(#botChartPreviewOsc_adx:not([style*="display: none"])) .chart-osc-label,
+.relative:has(#botChartPreviewOsc_botbulls1:not([style*="display: none"])) .chart-osc-label {
     display: block;
 }
 
@@ -945,10 +984,10 @@
     );
     border-color: rgba(245, 158, 11, 0.9);
     box-shadow: 
-        0 0 25px rgba(245, 158, 11, 0.5),
-        inset 0 1px 0 rgba(255, 255, 255, 0.9);
-    transform: scale(1.02);
-    z-index: 10;
+        0 4px 14px rgba(245, 158, 11, 0.2),
+        inset 0 0 0 1px rgba(245, 158, 11, 0.4);
+    transform: none;
+    z-index: 5;
 }
 
 /* Glowing golden accent bar for options */
@@ -1010,10 +1049,10 @@
     );
     border-color: rgba(244, 114, 182, 0.9);
     box-shadow: 
-        0 0 25px rgba(244, 114, 182, 0.5),
-        inset 0 1px 0 rgba(255, 255, 255, 0.9);
-    transform: scale(1.02);
-    z-index: 10;
+        0 4px 14px rgba(244, 114, 182, 0.2),
+        inset 0 0 0 1px rgba(244, 114, 182, 0.4);
+    transform: none;
+    z-index: 5;
 }
 
 /* Glowing pinkish gold accent bar for crypto */

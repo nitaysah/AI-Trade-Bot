@@ -7,6 +7,13 @@ from broker_factory import create_broker
 from trader import evaluate_trade
 from swing_strategy import build_swing_exit
 from options_direction import normalize_options_type, VALID_OPTION_DIRECTIONS, options_type_to_contract_type
+from prior_day_high_low import (
+    buffered_prior_day_levels,
+    dynamic_high_low_exit_levels as _buffered_dynamic_high_low_exit_levels,
+    price_history_days_central,
+    prior_day_ohlc_from_history as _shared_prior_day_ohlc_from_history,
+    resolve_high_low_buffer_pct,
+)
 from firebase_admin import firestore
 import config as global_config
 from user_config import UserConfig, set_user_config
@@ -40,34 +47,7 @@ def _safe_float(value, fallback: float = 0.0) -> float:
 
 
 def _price_history_days(price_history):
-    if not price_history:
-        return []
-
-    ny_tz = pytz.timezone("America/New_York")
-    days = {}
-    for candle in price_history:
-        try:
-            ts = candle.get("time")
-            if ts is None:
-                continue
-            if isinstance(ts, (int, float)):
-                dt = datetime.fromtimestamp(float(ts), ny_tz)
-            else:
-                ts_text = str(ts).strip()
-                try:
-                    dt = datetime.fromtimestamp(float(ts_text), ny_tz)
-                except (TypeError, ValueError):
-                    dt = datetime.fromisoformat(ts_text.replace("Z", "+00:00"))
-                    if dt.tzinfo is None:
-                        dt = ny_tz.localize(dt)
-                    else:
-                        dt = dt.astimezone(ny_tz)
-            key = dt.strftime("%Y-%m-%d")
-            days.setdefault(key, []).append(candle)
-        except Exception:
-            continue
-
-    return [(day, days[day]) for day in sorted(days)]
+    return price_history_days_central(price_history)
 
 
 def _ohlc_from_candles(candles):
@@ -86,10 +66,7 @@ def _ohlc_from_candles(candles):
 
 
 def _prior_day_ohlc_from_history(price_history):
-    days = _price_history_days(price_history)
-    if len(days) < 2:
-        return None
-    return _ohlc_from_candles(days[-2][1])
+    return _shared_prior_day_ohlc_from_history(price_history)
 
 
 def _current_day_range_from_history(price_history):
@@ -129,6 +106,47 @@ def _is_crypto_symbol(symbol: str) -> bool:
     return clean.endswith(("USD", "USDT", "USDC")) or clean in {"BTC", "ETH", "XRP", "DOGE", "LTC", "ADA", "SOL"}
 
 
+def _exit_signal_threshold(settings: dict, fallback: int = 1) -> int:
+    return max(
+        1,
+        int(
+            _safe_float(
+                (settings or {}).get("min_sell_signals", (settings or {}).get("sell_threshold", fallback)),
+                fallback,
+            )
+        ),
+    )
+
+
+def _mark_exit_signal_watch(result: dict, settings: dict, *, is_long: bool = True, prefix: str = "Position open") -> None:
+    """Keep open-position scan logs focused on exit monitoring, not fresh entries."""
+    threshold = _exit_signal_threshold(settings, getattr(global_config, "MIN_BEARISH_SIGNALS", 1))
+    bullish_count = int(_safe_float(result.get("bullish_count"), 0))
+    bearish_count = int(_safe_float(result.get("bearish_count"), 0))
+    exit_count = bearish_count if is_long else bullish_count
+    exit_direction = "BEARISH" if is_long else "BULLISH"
+    exit_suffix = "S" if is_long else "B"
+    result["action"] = "HOLD"
+    result["exit_monitoring"] = True
+    result["exit_signal_count"] = exit_count
+    result["exit_signal_threshold"] = threshold
+    result["exit_signal_direction"] = exit_direction
+    result["exit_signal_label"] = f"Exit {exit_count}/{threshold}{exit_suffix}"
+    result["reason"] = (
+        f"{prefix}. Checking exit signals: {exit_count}/{threshold} {exit_direction} confirmed "
+        f"({bullish_count}B / {bearish_count}S)."
+    )
+
+
+def _mark_exit_level_watch(result: dict, label: str, reason: str, details: dict = None) -> None:
+    result["action"] = "HOLD"
+    result["exit_monitoring"] = True
+    result["exit_signal_label"] = label
+    result["exit_watch_type"] = label
+    result["exit_watch_details"] = details or {}
+    result["reason"] = reason
+
+
 def _next_above(levels, current_price, fallback_step):
     valid = sorted([float(v) for v in levels if v is not None and float(v) > current_price])
     if valid:
@@ -158,17 +176,8 @@ def _dynamic_pivot_levels(prev_h, prev_l, prev_c, current_price):
     return {"tp": tp, "sl": sl, "p": p_val, "r1": r1, "r2": r2, "r3": r3, "s1": s1, "s2": s2, "s3": s3}
 
 
-def _dynamic_high_low_levels(prev_h, prev_l, current_price):
-    day_range = max(float(prev_h) - float(prev_l), 0.0)
-    if day_range <= 0:
-        return None
-    if current_price >= float(prev_h):
-        tp = _next_above([float(prev_h) + day_range, float(prev_h) + (2 * day_range)], current_price, day_range)
-        sl = float(prev_h)
-    else:
-        tp = float(prev_h)
-        sl = float(prev_l)
-    return {"tp": tp, "sl": sl}
+def _dynamic_high_low_levels(prev_h, prev_l, current_price, buffer_pct=0.0):
+    return _buffered_dynamic_high_low_exit_levels(prev_h, prev_l, current_price, buffer_pct)
 
 class UserEngine:
     def __init__(self, uid: str, db):
@@ -203,6 +212,89 @@ class UserEngine:
     def get_now(self):
         tz = pytz.timezone(self.config.TIMEZONE if hasattr(self.config, 'TIMEZONE') else 'US/Central')
         return datetime.now(tz)
+
+    def _normalize_signal_lock(self, value):
+        direction = str(value or "").upper().strip()
+        return direction if direction in {"BUY", "SELL"} else None
+
+    def _hydrate_signal_reset_locks(self):
+        hydrated = {}
+        for ticker, settings in self.config.TICKER_SETTINGS.items():
+            if not isinstance(settings, dict):
+                continue
+            locked_dir = self._normalize_signal_lock(settings.get("signal_locked_direction"))
+            if locked_dir:
+                ticker_key = str(ticker or "").upper().strip()
+                hydrated[ticker_key] = locked_dir
+                settings["signal_locked_direction"] = locked_dir
+            else:
+                settings.pop("signal_locked_direction", None)
+        self.signal_locked_direction = hydrated
+
+    def _set_signal_reset_lock(self, ticker, direction, t_settings=None):
+        ticker_key = str(ticker or "").upper().strip()
+        locked_dir = self._normalize_signal_lock(direction)
+        if not ticker_key or not locked_dir:
+            return None
+        self.signal_locked_direction[ticker_key] = locked_dir
+        settings = t_settings if isinstance(t_settings, dict) else self.config.TICKER_SETTINGS.setdefault(ticker_key, {})
+        if isinstance(settings, dict):
+            settings["signal_locked_direction"] = locked_dir
+        return locked_dir
+
+    def _clear_signal_reset_lock(self, ticker, t_settings=None):
+        ticker_key = str(ticker or "").upper().strip()
+        changed = False
+        if ticker_key:
+            changed = self.signal_locked_direction.pop(ticker_key, None) is not None
+        settings = t_settings if isinstance(t_settings, dict) else self.config.TICKER_SETTINGS.get(ticker_key, {})
+        if isinstance(settings, dict):
+            changed = settings.pop("signal_locked_direction", None) is not None or changed
+        return changed
+
+    def _get_signal_reset_lock(self, ticker, t_settings=None):
+        ticker_key = str(ticker or "").upper().strip()
+        locked_dir = self._normalize_signal_lock(self.signal_locked_direction.get(ticker_key))
+        if locked_dir:
+            return locked_dir
+        settings = t_settings if isinstance(t_settings, dict) else self.config.TICKER_SETTINGS.get(ticker_key, {})
+        if isinstance(settings, dict):
+            locked_dir = self._normalize_signal_lock(settings.get("signal_locked_direction"))
+            if locked_dir and ticker_key:
+                self.signal_locked_direction[ticker_key] = locked_dir
+                settings["signal_locked_direction"] = locked_dir
+                return locked_dir
+        return None
+
+    def _signal_reset_threshold(self, locked_dir, t_settings):
+        if locked_dir == "SELL":
+            keys = ("min_sell_signals", "sell_threshold")
+            default_value = getattr(self.config, "MIN_BEARISH_SIGNALS", 1)
+        else:
+            keys = ("min_buy_signals", "threshold", "buy_threshold")
+            default_value = getattr(self.config, "MIN_BULLISH_SIGNALS", 1)
+        for key in keys:
+            value = (t_settings or {}).get(key)
+            if value is None or value == "":
+                continue
+            try:
+                return max(1, int(value))
+            except (TypeError, ValueError):
+                continue
+        try:
+            return max(1, int(default_value))
+        except (TypeError, ValueError):
+            return 1
+
+    def _signal_reset_count(self, result, locked_dir):
+        key = "bearish_count" if locked_dir == "SELL" else "bullish_count"
+        try:
+            return float(result.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _signal_reset_is_reset(self, result, locked_dir, t_settings):
+        return self._signal_reset_count(result, locked_dir) < self._signal_reset_threshold(locked_dir, t_settings)
         
     async def save_settings(self):
         async with self.settings_save_lock:
@@ -327,6 +419,7 @@ class UserEngine:
                 self.config.TRADELIST = ui.get("tradelist", self.config.TRADELIST)
                 self.config.DEFAULT_TIMEFRAME = ui.get("strategy_timeframe", self.config.DEFAULT_TIMEFRAME)
                 self.config.TICKER_SETTINGS = ui.get("ticker_settings", {})
+                self._hydrate_signal_reset_locks()
                 
                 # Load isolated contexts if present
                 if not hasattr(self.config, 'contexts') or not self.config.contexts:
@@ -824,14 +917,18 @@ class UserEngine:
             sl_pct = float(t_settings.get('regular_stop_loss_pct', 0.05))
             tp_pct = float(t_settings.get('regular_take_profit_pct', 0.10))
             trail_pct = float(t_settings.get('regular_trailing_pct', 0.03))
+            enable_trail = bool(t_settings.get('enable_pct_trail', False))
             base_stop = round(entry_price * (1 - sl_pct), precision)
-            if ticker not in self.last_trailing_stops:
-                self.last_trailing_stops[ticker] = base_stop
-            if t_settings.get('enable_pct_trail', True) and current_price > 0:
-                candidate = round(current_price * (1 - trail_pct), precision)
-                if candidate > self.last_trailing_stops[ticker]:
-                    self.last_trailing_stops[ticker] = candidate
-            sl = self.last_trailing_stops[ticker]
+            if enable_trail:
+                if ticker not in self.last_trailing_stops:
+                    self.last_trailing_stops[ticker] = base_stop
+                if current_price > 0:
+                    candidate = round(current_price * (1 - trail_pct), precision)
+                    if candidate > self.last_trailing_stops[ticker]:
+                        self.last_trailing_stops[ticker] = candidate
+                sl = self.last_trailing_stops[ticker]
+            else:
+                sl = base_stop
             tp = round(entry_price * (1 + tp_pct), precision)
 
         elif sell_mode in ('sltp', 'hybrid'):
@@ -841,14 +938,18 @@ class UserEngine:
             stop_mult = float(t_settings.get('atr_stop_multiplier', 2.0))
             trail_mult = float(t_settings.get('atr_trail_multiplier', 3.0))
             tp_mult = float(t_settings.get('take_profit_multiplier', 4.0))
+            enable_atr_trail = bool(t_settings.get('enable_atr_trail', False))
             base_stop = entry_price - (atr * stop_mult)
-            if ticker not in self.last_trailing_stops:
-                self.last_trailing_stops[ticker] = base_stop
-            if t_settings.get('enable_atr_trail', True) and current_price > 0:
-                candidate = current_price - (atr * trail_mult)
-                if candidate > self.last_trailing_stops[ticker]:
-                    self.last_trailing_stops[ticker] = round(candidate, precision)
-            sl = round(max(base_stop, self.last_trailing_stops[ticker]), precision)
+            if enable_atr_trail:
+                if ticker not in self.last_trailing_stops:
+                    self.last_trailing_stops[ticker] = base_stop
+                if current_price > 0:
+                    candidate = current_price - (atr * trail_mult)
+                    if candidate > self.last_trailing_stops[ticker]:
+                        self.last_trailing_stops[ticker] = round(candidate, precision)
+                sl = round(max(base_stop, self.last_trailing_stops[ticker]), precision)
+            else:
+                sl = round(base_stop, precision)
             tp = round(entry_price + (atr * tp_mult), precision)
 
         elif sell_mode in ('pivot_points', 'hybrid_pivot'):
@@ -868,7 +969,8 @@ class UserEngine:
             prior_day = _prior_day_ohlc_from_history(result.get('price_history', []))
             if not prior_day:
                 return None
-            hl_levels = _dynamic_high_low_levels(prior_day['high'], prior_day['low'], current_price)
+            hl_buffer = resolve_high_low_buffer_pct(t_settings)
+            hl_levels = _dynamic_high_low_levels(prior_day['high'], prior_day['low'], current_price, hl_buffer)
             if not hl_levels:
                 return None
             tp = round(hl_levels['tp'], precision)
@@ -1258,9 +1360,12 @@ class UserEngine:
                                     result = bot_result
                                     
                         if result:
+                            if float(result.get('price_raw', 0.0)) <= 0:
+                                result['action'] = 'HOLD'
+                                result['reason'] = 'Live quote unavailable ($0.00) - Trade evaluation skipped'
                             trade_executed = False
 
-                            if is_active:
+                            if is_active and float(result.get('price_raw', 0.0)) > 0:
                                 market_session = str(t_settings.get('market_session', 'Regular')).strip().lower()
                                 is_options_enabled = t_settings.get('options_trading', getattr(self.config, 'ENABLE_OPTIONS_TRADING', False)) or t_settings.get('is_option', False)
                                 if is_crypto:
@@ -1348,31 +1453,37 @@ class UserEngine:
                                     # Get Smart Re-entry Settings
                                     enable_signal_reset = t_settings.get('enable_signal_reset', getattr(self.config, 'ENABLE_SIGNAL_RESET', False))
                                     enable_smart_reentry = t_settings.get('enable_smart_reentry', getattr(self.config, 'ENABLE_SMART_REENTRY', False))
-                                    smart_reentry_type = t_settings.get('smart_reentry_type', getattr(self.config, 'SMART_REENTRY_TYPE', 'RSI'))
-                                    smart_reentry_rsi_call_max = t_settings.get('smart_reentry_rsi_call_max', getattr(self.config, 'SMART_REENTRY_RSI_CALL_MAX', 70))
-                                    smart_reentry_rsi_put_min = t_settings.get('smart_reentry_rsi_put_min', getattr(self.config, 'SMART_REENTRY_RSI_PUT_MIN', 30))
-                                    smart_reentry_vwap_call_max_dist_pct = t_settings.get('smart_reentry_vwap_call_max_dist_pct', getattr(self.config, 'SMART_REENTRY_VWAP_CALL_MAX_DIST_PCT', 0.5))
-                                    smart_reentry_vwap_put_max_dist_pct = t_settings.get('smart_reentry_vwap_put_max_dist_pct', getattr(self.config, 'SMART_REENTRY_VWAP_PUT_MAX_DIST_PCT', 0.5))
+                                    smart_reentry_type = str(t_settings.get('smart_reentry_type', getattr(self.config, 'SMART_REENTRY_TYPE', 'RSI')) or 'RSI').upper()
+                                    smart_reentry_rsi_call_max = _safe_float(t_settings.get('smart_reentry_rsi_call_max'), _safe_float(getattr(self.config, 'SMART_REENTRY_RSI_CALL_MAX', 70), 70.0))
+                                    smart_reentry_rsi_put_min = _safe_float(t_settings.get('smart_reentry_rsi_put_min'), _safe_float(getattr(self.config, 'SMART_REENTRY_RSI_PUT_MIN', 30), 30.0))
+                                    smart_reentry_vwap_call_max_dist_pct = _safe_float(t_settings.get('smart_reentry_vwap_call_max_dist_pct'), _safe_float(getattr(self.config, 'SMART_REENTRY_VWAP_CALL_MAX_DIST_PCT', 0.5), 0.5))
+                                    smart_reentry_vwap_put_max_dist_pct = _safe_float(t_settings.get('smart_reentry_vwap_put_max_dist_pct'), _safe_float(getattr(self.config, 'SMART_REENTRY_VWAP_PUT_MAX_DIST_PCT', 0.5), 0.5))
 
                                     # Apply Signal Reset Check/Clear
                                     if enable_signal_reset:
                                         action = result.get('action', 'HOLD')
-                                        locked_dir = self.signal_locked_direction.get(ticker)
+                                        locked_dir = self._get_signal_reset_lock(ticker, t_settings)
                                         if locked_dir:
-                                            if action == locked_dir:
+                                            if action != locked_dir and self._signal_reset_is_reset(result, locked_dir, t_settings):
+                                                if self._clear_signal_reset_lock(ticker, t_settings):
+                                                    await self.save_settings()
+                                            elif action == locked_dir:
                                                 result['action'] = 'HOLD'
-                                                result['reason'] = f"Signal Reset Active: Blocked immediate re-entry on stale {locked_dir} signal."
+                                                reset_count = self._signal_reset_count(result, locked_dir)
+                                                reset_threshold = self._signal_reset_threshold(locked_dir, t_settings)
+                                                result['reason'] = f"Signal Reset Active: Blocked stale {locked_dir} re-entry until directional signal resets below {reset_threshold} (now {reset_count:g})."
                                             else:
-                                                self.signal_locked_direction[ticker] = None
+                                                result['reason'] = f"Signal Reset Active: waiting for stale {locked_dir} signal to cool below threshold."
                                     else:
-                                        self.signal_locked_direction[ticker] = None
+                                        if self._clear_signal_reset_lock(ticker, t_settings):
+                                            await self.save_settings()
 
                                     # Apply Smart Re-entry Pullback Filters
                                     if enable_smart_reentry:
                                         action = result.get('action', 'HOLD')
                                         if action in ['BUY', 'SELL']:
                                             if smart_reentry_type == 'RSI':
-                                                rsi = result.get('rsi')
+                                                rsi = _safe_float(result.get('rsi'), None)
                                                 if rsi is not None:
                                                     if action == 'BUY' and rsi > smart_reentry_rsi_call_max:
                                                         result['action'] = 'HOLD'
@@ -1381,8 +1492,8 @@ class UserEngine:
                                                         result['action'] = 'HOLD'
                                                         result['reason'] = f"Smart Re-entry RSI Filter: Blocked SELL since RSI ({rsi:.1f}) < {smart_reentry_rsi_put_min} (Oversold)."
                                             elif smart_reentry_type == 'VWAP':
-                                                vwap = result.get('vwap')
-                                                price = result.get('price_raw', 0.0)
+                                                vwap = _safe_float(result.get('vwap'), 0.0)
+                                                price = _safe_float(result.get('price_raw'), 0.0)
                                                 if vwap is not None and vwap > 0 and price > 0:
                                                     dist_pct = abs(price - vwap) / vwap * 100.0
                                                     if action == 'BUY' and dist_pct > smart_reentry_vwap_call_max_dist_pct:
@@ -1436,7 +1547,7 @@ class UserEngine:
                                             base_stop = opt_avg * (1 - stop_loss_pct)
                                             stop_loss_price = base_stop
                                             trail_key = pos_info.get('symbol', ticker)
-                                            if t_settings.get('enable_pct_trail', True) and option_trail_pct > 0:
+                                            if bool(t_settings.get('enable_pct_trail', False)) and option_trail_pct > 0:
                                                 if trail_key not in self.last_trailing_stops:
                                                     self.last_trailing_stops[trail_key] = base_stop
                                                 candidate = opt_curr * (1 - option_trail_pct)
@@ -1471,7 +1582,7 @@ class UserEngine:
                                                     atr_sl = entry_underlying - (atr_val * stop_mult)
                                                     atr_tp = entry_underlying + (atr_val * tp_mult)
                                                     effective_sl = atr_sl
-                                                    if t_settings.get('enable_atr_trail', True) and trail_mult > 0:
+                                                    if bool(t_settings.get('enable_atr_trail', False)) and trail_mult > 0:
                                                         candidate = current_price - (atr_val * trail_mult)
                                                         previous = self.last_trailing_stops.get(trail_key, atr_sl)
                                                         effective_sl = max(atr_sl, previous, candidate)
@@ -1486,7 +1597,7 @@ class UserEngine:
                                                     atr_sl = entry_underlying + (atr_val * stop_mult)
                                                     atr_tp = entry_underlying - (atr_val * tp_mult)
                                                     effective_sl = atr_sl
-                                                    if t_settings.get('enable_atr_trail', True) and trail_mult > 0:
+                                                    if bool(t_settings.get('enable_atr_trail', False)) and trail_mult > 0:
                                                         candidate = current_price + (atr_val * trail_mult)
                                                         previous = self.last_trailing_stops.get(trail_key, atr_sl)
                                                         effective_sl = min(atr_sl, previous, candidate)
@@ -1559,22 +1670,26 @@ class UserEngine:
                                                         exit_triggered = True
                                                         exit_reason = f"Pivot SL Hit (Underlying {current_price:.2f} >= R1 {R1:.2f})"
                                                         
-                                            # Strategy C: Daily High/Low ranges
+                                            # Strategy C: Prior Day High/Low ranges
                                             if not exit_triggered and opt_exit_strategy in ['high_low', 'hybrid_high_low']:
-                                                if opt_type == 'CALL':
-                                                    if current_price >= prev_h:
+                                                hl_levels = buffered_prior_day_levels(
+                                                    {"high": prev_h, "low": prev_l, "close": prev_c},
+                                                    resolve_high_low_buffer_pct(t_settings),
+                                                )
+                                                if opt_type == 'CALL' and hl_levels:
+                                                    if current_price >= hl_levels['high_trigger']:
                                                         exit_triggered = True
-                                                        exit_reason = f"Prev Day High Breakout (Underlying {current_price:.2f} >= Prev High {prev_h:.2f})"
-                                                    elif current_price <= prev_l:
+                                                        exit_reason = f"Prev Day High Breakout (Underlying {current_price:.2f} >= Trigger {hl_levels['high_trigger']:.2f}, PDH {hl_levels['high']:.2f}, Buffer {hl_levels['buffer_pct']:.2f}%)"
+                                                    elif current_price <= hl_levels['low_trigger']:
                                                         exit_triggered = True
-                                                        exit_reason = f"Prev Day Low Breakdown (Underlying {current_price:.2f} <= Prev Low {prev_l:.2f})"
-                                                else:  # PUT
-                                                    if current_price <= prev_l:
+                                                        exit_reason = f"Prev Day Low Breakdown (Underlying {current_price:.2f} <= Trigger {hl_levels['low_trigger']:.2f}, PDL {hl_levels['low']:.2f}, Buffer {hl_levels['buffer_pct']:.2f}%)"
+                                                elif opt_type == 'PUT' and hl_levels:
+                                                    if current_price <= hl_levels['low_trigger']:
                                                         exit_triggered = True
-                                                        exit_reason = f"Prev Day Low Breakout (Underlying {current_price:.2f} <= Prev Low {prev_l:.2f})"
-                                                    elif current_price >= prev_h:
+                                                        exit_reason = f"Prev Day Low Breakout (Underlying {current_price:.2f} <= Trigger {hl_levels['low_trigger']:.2f}, PDL {hl_levels['low']:.2f}, Buffer {hl_levels['buffer_pct']:.2f}%)"
+                                                    elif current_price >= hl_levels['high_trigger']:
                                                         exit_triggered = True
-                                                        exit_reason = f"Prev Day High Breakdown (Underlying {current_price:.2f} >= Prev High {prev_h:.2f})"
+                                                        exit_reason = f"Prev Day High Breakdown (Underlying {current_price:.2f} >= Trigger {hl_levels['high_trigger']:.2f}, PDH {hl_levels['high']:.2f}, Buffer {hl_levels['buffer_pct']:.2f}%)"
 
                                         # Strategy C2: Swing points exits
                                         if not exit_triggered and opt_exit_strategy in ['swing_points', 'hybrid_swing']:
@@ -1636,14 +1751,22 @@ class UserEngine:
                                             result['option_intent'] = 'CLOSE_OPTION'
                                             result['reason'] = exit_reason
                                         else:
-                                            result['action'] = 'HOLD'
                                             result['option_intent'] = 'HOLD'
-                                            result['reason'] = "Option position open. Checking exit criteria..."
-                                            
+                                            _mark_exit_signal_watch(
+                                                result,
+                                                t_settings,
+                                                is_long=(opt_type == 'CALL'),
+                                                prefix="Option position open",
+                                            )
+
                                     else:
                                         # Standard Stock/Crypto Sell Mode Logic
                                         entry_price = float(pos_info.get('avg_price', result['price_raw']))
-                                        current_price = result['price_raw']
+                                        current_price = float(result.get('price_raw', 0.0))
+                                        if current_price <= 0:
+                                            result['action'] = 'HOLD'
+                                            result['reason'] = 'Live quote unavailable ($0.00)'
+                                            break
                                         
                                         # Read exit strategy parameters
                                         sl_pct    = t_settings.get('regular_stop_loss_pct', 0.05)
@@ -1682,22 +1805,32 @@ class UserEngine:
                                                 elif custom_tp > 0 and current_price >= custom_tp:
                                                     result['action'] = 'SELL'
                                                     result['reason'] = f'Custom Take Profit Hit (${current_price:.{precision}f} >= ${custom_tp:.{precision}f})'
+                                                elif result.get('action') != 'SELL':
+                                                    _mark_exit_level_watch(
+                                                        result,
+                                                        "Custom SL/TP",
+                                                        f"Position open. Checking custom exits: Price ${current_price:.{precision}f}, SL ${custom_sl:.{precision}f}, TP ${custom_tp:.{precision}f}.",
+                                                        {"price": current_price, "stop_loss": custom_sl, "take_profit": custom_tp},
+                                                    )
 
                                             elif sell_mode in ['percentage', 'hybrid_pct']:
                                                 # ── NEW: Percentage-based exit ──────────────────────────────
                                                 base_stop = round(entry_price * (1 - sl_pct), precision)
                                                 take_profit = round(entry_price * (1 + tp_pct), precision)
                                                 
-                                                if ticker not in self.last_trailing_stops:
-                                                    self.last_trailing_stops[ticker] = base_stop
-                                                
-                                                if t_settings.get('enable_pct_trail', True):
+                                                enable_trail = bool(t_settings.get('enable_pct_trail', False))
+                                                if enable_trail:
+                                                    if ticker not in self.last_trailing_stops:
+                                                        self.last_trailing_stops[ticker] = base_stop
                                                     # Ratchet trailing stop upward (only ever tightens, never loosens)
                                                     candidate = round(current_price * (1 - trail_pct), precision)
                                                     if candidate > self.last_trailing_stops[ticker]:
                                                         self.last_trailing_stops[ticker] = candidate
-                                                
-                                                stop_loss = self.last_trailing_stops[ticker]
+                                                    stop_loss = self.last_trailing_stops[ticker]
+                                                    sl_desc = f"Trail {trail_pct*100:.1f}%"
+                                                else:
+                                                    stop_loss = base_stop
+                                                    sl_desc = f"Fixed SL {sl_pct*100:.1f}%"
                                                 
                                                 # In percentage mode: silence indicator SELL signals, rely on % levels
                                                 if sell_mode == 'percentage' and result['action'] == 'SELL':
@@ -1706,10 +1839,23 @@ class UserEngine:
                                                 
                                                 if current_price <= stop_loss:
                                                     result['action'] = 'SELL'
-                                                    result['reason'] = f'Percentage Stop Loss Hit (${current_price:.{precision}f} <= ${stop_loss:.{precision}f}, Trail {trail_pct*100:.1f}%)'
+                                                    result['reason'] = f'Percentage Stop Loss Hit (${current_price:.{precision}f} <= ${stop_loss:.{precision}f}, {sl_desc})'
                                                 elif current_price >= take_profit:
                                                     result['action'] = 'SELL'
                                                     result['reason'] = f'Percentage Take Profit Hit (${current_price:.{precision}f} >= ${take_profit:.{precision}f}, TP {tp_pct*100:.1f}%)'
+                                                elif result.get('action') != 'SELL':
+                                                    _mark_exit_level_watch(
+                                                        result,
+                                                        "PCT Exit",
+                                                        f"Position open. Checking PCT exits: Price ${current_price:.{precision}f}, SL ${stop_loss:.{precision}f} ({sl_desc}), TP ${take_profit:.{precision}f} ({tp_pct*100:.1f}%).",
+                                                        {
+                                                            "price": current_price,
+                                                            "stop_loss": stop_loss,
+                                                            "take_profit": take_profit,
+                                                            "trail_enabled": enable_trail,
+                                                            "trail_pct": trail_pct if enable_trail else None,
+                                                        },
+                                                    )
                                         
                                             elif sell_mode in ['pivot_points', 'hybrid_pivot']:
                                                 # Pivot point exit from the scan's OHLCV history.
@@ -1744,6 +1890,13 @@ class UserEngine:
                                                 elif current_price >= pivot_tp:
                                                     result['action'] = 'SELL'
                                                     result['reason'] = f'Pivot Take Profit Hit (${current_price:.{precision}f} >= ${pivot_tp:.{precision}f})'
+                                                elif result.get('action') != 'SELL':
+                                                    _mark_exit_level_watch(
+                                                        result,
+                                                        "Pivot Exit",
+                                                        f"Position open. Checking Pivot exits: Price ${current_price:.{precision}f}, SL ${pivot_sl:.{precision}f}, TP ${pivot_tp:.{precision}f}.",
+                                                        {"price": current_price, "stop_loss": pivot_sl, "take_profit": pivot_tp, "pivot": P},
+                                                    )
 
                                             elif sell_mode in ['high_low', 'hybrid_high_low']:
                                                 prior_day = _prior_day_ohlc_from_history(result.get('price_history', []))
@@ -1757,16 +1910,24 @@ class UserEngine:
                                                     result['action'] = 'HOLD'
                                                     result['reason'] = 'Sell Signal Ignored (High/Low Mode)'
 
-                                                dynamic_hl = _dynamic_high_low_levels(prev_h, prev_l, current_price)
+                                                hl_buffer = resolve_high_low_buffer_pct(t_settings)
+                                                dynamic_hl = _dynamic_high_low_levels(prev_h, prev_l, current_price, hl_buffer)
                                                 hl_tp = round(dynamic_hl['tp'], precision) if dynamic_hl else prev_h
                                                 hl_sl = round(dynamic_hl['sl'], precision) if dynamic_hl else prev_l
 
                                                 if current_price >= hl_tp:
                                                     result['action'] = 'SELL'
-                                                    result['reason'] = f'High/Low Take Profit Hit (${current_price:.{precision}f} >= ${hl_tp:.{precision}f})'
+                                                    result['reason'] = f'High/Low Take Profit Hit (${current_price:.{precision}f} >= ${hl_tp:.{precision}f}, Buffer {hl_buffer:.2f}%)'
                                                 elif current_price <= hl_sl:
                                                     result['action'] = 'SELL'
-                                                    result['reason'] = f'High/Low Stop Loss Hit (${current_price:.{precision}f} <= ${hl_sl:.{precision}f})'
+                                                    result['reason'] = f'High/Low Stop Loss Hit (${current_price:.{precision}f} <= ${hl_sl:.{precision}f}, Buffer {hl_buffer:.2f}%)'
+                                                elif result.get('action') != 'SELL':
+                                                    _mark_exit_level_watch(
+                                                        result,
+                                                        "PDH/PDL Exit",
+                                                        f"Position open. Checking PDH/PDL exits: Price ${current_price:.{precision}f}, SL ${hl_sl:.{precision}f}, TP ${hl_tp:.{precision}f}, Buffer {hl_buffer:.2f}%.",
+                                                        {"price": current_price, "stop_loss": hl_sl, "take_profit": hl_tp, "buffer_pct": hl_buffer},
+                                                    )
 
                                             elif sell_mode in ['swing_points', 'hybrid_swing']:
                                                 swing_exit = build_swing_exit(
@@ -1790,38 +1951,67 @@ class UserEngine:
                                                     elif current_price <= sl:
                                                         result['action'] = 'SELL'
                                                         result['reason'] = f'Swing Stop Loss Hit (${current_price:.{precision}f} <= ${sl:.{precision}f})'
+                                                    elif result.get('action') != 'SELL':
+                                                        _mark_exit_level_watch(
+                                                            result,
+                                                            "Swing Exit",
+                                                            f"Position open. Checking Swing exits: Price ${current_price:.{precision}f}, SL ${sl:.{precision}f}, TP ${tp:.{precision}f}.",
+                                                            {"price": current_price, "stop_loss": sl, "take_profit": tp},
+                                                        )
+                                                elif result.get('action') != 'SELL':
+                                                    _mark_exit_signal_watch(result, t_settings, is_long=True, prefix="Position open. Swing exit levels unavailable")
 
                                             else:
                                                 # ── EXISTING: ATR-based logic (unchanged) ───────────────────
                                                 stop_mult = t_settings.get('atr_stop_multiplier', 2.0)
                                                 trail_mult = t_settings.get('atr_trail_multiplier', 3.0)
                                                 tp_mult = t_settings.get('take_profit_multiplier', 4.0)
+                                                atr_value = _safe_float(result.get('atr'), 0.0)
                                                 
-                                                base_stop_loss = entry_price - (result['atr'] * stop_mult)
-                                                take_profit = entry_price + (result['atr'] * tp_mult)
+                                                base_stop_loss = entry_price - (atr_value * stop_mult)
+                                                take_profit = entry_price + (atr_value * tp_mult)
                                                 
-                                                if ticker not in self.last_trailing_stops:
-                                                    self.last_trailing_stops[ticker] = base_stop_loss
-                                                
-                                                if t_settings.get('enable_atr_trail', True):
-                                                    trail_distance = result['atr'] * trail_mult
+                                                enable_atr_trail = bool(t_settings.get('enable_atr_trail', False))
+                                                if enable_atr_trail:
+                                                    if ticker not in self.last_trailing_stops:
+                                                        self.last_trailing_stops[ticker] = base_stop_loss
+                                                    trail_distance = atr_value * trail_mult
                                                     candidate_stop = current_price - trail_distance
                                                     if candidate_stop > self.last_trailing_stops[ticker]:
                                                         self.last_trailing_stops[ticker] = round(candidate_stop, precision)
-                                                
-                                                stop_loss = max(base_stop_loss, self.last_trailing_stops[ticker])
+                                                    stop_loss = max(base_stop_loss, self.last_trailing_stops[ticker])
+                                                else:
+                                                    stop_loss = base_stop_loss
                                                 
                                                 if sell_mode == 'sltp' and result['action'] == 'SELL':
                                                     result['action'] = 'HOLD'
                                                     result['reason'] = 'Sell Signal Ignored (Fixed SL/TP Mode)'
                                                     
-                                                if sell_mode in ['sltp', 'hybrid']:
+                                                if sell_mode in ['sltp', 'hybrid', 'atr', 'hybrid_atr']:
                                                     if current_price <= stop_loss:
                                                         result['action'] = 'SELL'
                                                         result['reason'] = f'Stop Loss Hit (${current_price:.{precision}f} <= ${stop_loss:.{precision}f})'
                                                     elif current_price >= take_profit:
                                                         result['action'] = 'SELL'
                                                         result['reason'] = f'Take Profit Hit (${current_price:.{precision}f} >= ${take_profit:.{precision}f})'
+                                                    elif result.get('action') != 'SELL':
+                                                        trail_desc = f", Trail {trail_mult:.2f}x ATR" if enable_atr_trail else ""
+                                                        _mark_exit_level_watch(
+                                                            result,
+                                                            "ATR Exit",
+                                                            f"Position open. Checking ATR exits: Price ${current_price:.{precision}f}, SL ${stop_loss:.{precision}f}, TP ${take_profit:.{precision}f}, ATR ${atr_value:.{precision}f}{trail_desc}.",
+                                                            {
+                                                                "price": current_price,
+                                                                "stop_loss": stop_loss,
+                                                                "take_profit": take_profit,
+                                                                "atr": atr_value,
+                                                                "trail_enabled": enable_atr_trail,
+                                                                "trail_multiplier": trail_mult if enable_atr_trail else None,
+                                                            },
+                                                        )
+
+                                        if result.get('action') != 'SELL' and not result.get('exit_monitoring'):
+                                            _mark_exit_signal_watch(result, t_settings, is_long=True, prefix="Position open")
 
                                 if has_this_pos and pos_info and not is_options_enabled and not is_market_closed_skip:
                                     if result['action'] == 'SELL':
@@ -1930,7 +2120,8 @@ class UserEngine:
                                                 parsed_closed = parse_occ_symbol(pos_info['symbol'])
                                                 closed_type = parsed_closed['type'] if parsed_closed else 'CALL'
                                                 locked_dir = 'BUY' if closed_type == 'CALL' else 'SELL'
-                                                self.signal_locked_direction[ticker] = locked_dir
+                                                self._set_signal_reset_lock(ticker, locked_dir, t_settings)
+                                                await self.save_settings()
                                                 print(f"[engine-{self.uid}] Signal Reset Activated: Locked {locked_dir} re-entry for {ticker}")
                                         else:
                                             result['reason'] = f"Option sell failed: {order_result.get('error')}"
@@ -2186,7 +2377,8 @@ class UserEngine:
                                                 enable_signal_reset = t_settings.get('enable_signal_reset', getattr(self.config, 'ENABLE_SIGNAL_RESET', False))
                                                 if enable_signal_reset:
                                                     locked_dir = 'BUY' if opt_type == 'CALL' else 'SELL'
-                                                    self.signal_locked_direction[ticker] = locked_dir
+                                                    self._set_signal_reset_lock(ticker, locked_dir, t_settings)
+                                                    await self.save_settings()
                                                     print(f"[engine-{self.uid}] Signal Reset Activated: Locked {locked_dir} re-entry for {ticker}")
                                             else:
                                                 result['reason'] = f"Option sell failed: {order_result.get('error')}"
@@ -2378,7 +2570,8 @@ class UserEngine:
 
                                                 enable_signal_reset = t_settings.get('enable_signal_reset', getattr(self.config, 'ENABLE_SIGNAL_RESET', False))
                                                 if enable_signal_reset:
-                                                    self.signal_locked_direction[ticker] = 'BUY'
+                                                    self._set_signal_reset_lock(ticker, 'BUY', t_settings)
+                                                    await self.save_settings()
                                                     print(f"[engine-{self.uid}] Signal Reset Activated: Locked BUY re-entry for standard asset {ticker}")
                                             else:
                                                 result['reason'] = f"Sell order failed: {order_result.get('error', 'Broker Error')}"

@@ -28,15 +28,35 @@ function normalizeTicker(ticker) {
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    let didTimeout = false;
+    const timeoutId = setTimeout(() => {
+        didTimeout = true;
+        controller.abort();
+    }, timeoutMs);
     try {
         return await fetch(url, {
             ...options,
             signal: controller.signal
         });
+    } catch (error) {
+        if (didTimeout && error?.name === 'AbortError') {
+            const timeoutError = new Error(`Request timed out after ${timeoutMs}ms`);
+            timeoutError.name = 'TimeoutError';
+            timeoutError.url = url;
+            throw timeoutError;
+        }
+        throw error;
     } finally {
         clearTimeout(timeoutId);
     }
+}
+
+function isRequestTimeout(error) {
+    return error?.name === 'TimeoutError';
+}
+
+function isRequestAbort(error) {
+    return error?.name === 'AbortError';
 }
 
 function readLastViewedTicker() {
@@ -147,6 +167,21 @@ function formatTimeOnlyCT(time) {
     }) + ' CT';
 }
 
+function getChartDisplayOffsetSeconds(timeframe = currentBackendTf) {
+    const seconds = CHART_INTERVALS[timeframe]?.seconds || 300;
+    return seconds > 0 && seconds < 86400 ? seconds : 0;
+}
+
+function toCloseTimeDisplayBar(bar, timeframe = currentBackendTf) {
+    const sourceTime = Number(bar?.time);
+    if (!Number.isFinite(sourceTime)) return bar;
+    return {
+        ...bar,
+        source_time: sourceTime,
+        time: sourceTime + getChartDisplayOffsetSeconds(timeframe),
+    };
+}
+
 function isRegularMarketBar(bar) {
     const d = new Date(bar.time * 1000);
     const parts = new Intl.DateTimeFormat('en-US', {
@@ -175,7 +210,9 @@ function getRangeStartTime(bars) {
 }
 
 function getDisplayBars(rawBars, ticker = selectedTicker) {
-    const sorted = [...(rawBars || [])].sort((a, b) => a.time - b.time);
+    const sorted = [...(rawBars || [])]
+        .map(bar => toCloseTimeDisplayBar(bar))
+        .sort((a, b) => a.time - b.time);
     const rangeStart = getRangeStartTime(sorted);
     const ranged = rangeStart ? sorted.filter(b => b.time >= rangeStart) : sorted;
     if (isCryptoTicker(ticker) || currentChartSession === 'extended' || currentBackendTf === '1Day') return ranged;
@@ -269,20 +306,25 @@ let latestTradesData = []; // Cached log data
 let pendingDashboardRefreshMode = null;
 const chartDataCache = new Map();
 let chartRequestSerial = 0;
-const CHART_CACHE_VERSION = 'v3';
-const CHART_CACHE_TTL_MS = 5 * 60 * 1000;
+const CHART_CACHE_VERSION = 'v7';
+const CHART_CACHE_TTL_MS = 30 * 60 * 1000;
+const CHART_IDB_NAME = 'aiTradeBotChartCache';
+const CHART_IDB_VERSION = 1;
+const CHART_IDB_STORE = 'chartPayloads';
 const COMPLETED_CANDLE_HEARTBEAT_MS = 10000;
 const COMPLETED_CANDLE_DELAY_MS = 15000;
 const LIVE_PRICE_HEARTBEAT_MS = 10000;
-const DASHBOARD_FETCH_TIMEOUT_MS = 12000;
-const CHART_FETCH_TIMEOUT_MS = 15000;
-const QUOTE_FETCH_TIMEOUT_MS = 8000;
+const DASHBOARD_FETCH_TIMEOUT_MS = 20000;
+const CHART_FETCH_TIMEOUT_MS = 30000;
+const QUOTE_FETCH_TIMEOUT_MS = 10000;
 let completedCandleHeartbeatId = null;
 let lastCompletedChartFetchAt = 0;
 let lastCompletedChartBarTime = 0;
 let lastCompletedChartAttemptedCloseTime = 0;
 let activeChartRefreshInFlight = false;
 let livePriceRequestSerial = 0;
+let chartIndexedDbPromise = null;
+let legacyChartLocalStorageCleared = false;
 let signalRefreshRequestSerial = 0;
 
 const CHART_INTERVALS = {
@@ -424,6 +466,8 @@ let oscChartBotbulls1 = null;
 // All series objects keyed by indicator name
 const _overlaySeries = {};
 const _oscSeries = {};
+const _overlayPriceLines = {};
+const _overlayLabelMeta = {};
 
 // Which indicators are currently visible (toggled by toolbar)
 const _defaultVisibleIndicators = {
@@ -435,13 +479,18 @@ const _defaultVisibleIndicators = {
     macd: false,
     mystic: false,
     sma: false,
+    daily_high_low: false,
+    pivot_points: false,
+    volume_profile: false,
+    swing_points: false,
     adx: false,
     botbulls1: false,
     botbulls2: false,
     botbulls3: false,
+    'Candle Patterns': false,
 };
 
-const INDICATOR_STORE_VERSION = 'v2';
+const INDICATOR_STORE_VERSION = 'v4';
 
 function loadIndicatorPrefs() {
     try {
@@ -484,6 +533,20 @@ const IND_COLORS = {
     lx_rz_upper: '#f59e0b', // Reversal zone upper
     lx_rz_lower: '#ec4899', // Reversal zone lower
     ut_trail: '#3b82f6', // UT Bot trail
+    daily_high_low_high: '#d97706',
+    daily_high_low_low: '#0891b2',
+    pivot_p: '#1f2937',
+    pivot_r1: '#dc2626',
+    pivot_s1: '#059669',
+    pivot_r2: '#f97316',
+    pivot_s2: '#22c55e',
+    pivot_r_ladder: 'rgba(220, 38, 38, 0.78)',
+    pivot_s_ladder: 'rgba(5, 150, 105, 0.78)',
+    volume_profile_poc: '#7c2d12',
+    volume_profile_vah: '#ea580c',
+    volume_profile_val: '#0f766e',
+    swing_support: '#16a34a',
+    swing_resistance: '#dc2626',
 };
 
 function initChart() {
@@ -499,7 +562,7 @@ function initChart() {
             horzLines: { color: 'rgba(168, 85, 247, 0.05)' },
         },
         crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-        rightPriceScale: { borderColor: 'rgba(197, 203, 206, 0.8)' },
+        rightPriceScale: { borderColor: 'rgba(197, 203, 206, 0.8)', minimumWidth: 75 },
         localization: {
             timeFormatter: time => {
                 return `${formatChartTime(time, false)} CT`;
@@ -555,7 +618,10 @@ function initChart() {
     resizeObserver.observe(container);
 
     _initOscPane();
-    lwChart.timeScale().subscribeVisibleTimeRangeChange(() => updateVisibleHighLow());
+    lwChart.timeScale().subscribeVisibleTimeRangeChange(() => {
+        updateVisibleHighLow();
+        _refreshOverlayPriceLineLabels();
+    });
 }
 
 function _initOscPane() {
@@ -566,7 +632,7 @@ function _initOscPane() {
         oscChartRsi = LightweightCharts.createChart(rsiContainer, {
             layout: { background: { color: '#fafbff' }, textColor: '#64748b' },
             grid: { vertLines: { color: 'rgba(168,85,247,0.04)' }, horzLines: { color: 'rgba(168,85,247,0.04)' } },
-            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)' },
+            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)', minimumWidth: 75 },
             localization: {
                 timeFormatter: time => {
                     return `${formatChartTime(time, false)} CT`;
@@ -591,7 +657,7 @@ function _initOscPane() {
         oscChartMacd = LightweightCharts.createChart(macdContainer, {
             layout: { background: { color: '#fafbff' }, textColor: '#64748b' },
             grid: { vertLines: { color: 'rgba(168,85,247,0.04)' }, horzLines: { color: 'rgba(168,85,247,0.04)' } },
-            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)' },
+            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)', minimumWidth: 75 },
             localization: {
                 timeFormatter: time => {
                     return `${formatChartTime(time, false)} CT`;
@@ -616,7 +682,7 @@ function _initOscPane() {
         oscChartMystic = LightweightCharts.createChart(mysticContainer, {
             layout: { background: { color: '#fafbff' }, textColor: '#64748b' },
             grid: { vertLines: { color: 'rgba(168,85,247,0.04)' }, horzLines: { color: 'rgba(168,85,247,0.04)' } },
-            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)' },
+            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)', minimumWidth: 75 },
             localization: {
                 timeFormatter: time => {
                     return `${formatChartTime(time, false)} CT`;
@@ -641,7 +707,7 @@ function _initOscPane() {
         oscChartAdx = LightweightCharts.createChart(adxContainer, {
             layout: { background: { color: '#fafbff' }, textColor: '#64748b' },
             grid: { vertLines: { color: 'rgba(168,85,247,0.04)' }, horzLines: { color: 'rgba(168,85,247,0.04)' } },
-            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)' },
+            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)', minimumWidth: 75 },
             localization: {
                 timeFormatter: time => {
                     return `${formatChartTime(time, false)} CT`;
@@ -666,7 +732,7 @@ function _initOscPane() {
         oscChartBotbulls1 = LightweightCharts.createChart(botbulls1Container, {
             layout: { background: { color: '#fafbff' }, textColor: '#64748b' },
             grid: { vertLines: { color: 'rgba(168,85,247,0.04)' }, horzLines: { color: 'rgba(168,85,247,0.04)' } },
-            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)' },
+            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)', minimumWidth: 75 },
             localization: {
                 timeFormatter: time => {
                     return `${formatChartTime(time, false)} CT`;
@@ -790,10 +856,80 @@ function updateChart(priceHistory, ticker) {
 
 function _getOrCreate(map, key, chartInst, options) {
     if (!map[key]) map[key] = chartInst.addLineSeries(options);
+    else if (typeof map[key].applyOptions === 'function') map[key].applyOptions(options);
     return map[key];
 }
 function _removeSeries(map, key, chartInst) {
+    if (_overlayPriceLines[key] && map[key]) {
+        try { map[key].removePriceLine(_overlayPriceLines[key]); } catch (e) { }
+        delete _overlayPriceLines[key];
+    }
+    delete _overlayLabelMeta[key];
     if (map[key]) { try { chartInst.removeSeries(map[key]); } catch (e) { } delete map[key]; }
+}
+
+function _rightVisiblePointForData(data, chartInst) {
+    if (!Array.isArray(data) || data.length === 0) return null;
+    let from = NaN;
+    let to = NaN;
+    try {
+        const range = chartInst?.timeScale?.().getVisibleRange?.();
+        from = Number(range?.from);
+        to = Number(range?.to);
+    } catch (e) { }
+    if (Number.isFinite(to)) {
+        for (let i = data.length - 1; i >= 0; i -= 1) {
+            const pointTime = Number(data[i]?.time);
+            if (pointTime <= to && (!Number.isFinite(from) || pointTime >= from)) {
+                return data[i];
+            }
+        }
+        for (let i = data.length - 1; i >= 0; i -= 1) {
+            if (Number(data[i]?.time) <= to) return data[i];
+        }
+    }
+    return data[data.length - 1];
+}
+
+function _refreshOverlayPriceLineLabel(key) {
+    const meta = _overlayLabelMeta[key];
+    if (!meta) return;
+    const series = meta.map[key];
+    if (!series) return;
+    if (_overlayPriceLines[key]) {
+        try { series.removePriceLine(_overlayPriceLines[key]); } catch (e) { }
+        delete _overlayPriceLines[key];
+    }
+    const point = _rightVisiblePointForData(meta.data, meta.chartInst);
+    const price = Number(point?.value);
+    if (Number.isFinite(price) && meta.labelTitle) {
+        _overlayPriceLines[key] = series.createPriceLine({
+            price,
+            color: meta.options.color,
+            lineWidth: 1,
+            lineStyle: meta.options.lineStyle ?? 0,
+            axisLabelVisible: true,
+            lineVisible: false,
+            title: meta.labelTitle,
+        });
+    }
+}
+
+function _refreshOverlayPriceLineLabels() {
+    Object.keys(_overlayLabelMeta).forEach(_refreshOverlayPriceLineLabel);
+}
+
+function _setLabeledLineData(map, key, chartInst, data, options, labelTitle) {
+    const series = _getOrCreate(map, key, chartInst, {
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+        ...options,
+    });
+    series.setData(data);
+    _overlayLabelMeta[key] = { map, chartInst, data, options, labelTitle };
+    _refreshOverlayPriceLineLabel(key);
+    return series;
 }
 
 function clean(arr) {
@@ -812,9 +948,9 @@ function _refreshOverlays(bars) {
 
     // EMA
     if (_visibleIndicators.ema) {
-        _getOrCreate(_overlaySeries, 'ema_fast', lwChart, { color: IND_COLORS.ema_fast, lineWidth: 1 })
+        _getOrCreate(_overlaySeries, 'ema_fast', lwChart, { color: IND_COLORS.ema_fast, lineWidth: 1.5 })
             .setData(clean(bars.filter(b => b.ema_fast != null).map(b => ({ time: b.time, value: b.ema_fast }))));
-        _getOrCreate(_overlaySeries, 'ema_slow', lwChart, { color: IND_COLORS.ema_slow, lineWidth: 1 })
+        _getOrCreate(_overlaySeries, 'ema_slow', lwChart, { color: IND_COLORS.ema_slow, lineWidth: 1.5 })
             .setData(clean(bars.filter(b => b.ema_slow != null).map(b => ({ time: b.time, value: b.ema_slow }))));
     } else {
         _removeSeries(_overlaySeries, 'ema_fast', lwChart);
@@ -822,14 +958,14 @@ function _refreshOverlays(bars) {
     }
     // VWAP
     if (_visibleIndicators.vwap) {
-        _getOrCreate(_overlaySeries, 'vwap', lwChart, { color: IND_COLORS.vwap, lineWidth: 3, lineStyle: 0 })
+        _getOrCreate(_overlaySeries, 'vwap', lwChart, { color: '#f59e0b', lineWidth: 2.5, lineStyle: 0 })
             .setData(clean(bars.filter(b => b.vwap != null).map(b => ({ time: b.time, value: b.vwap }))));
     } else {
         _removeSeries(_overlaySeries, 'vwap', lwChart);
     }
     // SMA
     if (_visibleIndicators.sma) {
-        _getOrCreate(_overlaySeries, 'sma', lwChart, { color: IND_COLORS.sma, lineWidth: 3, lineStyle: 0 })
+        _getOrCreate(_overlaySeries, 'sma', lwChart, { color: IND_COLORS.sma, lineWidth: 2.5, lineStyle: 0 })
             .setData(clean(bars.filter(b => b.sma != null).map(b => ({ time: b.time, value: b.sma }))));
     } else {
         _removeSeries(_overlaySeries, 'sma', lwChart);
@@ -852,7 +988,7 @@ function _refreshOverlays(bars) {
 
         _getOrCreate(_overlaySeries, 'st_line', lwChart, {
             lineWidth: 2,
-            lineType: 2 // LineType.Curved
+            lineType: 0 // Straight candle-to-candle line; avoids curved Supertrend distortion.
         }).setData(clean(stData));
 
         // Clean up old multi-series if they exist
@@ -894,16 +1030,134 @@ function _refreshOverlays(bars) {
     }
     // Bollinger Bands
     if (_visibleIndicators.bollinger) {
-        _getOrCreate(_overlaySeries, 'boll_upper', lwChart, { color: IND_COLORS.boll_upper, lineWidth: 2 }).setData(clean(bars.filter(b => b.boll_upper != null).map(b => ({ time: b.time, value: b.boll_upper }))));
-        _getOrCreate(_overlaySeries, 'boll_middle', lwChart, { color: IND_COLORS.boll_middle, lineWidth: 2, lineStyle: 2 }).setData(clean(bars.filter(b => b.boll_middle != null).map(b => ({ time: b.time, value: b.boll_middle }))));
-        _getOrCreate(_overlaySeries, 'boll_lower', lwChart, { color: IND_COLORS.boll_lower, lineWidth: 2 }).setData(clean(bars.filter(b => b.boll_lower != null).map(b => ({ time: b.time, value: b.boll_lower }))));
+        _getOrCreate(_overlaySeries, 'boll_upper', lwChart, { color: IND_COLORS.boll_upper, lineWidth: 1.5 }).setData(clean(bars.filter(b => b.boll_upper != null).map(b => ({ time: b.time, value: b.boll_upper }))));
+        _getOrCreate(_overlaySeries, 'boll_middle', lwChart, { color: IND_COLORS.boll_middle, lineWidth: 1, lineStyle: 2 }).setData(clean(bars.filter(b => b.boll_middle != null).map(b => ({ time: b.time, value: b.boll_middle }))));
+        _getOrCreate(_overlaySeries, 'boll_lower', lwChart, { color: IND_COLORS.boll_lower, lineWidth: 1.5 }).setData(clean(bars.filter(b => b.boll_lower != null).map(b => ({ time: b.time, value: b.boll_lower }))));
     } else {
         _removeSeries(_overlaySeries, 'boll_upper', lwChart);
         _removeSeries(_overlaySeries, 'boll_middle', lwChart);
         _removeSeries(_overlaySeries, 'boll_lower', lwChart);
     }
 
-    // BotBulls2 — Smart Trail + Trend Tracer + Reversal Zones (LuxAlgo Premium style)
+    // Prior Day High/Low — prior session structure lines
+    if (_visibleIndicators.daily_high_low) {
+        _setLabeledLineData(_overlaySeries, 'daily_high_low_high', lwChart, clean(bars.filter(b => b.daily_high_low_high != null).map(b => ({ time: b.time, value: b.daily_high_low_high }))), {
+            color: IND_COLORS.daily_high_low_high,
+            lineWidth: 3,
+            lineStyle: 1,
+        }, 'PDH');
+        _setLabeledLineData(_overlaySeries, 'daily_high_low_low', lwChart, clean(bars.filter(b => b.daily_high_low_low != null).map(b => ({ time: b.time, value: b.daily_high_low_low }))), {
+            color: IND_COLORS.daily_high_low_low,
+            lineWidth: 3,
+            lineStyle: 1,
+        }, 'PDL');
+        _getOrCreate(_overlaySeries, 'daily_high_low_high_trigger', lwChart, {
+            color: 'rgba(217, 119, 6, 0.75)',
+            lineWidth: 2,
+            lineStyle: 1,
+        }).setData(clean(bars.filter(b => b.daily_high_low_high_trigger != null).map(b => ({ time: b.time, value: b.daily_high_low_high_trigger }))));
+        _getOrCreate(_overlaySeries, 'daily_high_low_low_trigger', lwChart, {
+            color: 'rgba(8, 145, 178, 0.75)',
+            lineWidth: 2,
+            lineStyle: 1,
+        }).setData(clean(bars.filter(b => b.daily_high_low_low_trigger != null).map(b => ({ time: b.time, value: b.daily_high_low_low_trigger }))));
+    } else {
+        _removeSeries(_overlaySeries, 'daily_high_low_high', lwChart);
+        _removeSeries(_overlaySeries, 'daily_high_low_low', lwChart);
+        _removeSeries(_overlaySeries, 'daily_high_low_high_trigger', lwChart);
+        _removeSeries(_overlaySeries, 'daily_high_low_low_trigger', lwChart);
+    }
+
+    // Pivot Points (S/R) — prior-session floor pivot structure
+    if (_visibleIndicators.pivot_points) {
+        const pivotLevelCount = Math.min(5, Math.max(1, Math.round(indicatorParamValue('PIVOT_LEVEL_COUNT', 1))));
+        _setLabeledLineData(_overlaySeries, 'pivot_p', lwChart, clean(bars.filter(b => b.pivot_p != null).map(b => ({ time: b.time, value: b.pivot_p }))), {
+            color: IND_COLORS.pivot_p,
+            lineWidth: 3,
+            lineStyle: 2,
+        }, 'P');
+        for (let level = 1; level <= 5; level += 1) {
+            const active = level <= pivotLevelCount;
+            const rKey = `pivot_r${level}`;
+            const sKey = `pivot_s${level}`;
+            if (active) {
+                _setLabeledLineData(_overlaySeries, rKey, lwChart, clean(bars.filter(b => b[rKey] != null).map(b => ({ time: b.time, value: b[rKey] }))), {
+                    color: level === 1 ? IND_COLORS.pivot_r1 : IND_COLORS.pivot_r_ladder,
+                    lineWidth: 2,
+                    lineStyle: level === 1 ? 1 : 2,
+                }, `R${level}`);
+                _setLabeledLineData(_overlaySeries, sKey, lwChart, clean(bars.filter(b => b[sKey] != null).map(b => ({ time: b.time, value: b[sKey] }))), {
+                    color: level === 1 ? IND_COLORS.pivot_s1 : IND_COLORS.pivot_s_ladder,
+                    lineWidth: 2,
+                    lineStyle: level === 1 ? 1 : 2,
+                }, `S${level}`);
+            } else {
+                _removeSeries(_overlaySeries, rKey, lwChart);
+                _removeSeries(_overlaySeries, sKey, lwChart);
+            }
+        }
+    } else {
+        _removeSeries(_overlaySeries, 'pivot_p', lwChart);
+        for (let level = 1; level <= 5; level += 1) {
+            _removeSeries(_overlaySeries, `pivot_r${level}`, lwChart);
+            _removeSeries(_overlaySeries, `pivot_s${level}`, lwChart);
+        }
+    }
+
+    // Swing Points — rolling support/resistance clusters
+    if (_visibleIndicators.swing_points) {
+        const swingLevelCount = Math.min(5, Math.max(1, Math.round(indicatorParamValue('SWING_POINTS_LEVEL_COUNT', 1))));
+        for (let level = 1; level <= 5; level += 1) {
+            const active = level <= swingLevelCount;
+            const sKey = `swing_support_${level}`;
+            const rKey = `swing_resistance_${level}`;
+            if (active) {
+                _setLabeledLineData(_overlaySeries, sKey, lwChart, clean(bars.filter(b => b[sKey] != null).map(b => ({ time: b.time, value: b[sKey] }))), {
+                    color: level === 1 ? IND_COLORS.swing_support : 'rgba(22, 163, 74, 0.72)',
+                    lineWidth: level === 1 ? 3 : 2,
+                    lineStyle: level === 1 ? 1 : 2,
+                }, `SW S${level}`);
+                _setLabeledLineData(_overlaySeries, rKey, lwChart, clean(bars.filter(b => b[rKey] != null).map(b => ({ time: b.time, value: b[rKey] }))), {
+                    color: level === 1 ? IND_COLORS.swing_resistance : 'rgba(220, 38, 38, 0.72)',
+                    lineWidth: level === 1 ? 3 : 2,
+                    lineStyle: level === 1 ? 1 : 2,
+                }, `SW R${level}`);
+            } else {
+                _removeSeries(_overlaySeries, sKey, lwChart);
+                _removeSeries(_overlaySeries, rKey, lwChart);
+            }
+        }
+    } else {
+        for (let level = 1; level <= 5; level += 1) {
+            _removeSeries(_overlaySeries, `swing_support_${level}`, lwChart);
+            _removeSeries(_overlaySeries, `swing_resistance_${level}`, lwChart);
+        }
+    }
+
+    // Volume Profile — prior-session POC and value-area structure
+    if (_visibleIndicators.volume_profile) {
+        _setLabeledLineData(_overlaySeries, 'volume_profile_poc', lwChart, clean(bars.filter(b => b.volume_profile_poc != null).map(b => ({ time: b.time, value: b.volume_profile_poc }))), {
+            color: IND_COLORS.volume_profile_poc,
+            lineWidth: 3,
+            lineStyle: 0,
+        }, 'POC');
+        _setLabeledLineData(_overlaySeries, 'volume_profile_vah', lwChart, clean(bars.filter(b => b.volume_profile_vah != null).map(b => ({ time: b.time, value: b.volume_profile_vah }))), {
+            color: IND_COLORS.volume_profile_vah,
+            lineWidth: 2,
+            lineStyle: 2,
+        }, 'VAH');
+        _setLabeledLineData(_overlaySeries, 'volume_profile_val', lwChart, clean(bars.filter(b => b.volume_profile_val != null).map(b => ({ time: b.time, value: b.volume_profile_val }))), {
+            color: IND_COLORS.volume_profile_val,
+            lineWidth: 2,
+            lineStyle: 2,
+        }, 'VAL');
+    } else {
+        _removeSeries(_overlaySeries, 'volume_profile_poc', lwChart);
+        _removeSeries(_overlaySeries, 'volume_profile_vah', lwChart);
+        _removeSeries(_overlaySeries, 'volume_profile_val', lwChart);
+    }
+
+    // BotBulls2 — Universal Trailing Stop (UT) + Trend Tracer + Reversal Zones
     if (_visibleIndicators.botbulls2) {
         const lxTrailData = bars.filter(b => b.lx_smart_trail != null).map(b => ({
             time: b.time,
@@ -911,8 +1165,8 @@ function _refreshOverlays(bars) {
             color: b.lx_smart_trend ? '#10b981' : '#ef4444'
         }));
         _getOrCreate(_overlaySeries, 'lx_smart_trail', lwChart, {
-            lineWidth: 4,
-            lineType: 2 // Curved
+            lineWidth: 2.5,
+            lineType: 0
         }).setData(clean(lxTrailData));
 
         _getOrCreate(_overlaySeries, 'lx_trend_tracer', lwChart, {
@@ -943,19 +1197,19 @@ function _refreshOverlays(bars) {
                 activeMarkers.push({
                     time: curr.time,
                     position: 'belowBar',
-                    color: '#c2410c', // Dark orange/rust
+                    color: '#10b981',
                     shape: 'arrowUp',
                     text: 'BB2 BUY',
-                    size: 1.2
+                    size: 1
                 });
             } else if (!curr.lx_smart_trend && prev.lx_smart_trend) {
                 activeMarkers.push({
                     time: curr.time,
                     position: 'aboveBar',
-                    color: '#be123c', // Deep rose/crimson
+                    color: '#ef4444',
                     shape: 'arrowDown',
                     text: 'BB2 SELL',
-                    size: 1.2
+                    size: 1
                 });
             }
         }
@@ -974,8 +1228,8 @@ function _refreshOverlays(bars) {
             color: b.ut_above ? '#0ea5e9' : '#f43f5e'
         }));
         _getOrCreate(_overlaySeries, 'ut_trail', lwChart, {
-            lineWidth: 4,
-            lineType: 2 // Curved
+            lineWidth: 2.5,
+            lineType: 0
         }).setData(clean(utTrailData));
 
         // UT Bot buy/sell flip alerts
@@ -988,19 +1242,19 @@ function _refreshOverlays(bars) {
                 activeMarkers.push({
                     time: curr.time,
                     position: 'belowBar',
-                    color: '#0ea5e9', // Blue
+                    color: '#0ea5e9',
                     shape: 'arrowUp',
                     text: 'BB3 BUY',
-                    size: 1.5
+                    size: 1.2
                 });
             } else if (!curr.ut_above && prev.ut_above) {
                 activeMarkers.push({
                     time: curr.time,
                     position: 'aboveBar',
-                    color: '#f43f5e', // Red
+                    color: '#f43f5e',
                     shape: 'arrowDown',
                     text: 'BB3 SELL',
-                    size: 1.5
+                    size: 1.2
                 });
             }
         }
@@ -1016,19 +1270,54 @@ function _refreshOverlays(bars) {
                 activeMarkers.push({
                     time: b.time,
                     position: 'belowBar',
-                    color: '#06b6d4', // Cyan
+                    color: '#06b6d4',
                     shape: 'arrowUp',
                     text: 'BB1 BUY',
-                    size: 1.2
+                    size: 1
                 });
             } else if (b.ba1_sell) {
                 activeMarkers.push({
                     time: b.time,
                     position: 'aboveBar',
-                    color: '#f43f5e', // Rose
+                    color: '#f43f5e',
                     shape: 'arrowDown',
                     text: 'BB1 SELL',
-                    size: 1.2
+                    size: 1
+                });
+            }
+        }
+    }
+
+    // Candle Patterns Markers
+    if (_visibleIndicators['Candle Patterns']) {
+        const b = bars[bars.length - 1];
+        if (b?.cdl_name && b.cdl_name !== 'Neutral') {
+            if (b.cdl_bullish) {
+                activeMarkers.push({
+                    time: b.time,
+                    position: 'belowBar',
+                    color: '#10b981',
+                    shape: 'arrowUp',
+                    text: b.cdl_name,
+                    size: 1.1
+                });
+            } else if (b.cdl_bearish) {
+                activeMarkers.push({
+                    time: b.time,
+                    position: 'aboveBar',
+                    color: '#ef4444',
+                    shape: 'arrowDown',
+                    text: b.cdl_name,
+                    size: 1.1
+                });
+            } else {
+                activeMarkers.push({
+                    time: b.time,
+                    position: 'aboveBar',
+                    color: '#f59e0b',
+                    shape: 'circle',
+                    text: b.cdl_name,
+                    size: 1.1
                 });
             }
         }
@@ -1056,9 +1345,15 @@ function _refreshOscillators(bars) {
             .setData(clean(bars.filter(b => b.rsi != null).map(b => ({ time: b.time, value: b.rsi }))));
         const ob = _getOrCreate(_oscSeries, 'rsi_ob', oscChartRsi, { color: 'rgba(239,68,68,0.4)', lineWidth: 1, lineStyle: 2 });
         const os = _getOrCreate(_oscSeries, 'rsi_os', oscChartRsi, { color: 'rgba(16,185,129,0.4)', lineWidth: 1, lineStyle: 2 });
+        const rsiPeriod = indicatorParamValue('RSI_PERIOD', 14);
+        const obVal = indicatorParamValue('RSI_OVERBOUGHT', 70);
+        const osVal = indicatorParamValue('RSI_OVERSOLD', 30);
+        if (rsiLabel) {
+            rsiLabel.textContent = `RSI (${rsiPeriod})  •  OB: ${obVal} / OS: ${osVal}`;
+        }
         if (bars.length) {
-            ob.setData(clean([{ time: bars[0].time, value: 70 }, { time: bars[bars.length - 1].time, value: 70 }]));
-            os.setData(clean([{ time: bars[0].time, value: 30 }, { time: bars[bars.length - 1].time, value: 30 }]));
+            ob.setData(clean([{ time: bars[0].time, value: obVal }, { time: bars[bars.length - 1].time, value: obVal }]));
+            os.setData(clean([{ time: bars[0].time, value: osVal }, { time: bars[bars.length - 1].time, value: osVal }]));
         }
         try { oscChartRsi.timeScale().fitContent(); } catch (e) { }
     } else if (oscChartRsi) {
@@ -1079,11 +1374,17 @@ function _refreshOscillators(bars) {
         }
     }
     if (_visibleIndicators.macd && oscChartMacd) {
+        const macdFast = indicatorParamValue('MACD_FAST', 12);
+        const macdSlow = indicatorParamValue('MACD_SLOW', 26);
+        const macdSig = indicatorParamValue('MACD_SIGNAL', 9);
+        if (macdLabel) {
+            macdLabel.textContent = `MACD (${macdFast}, ${macdSlow}, ${macdSig})`;
+        }
         // Histogram
         if (!_oscSeries['macd_hist']) {
             _oscSeries['macd_hist'] = oscChartMacd.addHistogramSeries({
                 base: 0,
-                priceFormat: { type: 'price', precision: 6, minMove: 0.000001 }
+                priceFormat: { type: 'price', precision: 4, minMove: 0.0001 }
             });
         }
         const histData = bars.filter(b => b.macd_hist != null).map(b => ({
@@ -1096,13 +1397,13 @@ function _refreshOscillators(bars) {
         _getOrCreate(_oscSeries, 'macd_line', oscChartMacd, { 
             color: IND_COLORS.macd_line, 
             lineWidth: 1,
-            priceFormat: { type: 'price', precision: 6, minMove: 0.000001 }
+            priceFormat: { type: 'price', precision: 4, minMove: 0.0001 }
         }).setData(clean(bars.filter(b => b.macd_line != null).map(b => ({ time: b.time, value: b.macd_line }))));
         
         _getOrCreate(_oscSeries, 'macd_signal', oscChartMacd, { 
             color: IND_COLORS.macd_signal, 
             lineWidth: 1,
-            priceFormat: { type: 'price', precision: 6, minMove: 0.000001 }
+            priceFormat: { type: 'price', precision: 4, minMove: 0.0001 }
         }).setData(clean(bars.filter(b => b.macd_signal != null).map(b => ({ time: b.time, value: b.macd_signal }))));
         
         try { oscChartMacd.timeScale().fitContent(); } catch (e) { }
@@ -1124,6 +1425,10 @@ function _refreshOscillators(bars) {
         }
     }
     if (_visibleIndicators.mystic && oscChartMystic) {
+        const mysticThresh = indicatorParamValue('MYSTIC_PULSE_THRESHOLD', 5);
+        if (mysticLabel) {
+            mysticLabel.textContent = `Mystic Pulse  •  Threshold: ${mysticThresh}`;
+        }
         if (!_oscSeries['mystic_hist']) {
             _oscSeries['mystic_hist'] = oscChartMystic.addHistogramSeries({
                 base: 0,
@@ -1135,14 +1440,21 @@ function _refreshOscillators(bars) {
             let col = 'rgba(168,85,247,0.2)'; // neutral
             if (b.mystic_bull > 0) {
                 val = b.mystic_bull;
-                col = b.mystic_bull >= 5 ? 'rgba(16, 185, 129, 0.9)' : 'rgba(16, 185, 129, 0.4)';
+                col = b.mystic_bull >= mysticThresh ? 'rgba(16, 185, 129, 0.9)' : 'rgba(16, 185, 129, 0.4)';
             } else if (b.mystic_bear > 0) {
                 val = -b.mystic_bear;
-                col = b.mystic_bear >= 5 ? 'rgba(239, 68, 68, 0.9)' : 'rgba(239, 68, 68, 0.4)';
+                col = b.mystic_bear >= mysticThresh ? 'rgba(239, 68, 68, 0.9)' : 'rgba(239, 68, 68, 0.4)';
             }
             return { time: b.time, value: val, color: col };
         });
         _oscSeries['mystic_hist'].setData(clean(histData));
+
+        const ob = _getOrCreate(_oscSeries, 'mystic_ob', oscChartMystic, { color: 'rgba(16,185,129,0.35)', lineWidth: 1, lineStyle: 2 });
+        const os = _getOrCreate(_oscSeries, 'mystic_os', oscChartMystic, { color: 'rgba(239,68,68,0.35)', lineWidth: 1, lineStyle: 2 });
+        if (bars.length) {
+            ob.setData(clean([{ time: bars[0].time, value: mysticThresh }, { time: bars[bars.length - 1].time, value: mysticThresh }]));
+            os.setData(clean([{ time: bars[0].time, value: -mysticThresh }, { time: bars[bars.length - 1].time, value: -mysticThresh }]));
+        }
         try { oscChartMystic.timeScale().fitContent(); } catch (e) { }
     } else if (oscChartMystic) {
         _removeSeries(_oscSeries, 'mystic_hist', oscChartMystic);
@@ -1160,6 +1472,11 @@ function _refreshOscillators(bars) {
         }
     }
     if (_visibleIndicators.adx && oscChartAdx) {
+        const adxPeriod = indicatorParamValue('ADX_PERIOD', 14);
+        const adxThreshVal = indicatorParamValue('ADX_TRENDING_THRESHOLD', 25);
+        if (adxLabel) {
+            adxLabel.textContent = `ADX (${adxPeriod})  •  Trend Thresh: ${adxThreshVal}`;
+        }
         _getOrCreate(_oscSeries, 'adx', oscChartAdx, { color: IND_COLORS.adx, lineWidth: 2 })
             .setData(clean(bars.filter(b => b.adx != null).map(b => ({ time: b.time, value: b.adx }))));
         _getOrCreate(_oscSeries, 'di_plus', oscChartAdx, { color: IND_COLORS.di_plus, lineWidth: 1 })
@@ -1169,7 +1486,7 @@ function _refreshOscillators(bars) {
 
         // Threshold line at 25 (trending vs choppy)
         const adxThreshold = _getOrCreate(_oscSeries, 'adx_threshold', oscChartAdx, { color: 'rgba(99,102,241,0.25)', lineWidth: 1, lineStyle: 2 });
-        adxThreshold.setData(clean(bars.map(b => ({ time: b.time, value: 25 }))));
+        adxThreshold.setData(clean(bars.map(b => ({ time: b.time, value: adxThreshVal }))));
 
         try { oscChartAdx.timeScale().fitContent(); } catch (e) { }
     } else if (oscChartAdx) {
@@ -1191,6 +1508,12 @@ function _refreshOscillators(bars) {
         }
     }
     if (_visibleIndicators.botbulls1 && oscChartBotbulls1) {
+        const wtChannel = indicatorParamValue('BOTBULLS1_WT_CHANNEL', 10);
+        const wtAvg = indicatorParamValue('BOTBULLS1_WT_AVERAGE', 21);
+        const mfiConfirm = indicatorParamValue('BOTBULLS1_MFI_CONFIRM', 30);
+        if (botbulls1Label) {
+            botbulls1Label.textContent = `BotBulls1 (WT: ${wtChannel}, ${wtAvg} | MFI: ${mfiConfirm})`;
+        }
         // wt1 line
         _getOrCreate(_oscSeries, 'wt1', oscChartBotbulls1, { color: IND_COLORS.wt1, lineWidth: 1.5 })
             .setData(clean(bars.filter(b => b.wt1 != null).map(b => ({ time: b.time, value: b.wt1 }))));
@@ -1288,6 +1611,126 @@ function chartCacheKey(ticker, timeframe = currentBackendTf) {
     return `${normalizeTicker(ticker)}|${timeframe}|${CHART_CACHE_VERSION}`;
 }
 
+function clearLegacyChartLocalStorageCaches() {
+    if (legacyChartLocalStorageCleared) return;
+    legacyChartLocalStorageCleared = true;
+    try {
+        const keysToRemove = [];
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && key.startsWith('chart_cache_')) keysToRemove.push(key);
+        }
+        keysToRemove.forEach(key => localStorage.removeItem(key));
+    } catch (e) {
+        console.warn('[chart] Could not clear legacy localStorage chart cache:', e);
+    }
+}
+
+function openChartIndexedDB() {
+    if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+    if (chartIndexedDbPromise) return chartIndexedDbPromise;
+    chartIndexedDbPromise = new Promise(resolve => {
+        const request = indexedDB.open(CHART_IDB_NAME, CHART_IDB_VERSION);
+        request.onupgradeneeded = event => {
+            const db = event.target.result;
+            if (!db.objectStoreNames.contains(CHART_IDB_STORE)) {
+                const store = db.createObjectStore(CHART_IDB_STORE, { keyPath: 'key' });
+                store.createIndex('fetchedAt', 'fetchedAt', { unique: false });
+            }
+        };
+        request.onsuccess = event => resolve(event.target.result);
+        request.onerror = () => {
+            console.warn('[chart] IndexedDB chart cache unavailable:', request.error);
+            resolve(null);
+        };
+        request.onblocked = () => {
+            console.warn('[chart] IndexedDB chart cache upgrade blocked by another tab.');
+            resolve(null);
+        };
+    });
+    return chartIndexedDbPromise;
+}
+
+async function readChartCacheFromIndexedDB(key) {
+    const db = await openChartIndexedDB();
+    if (!db) return null;
+    return new Promise(resolve => {
+        try {
+            const tx = db.transaction(CHART_IDB_STORE, 'readonly');
+            const store = tx.objectStore(CHART_IDB_STORE);
+            const request = store.get(key);
+            request.onsuccess = () => resolve(request.result || null);
+            request.onerror = () => {
+                console.warn('[chart] Failed to read chart cache from IndexedDB:', request.error);
+                resolve(null);
+            };
+        } catch (e) {
+            console.warn('[chart] Failed to open IndexedDB read transaction:', e);
+            resolve(null);
+        }
+    });
+}
+
+async function pruneChartIndexedDB(maxEntries = 30) {
+    const db = await openChartIndexedDB();
+    if (!db) return;
+    return new Promise(resolve => {
+        try {
+            const tx = db.transaction(CHART_IDB_STORE, 'readwrite');
+            const store = tx.objectStore(CHART_IDB_STORE);
+            const request = store.getAll();
+            request.onsuccess = () => {
+                const rows = (Array.isArray(request.result) ? request.result : [])
+                    .filter(row => !String(row?.key || '').startsWith('bot-preview|'));
+                rows
+                    .sort((a, b) => Number(b.fetchedAt || 0) - Number(a.fetchedAt || 0))
+                    .slice(maxEntries)
+                    .forEach(row => {
+                        if (row?.key) store.delete(row.key);
+                    });
+            };
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+            tx.onabort = () => resolve();
+        } catch (e) {
+            resolve();
+        }
+    });
+}
+
+async function saveChartCacheToIndexedDB(key, wrapped) {
+    const db = await openChartIndexedDB();
+    if (!db) return false;
+    const record = { ...wrapped, key, cacheType: 'dashboard-chart' };
+    const writeRecord = () => new Promise((resolve, reject) => {
+        try {
+            const tx = db.transaction(CHART_IDB_STORE, 'readwrite');
+            tx.objectStore(CHART_IDB_STORE).put(record);
+            tx.oncomplete = () => resolve(true);
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
+        } catch (e) {
+            reject(e);
+        }
+    });
+    try {
+        await writeRecord();
+        pruneChartIndexedDB().catch(() => {});
+        clearLegacyChartLocalStorageCaches();
+        return true;
+    } catch (e) {
+        await pruneChartIndexedDB(10);
+        try {
+            await writeRecord();
+            clearLegacyChartLocalStorageCaches();
+            return true;
+        } catch (retryErr) {
+            console.warn('[chart] IndexedDB chart cache write skipped:', retryErr);
+            return false;
+        }
+    }
+}
+
 function renderFastChartPayload(data, requestedTicker) {
     const ticker = normalizeTicker(requestedTicker || data?.ticker || data?.primaryTicker);
     if (!ticker || normalizeTicker(selectedTicker) !== ticker) return;
@@ -1375,20 +1818,16 @@ async function loadTickerChartFast(ticker, options = {}) {
     const key = chartCacheKey(requestedTicker);
     let cached = chartDataCache.get(key);
 
-    // Fallback to localStorage if not found in memory
+    // Fallback to IndexedDB if not found in memory.
     if (!cached && renderCached) {
-        try {
-            const localData = localStorage.getItem(`chart_cache_${key}`);
-            if (localData) {
-                cached = JSON.parse(localData);
-                if (cached?.fetchedAt && (Date.now() - cached.fetchedAt) > CHART_CACHE_TTL_MS) {
-                    cached = null;
-                } else {
-                    chartDataCache.set(key, cached);
-                }
+        const idbData = await readChartCacheFromIndexedDB(key);
+        if (idbData) {
+            if (idbData?.fetchedAt && (Date.now() - idbData.fetchedAt) > CHART_CACHE_TTL_MS) {
+                cached = null;
+            } else {
+                cached = idbData;
+                chartDataCache.set(key, cached);
             }
-        } catch (e) {
-            console.warn('[chart] Failed to read chart cache from localStorage:', e);
         }
     }
 
@@ -1440,33 +1879,16 @@ async function loadTickerChartFast(ticker, options = {}) {
             ticker: requestedTicker
         };
         chartDataCache.set(key, wrapped);
-        
-        const cacheKeyName = `chart_cache_${key}`;
-        try {
-            localStorage.setItem(cacheKeyName, JSON.stringify(wrapped));
-        } catch (e) {
-            // Storage might be full. Clear out old chart caches to make room.
-            try {
-                const keysToRemove = [];
-                for (let i = 0; i < localStorage.length; i++) {
-                    const k = localStorage.key(i);
-                    if (k && k.startsWith('chart_cache_') && k !== cacheKeyName) {
-                        keysToRemove.push(k);
-                    }
-                }
-                keysToRemove.forEach(k => localStorage.removeItem(k));
-                
-                // Retry saving after cleanup
-                localStorage.setItem(cacheKeyName, JSON.stringify(wrapped));
-            } catch (retryErr) {
-                // The single chart payload itself is too large for the remaining localStorage quota (often true for 1Min charts).
-                // Silently skip caching for this specific ticker/timeframe to avoid console spam.
-                console.log(`[chart] Payload too large to cache in localStorage: ${cacheKeyName}`);
-            }
-        }
+        saveChartCacheToIndexedDB(key, wrapped).catch(e => {
+            console.warn('[chart] IndexedDB chart cache save failed:', e);
+        });
         renderFastChartPayload(data, requestedTicker);
     } catch (e) {
-        console.error('[chart] Fast chart load failed:', e);
+        if (isRequestTimeout(e) || isRequestAbort(e)) {
+            console.warn(`[chart] Refresh skipped: ${e.message || e.name}`);
+        } else {
+            console.error('[chart] Fast chart load failed:', e);
+        }
     }
 }
 
@@ -1485,7 +1907,7 @@ async function refreshCompletedCandlesIfDue() {
     activeChartRefreshInFlight = true;
     lastCompletedChartAttemptedCloseTime = latestSafeClosedBarTime;
     try {
-        await loadSelectedTickerChart({ renderCached: false, fetchFresh: true });
+        await loadSelectedTickerChart({ force: true, renderCached: false, fetchFresh: true });
     } finally {
         activeChartRefreshInFlight = false;
     }
@@ -1793,6 +2215,10 @@ var INDICATOR_TOOLTIPS = {
     "Candle patterns": "Candlestick Patterns identify specific OHLC price formations. Purpose: Provides visual clues about market psychology and potential reversals.",
     "ADX Trend": "Average Directional Index (ADX) quantifies trend strength. Purpose: Determines if the market is trending strongly (ADX > 25) or ranging.",
     "VWAP": "Volume Weighted Average Price (VWAP) is the ratio of value traded to total volume. Purpose: Provides the true average price a security traded at throughout the day.",
+    "Volume Profile": "Prior-session volume-at-price profile using POC, VAH, and VAL. Purpose: Identifies institutional acceptance/rejection zones where the most volume traded.",
+    "Prior Day High/Low": "Uses the previous completed trading session's high and low as breakout/breakdown levels. Buffer is entered as %, with dotted trigger lines when non-zero.",
+    "Pivot Points (S/R)": "Classic prior-session floor pivot levels. Draws up to 5 support/resistance ladders; bullish when price reclaims support/pivot, bearish when price rejects resistance or loses pivot.",
+    "Swing Points": "Rolling swing support/resistance clusters from recent local highs/lows. Purpose: Identifies structural bounce, rejection, reclaim, and breakdown zones.",
     "Strategy Confidence": "Strategy Confidence combines multiple indicator signals into a single probability score. Purpose: Measures the overall conviction of a bullish or bearish trend."
 };
 
@@ -1805,6 +2231,10 @@ var INDICATOR_CONFIG_MAP = {
     'Mystic Pulse': ['MYSTIC_PULSE_THRESHOLD'],
     'ADX Trend': ['ADX_PERIOD', 'ADX_TRENDING_THRESHOLD'],
     'SMA': ['SMA_PERIOD'],
+    'Prior Day High/Low': ['DAILY_HIGH_LOW_BUFFER_PCT'],
+    'Pivot Points (S/R)': ['PIVOT_LEVEL_COUNT', 'PIVOT_TOLERANCE_PCT'],
+    'Volume Profile': ['VOLUME_PROFILE_ROWS', 'VOLUME_PROFILE_VALUE_AREA_PCT', 'VOLUME_PROFILE_TOLERANCE_PCT', 'VOLUME_PROFILE_CONFIRMATION_CANDLES'],
+    'Swing Points': ['SWING_POINTS_LOOKBACK_DAYS', 'SWING_POINTS_ENTRY_MODE', 'SWING_POINTS_LEVEL_COUNT'],
     'ATR Volatility': ['ATR_PERIOD', 'ATR_STOP_MULTIPLIER', 'ATR_TRAIL_MULTIPLIER', 'ATR_TAKE_PROFIT_MULTIPLIER'],
     'Strategy Confidence': ['MIN_BULLISH_SIGNALS', 'MIN_BEARISH_SIGNALS'],
     'Botbulls4 News AI': ['SENTIMENT_BULLISH_PERCENTAGE', 'SENTIMENT_BEARISH_PERCENTAGE'],
@@ -1839,6 +2269,16 @@ var INDICATOR_DEFAULTS = {
     'ADX_PERIOD': 14,
     'ADX_TRENDING_THRESHOLD': 25,
     'SMA_PERIOD': 200,
+    'DAILY_HIGH_LOW_BUFFER_PCT': 0.0,
+    'PIVOT_LEVEL_COUNT': 1,
+    'PIVOT_TOLERANCE_PCT': 0.0,
+    'VOLUME_PROFILE_ROWS': 48,
+    'VOLUME_PROFILE_VALUE_AREA_PCT': 70.0,
+    'VOLUME_PROFILE_TOLERANCE_PCT': 0.15,
+    'VOLUME_PROFILE_CONFIRMATION_CANDLES': 1,
+    'SWING_POINTS_LOOKBACK_DAYS': 20,
+    'SWING_POINTS_ENTRY_MODE': 'bounce_retest',
+    'SWING_POINTS_LEVEL_COUNT': 1,
     'ATR_PERIOD': 14,
     'ATR_STOP_MULTIPLIER': 2.0,
     'ATR_TRAIL_MULTIPLIER': 3.0,
@@ -1857,7 +2297,7 @@ let currentEditingIndicator = null;
 const GLOBAL_INDICATOR_PREFS_KEY = 'globalIndicatorPrefs';
 const ALL_SIGNAL_NAMES = [
     'RSI', 'MACD', 'EMA Cross', 'ADX Trend', 'Supertrend',
-    'Bollinger', 'VWAP', 'SMA', 'Mystic Pulse', 'Candle Patterns', 'Botbulls4 News AI'
+    'Bollinger', 'VWAP', 'Volume Profile', 'SMA', 'Prior Day High/Low', 'Pivot Points (S/R)', 'Swing Points', 'Mystic Pulse', 'Candle Patterns', 'Botbulls4 News AI'
 ];
 
 function getGlobalIndicatorPrefs() {
@@ -1937,6 +2377,11 @@ async function resetConfluenceIndicatorsToDefaults() {
 }
 
 function indicatorParamValue(key, fallback) {
+    const overrides = window.lastDashboardData?.indicator_overrides || {};
+    if (overrides[key] !== undefined && overrides[key] !== null && overrides[key] !== '') {
+        const val = Number(overrides[key]);
+        if (Number.isFinite(val)) return val;
+    }
     const params = window.lastDashboardData?.indicator_parameters || {};
     const raw = params[key] !== undefined && params[key] !== null && params[key] !== ''
         ? params[key]
@@ -2002,15 +2447,34 @@ async function loadOllamaModels() {
     }
 }
 
-var AI_INDICATOR_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+var AI_INDICATOR_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 let _aiIndicatorFetchId = 0; // prevents stale response rendering
+
+function getAIIndicatorCacheKey(ticker, timeframe, model) {
+    return `${normalizeTicker(ticker)}|${timeframe}|${model}`;
+}
+
+function isAICacheFresh(cached) {
+    return cached && cached.timestamp && (Date.now() - cached.timestamp) < AI_INDICATOR_CACHE_TTL;
+}
+
+function isAICacheForContext(cached, ticker, timeframe, model) {
+    if (!isAICacheFresh(cached)) return false;
+    const expectedKey = getAIIndicatorCacheKey(ticker, timeframe, model);
+    if (cached.key) return cached.key === expectedKey;
+    return (
+        normalizeTicker(cached.ticker) === normalizeTicker(ticker) &&
+        cached.timeframe === timeframe &&
+        cached.model === model
+    );
+}
 
 function getAICache(key) {
     try {
         const cachedStr = localStorage.getItem(`ai_cache_${key}`);
         if (cachedStr) {
             const cached = JSON.parse(cachedStr);
-            if ((Date.now() - cached.timestamp) < AI_INDICATOR_CACHE_TTL) {
+            if (isAICacheFresh(cached)) {
                 return cached;
             }
             localStorage.removeItem(`ai_cache_${key}`);
@@ -2019,11 +2483,84 @@ function getAICache(key) {
     return null;
 }
 
-function setAICache(key, data) {
+function normalizeCachedAISentimentScore(rawScore) {
+    const value = Number(rawScore);
+    if (!Number.isFinite(value)) return null;
+    if (value >= -1 && value <= 1) return value;
+    if (value >= 0 && value <= 100) return (value / 100) * 2 - 1;
+    return Math.max(-1, Math.min(1, value));
+}
+
+function getCachedAIAnalysisForTicker(ticker, timeframe = currentBackendTf) {
+    const normalizedTicker = normalizeTicker(ticker);
+    if (!normalizedTicker) return null;
+    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const exact = getAICache(getAIIndicatorCacheKey(normalizedTicker, timeframe, selectedModel));
+    if (exact?.data?.sentiment_score != null) return exact;
+
+    try {
+        const globalAi = JSON.parse(localStorage.getItem('latest_global_ai_analysis') || 'null');
+        if (
+            globalAi?.data?.sentiment_score != null &&
+            isAICacheFresh(globalAi) &&
+            normalizeTicker(globalAi.ticker || globalAi.data?.ticker) === normalizedTicker
+        ) {
+            return globalAi;
+        }
+    } catch (e) {}
+
+    try {
+        const prefix = `ai_cache_${normalizedTicker}|`;
+        for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+            const key = localStorage.key(i);
+            if (!key || !key.startsWith(prefix)) continue;
+            const cached = JSON.parse(localStorage.getItem(key) || 'null');
+            if (cached?.data?.sentiment_score != null && isAICacheFresh(cached)) return cached;
+        }
+    } catch (e) {}
+    return null;
+}
+
+function getCachedNewsAISentiment(ticker, timeframe = currentBackendTf) {
+    const cached = getCachedAIAnalysisForTicker(ticker, timeframe);
+    const data = cached?.data;
+    if (!data) return null;
+    const score = normalizeCachedAISentimentScore(data.sentiment_score);
+    if (score === null) return null;
+    return {
+        score,
+        pct: Math.round(((score + 1.0) / 2.0) * 100),
+        reason: data.sentiment_key_factor || data.key_catalyst || 'Mixed Catalysts',
+        summary: data.sentiment_summary || data.summary || '',
+        confidence: Number(data.sentiment_confidence ?? data.confidence ?? 0),
+    };
+}
+
+function applyCachedNewsAISignal(signal, options = {}) {
+    if (!signal) return signal;
+    const sentiment = getCachedNewsAISentiment(options.ticker || selectedTicker, options.timeframe || currentBackendTf);
+    if (!sentiment) return signal;
+    signal.value = sentiment.score;
+    signal.reason = sentiment.reason;
+    signal.cached = true;
+    signal.sentiment_summary = sentiment.summary;
+    signal.sentiment_confidence = sentiment.confidence;
+    const params = options.params || window.lastDashboardData?.indicator_parameters || {};
+    const bullishThresh = params.SENTIMENT_BULLISH_PERCENTAGE ?? INDICATOR_DEFAULTS?.SENTIMENT_BULLISH_PERCENTAGE ?? 70;
+    const bearishThresh = params.SENTIMENT_BEARISH_PERCENTAGE ?? INDICATOR_DEFAULTS?.SENTIMENT_BEARISH_PERCENTAGE ?? 30;
+    signal.signal = sentiment.pct >= bullishThresh ? 'BULLISH' : sentiment.pct <= bearishThresh ? 'BEARISH' : 'NEUTRAL';
+    return signal;
+}
+
+function setAICache(key, data, meta = {}) {
     try {
         const payload = {
             data: data,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            key,
+            ticker: normalizeTicker(meta.ticker || data?.ticker),
+            timeframe: meta.timeframe,
+            model: meta.model
         };
         localStorage.setItem(`ai_cache_${key}`, JSON.stringify(payload));
         localStorage.setItem(`latest_global_ai_analysis`, JSON.stringify(payload));
@@ -2032,26 +2569,36 @@ function setAICache(key, data) {
 
 async function fetchAIIndicator(ticker, timeframe, force = false) {
     if (!ticker) return;
+    const normalizedTicker = normalizeTicker(ticker);
     const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
-    const key = `${ticker}|${timeframe}|${selectedModel}`;
+    const key = getAIIndicatorCacheKey(normalizedTicker, timeframe, selectedModel);
 
     // Check client-side cache first (unless forced)
     if (!force) {
         const cached = getAICache(key);
         if (cached) {
             renderAIIndicatorCard(cached.data, true);
+            if (window._lastSignals) {
+                renderSignals(
+                    window._lastSignals,
+                    window.lastDashboardData?.primaryScan?.action || 'HOLD',
+                    window.lastDashboardData?.primaryScan?.reason || '',
+                    window.lastDashboardData?.primaryScan?.bullish_count ?? 0,
+                    window.lastDashboardData?.primaryScan?.bearish_count ?? 0
+                );
+            }
             recomputeConfluence();
             return;
         }
     }
 
     // Show loading skeleton
-    _showAIIndicatorLoading(ticker);
+    _showAIIndicatorLoading(normalizedTicker);
 
     const fetchId = ++_aiIndicatorFetchId;
     try {
         const headers = await getAuthHeaders();
-        const url = `${API_BASE}/api/ai-indicator?ticker=${encodeURIComponent(ticker)}&timeframe=${encodeURIComponent(timeframe)}&model=${encodeURIComponent(selectedModel)}${force ? '&force=true' : ''}`;
+        const url = `${API_BASE}/api/ai-indicator?ticker=${encodeURIComponent(normalizedTicker)}&timeframe=${encodeURIComponent(timeframe)}&model=${encodeURIComponent(selectedModel)}${force ? '&force=true' : ''}`;
         const res = await fetch(url, { headers });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
@@ -2069,8 +2616,17 @@ async function fetchAIIndicator(ticker, timeframe, force = false) {
             return;
         }
 
-        setAICache(key, data);
+        setAICache(key, data, { ticker: normalizedTicker, timeframe, model: selectedModel });
         renderAIIndicatorCard(data, false);
+        if (window._lastSignals) {
+            renderSignals(
+                window._lastSignals,
+                window.lastDashboardData?.primaryScan?.action || 'HOLD',
+                window.lastDashboardData?.primaryScan?.reason || '',
+                window.lastDashboardData?.primaryScan?.bullish_count ?? 0,
+                window.lastDashboardData?.primaryScan?.bearish_count ?? 0
+            );
+        }
 
         // Refresh the signal grid so the Botbulls4 News AI row syncs with the fresh score
         recomputeConfluence();
@@ -2430,7 +2986,7 @@ window.refreshAIIndicator = async function () {
         refreshBtn.disabled = true;
     }
     const ticker = (typeof selectedTicker !== 'undefined' ? selectedTicker : '') || 'TSLA';
-    const timeframe = (typeof selectedTimeframe !== 'undefined' ? selectedTimeframe : '') || '1Hour';
+    const timeframe = currentBackendTf || (typeof selectedTimeframe !== 'undefined' ? selectedTimeframe : '') || '1Hour';
     try {
         await fetchAIIndicator(ticker, timeframe, true);
     } catch (e) {
@@ -2496,32 +3052,11 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
 
         // Sync Botbulls4 News AI with actual cached AI Indicator score before style evaluation
         if (name === 'Botbulls4 News AI') {
-            const tickerStr = typeof selectedTicker !== 'undefined' ? selectedTicker : '';
-            const timeframeStr = typeof selectedTimeframe !== 'undefined' ? selectedTimeframe : '';
-            const aiCacheKey = `${tickerStr}|${timeframeStr}|${localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile'}`;
-            const cachedAi = getAICache(aiCacheKey);
-            if (cachedAi && cachedAi.data && cachedAi.data.sentiment_score != null) {
-                const score = parseFloat(cachedAi.data.sentiment_score);
-                data.value = score;
-                data.reason = cachedAi.data.sentiment_key_factor || "Mixed Catalysts";
-
-                const sentPct = Math.round(((score + 1.0) / 2.0) * 100);
-                const currentParams = window.lastDashboardData?.indicator_parameters || {};
-                const bullishThresh = currentParams['SENTIMENT_BULLISH_PERCENTAGE'] !== undefined
-                    ? currentParams['SENTIMENT_BULLISH_PERCENTAGE']
-                    : (typeof INDICATOR_DEFAULTS !== 'undefined' ? INDICATOR_DEFAULTS['SENTIMENT_BULLISH_PERCENTAGE'] : 70);
-                const bearishThresh = currentParams['SENTIMENT_BEARISH_PERCENTAGE'] !== undefined
-                    ? currentParams['SENTIMENT_BEARISH_PERCENTAGE']
-                    : (typeof INDICATOR_DEFAULTS !== 'undefined' ? INDICATOR_DEFAULTS['SENTIMENT_BEARISH_PERCENTAGE'] : 30);
-
-                if (sentPct >= bullishThresh) {
-                    data.signal = 'BULLISH';
-                } else if (sentPct <= bearishThresh) {
-                    data.signal = 'BEARISH';
-                } else {
-                    data.signal = 'NEUTRAL';
-                }
-            }
+            applyCachedNewsAISignal(data, {
+                ticker: typeof selectedTicker !== 'undefined' ? selectedTicker : '',
+                timeframe: typeof currentBackendTf !== 'undefined' ? currentBackendTf : '',
+                params: window.lastDashboardData?.indicator_parameters || {},
+            });
         }
 
         // Determine CSS class
@@ -2601,7 +3136,6 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
 
             if (isPremium) {
                 // Premium card with ⓘ info tooltip
-                const tooltipText = PREMIUM_INFO[name] || '';
                 card.innerHTML = `
                     <div class="flex items-center justify-between mb-1">
                         <div class="flex items-center gap-1.5">
@@ -2610,8 +3144,8 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
                                 <svg onclick="event.stopPropagation(); event.preventDefault(); typeof openInfoModal === 'function' ? openInfoModal('${name}') : null" xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                 </svg>
-                                <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal normal-case tracking-normal">
-                                    ${tooltipText}
+                                <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                    Click to read guide
                                     <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900"></div>
                                 </div>
                             </div>
@@ -2629,11 +3163,21 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
                     <p class="text-[0.65rem] text-amber-700 leading-tight ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${reasonHtml}</p>
                 `;
             } else {
-                // Standard signal card (existing template)
-
+                // Standard signal card
                 card.innerHTML = `
                     <div class="flex items-center justify-between mb-1">
-                        <span class="font-bold text-xs text-indigo-900 ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${name}</span>
+                        <div class="flex items-center gap-1.5">
+                            <span class="font-bold text-xs text-indigo-900 ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${name}</span>
+                            <div class="group/tooltip relative inline-flex items-center">
+                                <svg onclick="event.stopPropagation(); event.preventDefault(); typeof openInfoModal === 'function' ? openInfoModal('${name}') : null" xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                    Click to read guide
+                                    <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900"></div>
+                                </div>
+                            </div>
+                        </div>
                         <div class="flex items-center gap-2">
                             <button class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" 
                                     onclick="event.stopPropagation(); openIndicatorSettings('${name}')"
@@ -2692,10 +3236,15 @@ const SIGNAL_TO_CHART_KEY = {
     'VWAP': 'vwap',
     'Mystic Pulse': 'mystic',
     'SMA': 'sma',
+    'Prior Day High/Low': 'daily_high_low',
+    'Pivot Points (S/R)': 'pivot_points',
+    'Volume Profile': 'volume_profile',
+    'Swing Points': 'swing_points',
     'ADX Trend': 'adx',
     'BotBulls1': 'botbulls1',
     'BotBulls2': 'botbulls2',
     'BotBulls3': 'botbulls3',
+    'Candle Patterns': 'Candle Patterns',
 };
 
 function _syncIndicatorsFromSignals(signals) {
@@ -2743,7 +3292,7 @@ function renderWatchlist(scans, watchlist) {
         // Always use general scans for the Dashboard Watchlist to ensure settings separation
         const scan = (scans || {})[ticker];
         const item = document.createElement('div');
-        item.className = `watchlist-item group cursor-pointer ${selectedTicker === ticker ? 'active' : ''} p-3 mb-2 flex flex-col gap-2`;
+        item.className = `watchlist-item group cursor-pointer ${selectedTicker === ticker ? 'active ring-2 ring-indigo-500 bg-indigo-50/60 shadow-sm' : 'bg-white/80 hover:bg-white'} px-2.5 py-1.5 rounded-lg border border-slate-200/80 hover:shadow-sm transition-all flex flex-col justify-between`;
         item.onclick = () => selectTicker(ticker);
 
         const price = scan?.price ? `$${isCryptoTicker(ticker) ? new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 8, useGrouping: false }).format(parseFloat(scan.price.toString().replace('$', ''))) : parseFloat(scan.price.toString().replace('$', '')).toFixed(2)}` : '---';
@@ -2818,10 +3367,29 @@ function selectTicker(ticker) {
     const normalizedTicker = normalizeTicker(ticker);
     if (!normalizedTicker) return;
 
-    // Auto-collapse watchlist on mobile when selecting a ticker
-    if (window.innerWidth < 1024 && typeof window.toggleWatchlistCollapse === 'function') {
+    // Auto-collapse watchlist when selecting a ticker and highlight active chart
+    if (typeof window.toggleWatchlistCollapse === 'function') {
         window.toggleWatchlistCollapse(true);
     }
+    setTimeout(() => {
+        const chartPanel = document.getElementById('mainChartPanel');
+        if (chartPanel) {
+            const isMobile = window.innerWidth < 640;
+            const topOffset = isMobile ? 8 : 16;
+            const alignChartToTop = () => {
+                const targetY = chartPanel.getBoundingClientRect().top + window.pageYOffset - topOffset;
+                window.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' });
+            };
+            alignChartToTop();
+            // Second check for mobile browsers after address bar / viewport reflow
+            setTimeout(alignChartToTop, 160);
+
+            chartPanel.classList.add('ring-4', 'ring-indigo-400', 'shadow-2xl', 'transition-all', 'duration-500');
+            setTimeout(() => {
+                chartPanel.classList.remove('ring-4', 'ring-indigo-400', 'shadow-2xl');
+            }, 1400);
+        }
+    }, 340);
 
     if (selectedTicker === normalizedTicker) {
         rememberSelectedTicker(normalizedTicker);
@@ -2846,7 +3414,7 @@ function selectTicker(ticker) {
     fetchLivePriceForActiveTicker();
     loadSelectedTickerChart({ force: true, renderCached: false });
     fetchDashboard('heavy', { queueIfBusy: true });
-    fetchAIIndicator(normalizedTicker, currentBackendTf, true);
+    fetchAIIndicator(normalizedTicker, currentBackendTf);
 }
 
 async function removeFromWatchlist(ticker) {
@@ -3152,7 +3720,8 @@ async function fetchDashboard(mode = 'heavy', options = {}) {
                 const globalAiStr = localStorage.getItem('latest_global_ai_analysis');
                 if (globalAiStr) {
                     const globalAi = JSON.parse(globalAiStr);
-                    if ((Date.now() - globalAi.timestamp) < AI_INDICATOR_CACHE_TTL) {
+                    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+                    if (isAICacheForContext(globalAi, selectedTicker, currentBackendTf, selectedModel)) {
                         renderAIIndicatorCard(globalAi.data, true);
                         mirrored = true;
                     }
@@ -3327,6 +3896,11 @@ async function fetchDashboard(mode = 'heavy', options = {}) {
         }
 
     } catch (error) {
+        if (isRequestTimeout(error) || isRequestAbort(error)) {
+            console.warn(`[dashboard] Refresh skipped: ${error.message || error.name}`);
+            return;
+        }
+
         console.error('[dashboard] Fetch error:', error);
         const lastScanEl = document.getElementById('lastScanTime');
         if (lastScanEl) lastScanEl.textContent = 'Connection error';
@@ -3560,6 +4134,7 @@ async function prefetchBotsData() {
 // ──────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
     console.log('[dashboard] Initializing components...');
+    clearLegacyChartLocalStorageCaches();
 
     // Attach event listeners first (DOM is now ready)
     attachEventListeners();
@@ -4002,13 +4577,12 @@ function openIndicatorSettings(indicatorName) {
     const title = document.getElementById('indicatorModalTitle');
 
 
-    const desc = INDICATOR_TOOLTIPS[indicatorName] || "Adjust parameters for this indicator.";
     const tooltipHtml = `<div class="group/tooltip relative inline-flex items-center ml-2 align-middle">
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-indigo-200 hover:text-white cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <svg onclick="event.stopPropagation(); event.preventDefault(); typeof openInfoModal === 'function' ? openInfoModal('${indicatorName}') : null" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-indigo-200 hover:text-white cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
-        <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute top-full left-1/2 -translate-x-1/2 mt-2 w-56 p-2.5 bg-white text-indigo-900 text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal capitalize-none normal-case tracking-normal border border-indigo-100">
-            ${desc}
+        <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute top-full left-1/2 -translate-x-1/2 mt-2 px-3 py-1.5 bg-white text-indigo-900 text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal border border-indigo-100">
+            Click to read guide
             <div class="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-white"></div>
         </div>
     </div>`;
@@ -4022,21 +4596,55 @@ function openIndicatorSettings(indicatorName) {
 
     const currentParams = window.lastDashboardData?.indicator_parameters || {};
     const overrides = window.lastDashboardData?.indicator_overrides || {};
+    const paramLabels = {
+        DAILY_HIGH_LOW_BUFFER_PCT: 'Breakout Buffer (%)',
+        PIVOT_LEVEL_COUNT: 'S/R Levels To Draw (1-5)',
+        PIVOT_TOLERANCE_PCT: 'Reclaim/Rejection Tolerance (%)',
+        VOLUME_PROFILE_ROWS: 'Profile Rows / Price Bins',
+        VOLUME_PROFILE_VALUE_AREA_PCT: 'Value Area (%)',
+        VOLUME_PROFILE_TOLERANCE_PCT: 'Signal Tolerance (%)',
+        VOLUME_PROFILE_CONFIRMATION_CANDLES: 'Acceptance Confirmation Candles',
+        SWING_POINTS_LOOKBACK_DAYS: 'Swing Lookback Days',
+        SWING_POINTS_ENTRY_MODE: 'Swing Entry Mode',
+        SWING_POINTS_LEVEL_COUNT: 'S/R Levels To Draw (1-5)',
+    };
 
     configKeys.forEach(key => {
         const hasOverride = overrides[key] !== undefined && overrides[key] !== null && overrides[key] !== '';
         const val = currentParams[key] !== undefined ? currentParams[key] : (INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : '');
-        const label = key.replace(/_/g, ' ').toLowerCase();
+        const label = paramLabels[key] || key.replace(/_/g, ' ').toLowerCase();
+        const isPercent = key.endsWith('_PCT') || key.endsWith('_PERCENTAGE');
+        const inputAttrs = key === 'PIVOT_LEVEL_COUNT'
+            ? 'min="1" max="5" step="1"'
+            : key === 'SWING_POINTS_LEVEL_COUNT'
+                ? 'min="1" max="5" step="1"'
+                : key === 'SWING_POINTS_LOOKBACK_DAYS'
+                    ? 'min="1" max="365" step="1"'
+            : key === 'VOLUME_PROFILE_ROWS'
+                ? 'min="12" max="120" step="1"'
+                : key === 'VOLUME_PROFILE_CONFIRMATION_CANDLES'
+                    ? 'min="1" max="5" step="1"'
+                    : 'step="any"';
 
         const div = document.createElement('div');
         div.className = 'flex flex-col gap-1.5';
+        const controlHtml = key === 'SWING_POINTS_ENTRY_MODE'
+            ? `<select data-key="${key}" data-default="${INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : ''}"
+                    class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-bold text-indigo-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all">
+                    <option value="bounce_retest" ${val === 'bounce_retest' ? 'selected' : ''}>Bounce / Retest</option>
+                    <option value="breakout_retest" ${val === 'breakout_retest' ? 'selected' : ''}>Breakout / Retest</option>
+                </select>`
+            : `<input type="number" ${inputAttrs} data-key="${key}" value="${val}" placeholder="${INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : ''}"
+                    class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 ${isPercent ? 'pr-8' : ''} py-2 text-sm font-bold text-indigo-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all">
+                ${isPercent ? '<span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-black text-indigo-400">%</span>' : ''}`;
         div.innerHTML = `
             <div class="flex justify-between items-center mb-0.5">
                 <label class="text-[0.65rem] font-black text-indigo-950 uppercase tracking-widest opacity-60">${label}</label>
                 ${!hasOverride ? '<span class="text-[0.55rem] font-extrabold text-emerald-500 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded-md">System Default</span>' : ''}
             </div>
-            <input type="number" step="any" data-key="${key}" value="${val}" placeholder="${INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : ''}" 
-                class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-bold text-indigo-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all">
+            <div class="relative">
+                ${controlHtml}
+            </div>
         `;
         container.appendChild(div);
     });
@@ -4051,10 +4659,10 @@ function closeIndicatorSettings() {
 
 function resetIndicatorSettingsToDefaults() {
     if (!currentEditingIndicator) return;
-    const inputs = document.querySelectorAll('#indicatorModalContent input');
-    inputs.forEach(input => {
-        input.value = input.placeholder; // Revert to system default (visible value)
-        const container = input.closest('.flex-col');
+    const controls = document.querySelectorAll('#indicatorModalContent input, #indicatorModalContent select');
+    controls.forEach(control => {
+        control.value = control.tagName === 'SELECT' ? (control.dataset.default || '') : control.placeholder; // Revert to system default
+        const container = control.closest('.flex-col');
         if (container) {
             const header = container.querySelector('.flex.justify-between.items-center');
             if (header) {
@@ -4103,10 +4711,11 @@ function applyIndicatorSettingUpdatesLocally(updates) {
 }
 
 async function saveIndicatorSettings() {
-    const inputs = document.querySelectorAll('#indicatorModalContent input');
+    const inputs = document.querySelectorAll('#indicatorModalContent input, #indicatorModalContent select');
     const updates = {};
     inputs.forEach(input => {
-        if (input.value === input.placeholder || input.value === "") {
+        const defaultValue = input.tagName === 'SELECT' ? input.dataset.default : input.placeholder;
+        if (input.value === defaultValue || input.value === "") {
             updates[input.dataset.key] = "";
         } else {
             updates[input.dataset.key] = input.value;
@@ -4645,7 +5254,7 @@ async function fetchMacroEvents() {
         // Render Indicators
         const indList = document.getElementById('macro-indicators-list');
         if (indList && data.indicators) {
-            let html = '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">';
+            let html = '<div class="grid grid-cols-1 md:grid-cols-2 gap-3">';
             const indicators = Object.values(data.indicators);
 
             indicators.forEach(ind => {
@@ -4809,12 +5418,14 @@ window.toggleWatchlistCollapse = function (forceCollapse = false) {
         area.style.maxHeight = '0px';
         area.style.opacity = '0';
         area.style.marginTop = '0';
+        area.style.pointerEvents = 'none';
         chevron.style.transform = 'rotate(0deg)';
     } else {
         // Expand it
-        area.style.maxHeight = '1000px';
+        area.style.maxHeight = '3000px';
         area.style.opacity = '1';
         area.style.marginTop = '1rem';
+        area.style.pointerEvents = 'auto';
         chevron.style.transform = 'rotate(180deg)';
     }
 };

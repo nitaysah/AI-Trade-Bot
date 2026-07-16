@@ -83,6 +83,8 @@ extracted_diffs.txt
 # Local Scratch / Diagnostics / Docs
 backend/check_*.py
 backend/get_*.py
+backend/spy_grid_*
+backend/*_sim.py
 *_diagram.*
 *_workflow.*
 format_*.py

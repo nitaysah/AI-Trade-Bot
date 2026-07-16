@@ -6,7 +6,13 @@ import os
 # pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
 
-load_dotenv()
+_BASE_DIR = os.path.dirname(__file__)
+_PROJECT_ROOT = os.path.dirname(_BASE_DIR)
+
+# Load both the backend-local .env and the project-root .env so scripts work
+# whether they are launched from the repo root or from backend/.
+load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
+load_dotenv(os.path.join(_BASE_DIR, ".env"))
 
 # ──────────────────────────────────────────────
 # Timezone
@@ -33,6 +39,12 @@ WEBULL_APP_KEY = os.getenv("WEBULL_APP_KEY", "")
 WEBULL_APP_SECRET = os.getenv("WEBULL_APP_SECRET", "")
 WEBULL_ACCOUNT_ID = os.getenv("WEBULL_ACCOUNT_ID", "")  # Auto-discovered if blank
 WEBULL_DATA_ONLY = os.getenv("WEBULL_DATA_ONLY", "false").lower() == "true"  # If True, skip trading/account calls
+
+# ──────────────────────────────────────────────
+# API Keys — Massive
+# ──────────────────────────────────────────────
+MASSIVE_API_KEY = os.getenv("MASSIVE_API_KEY", "")
+MASSIVE_BASE_URL = os.getenv("MASSIVE_BASE_URL", "https://api.massive.com")
 
 # ──────────────────────────────────────────────
 # Watchlist — Tickers to scan
@@ -77,6 +89,10 @@ ENABLE_AI_SENTIMENT = True
 ENABLE_CANDLE_PATTERNS = True
 ENABLE_ADX_TREND = True
 ENABLE_SMA = True
+ENABLE_DAILY_HIGH_LOW = True
+ENABLE_PIVOT_POINTS = True
+ENABLE_VOLUME_PROFILE = True
+ENABLE_SWING_POINTS = True
 ENABLE_BOTBULLS1 = True
 ENABLE_BOTBULLS2 = True
 ENABLE_BOTBULLS3 = True
@@ -84,7 +100,7 @@ ENABLE_BOTBULLS3 = True
 # AI Indicator (Groq Agentic)
 ENABLE_AI_INDICATOR = True
 AI_INDICATOR_MODEL = "llama-3.3-70b-versatile"
-AI_INDICATOR_CACHE_MINUTES = 10
+AI_INDICATOR_CACHE_MINUTES = 30
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
 # AI Autopilot (uses AI Indicator for autonomous trade decisions in bots & backtest)
@@ -117,6 +133,16 @@ MYSTIC_PULSE_THRESHOLD = 5
 VOL_MA_PERIOD = 20
 VOL_SPIKE_MULTIPLIER = 1.5
 SMA_PERIOD = 200
+DAILY_HIGH_LOW_BUFFER_PCT = 0.0
+PIVOT_LEVEL_COUNT = 1
+PIVOT_TOLERANCE_PCT = 0.0
+VOLUME_PROFILE_ROWS = 48
+VOLUME_PROFILE_VALUE_AREA_PCT = 70.0
+VOLUME_PROFILE_TOLERANCE_PCT = 0.15
+VOLUME_PROFILE_CONFIRMATION_CANDLES = 1
+SWING_POINTS_LOOKBACK_DAYS = 20
+SWING_POINTS_ENTRY_MODE = "bounce_retest"
+SWING_POINTS_LEVEL_COUNT = 1
 
 # Premium BotBulls Parameters
 BOTBULLS1_WT_CHANNEL = 10

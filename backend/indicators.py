@@ -11,7 +11,8 @@ import pandas as pd
 import numpy as np
 import ta as ta_lib
 import config as global_config
-from user_config import get_user_config
+from user_config import active_evaluation_context, get_user_config
+from swing_strategy import detect_swing_entry
 
 from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
@@ -63,6 +64,240 @@ def _get_mystic_v2_presets(timeframe):
     elif timeframe == '1Day': key = '1d'
     return defaults.get(key, defaults['1h'])
 
+def _timeframe_seconds(timeframe):
+    tf = str(timeframe or "").upper().strip()
+    if tf in ("1D", "1DAY", "DAY", "D"):
+        return 86400
+    import re
+    match = re.search(r"\d+", tf)
+    value = int(match.group()) if match else 5
+    if "HOUR" in tf or tf.endswith("H"):
+        return value * 3600
+    if "SEC" in tf or tf.endswith("S"):
+        return value
+    if "MIN" in tf or tf.endswith("M"):
+        return value * 60
+    return 300
+
+def _completed_candles_for_live_chart(df, timeframe, safety_delay_seconds=5):
+    """Return only candles that are fully closed for live dashboard/bot views."""
+    if df is None or df.empty or len(df) <= 1:
+        return df
+
+    seconds = _timeframe_seconds(timeframe)
+    if seconds <= 0:
+        return df.iloc[:-1]
+
+    index = df.index
+    if getattr(index, "tz", None) is None:
+        index = index.tz_localize("UTC")
+    else:
+        index = index.tz_convert("UTC")
+
+    now_utc = pd.Timestamp.now(tz="UTC") - pd.Timedelta(seconds=safety_delay_seconds)
+    completed_mask = (index + pd.Timedelta(seconds=seconds)) <= now_utc
+    completed = df.loc[completed_mask]
+
+    # Keep the previous behavior as a fallback if clocks/provider timestamps are unusual.
+    if completed.empty:
+        return df.iloc[:-1]
+    return completed
+
+def _volume_profile_levels(session_df, rows=48, value_area_pct=70.0):
+    """Approximate volume-at-price from OHLCV bars for one completed session."""
+    if session_df is None or session_df.empty:
+        return (np.nan, np.nan, np.nan)
+
+    try:
+        rows = int(float(rows))
+    except Exception:
+        rows = 48
+    rows = min(120, max(12, rows))
+
+    try:
+        value_area_pct = float(value_area_pct)
+    except Exception:
+        value_area_pct = 70.0
+    value_area_pct = min(95.0, max(50.0, value_area_pct)) / 100.0
+
+    low_price = float(pd.to_numeric(session_df["Low"], errors="coerce").min())
+    high_price = float(pd.to_numeric(session_df["High"], errors="coerce").max())
+    if not np.isfinite(low_price) or not np.isfinite(high_price) or high_price <= low_price:
+        close_vals = pd.to_numeric(session_df["Close"], errors="coerce").dropna()
+        if close_vals.empty:
+            return (np.nan, np.nan, np.nan)
+        price = float(close_vals.iloc[-1])
+        return (price, price, price)
+
+    edges = np.linspace(low_price, high_price, rows + 1)
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    profile = np.zeros(rows, dtype=float)
+
+    for _, row in session_df.iterrows():
+        lo = float(row.get("Low", np.nan))
+        hi = float(row.get("High", np.nan))
+        close = float(row.get("Close", np.nan))
+        vol = float(row.get("Volume", 0.0) or 0.0)
+        if not np.isfinite(vol) or vol <= 0:
+            continue
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            price = close if np.isfinite(close) else (lo if np.isfinite(lo) else np.nan)
+            if not np.isfinite(price):
+                continue
+            idx = int(np.clip(np.searchsorted(edges, price, side="right") - 1, 0, rows - 1))
+            profile[idx] += vol
+            continue
+
+        candle_range = hi - lo
+        overlaps = np.maximum(0.0, np.minimum(edges[1:], hi) - np.maximum(edges[:-1], lo))
+        overlap_sum = overlaps.sum()
+        if overlap_sum > 0:
+            profile += vol * (overlaps / overlap_sum)
+        else:
+            idx = int(np.clip(np.searchsorted(edges, close, side="right") - 1, 0, rows - 1))
+            profile[idx] += vol
+
+    total_volume = profile.sum()
+    if total_volume <= 0:
+        return (np.nan, np.nan, np.nan)
+
+    poc_idx = int(np.argmax(profile))
+    target_volume = total_volume * value_area_pct
+    included_volume = profile[poc_idx]
+    low_idx = high_idx = poc_idx
+
+    while included_volume < target_volume and (low_idx > 0 or high_idx < rows - 1):
+        left_volume = profile[low_idx - 1] if low_idx > 0 else -1
+        right_volume = profile[high_idx + 1] if high_idx < rows - 1 else -1
+        if right_volume >= left_volume and high_idx < rows - 1:
+            high_idx += 1
+            included_volume += profile[high_idx]
+        elif low_idx > 0:
+            low_idx -= 1
+            included_volume += profile[low_idx]
+        else:
+            break
+
+    poc = float(centers[poc_idx])
+    val = float(edges[low_idx])
+    vah = float(edges[high_idx + 1])
+    return (poc, vah, val)
+
+def _is_crypto_symbol(symbol):
+    clean = str(symbol or "").upper().replace("/", "").replace("-", "")
+    return clean.endswith(("USD", "USDT", "USDC")) or clean in {"BTC", "ETH", "XRP", "DOGE", "LTC", "ADA", "SOL"}
+
+def _df_row_to_swing_candle(index_value, row):
+    try:
+        ts = int(index_value.timestamp())
+    except Exception:
+        ts = index_value
+    return {
+        "time": ts,
+        "open": float(row.get("Open", np.nan)),
+        "high": float(row.get("High", np.nan)),
+        "low": float(row.get("Low", np.nan)),
+        "close": float(row.get("Close", np.nan)),
+        "volume": float(row.get("Volume", 0.0) or 0.0),
+    }
+
+def _add_swing_point_columns(df, ticker, settings, param_getter, timeframe=None):
+    """Populate rolling swing support/resistance columns without lookahead."""
+    for col in (
+        "Swing_Support_1", "Swing_Support_2", "Swing_Support_3", "Swing_Support_4", "Swing_Support_5",
+        "Swing_Resistance_1", "Swing_Resistance_2", "Swing_Resistance_3", "Swing_Resistance_4", "Swing_Resistance_5",
+        "Swing_Bullish", "Swing_Bearish",
+    ):
+        df[col] = False if col in {"Swing_Bullish", "Swing_Bearish"} else np.nan
+
+    try:
+        lookback_days = max(1, min(365, int(float(param_getter("SWING_POINTS_LOOKBACK_DAYS", 20)))))
+    except Exception:
+        lookback_days = 20
+    try:
+        level_count = max(1, min(5, int(float(param_getter("SWING_POINTS_LEVEL_COUNT", 1)))))
+    except Exception:
+        level_count = 1
+
+    entry_mode = str(param_getter("SWING_POINTS_ENTRY_MODE", "bounce_retest") or "bounce_retest")
+    if entry_mode not in {"bounce_retest", "breakout_retest"}:
+        entry_mode = "bounce_retest"
+
+    market_session = "Regular"
+    if isinstance(settings, dict):
+        market_session = settings.get("market_session") or settings.get("MARKET_SESSION") or market_session
+    is_crypto = _is_crypto_symbol(ticker)
+    if is_crypto:
+        market_session = "Crypto24"
+
+    history = []
+    support_cols = [f"Swing_Support_{i}" for i in range(1, 6)]
+    resistance_cols = [f"Swing_Resistance_{i}" for i in range(1, 6)]
+
+    eval_context = active_evaluation_context.get()
+    settings_source = str(settings.get("source", "") if isinstance(settings, dict) else "").lower()
+    is_backtest_context = eval_context == "backtest" or settings_source == "backtest"
+    calc_df = df
+
+    if not is_backtest_context and len(df) > 600:
+        seconds = max(60, _timeframe_seconds(timeframe))
+        minutes = max(1.0, seconds / 60.0)
+        rth_bars_per_day = max(1, int(round(390 / minutes)))
+        live_window_bars = max(240, min(600, lookback_days * rth_bars_per_day))
+        calc_df = df.iloc[-live_window_bars:]
+
+    for idx, row in calc_df.iterrows():
+        candle = _df_row_to_swing_candle(idx, row)
+        if not all(np.isfinite(candle.get(k, np.nan)) for k in ("open", "high", "low", "close")):
+            continue
+        history.append(candle)
+        decision = detect_swing_entry(
+            history,
+            current_price=candle["close"],
+            entry_mode=entry_mode,
+            lookback_days=lookback_days,
+            market_session=market_session,
+            is_crypto=is_crypto,
+        )
+        ctx = decision.get("context") or {}
+        current_price = candle["close"]
+
+        def _level_price(level):
+            try:
+                return float(level.get("price", np.nan))
+            except Exception:
+                return np.nan
+
+        supports = sorted(
+            [
+                lvl for lvl in (ctx.get("support_levels") or [])
+                if np.isfinite(_level_price(lvl)) and _level_price(lvl) <= current_price
+            ],
+            key=lambda lvl: (abs(_level_price(lvl) - current_price), -float(lvl.get("score", 0.0))),
+        )
+        resistances = sorted(
+            [
+                lvl for lvl in (ctx.get("resistance_levels") or [])
+                if np.isfinite(_level_price(lvl)) and _level_price(lvl) >= current_price
+            ],
+            key=lambda lvl: (abs(_level_price(lvl) - current_price), -float(lvl.get("score", 0.0))),
+        )
+        for pos, level in enumerate(supports[:level_count]):
+            try:
+                df.at[idx, support_cols[pos]] = float(level.get("price"))
+            except Exception:
+                pass
+        for pos, level in enumerate(resistances[:level_count]):
+            try:
+                df.at[idx, resistance_cols[pos]] = float(level.get("price"))
+            except Exception:
+                pass
+        action = decision.get("action", "HOLD")
+        if action == "BUY":
+            df.at[idx, "Swing_Bullish"] = True
+        elif action == "SELL":
+            df.at[idx, "Swing_Bearish"] = True
+
 # Alpaca clients (Dynamic access)
 # ---------------------------------------------------------------------------
 _client_cache = {}
@@ -88,11 +323,81 @@ def get_alpaca_clients():
 
 _data_cache = {}
 
-def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca"):
+def _coerce_param_value(value, fallback=None):
+    try:
+        if fallback is not None:
+            return type(fallback)(value)
+        return value
+    except Exception:
+        return value
+
+
+def _bot_swing_param_alias(key, settings=None):
+    """Map bot Swing entry/exit strategy settings onto the visual Swing indicator."""
+    if not isinstance(settings, dict):
+        return None
+
+    swing_modes = {"swing_points", "hybrid_swing"}
+    buy_mode = str(settings.get("buy_mode") or "").strip().lower()
+    sell_mode = str(settings.get("sell_mode") or settings.get("options_exit_strategy") or "").strip().lower()
+
+    if key == "SWING_POINTS_ENTRY_MODE" and buy_mode in swing_modes:
+        return settings.get("swing_entry_mode") or settings.get("SWING_POINTS_ENTRY_MODE")
+
+    if key == "SWING_POINTS_LOOKBACK_DAYS":
+        if buy_mode in swing_modes:
+            return (
+                settings.get("swing_entry_lookback_days")
+                or settings.get("swing_lookback_days")
+                or settings.get("SWING_POINTS_LOOKBACK_DAYS")
+            )
+        if sell_mode in swing_modes:
+            return (
+                settings.get("swing_exit_lookback_days")
+                or settings.get("swing_lookback_days")
+                or settings.get("SWING_POINTS_LOOKBACK_DAYS")
+            )
+
+    return None
+
+
+def _bot_swing_settings_source(settings=None):
+    if not isinstance(settings, dict):
+        return "indicator_settings"
+    swing_modes = {"swing_points", "hybrid_swing"}
+    buy_mode = str(settings.get("buy_mode") or "").strip().lower()
+    sell_mode = str(settings.get("sell_mode") or settings.get("options_exit_strategy") or "").strip().lower()
+    if buy_mode in swing_modes:
+        return "bot_entry_strategy"
+    if sell_mode in swing_modes:
+        return "bot_exit_strategy"
+    return "indicator_settings"
+
+
+def _resolve_param(key, fallback=None, settings=None):
+    if settings and isinstance(settings, dict):
+        alias_val = _bot_swing_param_alias(key, settings)
+        if alias_val is not None and alias_val != "":
+            return _coerce_param_value(alias_val, fallback)
+
+        candidates = [
+            settings,
+            settings.get("indicator_overrides") if isinstance(settings.get("indicator_overrides"), dict) else {},
+            settings.get("indicator_parameters") if isinstance(settings.get("indicator_parameters"), dict) else {},
+        ]
+        for source in candidates:
+            val = source.get(key)
+            if val is not None and val != "":
+                return _coerce_param_value(val, fallback)
+    return getattr(get_user_config(), key, fallback)
+
+
+def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca", settings=None):
     """
     Fetch live data from Alpaca or Webull, compute indicators, and return a result dict.
     Supports both Stocks and Crypto.
     """
+
     try:
         df = None
 
@@ -253,7 +558,7 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca"):
         if len(df) < 30:
             return None
 
-        return calculate_indicators_for_df(df, timeframe, ticker)
+        return calculate_indicators_for_df(df, timeframe, ticker, settings=settings)
 
     except Exception as exc:
         print(f"[indicators] Fetch error: {exc}")
@@ -263,11 +568,14 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca"):
 # ---------------------------------------------------------------------------
 # Core engine: calculate_indicators_for_df
 # ---------------------------------------------------------------------------
-def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
+def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings=None):
     """
     Compute every indicator on *df* and return a result dict.
     Designed to work identically for live analysis and backtesting.
     """
+    def _param(key, fallback=None):
+        return _resolve_param(key, fallback, settings=settings)
+
     try:
         # --- Column normalisation ------------------------------------------
         for col in ("Open", "High", "Low", "Close", "Volume"):
@@ -275,31 +583,146 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
             if lc in df.columns and col not in df.columns:
                 df[col] = df[lc]
 
-        # Ensure numeric (yfinance sometimes returns object columns)
+        df = df.loc[:, ~df.columns.duplicated()]
         for col in ("Open", "High", "Low", "Close", "Volume"):
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+            df[col] = pd.to_numeric(df[col].squeeze(), errors="coerce")
 
         close = df["Close"]
         high = df["High"]
         low = df["Low"]
         volume = df["Volume"]
 
+        # Previous-session high/low levels used by the Prior Day High/Low confluence indicator.
+        try:
+            if getattr(df.index, "tz", None) is not None:
+                session_dates = df.index.tz_convert("America/Chicago").date
+            else:
+                session_dates = df.index.date
+            session_key = pd.Series(session_dates, index=df.index)
+            daily_levels = df.groupby(session_key).agg({"High": "max", "Low": "min", "Close": "last"})
+            prior_high_by_session = daily_levels["High"].shift(1)
+            prior_low_by_session = daily_levels["Low"].shift(1)
+            prior_close_by_session = daily_levels["Close"].shift(1)
+            df["Daily_HighLow_High"] = session_key.map(prior_high_by_session).astype(float)
+            df["Daily_HighLow_Low"] = session_key.map(prior_low_by_session).astype(float)
+            df["Pivot_P"] = (df["Daily_HighLow_High"] + df["Daily_HighLow_Low"] + session_key.map(prior_close_by_session).astype(float)) / 3.0
+            df["Pivot_R1"] = (2.0 * df["Pivot_P"]) - df["Daily_HighLow_Low"]
+            df["Pivot_S1"] = (2.0 * df["Pivot_P"]) - df["Daily_HighLow_High"]
+            prior_range = df["Daily_HighLow_High"] - df["Daily_HighLow_Low"]
+            df["Pivot_R2"] = df["Pivot_P"] + prior_range
+            df["Pivot_S2"] = df["Pivot_P"] - prior_range
+            df["Pivot_R3"] = df["Daily_HighLow_High"] + (2.0 * (df["Pivot_P"] - df["Daily_HighLow_Low"]))
+            df["Pivot_S3"] = df["Daily_HighLow_Low"] - (2.0 * (df["Daily_HighLow_High"] - df["Pivot_P"]))
+            df["Pivot_R4"] = df["Pivot_R3"] + prior_range
+            df["Pivot_S4"] = df["Pivot_S3"] - prior_range
+            df["Pivot_R5"] = df["Pivot_R4"] + prior_range
+            df["Pivot_S5"] = df["Pivot_S4"] - prior_range
+
+            vp_rows = _param("VOLUME_PROFILE_ROWS", 48)
+            vp_value_area_pct = _param("VOLUME_PROFILE_VALUE_AREA_PCT", 70.0)
+            profile_by_session = {}
+            for session_date, session_df in df.groupby(session_key):
+                profile_by_session[session_date] = _volume_profile_levels(
+                    session_df,
+                    rows=vp_rows,
+                    value_area_pct=vp_value_area_pct,
+                )
+            profile_df = pd.DataFrame.from_dict(
+                profile_by_session,
+                orient="index",
+                columns=["Volume_Profile_POC", "Volume_Profile_VAH", "Volume_Profile_VAL"],
+            ).sort_index()
+            prior_profile_df = profile_df.shift(1)
+            df["Volume_Profile_POC"] = session_key.map(prior_profile_df["Volume_Profile_POC"]).astype(float)
+            df["Volume_Profile_VAH"] = session_key.map(prior_profile_df["Volume_Profile_VAH"]).astype(float)
+            df["Volume_Profile_VAL"] = session_key.map(prior_profile_df["Volume_Profile_VAL"]).astype(float)
+
+            hl_buffer = max(0.0, float(_param("DAILY_HIGH_LOW_BUFFER_PCT", 0.0))) / 100.0
+            high_trigger = df["Daily_HighLow_High"] * (1.0 + hl_buffer)
+            low_trigger = df["Daily_HighLow_Low"] * (1.0 - hl_buffer)
+            df["Daily_HighLow_High_Trigger"] = high_trigger if hl_buffer > 0 else np.nan
+            df["Daily_HighLow_Low_Trigger"] = low_trigger if hl_buffer > 0 else np.nan
+            prev_close_series = close.shift(1)
+            df["Daily_HighLow_Bullish"] = ((close > high_trigger) & (prev_close_series <= high_trigger)).fillna(False)
+            df["Daily_HighLow_Bearish"] = ((close < low_trigger) & (prev_close_series >= low_trigger)).fillna(False)
+            pivot_tolerance_pct = max(0.0, float(_param("PIVOT_TOLERANCE_PCT", 0.0))) / 100.0
+            pivot_tolerance = close * pivot_tolerance_pct
+            df["Pivot_Bullish"] = (
+                ((low <= df["Pivot_S1"] + pivot_tolerance) & (close > df["Pivot_S1"]))
+                | ((close > df["Pivot_P"]) & (prev_close_series <= df["Pivot_P"]))
+            ).fillna(False)
+            df["Pivot_Bearish"] = (
+                ((high >= df["Pivot_R1"] - pivot_tolerance) & (close < df["Pivot_R1"]))
+                | ((close < df["Pivot_P"]) & (prev_close_series >= df["Pivot_P"]))
+            ).fillna(False)
+            vp_tolerance_pct = max(0.0, float(_param("VOLUME_PROFILE_TOLERANCE_PCT", 0.15))) / 100.0
+            vp_tol = close * vp_tolerance_pct
+            vp_confirm = max(1, min(5, int(float(_param("VOLUME_PROFILE_CONFIRMATION_CANDLES", 1)))))
+            vp_accepted_above = (
+                (close > df["Volume_Profile_VAH"] + vp_tol)
+                .rolling(vp_confirm, min_periods=vp_confirm)
+                .sum()
+                .ge(vp_confirm)
+            )
+            vp_accepted_below = (
+                (close < df["Volume_Profile_VAL"] - vp_tol)
+                .rolling(vp_confirm, min_periods=vp_confirm)
+                .sum()
+                .ge(vp_confirm)
+            )
+            df["Volume_Profile_Bullish"] = (
+                ((close > df["Volume_Profile_POC"]) & (prev_close_series <= df["Volume_Profile_POC"]))
+                | ((low <= df["Volume_Profile_VAL"] + vp_tol) & (close > df["Volume_Profile_VAL"]))
+                | vp_accepted_above
+            ).fillna(False)
+            df["Volume_Profile_Bearish"] = (
+                ((close < df["Volume_Profile_POC"]) & (prev_close_series >= df["Volume_Profile_POC"]))
+                | ((high >= df["Volume_Profile_VAH"] - vp_tol) & (close < df["Volume_Profile_VAH"]))
+                | vp_accepted_below
+            ).fillna(False)
+        except Exception as hl_exc:
+            print(f"[indicators] Prior-session levels error: {hl_exc}")
+            df["Daily_HighLow_High"] = np.nan
+            df["Daily_HighLow_Low"] = np.nan
+            df["Daily_HighLow_High_Trigger"] = np.nan
+            df["Daily_HighLow_Low_Trigger"] = np.nan
+            df["Daily_HighLow_Bullish"] = False
+            df["Daily_HighLow_Bearish"] = False
+            df["Volume_Profile_POC"] = np.nan
+            df["Volume_Profile_VAH"] = np.nan
+            df["Volume_Profile_VAL"] = np.nan
+            df["Volume_Profile_Bullish"] = False
+            df["Volume_Profile_Bearish"] = False
+            for pivot_col in (
+                "Pivot_P",
+                "Pivot_R1", "Pivot_S1",
+                "Pivot_R2", "Pivot_S2",
+                "Pivot_R3", "Pivot_S3",
+                "Pivot_R4", "Pivot_S4",
+                "Pivot_R5", "Pivot_S5",
+            ):
+                df[pivot_col] = np.nan
+            df["Pivot_Bullish"] = False
+            df["Pivot_Bearish"] = False
+
+        _add_swing_point_columns(df, ticker, settings, _param, timeframe=timeframe)
+
         # --- RSI -----------------------------------------------------------
-        df["RSI"] = ta_lib.momentum.rsi(close, window=get_user_config().RSI_PERIOD)
+        df["RSI"] = ta_lib.momentum.rsi(close, window=int(_param("RSI_PERIOD", 14)))
 
         # --- EMA -----------------------------------------------------------
-        df["EMA_Fast"] = ta_lib.trend.ema_indicator(close, window=get_user_config().EMA_FAST)
-        df["EMA_Slow"] = ta_lib.trend.ema_indicator(close, window=get_user_config().EMA_SLOW)
+        df["EMA_Fast"] = ta_lib.trend.ema_indicator(close, window=int(_param("EMA_FAST", 9)))
+        df["EMA_Slow"] = ta_lib.trend.ema_indicator(close, window=int(_param("EMA_SLOW", 21)))
 
         # --- SMA -----------------------------------------------------------
-        df["SMA"] = ta_lib.trend.sma_indicator(close, window=getattr(get_user_config(), "SMA_PERIOD", 200))
+        df["SMA"] = ta_lib.trend.sma_indicator(close, window=int(_param("SMA_PERIOD", 200)))
 
         # --- MACD ----------------------------------------------------------
         macd_ind = ta_lib.trend.MACD(
             close,
-            window_fast=get_user_config().MACD_FAST,
-            window_slow=get_user_config().MACD_SLOW,
-            window_sign=get_user_config().MACD_SIGNAL,
+            window_fast=int(_param("MACD_FAST", 12)),
+            window_slow=int(_param("MACD_SLOW", 26)),
+            window_sign=int(_param("MACD_SIGNAL", 9)),
         )
         df["MACD_Line"] = macd_ind.macd()
         df["MACD_Signal"] = macd_ind.macd_signal()
@@ -307,7 +730,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
 
         # --- Bollinger Bands -----------------------------------------------
         boll_ind = ta_lib.volatility.BollingerBands(
-            close, window=get_user_config().BOLL_PERIOD, window_dev=get_user_config().BOLL_STD_DEV
+            close, window=int(_param("BOLL_PERIOD", 20)), window_dev=float(_param("BOLL_STD_DEV", 2.0))
         )
         df["BOLL_Upper"] = boll_ind.bollinger_hband()
         df["BOLL_Lower"] = boll_ind.bollinger_lband()
@@ -320,10 +743,11 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
         
         # Wilder's Smoothing (Exponential Moving Average with alpha = 1/N)
-        st_atr = tr.ewm(alpha=1/get_user_config().SUPERTREND_PERIOD, min_periods=get_user_config().SUPERTREND_PERIOD, adjust=False).mean()
+        st_period = int(float(_param("SUPERTREND_PERIOD", 10)))
+        st_atr = tr.ewm(alpha=1/st_period, min_periods=st_period, adjust=False).mean()
         
         hl2 = (high + low) / 2.0
-        st_mult = get_user_config().SUPERTREND_MULTIPLIER
+        st_mult = float(_param("SUPERTREND_MULTIPLIER", 3.0))
         basic_ub = hl2 + st_mult * st_atr
         basic_lb = hl2 - st_mult * st_atr
 
@@ -393,8 +817,8 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
             cvol = df["Volume"].cumsum()
             
             # Find the Volume Spike indices (institutions entering)
-            vol_ma = df["Volume"].rolling(window=getattr(get_user_config(), 'VOL_MA_PERIOD', 20), min_periods=1).mean()
-            spike_condition = df["Volume"] > (vol_ma * getattr(get_user_config(), 'VOL_SPIKE_MULTIPLIER', 1.5))
+            vol_ma = df["Volume"].rolling(window=int(float(_param('VOL_MA_PERIOD', 20))), min_periods=1).mean()
+            spike_condition = df["Volume"] > (vol_ma * float(_param('VOL_SPIKE_MULTIPLIER', 1.5)))
             
             # Create a forward-filled Series of the most recent spike's integer index
             int_indices = pd.Series(range(len(df)), index=df.index)
@@ -433,11 +857,12 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
             df["Anchor_Date"] = pd.NaT
 
         # --- ATR (Wilder's Smoothing) --------------------------------------
-        df["ATR"] = tr.ewm(alpha=1/get_user_config().ATR_PERIOD, min_periods=get_user_config().ATR_PERIOD, adjust=False).mean()
+        atr_period = int(float(_param("ATR_PERIOD", 14)))
+        df["ATR"] = tr.ewm(alpha=1/atr_period, min_periods=atr_period, adjust=False).mean()
 
         # --- ADX (Standard Welles Wilder ADX / DI+ / DI-) -------------------
         adx_ind = ta_lib.trend.ADXIndicator(
-            high=high, low=low, close=close, window=getattr(get_user_config(), "ADX_PERIOD", 14)
+            high=high, low=low, close=close, window=int(_param("ADX_PERIOD", 14))
         )
         df["ADX"] = adx_ind.adx()
         df["DI_Plus"] = adx_ind.adx_pos()
@@ -505,9 +930,10 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
         df['max_p'] = df['Bull_Pulse'].rolling(collect_length).max()
         df['max_n'] = df['Bear_Pulse'].rolling(collect_length).max()
 
-        # 7. Signal Logic (Threshold of 5 bars)
-        df["mp_buy_trigger"] = (df["Bull_Pulse"] >= 5) & (df["Bull_Pulse"].shift(1) < 5)
-        df["mp_sell_trigger"] = (df["Bear_Pulse"] >= 5) & (df["Bear_Pulse"].shift(1) < 5)
+        # 7. Signal Logic (Threshold based on MYSTIC_PULSE_THRESHOLD parameter)
+        mystic_thresh = float(_param("MYSTIC_PULSE_THRESHOLD", 5))
+        df["mp_buy_trigger"] = (df["Bull_Pulse"] >= mystic_thresh) & (df["Bull_Pulse"].shift(1) < mystic_thresh)
+        df["mp_sell_trigger"] = (df["Bear_Pulse"] >= mystic_thresh) & (df["Bear_Pulse"].shift(1) < mystic_thresh)
 
         # --- Candlestick Patterns ------------------------------------------
         # Bullish Engulfing
@@ -587,12 +1013,36 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
                             (df["Open"] < df["Open"].shift(1)) & (df["Open"] > df["Close"].shift(1)) & \
                             (lower_wick < body * 0.2) & (df[["Open", "Close"]].shift(1).min(axis=1) - df["Low"].shift(1) < (df["Open"].shift(1) - df["Close"].shift(1)) * 0.2)
 
+        # Harami (Inside Bar Reversal)
+        bull_harami = (df["Close"].shift(1) < df["Open"].shift(1)) & \
+                      (df["Close"] > df["Open"]) & \
+                      (df["Open"] > df["Close"].shift(1)) & \
+                      (df["Close"] < df["Open"].shift(1))
+        bear_harami = (df["Close"].shift(1) > df["Open"].shift(1)) & \
+                      (df["Close"] < df["Open"]) & \
+                      (df["Open"] < df["Close"].shift(1)) & \
+                      (df["Close"] > df["Open"].shift(1))
+
+        # Tweezer Bottom / Top
+        tweezer_bot = ((df["Low"] - df["Low"].shift(1)).abs() <= (range_ * 0.05)) & \
+                      (df["Close"].shift(1) < df["Open"].shift(1)) & (df["Close"] > df["Open"])
+        tweezer_top = ((df["High"] - df["High"].shift(1)).abs() <= (range_ * 0.05)) & \
+                      (df["Close"].shift(1) > df["Open"].shift(1)) & (df["Close"] < df["Open"])
+
+        # Three Inside Up / Down (Harami + Breakout confirmation)
+        three_inside_up = bull_harami.shift(1) & (df["Close"] > df["Close"].shift(1)) & (df["Close"] > df["Open"])
+        three_inside_down = bear_harami.shift(1) & (df["Close"] < df["Close"].shift(1)) & (df["Close"] < df["Open"])
+
+        # Three Outside Up / Down (Engulfing + Breakout confirmation)
+        three_outside_up = bull_eng.shift(1) & (df["Close"] > df["Close"].shift(1)) & (df["Close"] > df["Open"])
+        three_outside_down = bear_eng.shift(1) & (df["Close"] < df["Close"].shift(1)) & (df["Close"] < df["Open"])
+
         # Specialized Dojis
         dragonfly_doji = doji & (lower_wick > body * 3) & (upper_wick < body)
         gravestone_doji = doji & (upper_wick > body * 3) & (lower_wick < body)
 
-        df["cdl_bullish"] = bull_eng | hammer | inverted_hammer | bull_marubozu | morning_star | piercing_line | three_white_soldiers | dragonfly_doji
-        df["cdl_bearish"] = bear_eng | shooting_star | hanging_man | bear_marubozu | evening_star | dark_cloud | three_black_crows | gravestone_doji
+        df["cdl_bullish"] = bull_eng | hammer | inverted_hammer | bull_marubozu | morning_star | piercing_line | three_white_soldiers | dragonfly_doji | bull_harami | tweezer_bot | three_inside_up | three_outside_up
+        df["cdl_bearish"] = bear_eng | shooting_star | hanging_man | bear_marubozu | evening_star | dark_cloud | three_black_crows | gravestone_doji | bear_harami | tweezer_top | three_inside_down | three_outside_down
         df["cdl_name"] = "Neutral"
         
         # Apply labels (order matters for precedence if multiple match, lower = higher precedence)
@@ -605,6 +1055,10 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
         df.loc[hanging_man, "cdl_name"] = "Hanging Man"
         df.loc[dragonfly_doji, "cdl_name"] = "Dragonfly Doji"
         df.loc[gravestone_doji, "cdl_name"] = "Gravestone Doji"
+        df.loc[bull_harami, "cdl_name"] = "Bull Harami"
+        df.loc[bear_harami, "cdl_name"] = "Bear Harami"
+        df.loc[tweezer_bot, "cdl_name"] = "Tweezer Bottom"
+        df.loc[tweezer_top, "cdl_name"] = "Tweezer Top"
         df.loc[bull_eng, "cdl_name"] = "Bull Engulfing"
         df.loc[bear_eng, "cdl_name"] = "Bear Engulfing"
         df.loc[piercing_line, "cdl_name"] = "Piercing Line"
@@ -613,15 +1067,19 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
         df.loc[evening_star, "cdl_name"] = "Evening Star"
         df.loc[three_white_soldiers, "cdl_name"] = "3 White Soldiers"
         df.loc[three_black_crows, "cdl_name"] = "3 Black Crows"
+        df.loc[three_inside_up, "cdl_name"] = "3 Inside Up"
+        df.loc[three_inside_down, "cdl_name"] = "3 Inside Down"
+        df.loc[three_outside_up, "cdl_name"] = "3 Outside Up"
+        df.loc[three_outside_down, "cdl_name"] = "3 Outside Down"
 
         # ═══════════════════════════════════════════════════════════════════
         # PREMIUM INDICATORS — BotBulls1, BotBulls2, BotBulls3
         # ═══════════════════════════════════════════════════════════════════
 
-        # --- BotBulls1: WaveTrend + MFI (Market Cipher B / VuManChu) --------
+        # --- BotBulls1: Premium Oscillator WaveTrend + Institutional MFI --------
         try:
-            _n1 = int(getattr(get_user_config(), "BOTBULLS1_WT_CHANNEL", 10))   # Channel Length
-            _n2 = int(getattr(get_user_config(), "BOTBULLS1_WT_AVERAGE", 21))   # Average Length
+            _n1 = int(_param("BOTBULLS1_WT_CHANNEL", 10))   # Channel Length
+            _n2 = int(_param("BOTBULLS1_WT_AVERAGE", 21))   # Average Length
             ap = (high + low + close) / 3  # hlc3
             esa = ta_lib.trend.ema_indicator(ap, window=_n1)
             d_wt = ta_lib.trend.ema_indicator((ap - esa).abs(), window=_n1)
@@ -649,7 +1107,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
                     cross_up = wt1_arr[i] > wt2_arr[i] and wt1_arr[i-1] <= wt2_arr[i-1]
                     cross_dn = wt1_arr[i] < wt2_arr[i] and wt1_arr[i-1] >= wt2_arr[i-1]
                     mfi_v = mfi_arr[i] if not np.isnan(mfi_arr[i]) else 50
-                    mfi_thres = int(getattr(get_user_config(), "BOTBULLS1_MFI_CONFIRM", 30))
+                    mfi_thres = int(_param("BOTBULLS1_MFI_CONFIRM", 30))
                     if cross_up and wt1_arr[i] < -53 and mfi_v < mfi_thres:
                         ba1_buy[i] = True
                     elif cross_dn and wt1_arr[i] > 53 and mfi_v > (100 - mfi_thres):
@@ -664,10 +1122,10 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
             df["BA1_Buy"] = False
             df["BA1_Sell"] = False
 
-        # --- BotBulls2: Smart Trail + Trend Tracer + Reversal Zones (LuxAlgo) --
+        # --- BotBulls2: UT (Universal Trailing Stop) + Trend Tracer + Reversal Zones ---
         try:
             _lx_atr_len = 14
-            _lx_atr_mult = float(getattr(get_user_config(), "BOTBULLS2_ATR_MULT", 2.0))
+            _lx_atr_mult = float(_param("BOTBULLS2_ATR_MULT", 2.0))
             # Reuse existing ATR or compute dedicated one
             lx_atr = df["ATR"].values
             close_arr_lx = close.to_numpy()
@@ -704,13 +1162,13 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
             df["LX_SmartTrend"] = lx_trend
 
             # Component 2: Trend Tracer (Hull-inspired double-smooth EMA)
-            _tt_period = int(getattr(get_user_config(), "BOTBULLS2_TREND_TRACER_PERIOD", 50))
+            _tt_period = int(_param("BOTBULLS2_TREND_TRACER_PERIOD", 50))
             ema_full = ta_lib.trend.ema_indicator(close, window=_tt_period)
             ema_half = ta_lib.trend.ema_indicator(close, window=max(_tt_period // 2, 2))
             df["LX_TrendTracer"] = 2 * ema_half - ema_full
 
             # Component 3: Reversal Zones (±2σ from 50-SMA)
-            _rz_period = int(getattr(get_user_config(), "BOTBULLS2_REVERSAL_ZONE_PERIOD", 50))
+            _rz_period = int(_param("BOTBULLS2_REVERSAL_ZONE_PERIOD", 50))
             rz_mean = close.rolling(window=_rz_period).mean()
             rz_std = close.rolling(window=_rz_period).std()
             df["LX_RZ_Upper"] = rz_mean + 2 * rz_std
@@ -751,8 +1209,8 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
 
         # --- BotBulls3: Heikin-Ashi + UT Bot ATR Trailing Stop ---------------
         try:
-            _ut_key = float(getattr(get_user_config(), "BOTBULLS3_ATR_MULT", 1.0))       # Sensitivity multiplier (QuantNomad default)
-            _ut_atr_period = int(getattr(get_user_config(), "BOTBULLS3_ATR_PERIOD", 10)) # ATR lookback (QuantNomad default)
+            _ut_key = float(_param("BOTBULLS3_ATR_MULT", 1.0))       # Sensitivity multiplier (QuantNomad default)
+            _ut_atr_period = int(_param("BOTBULLS3_ATR_PERIOD", 10)) # ATR lookback (QuantNomad default)
             open_arr = df["Open"].to_numpy()
             high_arr = high.to_numpy()
             low_arr = low.to_numpy()
@@ -822,31 +1280,58 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
             df["UT_Above"] = True
 
         # --- Build result --------------------------------------------------
-        # Forward-fill then back-fill any remaining NaN from warm-up period
+        # Forward-fill indicator warm-up gaps, but never back-fill prior-session
+        # levels. Back-filling PDH/PDL or POC/VAH/VAL would leak future sessions
+        # into earlier candles and distort backtests.
         indicator_cols = [
             "RSI", "EMA_Fast", "EMA_Slow", "SMA",
             "MACD_Line", "MACD_Signal", "MACD_Hist",
             "BOLL_Upper", "BOLL_Lower", "BOLL_Middle",
             "Supertrend", "ATR", "VWAP",
             "ADX", "DI_Plus", "DI_Minus",
+            "Daily_HighLow_High", "Daily_HighLow_Low",
+            "Daily_HighLow_High_Trigger", "Daily_HighLow_Low_Trigger",
+            "Volume_Profile_POC", "Volume_Profile_VAH", "Volume_Profile_VAL",
+            "Swing_Support_1", "Swing_Support_2", "Swing_Support_3", "Swing_Support_4", "Swing_Support_5",
+            "Swing_Resistance_1", "Swing_Resistance_2", "Swing_Resistance_3", "Swing_Resistance_4", "Swing_Resistance_5",
             # Premium indicator columns
             "WT1", "WT2", "MFI_14",
             "LX_SmartTrail", "LX_TrendTracer", "LX_RZ_Upper", "LX_RZ_Lower",
             "HA_Close", "UT_Trail",
         ]
+        prior_session_cols = {
+            "Daily_HighLow_High", "Daily_HighLow_Low",
+            "Daily_HighLow_High_Trigger", "Daily_HighLow_Low_Trigger",
+            "Volume_Profile_POC", "Volume_Profile_VAH", "Volume_Profile_VAL",
+            "Swing_Support_1", "Swing_Support_2", "Swing_Support_3", "Swing_Support_4", "Swing_Support_5",
+            "Swing_Resistance_1", "Swing_Resistance_2", "Swing_Resistance_3", "Swing_Resistance_4", "Swing_Resistance_5",
+        }
         for col in indicator_cols:
             if col in df.columns:
-                df[col] = df[col].ffill().bfill()
+                df[col] = df[col].ffill() if col in prior_session_cols else df[col].ffill().bfill()
 
         from user_config import active_evaluation_context
-        if active_evaluation_context.get() == "bots":
-            latest = df.iloc[-2]  # Active bot execution uses fully closed/completed candle
-            prev = df.iloc[-3]
+        eval_context = active_evaluation_context.get()
+        if eval_context in ("dashboard", "bots"):
+            chart_df = _completed_candles_for_live_chart(df, timeframe)
+            latest = chart_df.iloc[-1]  # Dashboard and bots use the latest fully closed/completed candle.
+            prev = chart_df.iloc[-2] if len(chart_df) > 1 else latest
+            recent_bars = chart_df.tail(5)
         else:
-            latest = df.iloc[-1]  # Manual chart/dashboard uses live forming candle
+            chart_df = df
+            latest = df.iloc[-1]  # Backtest/custom analysis can use the current row
             prev = df.iloc[-2]
+            recent_bars = df.tail(5)
 
-        signals = _generate_signals(latest, prev)
+        signal_chart_latest = latest if eval_context in ("dashboard", "bots") else df.iloc[-1]
+        signals = _generate_signals(latest, prev, settings=settings, recent_bars=recent_bars, chart_latest=signal_chart_latest)
+
+        # For dashboard and bots preview charts, mask candlestick markers to the displayed latest candle only.
+        # During backtesting simulation, we keep all bars active so the historical loop can evaluate rolling pattern windows at each bar i.
+        if eval_context != "backtest" and len(chart_df) > 0:
+            mask_not_last = df.index != chart_df.index[-1]
+            df.loc[mask_not_last, "cdl_name"] = "Neutral"
+            df.loc[mask_not_last, ["cdl_bullish", "cdl_bearish"]] = False
 
         def _safe(val):
             """Return float or None, never NaN/Inf."""
@@ -887,6 +1372,42 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
                     "boll_upper":    _safe(row.get("BOLL_Upper")),
                     "boll_middle":   _safe(row.get("BOLL_Middle")),
                     "boll_lower":    _safe(row.get("BOLL_Lower")),
+                    "daily_high_low_high": _safe(row.get("Daily_HighLow_High")),
+                    "daily_high_low_low":  _safe(row.get("Daily_HighLow_Low")),
+                    "daily_high_low_high_trigger": _safe(row.get("Daily_HighLow_High_Trigger")),
+                    "daily_high_low_low_trigger":  _safe(row.get("Daily_HighLow_Low_Trigger")),
+                    "daily_high_low_bullish": bool(row.get("Daily_HighLow_Bullish", False)),
+                    "daily_high_low_bearish": bool(row.get("Daily_HighLow_Bearish", False)),
+                    "pivot_p":       _safe(row.get("Pivot_P")),
+                    "pivot_r1":      _safe(row.get("Pivot_R1")),
+                    "pivot_s1":      _safe(row.get("Pivot_S1")),
+                    "pivot_r2":      _safe(row.get("Pivot_R2")),
+                    "pivot_s2":      _safe(row.get("Pivot_S2")),
+                    "pivot_r3":      _safe(row.get("Pivot_R3")),
+                    "pivot_s3":      _safe(row.get("Pivot_S3")),
+                    "pivot_r4":      _safe(row.get("Pivot_R4")),
+                    "pivot_s4":      _safe(row.get("Pivot_S4")),
+                    "pivot_r5":      _safe(row.get("Pivot_R5")),
+                    "pivot_s5":      _safe(row.get("Pivot_S5")),
+                    "pivot_bullish": bool(row.get("Pivot_Bullish", False)),
+                    "pivot_bearish": bool(row.get("Pivot_Bearish", False)),
+                    "volume_profile_poc": _safe(row.get("Volume_Profile_POC")),
+                    "volume_profile_vah": _safe(row.get("Volume_Profile_VAH")),
+                    "volume_profile_val": _safe(row.get("Volume_Profile_VAL")),
+                    "volume_profile_bullish": bool(row.get("Volume_Profile_Bullish", False)),
+                    "volume_profile_bearish": bool(row.get("Volume_Profile_Bearish", False)),
+                    "swing_support_1": _safe(row.get("Swing_Support_1")),
+                    "swing_support_2": _safe(row.get("Swing_Support_2")),
+                    "swing_support_3": _safe(row.get("Swing_Support_3")),
+                    "swing_support_4": _safe(row.get("Swing_Support_4")),
+                    "swing_support_5": _safe(row.get("Swing_Support_5")),
+                    "swing_resistance_1": _safe(row.get("Swing_Resistance_1")),
+                    "swing_resistance_2": _safe(row.get("Swing_Resistance_2")),
+                    "swing_resistance_3": _safe(row.get("Swing_Resistance_3")),
+                    "swing_resistance_4": _safe(row.get("Swing_Resistance_4")),
+                    "swing_resistance_5": _safe(row.get("Swing_Resistance_5")),
+                    "swing_bullish": bool(row.get("Swing_Bullish", False)),
+                    "swing_bearish": bool(row.get("Swing_Bearish", False)),
                     # Oscillators (drawn in sub-pane)
                     "rsi":           _safe(row.get("RSI")),
                     "macd_line":     _safe(row.get("MACD_Line")),
@@ -897,6 +1418,9 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
                     "adx":           _safe(row.get("ADX")),
                     "di_plus":       _safe(row.get("DI_Plus")),
                     "di_minus":      _safe(row.get("DI_Minus")),
+                    "cdl_name":      str(row.get("cdl_name", "Neutral")),
+                    "cdl_bullish":   bool(row.get("cdl_bullish", False)),
+                    "cdl_bearish":   bool(row.get("cdl_bearish", False)),
                     # Premium indicators
                     "wt1":            _safe(row.get("WT1")),
                     "wt2":            _safe(row.get("WT2")),
@@ -912,7 +1436,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
                     "ha_close":       _safe(row.get("HA_Close")),
                     "ut_trail":       _safe(row.get("UT_Trail")),
                     "ut_above":       bool(row.get("UT_Above", True)),
-                } for t, row in df.iterrows()
+                } for t, row in chart_df.iterrows()
             ],
             "df": df,
         }
@@ -925,10 +1449,13 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN"):
 # ---------------------------------------------------------------------------
 # Signal generation (used by live engine AND backtester)
 # ---------------------------------------------------------------------------
-def _generate_signals(latest, prev):
+def _generate_signals(latest, prev, settings=None, recent_bars=None, chart_latest=None):
     """
     Read indicator values from a single bar and return signal verdicts.
     """
+    def _param(key, fallback=None):
+        return _resolve_param(key, fallback, settings=settings)
+
     try:
         rsi_val = float(latest["RSI"])
         macd_h = float(latest["MACD_Hist"])
@@ -949,13 +1476,146 @@ def _generate_signals(latest, prev):
         prev_close = float(prev.get("Close", price))
 
         sma_val = float(latest.get("SMA", price))
+        dhl_high = float(latest.get("Daily_HighLow_High", np.nan))
+        dhl_low = float(latest.get("Daily_HighLow_Low", np.nan))
+        dhl_buffer_pct = max(0.0, float(_param("DAILY_HIGH_LOW_BUFFER_PCT", 0.0)))
+        dhl_ready = np.isfinite(dhl_high) and np.isfinite(dhl_low) and dhl_high > dhl_low > 0
+        if dhl_ready:
+            dhl_high_trigger = dhl_high * (1.0 + dhl_buffer_pct / 100.0)
+            dhl_low_trigger = dhl_low * (1.0 - dhl_buffer_pct / 100.0)
+            dhl_bull = price > dhl_high_trigger and prev_close <= dhl_high_trigger
+            dhl_bear = price < dhl_low_trigger and prev_close >= dhl_low_trigger
+            dhl_buffer_note = f" + {dhl_buffer_pct:.2f}% buffer" if dhl_buffer_pct else ""
+            if dhl_bull:
+                dhl_signal = "BULLISH"
+                dhl_reason = f"Prior high breakout above {dhl_high_trigger:.2f}{dhl_buffer_note}"
+            elif dhl_bear:
+                dhl_signal = "BEARISH"
+                dhl_reason = f"Prior low breakdown below {dhl_low_trigger:.2f}{dhl_buffer_note}"
+            else:
+                dhl_signal = "NEUTRAL"
+                if dhl_buffer_pct:
+                    dhl_reason = f"Inside buffered trigger range H {dhl_high_trigger:.2f} / L {dhl_low_trigger:.2f} (PDH {dhl_high:.2f} / PDL {dhl_low:.2f})"
+                else:
+                    dhl_reason = f"Inside prior range H {dhl_high:.2f} / L {dhl_low:.2f}"
+        else:
+            dhl_signal = "NEUTRAL"
+            dhl_reason = "Awaiting prior session high/low"
+
+        pivot_p = float(latest.get("Pivot_P", np.nan))
+        pivot_r1 = float(latest.get("Pivot_R1", np.nan))
+        pivot_s1 = float(latest.get("Pivot_S1", np.nan))
+        pivot_r2 = float(latest.get("Pivot_R2", np.nan))
+        pivot_s2 = float(latest.get("Pivot_S2", np.nan))
+        pivot_r3 = float(latest.get("Pivot_R3", np.nan))
+        pivot_s3 = float(latest.get("Pivot_S3", np.nan))
+        pivot_r4 = float(latest.get("Pivot_R4", np.nan))
+        pivot_s4 = float(latest.get("Pivot_S4", np.nan))
+        pivot_r5 = float(latest.get("Pivot_R5", np.nan))
+        pivot_s5 = float(latest.get("Pivot_S5", np.nan))
+        pivot_level_count = min(5, max(1, int(float(_param("PIVOT_LEVEL_COUNT", 1)))))
+        pivot_tolerance_pct = max(0.0, float(_param("PIVOT_TOLERANCE_PCT", 0.0)))
+        pivot_ready = np.isfinite(pivot_p) and np.isfinite(pivot_r1) and np.isfinite(pivot_s1) and pivot_r1 > pivot_p > pivot_s1
+        if pivot_ready:
+            pivot_tolerance = max(price * (pivot_tolerance_pct / 100.0), 0.0)
+            low_now = float(latest.get("Low", price))
+            high_now = float(latest.get("High", price))
+            pivot_bull = ((low_now <= pivot_s1 + pivot_tolerance) and price > pivot_s1) or (price > pivot_p and prev_close <= pivot_p)
+            pivot_bear = ((high_now >= pivot_r1 - pivot_tolerance) and price < pivot_r1) or (price < pivot_p and prev_close >= pivot_p)
+            if pivot_bull:
+                pivot_signal = "BULLISH"
+                pivot_reason = f"Pivot support/reclaim confirmed | P {pivot_p:.2f}, S1 {pivot_s1:.2f}, R1 {pivot_r1:.2f}, tolerance {pivot_tolerance_pct:.2f}%"
+            elif pivot_bear:
+                pivot_signal = "BEARISH"
+                pivot_reason = f"Pivot resistance/rejection confirmed | P {pivot_p:.2f}, S1 {pivot_s1:.2f}, R1 {pivot_r1:.2f}, tolerance {pivot_tolerance_pct:.2f}%"
+            else:
+                pivot_signal = "NEUTRAL"
+                extra_levels = f", S{pivot_level_count}/R{pivot_level_count} active" if pivot_level_count > 1 else ""
+                pivot_reason = f"Between pivot S/R levels | P {pivot_p:.2f}, S1 {pivot_s1:.2f}, R1 {pivot_r1:.2f}{extra_levels}"
+        else:
+            pivot_signal = "NEUTRAL"
+            pivot_reason = "Awaiting prior session pivot levels"
+
+        vp_poc = float(latest.get("Volume_Profile_POC", np.nan))
+        vp_vah = float(latest.get("Volume_Profile_VAH", np.nan))
+        vp_val = float(latest.get("Volume_Profile_VAL", np.nan))
+        vp_tolerance_pct = max(0.0, float(_param("VOLUME_PROFILE_TOLERANCE_PCT", 0.15)))
+        vp_confirm = max(1, min(5, int(float(_param("VOLUME_PROFILE_CONFIRMATION_CANDLES", 1)))))
+        vp_ready = np.isfinite(vp_poc) and np.isfinite(vp_vah) and np.isfinite(vp_val) and vp_vah >= vp_poc >= vp_val > 0
+        if vp_ready:
+            vp_tol = max(price * (vp_tolerance_pct / 100.0), 0.0)
+            low_now = float(latest.get("Low", price))
+            high_now = float(latest.get("High", price))
+            recent_closes = []
+            if recent_bars is not None and len(recent_bars) > 0:
+                try:
+                    recent_closes = [float(v) for v in recent_bars["Close"].tail(vp_confirm).tolist()]
+                except Exception:
+                    recent_closes = []
+            if len(recent_closes) < vp_confirm:
+                recent_closes = [price]
+            accepted_above_value = len(recent_closes) >= vp_confirm and all(c > vp_vah + vp_tol for c in recent_closes[-vp_confirm:])
+            accepted_below_value = len(recent_closes) >= vp_confirm and all(c < vp_val - vp_tol for c in recent_closes[-vp_confirm:])
+            poc_reclaim = price > vp_poc and prev_close <= vp_poc
+            poc_loss = price < vp_poc and prev_close >= vp_poc
+            val_bounce = low_now <= vp_val + vp_tol and price > vp_val
+            vah_rejection = high_now >= vp_vah - vp_tol and price < vp_vah
+
+            if accepted_above_value:
+                vp_signal = "BULLISH"
+                vp_reason = f"Accepted above VAH {vp_vah:.2f} after {vp_confirm} candle(s) | POC {vp_poc:.2f}"
+            elif accepted_below_value:
+                vp_signal = "BEARISH"
+                vp_reason = f"Accepted below VAL {vp_val:.2f} after {vp_confirm} candle(s) | POC {vp_poc:.2f}"
+            elif poc_reclaim:
+                vp_signal = "BULLISH"
+                vp_reason = f"POC reclaim above {vp_poc:.2f} | VAH {vp_vah:.2f} / VAL {vp_val:.2f}"
+            elif poc_loss:
+                vp_signal = "BEARISH"
+                vp_reason = f"POC loss below {vp_poc:.2f} | VAH {vp_vah:.2f} / VAL {vp_val:.2f}"
+            elif val_bounce:
+                vp_signal = "BULLISH"
+                vp_reason = f"VAL support bounce near {vp_val:.2f} | POC {vp_poc:.2f}"
+            elif vah_rejection:
+                vp_signal = "BEARISH"
+                vp_reason = f"VAH rejection near {vp_vah:.2f} | POC {vp_poc:.2f}"
+            else:
+                vp_signal = "NEUTRAL"
+                vp_reason = f"Inside value area | VAL {vp_val:.2f} / POC {vp_poc:.2f} / VAH {vp_vah:.2f}"
+        else:
+            vp_signal = "NEUTRAL"
+            vp_reason = "Awaiting prior-session volume profile"
+
+        swing_support = float(latest.get("Swing_Support_1", np.nan))
+        swing_resistance = float(latest.get("Swing_Resistance_1", np.nan))
+        swing_level_count = max(1, min(5, int(float(_param("SWING_POINTS_LEVEL_COUNT", 1)))))
+        swing_mode = str(_param("SWING_POINTS_ENTRY_MODE", "bounce_retest") or "bounce_retest")
+        swing_lookback = max(1, min(365, int(float(_param("SWING_POINTS_LOOKBACK_DAYS", 20)))))
+        swing_ready = np.isfinite(swing_support) or np.isfinite(swing_resistance)
+        if bool(latest.get("Swing_Bullish", False)):
+            swing_signal = "BULLISH"
+            swing_reason = f"Swing support/reclaim confirmed | Support {swing_support:.2f}" if np.isfinite(swing_support) else "Swing bullish structure confirmed"
+        elif bool(latest.get("Swing_Bearish", False)):
+            swing_signal = "BEARISH"
+            swing_reason = f"Swing resistance/rejection confirmed | Resistance {swing_resistance:.2f}" if np.isfinite(swing_resistance) else "Swing bearish structure confirmed"
+        elif swing_ready:
+            parts = []
+            if np.isfinite(swing_support):
+                parts.append(f"Support {swing_support:.2f}")
+            if np.isfinite(swing_resistance):
+                parts.append(f"Resistance {swing_resistance:.2f}")
+            swing_signal = "NEUTRAL"
+            swing_reason = f"Watching swing zones | {' / '.join(parts)} | {swing_lookback}D {swing_mode.replace('_', ' ')}"
+        else:
+            swing_signal = "NEUTRAL"
+            swing_reason = "Awaiting swing support/resistance levels"
 
         adx_val = float(latest.get("ADX", 0))
         di_plus = float(latest.get("DI_Plus", 0))
         di_minus = float(latest.get("DI_Minus", 0))
 
         # Check if trend strength exists (> 25)
-        is_trending = adx_val > getattr(get_user_config(), "ADX_TRENDING_THRESHOLD", 25)
+        is_trending = adx_val > float(_param("ADX_TRENDING_THRESHOLD", 25))
 
         # ADX Trend signal generator
         if is_trending:
@@ -972,16 +1632,30 @@ def _generate_signals(latest, prev):
             adx_signal = "NEUTRAL"
             adx_reason = f"Flat/Choppy Market (ADX: {adx_val:.1f})"
 
+        # Check Candle Patterns on the latest/new candle (analyzed using previous 5 bars during formula calculation)
+        cdl_bar = chart_latest if chart_latest is not None else latest
+        p_name = str(cdl_bar.get("cdl_name", "Neutral"))
+        is_bull = bool(cdl_bar.get("cdl_bullish", False))
+        is_bear = bool(cdl_bar.get("cdl_bearish", False))
+        if (is_bull or is_bear) and p_name not in ("Neutral", "None", ""):
+            cdl_signal = "BULLISH" if is_bull else "BEARISH"
+            cdl_reason = f"Pattern: {p_name}"
+        else:
+            cdl_signal = "NEUTRAL"
+            cdl_reason = f"Pattern: {p_name if p_name not in ('Neutral', '', 'None') else 'None'}"
+
+        rsi_os = float(_param("RSI_OVERSOLD", 30))
+        rsi_ob = float(_param("RSI_OVERBOUGHT", 70))
         return {
             "RSI": {
                 "signal": (
-                    "BULLISH" if rsi_val < get_user_config().RSI_OVERSOLD
-                    else "BEARISH" if rsi_val > get_user_config().RSI_OVERBOUGHT
+                    "BULLISH" if rsi_val < rsi_os
+                    else "BEARISH" if rsi_val > rsi_ob
                     else "NEUTRAL"
                 ),
                 "reason": (
-                    f"Oversold {rsi_val:.1f}" if rsi_val < get_user_config().RSI_OVERSOLD
-                    else f"Overbought {rsi_val:.1f}" if rsi_val > get_user_config().RSI_OVERBOUGHT
+                    f"Oversold {rsi_val:.1f}" if rsi_val < rsi_os
+                    else f"Overbought {rsi_val:.1f}" if rsi_val > rsi_ob
                     else f"Neutral {rsi_val:.1f}"
                 ),
                 "weight": 1,
@@ -1049,22 +1723,84 @@ def _generate_signals(latest, prev):
                 "reason": f"Above SMA ({sma_val:.1f})" if price >= sma_val else f"Below SMA ({sma_val:.1f})",
                 "weight": 1,
             },
+            "Prior Day High/Low": {
+                "signal": dhl_signal,
+                "reason": dhl_reason,
+                "weight": 1,
+                "levels": {
+                    "high": dhl_high if dhl_ready else None,
+                    "low": dhl_low if dhl_ready else None,
+                    "high_trigger": dhl_high_trigger if dhl_ready else None,
+                    "low_trigger": dhl_low_trigger if dhl_ready else None,
+                    "buffer_pct": dhl_buffer_pct if dhl_ready else None,
+                },
+            },
+            "Pivot Points (S/R)": {
+                "signal": pivot_signal,
+                "reason": pivot_reason,
+                "weight": 1,
+                "levels": {
+                    "pivot": pivot_p if pivot_ready else None,
+                    "r1": pivot_r1 if pivot_ready else None,
+                    "s1": pivot_s1 if pivot_ready else None,
+                    "r2": pivot_r2 if pivot_ready and pivot_level_count >= 2 and np.isfinite(pivot_r2) else None,
+                    "s2": pivot_s2 if pivot_ready and pivot_level_count >= 2 and np.isfinite(pivot_s2) else None,
+                    "r3": pivot_r3 if pivot_ready and pivot_level_count >= 3 and np.isfinite(pivot_r3) else None,
+                    "s3": pivot_s3 if pivot_ready and pivot_level_count >= 3 and np.isfinite(pivot_s3) else None,
+                    "r4": pivot_r4 if pivot_ready and pivot_level_count >= 4 and np.isfinite(pivot_r4) else None,
+                    "s4": pivot_s4 if pivot_ready and pivot_level_count >= 4 and np.isfinite(pivot_s4) else None,
+                    "r5": pivot_r5 if pivot_ready and pivot_level_count >= 5 and np.isfinite(pivot_r5) else None,
+                    "s5": pivot_s5 if pivot_ready and pivot_level_count >= 5 and np.isfinite(pivot_s5) else None,
+                    "level_count": pivot_level_count if pivot_ready else None,
+                    "tolerance_pct": pivot_tolerance_pct if pivot_ready else None,
+                },
+            },
+            "Volume Profile": {
+                "signal": vp_signal,
+                "reason": vp_reason,
+                "weight": 1,
+                "levels": {
+                    "poc": vp_poc if vp_ready else None,
+                    "vah": vp_vah if vp_ready else None,
+                    "val": vp_val if vp_ready else None,
+                    "value_area_pct": float(_param("VOLUME_PROFILE_VALUE_AREA_PCT", 70.0)) if vp_ready else None,
+                    "tolerance_pct": vp_tolerance_pct if vp_ready else None,
+                    "confirmation_candles": vp_confirm if vp_ready else None,
+                },
+            },
+            "Swing Points": {
+                "signal": swing_signal,
+                "reason": swing_reason,
+                "weight": 1,
+                "levels": {
+                    "support_1": float(latest.get("Swing_Support_1", np.nan)) if np.isfinite(float(latest.get("Swing_Support_1", np.nan))) else None,
+                    "support_2": float(latest.get("Swing_Support_2", np.nan)) if swing_level_count >= 2 and np.isfinite(float(latest.get("Swing_Support_2", np.nan))) else None,
+                    "support_3": float(latest.get("Swing_Support_3", np.nan)) if swing_level_count >= 3 and np.isfinite(float(latest.get("Swing_Support_3", np.nan))) else None,
+                    "support_4": float(latest.get("Swing_Support_4", np.nan)) if swing_level_count >= 4 and np.isfinite(float(latest.get("Swing_Support_4", np.nan))) else None,
+                    "support_5": float(latest.get("Swing_Support_5", np.nan)) if swing_level_count >= 5 and np.isfinite(float(latest.get("Swing_Support_5", np.nan))) else None,
+                    "resistance_1": float(latest.get("Swing_Resistance_1", np.nan)) if np.isfinite(float(latest.get("Swing_Resistance_1", np.nan))) else None,
+                    "resistance_2": float(latest.get("Swing_Resistance_2", np.nan)) if swing_level_count >= 2 and np.isfinite(float(latest.get("Swing_Resistance_2", np.nan))) else None,
+                    "resistance_3": float(latest.get("Swing_Resistance_3", np.nan)) if swing_level_count >= 3 and np.isfinite(float(latest.get("Swing_Resistance_3", np.nan))) else None,
+                    "resistance_4": float(latest.get("Swing_Resistance_4", np.nan)) if swing_level_count >= 4 and np.isfinite(float(latest.get("Swing_Resistance_4", np.nan))) else None,
+                    "resistance_5": float(latest.get("Swing_Resistance_5", np.nan)) if swing_level_count >= 5 and np.isfinite(float(latest.get("Swing_Resistance_5", np.nan))) else None,
+                    "level_count": swing_level_count if swing_ready else None,
+                    "lookback_days": swing_lookback if swing_ready else None,
+                    "entry_mode": swing_mode if swing_ready else None,
+                    "settings_source": _bot_swing_settings_source(settings) if swing_ready else None,
+                },
+            },
             "Mystic Pulse": {
                 "signal": (
-                    "BULLISH" if bull_p >= 5
-                    else "BEARISH" if bear_p >= 5
+                    "BULLISH" if bull_p >= float(_param("MYSTIC_PULSE_THRESHOLD", 5))
+                    else "BEARISH" if bear_p >= float(_param("MYSTIC_PULSE_THRESHOLD", 5))
                     else "NEUTRAL"
                 ),
-                "reason": f"Strength {int(bull_p if bull_p > bear_p else bear_p)}/5",
+                "reason": f"Strength {int(bull_p if bull_p > bear_p else bear_p)}/{int(float(_param('MYSTIC_PULSE_THRESHOLD', 5)))}",
                 "weight": 1,
             },
             "Candle Patterns": {
-                "signal": (
-                    "BULLISH" if bool(latest.get("cdl_bullish", False))
-                    else "BEARISH" if bool(latest.get("cdl_bearish", False))
-                    else "NEUTRAL"
-                ),
-                "reason": f"Pattern: {latest.get('cdl_name', 'None')}",
+                "signal": cdl_signal,
+                "reason": cdl_reason,
                 "weight": 1,
             },
             # ═══════════════ Premium Indicators ═══════════════

@@ -83,7 +83,10 @@ async def run_optimization(base_kwargs, split_pct=30):
             pass
 
     # 2. Calculate Indicators ONCE
-    result = calculate_indicators_for_df(raw_df, base_kwargs["timeframe"], base_kwargs["ticker"])
+    indicator_settings = {
+        "DAILY_HIGH_LOW_BUFFER_PCT": base_kwargs.get("daily_high_low_buffer_pct", 0.0),
+    }
+    result = calculate_indicators_for_df(raw_df, base_kwargs["timeframe"], base_kwargs["ticker"], settings=indicator_settings)
     if not result:
         print("[optimizer] Error: Failed to calculate indicators.")
         return {"error": "Failed to calculate indicators."}

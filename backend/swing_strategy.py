@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional
 
 import pytz
 
+from prior_day_high_low import prior_day_levels_from_history, prior_day_ohlc_from_history
+
 
 NY_TZ = pytz.timezone("America/New_York")
 
@@ -500,35 +502,7 @@ def format_swing_preview(
 
 
 def _prior_day_ohlc(candles: List[dict]) -> Optional[dict]:
-    day_map: dict[str, list] = {}
-    for candle in candles or []:
-        dt = candle.get("dt_et")
-        if dt is None:
-            continue
-        day_key = dt.strftime("%Y-%m-%d")
-        day_map.setdefault(day_key, []).append(candle)
-
-    if not day_map:
-        return None
-
-    sorted_days = sorted(day_map.keys())
-    prior_day_key = sorted_days[-2] if len(sorted_days) >= 2 else sorted_days[-1]
-    prior_candles = day_map.get(prior_day_key, [])
-    if not prior_candles:
-        return None
-
-    high = max((c.get("high") for c in prior_candles if c.get("high") is not None), default=None)
-    low = min((c.get("low") for c in prior_candles if c.get("low") is not None), default=None)
-    close = None
-    for candle in reversed(prior_candles):
-        if candle.get("close") is not None:
-            close = candle.get("close")
-            break
-
-    if high is None or low is None or close is None:
-        return None
-
-    return {"high": float(high), "low": float(low), "close": float(close), "date": prior_day_key}
+    return prior_day_ohlc_from_history(candles)
 
 
 def build_entry_signal(
@@ -546,6 +520,7 @@ def build_entry_signal(
     entry_pct_style: str = "dip_reclaim",
     swing_entry_mode: str = "bounce_retest",
     desired_direction: Optional[str] = None,
+    high_low_buffer_pct: float = 0.0,
 ) -> dict:
     ctx = _extract_context(
         price_history=price_history,
@@ -647,13 +622,24 @@ def build_entry_signal(
                 _set_signal("SELL", f"Pivot rejection confirmed below resistance at ${r1:.2f}", r1)
 
     elif entry_mode in ("high_low", "hybrid_high_low"):
-        prior = _prior_day_ohlc(candles)
-        if prior:
-            trigger_price = prior["high"]
-            if latest["close"] > prior["high"] and prev["close"] <= prior["high"]:
-                _set_signal("BUY", f"Prior day high breakout confirmed at ${prior['high']:.2f}", prior["high"])
-            elif latest["close"] < prior["low"] and prev["close"] >= prior["low"]:
-                _set_signal("SELL", f"Prior day low breakdown confirmed at ${prior['low']:.2f}", prior["low"])
+        levels = prior_day_levels_from_history(candles, buffer_pct=high_low_buffer_pct)
+        if levels:
+            high_trigger = levels["high_trigger"]
+            low_trigger = levels["low_trigger"]
+            trigger_price = high_trigger
+            buffer_note = f" with {levels['buffer_pct']:.2f}% buffer" if levels["buffer_pct"] else ""
+            if latest["close"] > high_trigger and prev["close"] <= high_trigger:
+                _set_signal(
+                    "BUY",
+                    f"Prior day high breakout confirmed above ${high_trigger:.2f}{buffer_note} (PDH ${levels['high']:.2f})",
+                    high_trigger,
+                )
+            elif latest["close"] < low_trigger and prev["close"] >= low_trigger:
+                _set_signal(
+                    "SELL",
+                    f"Prior day low breakdown confirmed below ${low_trigger:.2f}{buffer_note} (PDL ${levels['low']:.2f})",
+                    low_trigger,
+                )
 
     elif entry_mode in ("swing_points", "hybrid_swing"):
         swing_decision = detect_swing_entry(
@@ -688,6 +674,7 @@ def format_entry_preview(
     current_price: float,
     entry_mode: str = "indicator",
     is_option: bool = False,
+    high_low_buffer_pct: float = 0.0,
 ) -> str:
     ctx = (entry_signal or {}).get("context") or {}
     current_price = _safe_float(current_price)
@@ -731,9 +718,11 @@ def format_entry_preview(
         else:
             lines.append("Awaiting prior day data...")
     elif entry_mode in ("high_low", "hybrid_high_low"):
-        prior = _prior_day_ohlc(ctx.get("candles", []))
-        if prior:
-            lines.append(f"Prior High: ${prior['high']:.2f} | Prior Low: ${prior['low']:.2f}")
+        levels = prior_day_levels_from_history(ctx.get("candles", []), buffer_pct=high_low_buffer_pct)
+        if levels:
+            lines.append(f"PDH: ${levels['high']:.2f} | PDL: ${levels['low']:.2f}")
+            if levels["buffer_pct"]:
+                lines.append(f"Triggers: Above ${levels['high_trigger']:.2f} | Below ${levels['low_trigger']:.2f} ({levels['buffer_pct']:.2f}% buffer)")
             lines.append((entry_signal or {}).get("reason", "High/Low entry waiting"))
         else:
             lines.append("Awaiting prior day data...")

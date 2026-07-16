@@ -16,6 +16,7 @@ from ai_indicator import get_ai_sentiment
 from risk_manager import RiskManager
 from swing_strategy import detect_swing_entry, build_entry_signal
 from options_direction import normalize_options_type, VALID_OPTION_DIRECTIONS
+from prior_day_high_low import resolve_high_low_buffer_pct
 import config as global_config
 from user_config import get_user_config
 
@@ -120,6 +121,10 @@ def get_confluence_decision(
         'Candle Patterns': 'ENABLE_CANDLE_PATTERNS',
         'ADX Trend': 'ENABLE_ADX_TREND',
         'SMA': 'ENABLE_SMA',
+        'Prior Day High/Low': 'ENABLE_DAILY_HIGH_LOW',
+        'Pivot Points (S/R)': 'ENABLE_PIVOT_POINTS',
+        'Volume Profile': 'ENABLE_VOLUME_PROFILE',
+        'Swing Points': 'ENABLE_SWING_POINTS',
         'BotBulls1': 'ENABLE_BOTBULLS1',
         'BotBulls2': 'ENABLE_BOTBULLS2',
         'BotBulls3': 'ENABLE_BOTBULLS3',
@@ -217,6 +222,7 @@ def get_confluence_decision(
     market_session = t_settings.get('market_session', 'Regular')
     is_crypto = any(str(ticker).upper().endswith(base) for base in ["USD", "USDT", "USDC"]) or ticker.upper() in ["BTC", "ETH", "XRP", "DOGE", "LTC", "ADA", "SOL"]
     current_price = analysis_results.get('price', 0.0)
+    high_low_buffer_pct = resolve_high_low_buffer_pct(t_settings)
     entry_mode = buy_mode
 
     action = "HOLD"
@@ -297,6 +303,7 @@ def get_confluence_decision(
                 entry_pct_style=entry_pct_style,
                 swing_entry_mode=swing_entry_mode,
                 desired_direction=desired_direction,
+                high_low_buffer_pct=high_low_buffer_pct,
             )
             structure_direction = entry_signal.get("structure_direction", "NONE")
             structure_reason = entry_signal.get("reason", "")
@@ -381,6 +388,7 @@ def get_confluence_decision(
             entry_pct_style=entry_pct_style,
             swing_entry_mode=swing_entry_mode,
             desired_direction="BULLISH",
+            high_low_buffer_pct=high_low_buffer_pct,
         )
         structure_direction = entry_signal.get("structure_direction", "NONE")
         structure_ok = entry_signal.get("action") == "BUY" and structure_direction == "BULLISH"
@@ -471,6 +479,7 @@ def get_confluence_decision(
             entry_pct_move=entry_pct_move,
             entry_atr_style=entry_atr_style,
             entry_pct_style=entry_pct_style,
+            high_low_buffer_pct=high_low_buffer_pct,
         )
         if entry_signal.get('action', 'HOLD') != 'HOLD':
             action = entry_signal['action']
