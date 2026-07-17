@@ -15,7 +15,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
         rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=35">
+    <link rel="stylesheet" href="styles.css?v=44">
     <!-- Firebase Sentinel (Auth Guard) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
@@ -125,8 +125,7 @@
 
                 <div class="flex items-center gap-2 md:gap-3">
                     <div id="alpacaConnectionContainer" class="flex items-center">
-                        <button onclick="window.location.href='bots.html'"
-                            id="alpacaLinkRedirectBtn"
+                        <button onclick="window.location.href='bots.html'" id="alpacaLinkRedirectBtn"
                             class="flex items-center justify-center h-9 text-xs font-black bg-emerald-50 text-emerald-600 border-2 border-emerald-100 rounded-full px-5 hover:bg-emerald-600 hover:text-white transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
                             🔗 Connect Alpaca
                         </button>
@@ -161,9 +160,9 @@
 
         <!-- ═══════════════ PORTFOLIO CARDS ═══════════════ -->
         <div id="dashboardContent" class="flex flex-col gap-3 animate-in fade-in duration-700">
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+            <div class="dashboard-context-grid grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
                 <!-- Market Sentiment -->
-                <div class="card-glass group flex flex-col items-center p-5 cursor-pointer hover:ring-2 hover:ring-indigo-400 transition-all overflow-hidden"
+                <div class="card-glass dashboard-context-card group flex flex-col items-center p-5 cursor-pointer hover:ring-2 hover:ring-indigo-400 transition-all overflow-hidden order-1"
                     id="cardSentiment" onclick="openFngModal()">
                     <div class="card-glow"></div>
                     <h3
@@ -179,7 +178,7 @@
                     </div>
 
                     <div
-                        class="relative w-full max-w-[220px] sm:max-w-[260px] aspect-[2/1.2] mt-6 flex items-end justify-center">
+                        class="dashboard-fng-gauge relative w-full max-w-[220px] sm:max-w-[260px] aspect-[2/1.2] mt-6 flex items-end justify-center">
                         <svg viewBox="0 0 200 120" class="w-full h-full absolute bottom-0 overflow-visible">
                             <defs>
                                 <!-- Gradient arc: green → yellow → orange → red -->
@@ -216,100 +215,103 @@
                             <!-- Sentiment label -->
                             <text id="fgLabel" x="100" y="115" text-anchor="middle" dominant-baseline="middle"
                                 fill="#64748b" font-size="13" font-weight="800" text-transform="uppercase"
-                                letter-spacing="2">Fetching...</text>
+                                letter-spacing="2">Loading...</text>
 
                             <!-- Fear / Greed side labels -->
-                            <text x="12" y="115" text-anchor="start" dominant-baseline="middle" fill="#475569"
-                                font-size="11" font-weight="800" text-transform="uppercase"
+                            <text x="15" y="115" text-anchor="middle" dominant-baseline="middle" fill="#475569"
+                                font-size="12" font-weight="800" text-transform="uppercase"
                                 letter-spacing="1">Fear</text>
-                            <text x="188" y="115" text-anchor="end" dominant-baseline="middle" fill="#475569"
-                                font-size="11" font-weight="800" text-transform="uppercase"
+                            <text x="185" y="115" text-anchor="middle" dominant-baseline="middle" fill="#475569"
+                                font-size="12" font-weight="800" text-transform="uppercase"
                                 letter-spacing="1">Greed</text>
                         </svg>
                     </div>
                 </div>
 
                 <!-- Upcoming Macro Events -->
-                <div class="card-glass group flex flex-col p-5 cursor-pointer hover:ring-2 hover:ring-indigo-400 transition-all overflow-hidden relative" onclick="openMacroModal()">
+                <div class="card-glass dashboard-context-card group flex flex-col p-5 cursor-pointer hover:ring-2 hover:ring-indigo-400 transition-all overflow-hidden relative order-2"
+                    onclick="openMacroModal()">
                     <div class="card-glow"></div>
                     <h3 class="card-label uppercase tracking-widest text-[10px] font-black text-slate-500 mb-4">
                         Macro Events
                     </h3>
                     <div class="absolute top-4 right-4 text-slate-400">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                            <path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clip-rule="evenodd" />
+                            <path fill-rule="evenodd"
+                                d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z"
+                                clip-rule="evenodd" />
                         </svg>
                     </div>
-                    
-                    <div class="flex-1 flex flex-col justify-center gap-2 relative z-10" id="macroEventsContainer">
-                        <div class="flex items-center justify-between text-sm">
-                            <span class="font-bold text-slate-700">CPI Data Release</span>
-                            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-600 uppercase">High</span>
-                        </div>
-                        <div class="flex items-center justify-between text-sm">
-                            <span class="font-bold text-slate-700">FOMC Minutes</span>
-                            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-orange-100 text-orange-600 uppercase">Med</span>
-                        </div>
-                        <div class="flex items-center justify-between text-sm">
-                            <span class="font-bold text-slate-700">Initial Jobless</span>
-                            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-yellow-100 text-yellow-600 uppercase">Low</span>
+
+                    <div class="dashboard-macro-preview flex-1 flex flex-col justify-center gap-2 relative z-10" id="macroEventsContainer">
+                        <div class="dashboard-card-loading flex items-center justify-center py-4 text-xs font-bold text-slate-400 gap-2">
+                            <div class="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-indigo-600"></div>
+                            <span>Loading upcoming events...</span>
                         </div>
                     </div>
                 </div>
 
                 <!-- Market Breadth / Trend Alignment -->
-                <div class="card-glass group flex flex-col p-5 cursor-pointer hover:ring-2 hover:ring-indigo-400 transition-all overflow-hidden relative items-center" onclick="openBreadthModal()">
+                <div class="card-glass dashboard-context-card group flex flex-col p-5 cursor-pointer hover:ring-2 hover:ring-indigo-400 transition-all overflow-hidden relative items-center order-4"
+                    onclick="openBreadthModal()">
                     <div class="card-glow"></div>
-                    <h3 class="card-label absolute top-4 left-4 right-4 text-left uppercase tracking-widest text-[10px] font-black text-slate-500">
+                    <h3
+                        class="card-label absolute top-4 left-4 right-4 text-left uppercase tracking-widest text-[10px] font-black text-slate-500">
                         Market Breadth
                     </h3>
                     <div class="absolute top-4 right-4 text-slate-400">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                            <path fill-rule="evenodd" d="M12 7a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0V8.414l-4.293 4.293a1 1 0 01-1.414 0L8 10.414l-4.293 4.293a1 1 0 01-1.414-1.414l5-5a1 1 0 011.414 0L11 10.586 14.586 7H12z" clip-rule="evenodd" />
+                            <path fill-rule="evenodd"
+                                d="M12 7a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0V8.414l-4.293 4.293a1 1 0 01-1.414 0L8 10.414l-4.293 4.293a1 1 0 01-1.414-1.414l5-5a1 1 0 011.414 0L11 10.586 14.586 7H12z"
+                                clip-rule="evenodd" />
                         </svg>
                     </div>
 
-                    <div class="flex-1 flex flex-col items-center justify-center relative w-full mt-6">
-                        <div class="relative w-24 h-24 flex items-center justify-center">
+                    <div class="dashboard-breadth-preview flex-1 flex flex-col items-center justify-center relative w-full mt-6">
+                        <div class="dashboard-breadth-ring relative w-24 h-24 flex items-center justify-center">
                             <!-- Circular Progress -->
                             <svg class="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
                                 <!-- Background Circle -->
-                                <path class="text-slate-200" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" stroke-width="3" />
-                                <!-- Progress Circle (Dynamic via JS, mocked to 65%) -->
-                                <path id="breadthProgress" class="text-emerald-500" stroke-dasharray="65, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
+                                <path class="text-slate-200"
+                                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                                    fill="none" stroke="currentColor" stroke-width="3" />
+                                <!-- Progress Circle (Dynamic via /api/market-data) -->
+                                <path id="breadthProgress" class="text-slate-300" stroke-dasharray="0, 100"
+                                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                                    fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
                             </svg>
                             <div class="absolute flex flex-col items-center justify-center">
-                                <span id="breadthScore" class="text-xl font-black text-slate-800">65%</span>
+                                <span id="breadthScore" class="text-xl font-black text-slate-800">--%</span>
                             </div>
                         </div>
-                        <span id="breadthLabel" class="text-xs font-bold text-emerald-600 mt-2 uppercase tracking-wide">Bullish Trend</span>
+                        <span id="breadthLabel"
+                            class="text-xs font-bold text-slate-500 mt-2 uppercase tracking-wide">Loading
+                            Market...</span>
+                        <span id="breadthSubLabel"
+                            class="text-[9px] font-black text-slate-400 mt-1 uppercase tracking-[0.18em]">Composite
+                            breadth score</span>
                     </div>
                 </div>
 
                 <!-- Sector Heatmap -->
-                <div class="card-glass group flex flex-col p-5 cursor-pointer hover:ring-2 hover:ring-indigo-400 transition-all overflow-hidden relative" onclick="openSectorModal()">
+                <div class="card-glass dashboard-context-card group flex flex-col p-5 cursor-pointer hover:ring-2 hover:ring-indigo-400 transition-all overflow-hidden relative order-3"
+                    onclick="openSectorModal()">
                     <div class="card-glow"></div>
-                    <h3 class="card-label absolute top-4 left-4 right-4 text-left uppercase tracking-widest text-[10px] font-black text-slate-500">
+                    <h3
+                        class="card-label absolute top-4 left-4 right-4 text-left uppercase tracking-widest text-[10px] font-black text-slate-500">
                         Sector Heatmap
                     </h3>
                     <div class="absolute top-4 right-4 text-slate-400">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                            <path d="M5 3a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2V5a2 2 0 00-2-2H5zM5 11a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2v-2a2 2 0 00-2-2H5zM11 5a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V5zM11 13a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+                            <path
+                                d="M5 3a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2V5a2 2 0 00-2-2H5zM5 11a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2v-2a2 2 0 00-2-2H5zM11 5a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V5zM11 13a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
                         </svg>
                     </div>
 
-                    <div class="flex-1 flex flex-col justify-end gap-2 mt-8 relative z-10" id="sectorHeatmapContainer">
-                        <div class="flex items-center justify-between">
-                            <span class="text-sm font-bold text-slate-600">Technology</span>
-                            <span class="px-2 py-1 rounded text-xs font-bold bg-emerald-100 text-emerald-700">+1.2%</span>
-                        </div>
-                        <div class="flex items-center justify-between">
-                            <span class="text-sm font-bold text-slate-600">Crypto</span>
-                            <span class="px-2 py-1 rounded text-xs font-bold bg-emerald-100 text-emerald-700">+3.4%</span>
-                        </div>
-                        <div class="flex items-center justify-between">
-                            <span class="text-sm font-bold text-slate-600">Energy</span>
-                            <span class="px-2 py-1 rounded text-xs font-bold bg-red-100 text-red-700">-0.8%</span>
+                    <div class="dashboard-sector-preview flex-1 flex flex-col justify-start gap-1.5 mt-9 relative z-10" id="sectorHeatmapContainer">
+                        <div class="dashboard-card-loading flex items-center justify-center py-4 text-xs font-bold text-slate-400 gap-2">
+                            <div class="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-indigo-600"></div>
+                            <span>Loading Sector HeatMap</span>
                         </div>
                     </div>
                 </div>
@@ -322,19 +324,28 @@
                 <div class="panel-glass relative w-full" id="watchlistPanel">
                     <div class="panel-top-bar bg-gradient-to-r from-cyan-400 to-blue-400"></div>
 
-                    <div class="flex justify-between items-center cursor-pointer group py-1" onclick="toggleWatchlistCollapse()">
+                    <div class="flex justify-between items-center cursor-pointer group py-1"
+                        onclick="toggleWatchlistCollapse()">
                         <div class="flex items-center gap-2">
-                            <h2 class="text-lg font-bold text-indigo-900 group-hover:text-indigo-600 transition-colors">My Watchlist</h2>
-                            <span class="text-[0.65rem] font-bold text-slate-500 bg-slate-100 px-2.5 py-0.5 rounded-full border border-slate-200 shadow-sm">Click to expand</span>
+                            <h2 class="text-lg font-bold text-indigo-900 group-hover:text-indigo-600 transition-colors">
+                                My Watchlist</h2>
+                            <span
+                                class="text-[0.65rem] font-bold text-slate-500 bg-slate-100 px-2.5 py-0.5 rounded-full border border-slate-200 shadow-sm">Click
+                                to expand</span>
                         </div>
-                        <svg id="watchlistChevron" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500 transition-transform duration-300 transform rotate-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
+                        <svg id="watchlistChevron" xmlns="http://www.w3.org/2000/svg"
+                            class="h-5 w-5 text-indigo-500 transition-transform duration-300 transform rotate-0"
+                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                d="M19 9l-7 7-7-7" />
                         </svg>
                     </div>
 
-                    <div id="watchlistCollapsibleArea" class="transition-all duration-300 overflow-hidden" style="max-height: 0px; opacity: 0; pointer-events: none; margin-top: 0px;">
+                    <div id="watchlistCollapsibleArea" class="transition-all duration-300 overflow-hidden"
+                        style="max-height: 0px; opacity: 0; pointer-events: none; margin-top: 0px;">
                         <div class="flex flex-col mb-4">
-                            <div class="flex bg-slate-100/60 backdrop-blur-sm p-1 rounded-lg border border-purple-100/50 w-full sm:w-80 text-xs">
+                            <div
+                                class="flex bg-slate-100/60 backdrop-blur-sm p-1 rounded-lg border border-purple-100/50 w-full sm:w-80 text-xs">
                                 <button id="wlTabAll" onclick="setWatchlistTab('all')"
                                     class="flex-1 py-1.5 text-center rounded-md font-bold transition-all text-indigo-900 bg-white shadow-sm">
                                     All
@@ -360,337 +371,335 @@
                 <div class="panel-glass relative w-full" id="mainChartPanel">
                     <div class="panel-top-bar bg-gradient-to-r from-indigo-400 to-purple-500"></div>
 
-                        <!-- Chart Header: Ticker + Search + Star -->
-                        <div class="flex items-start justify-between mb-1">
-                            <div>
-                                <div class="flex flex-col">
-                                    <div class="flex items-baseline gap-2">
-                                        <span class="text-xl font-black text-indigo-900"
-                                            id="chartTickerLabel">---</span>
-                                        <span class="text-xl font-black text-emerald-600" id="chartPrice">---</span>
-                                    </div>
-                                    <div class="mt-0.5">
-                                        <span class="text-xs font-bold text-emerald-500"
-                                            id="chartPriceChange">---</span>
-                                    </div>
+                    <!-- Chart Header: Ticker + Search + Star -->
+                    <div class="flex items-start justify-between mb-1">
+                        <div>
+                            <div class="flex flex-col">
+                                <div class="flex items-baseline gap-2">
+                                    <span class="text-xl font-black text-indigo-900" id="chartTickerLabel">---</span>
+                                    <span class="text-xl font-black text-emerald-600" id="chartPrice">---</span>
                                 </div>
-                            </div>
-                            <!-- Search + Star -->
-                            <div class="relative flex items-center z-50 gap-1">
-                                <div class="relative">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-purple-400 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                                    </svg>
-                                    <input type="text" id="tickerSearch" autocomplete="off" placeholder="Search..."
-                                        class="bg-white/80 text-indigo-900 border border-purple-200 rounded-lg pl-8 pr-2 py-1 w-28 text-xs uppercase focus:outline-none focus:ring-2 focus:ring-purple-400 transition-all font-bold"
-                                        oninput="onTickerSearchInput(this.value)" onkeydown="onTickerSearchKey(event)">
-                                </div>
-                                <button id="favoriteBtn" onclick="toggleWatchlistStar()"
-                                    class="p-1.5 rounded-lg border border-purple-200 bg-white/80 hover:bg-yellow-50 transition-colors"
-                                    title="Add/Remove from Watchlist">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" id="favIcon" fill="none"
-                                        viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-                                            d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
-                                    </svg>
-                                </button>
-                                <div id="tickerSearchResults"
-                                    class="absolute top-full right-0 mt-1 bg-white rounded-xl shadow-2xl border border-indigo-100 overflow-hidden hidden max-h-64 overflow-y-auto z-50 w-56">
+                                <div class="mt-0.5">
+                                    <span class="text-xs font-bold text-emerald-500" id="chartPriceChange">---</span>
                                 </div>
                             </div>
                         </div>
-
-                        <!-- Webull-style interval bar -->
-                        <div class="chart-control-row chart-interval-row" id="chartTfBar">
-                            <button class="chart-tf-btn chart-tf-active" onclick="setChartTimeframe('1Min')"
-                                data-tf="1Min">1m</button>
-                            <button class="chart-tf-btn" onclick="setChartTimeframe('5Min')" data-tf="5Min">5m</button>
-                            <button class="chart-tf-btn" onclick="setChartTimeframe('15Min')"
-                                data-tf="15Min">15m</button>
-                            <button class="chart-tf-btn" onclick="setChartTimeframe('30Min')"
-                                data-tf="30Min">30m</button>
-                            <button class="chart-tf-btn" onclick="setChartTimeframe('1Hour')"
-                                data-tf="1Hour">1h</button>
-                            <button class="chart-tf-btn" onclick="setChartTimeframe('4Hour')"
-                                data-tf="4Hour">4h</button>
-                            <button class="chart-tf-btn" onclick="setChartTimeframe('1Day')"
-                                data-tf="1Day">1D</button>
-                        </div>
-
-                        <!-- OHLCV Crosshair Bar -->
-                        <div id="chartOhlcvBar"
-                            class="chart-ohlcv-bar mb-1 text-[0.65rem] font-mono text-slate-500 flex gap-3 flex-wrap">
-                            <span>O: <span id="ohlcvO" class="text-slate-700 font-bold">—</span></span>
-                            <span>H: <span id="ohlcvH" class="text-emerald-600 font-bold">—</span></span>
-                            <span>L: <span id="ohlcvL" class="text-red-500 font-bold">—</span></span>
-                            <span>C: <span id="ohlcvC" class="text-slate-700 font-bold">—</span></span>
-                            <span>Vol: <span id="ohlcvV" class="text-purple-600 font-bold">—</span></span>
-                        </div>
-
-                        <!-- Chart canvas -->
-                        <div class="chart-stage">
-                            <div class="chart-meta-strip">
-                                <span id="chartSessionStatus">Regular Hours</span>
-                                <span id="chartLastBarInfo">Last ticker/day: —</span>
-                            </div>
-                            <div class="w-full webull-main-chart" id="tradingChart"></div>
-                        </div>
-                        <!-- Oscillator sub-panes -->
-                        <div class="relative">
-                            <div class="chart-osc-label" id="rsiLabel" style="display: none;">RSI (14)<div class="group/tooltip relative inline-flex items-center ml-1">
-                                    <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('RSI')"
-                                        xmlns="http://www.w3.org/2000/svg"
-                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
-                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    <div
-                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
-                                        Click to read guide
-                                        <div
-                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
-                                        </div>
-                                    </div>
-                                </div></div>
-                            <div class="chart-osc-pane" id="oscChart_rsi" style="display: none;"></div>
-                        </div>
-                        <div class="relative group">
-                            <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
-                                onclick="openIndicatorSettings('MACD')" id="macdLabel" style="display: none;">
-                                MACD (12, 26, 9)<div class="group/tooltip relative inline-flex items-center ml-1">
-                                    <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('MACD')"
-                                        xmlns="http://www.w3.org/2000/svg"
-                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
-                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    <div
-                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
-                                        Click to read guide
-                                        <div
-                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
-                                        </div>
-                                    </div>
-                                </div>
-                                <svg class="w-3 h-3 opacity-70 hover:opacity-100 transition-opacity" fill="none"
-                                    stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
-                                    </path>
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                        <!-- Search + Star -->
+                        <div class="relative flex items-center z-50 gap-1">
+                            <div class="relative">
+                                <svg xmlns="http://www.w3.org/2000/svg"
+                                    class="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-purple-400 pointer-events-none"
+                                    fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                                        d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                                 </svg>
+                                <input type="text" id="tickerSearch" autocomplete="off" placeholder="Search..."
+                                    class="bg-white/80 text-indigo-900 border border-purple-200 rounded-lg pl-8 pr-2 py-1 w-28 text-xs uppercase focus:outline-none focus:ring-2 focus:ring-purple-400 transition-all font-bold"
+                                    oninput="onTickerSearchInput(this.value)" onkeydown="onTickerSearchKey(event)">
                             </div>
-                            <div class="chart-osc-pane" id="oscChart_macd" style="display: none;"></div>
-                        </div>
-                        <div class="relative group">
-                            <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
-                                onclick="openIndicatorSettings('Mystic Pulse')" id="mysticPulseLabel" style="display: none;">
-                                Mystic Pulse<div class="group/tooltip relative inline-flex items-center ml-1">
-                                    <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('Mystic Pulse')"
-                                        xmlns="http://www.w3.org/2000/svg"
-                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
-                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    <div
-                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
-                                        Click to read guide
-                                        <div
-                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
-                                        </div>
-                                    </div>
-                                </div>
-                                <svg class="w-3 h-3 opacity-70 hover:opacity-100 transition-opacity" fill="none"
-                                    stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
-                                    </path>
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                            <button id="favoriteBtn" onclick="toggleWatchlistStar()"
+                                class="p-1.5 rounded-lg border border-purple-200 bg-white/80 hover:bg-yellow-50 transition-colors"
+                                title="Add/Remove from Watchlist">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" id="favIcon" fill="none"
+                                    viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                        d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
                                 </svg>
-                            </div>
-                            <div class="chart-osc-pane" id="oscChart_mystic" style="display: none;"></div>
-                        </div>
-                        <div class="relative group">
-                            <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
-                                onclick="openIndicatorSettings('ADX')" id="adxLabel" style="display: none;">
-                                ADX (14) / DI+ / DI-<div class="group/tooltip relative inline-flex items-center ml-1">
-                                    <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('ADX Trend')"
-                                        xmlns="http://www.w3.org/2000/svg"
-                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
-                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    <div
-                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
-                                        Click to read guide
-                                        <div
-                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
-                                        </div>
-                                    </div>
-                                </div>
-                                <svg class="w-3 h-3 opacity-70 hover:opacity-100 transition-opacity" fill="none"
-                                    stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
-                                    </path>
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                                </svg>
-                            </div>
-                            <div class="chart-osc-pane" id="oscChart_adx" style="display: none;"></div>
-                        </div>
-                        <div class="relative group">
-                            <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
-                                onclick="openIndicatorSettings('BotBulls1')" id="botbulls1Label" style="display: none;">
-                                BotBulls1 (WaveTrend + MFI)
-                                <div class="group/tooltip relative inline-flex items-center ml-1">
-                                    <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('BotBulls1')"
-                                        xmlns="http://www.w3.org/2000/svg"
-                                        class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
-                                        fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    <div
-                                        class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
-                                        Click to read guide
-                                        <div
-                                            class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
-                                        </div>
-                                    </div>
-                                </div>
-                                <svg class="w-3 h-3 opacity-70 hover:opacity-100 transition-opacity" fill="none"
-                                    stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
-                                    </path>
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                                </svg>
-                            </div>
-                            <div class="chart-osc-pane" id="oscChart_botbulls1" style="display: none;"></div>
-                        </div>
-
-                        <div class="chart-bottom-bar">
-                            <div class="chart-control-row chart-range-row" id="chartRangeBar">
-                                <button class="chart-range-btn chart-range-active" onclick="setChartRange('1D')"
-                                    data-range="1D">1D</button>
-                                <button class="chart-range-btn" onclick="setChartRange('5D')"
-                                    data-range="5D">5D</button>
-                                <button class="chart-range-btn" onclick="setChartRange('1M')"
-                                    data-range="1M">1M</button>
-                                <button class="chart-range-btn" onclick="setChartRange('3M')"
-                                    data-range="3M">3M</button>
-                                <button class="chart-range-btn" onclick="setChartRange('6M')"
-                                    data-range="6M">6M</button>
-                                <button class="chart-range-btn" onclick="setChartRange('YTD')"
-                                    data-range="YTD">YTD</button>
-                                <button class="chart-range-btn" onclick="setChartRange('1Y')"
-                                    data-range="1Y">1Y</button>
-                                <button class="chart-range-btn" onclick="setChartRange('5Y')"
-                                    data-range="5Y">5Y</button>
-                                <button class="chart-range-btn" onclick="setChartRange('MAX')"
-                                    data-range="MAX">Max</button>
-                            </div>
-                            <div class="chart-session-controls">
-                                <button id="regularHoursBtn" class="chart-session-btn chart-session-active"
-                                    onclick="setChartSession('regular')">Regular</button>
-                                <button id="extendedHoursBtn" class="chart-session-btn"
-                                    onclick="setChartSession('extended')">Ext.</button>
-                                <button id="cryptoLiveBtn" class="chart-session-btn hidden"
-                                    onclick="setChartSession('crypto24')">24h Live</button>
+                            </button>
+                            <div id="tickerSearchResults"
+                                class="absolute top-full right-0 mt-1 bg-white rounded-xl shadow-2xl border border-indigo-100 overflow-hidden hidden max-h-64 overflow-y-auto z-50 w-56">
                             </div>
                         </div>
-
                     </div>
 
-                    <!-- Signal Confluence Panel -->
-                    <div class="panel-glass relative">
-                        <div class="panel-top-bar bg-gradient-to-r from-fuchsia-400 to-pink-400"></div>
-                        <div class="flex justify-between items-center mb-4">
-                            <div class="flex items-center gap-3">
-                                <h2 class="text-lg font-bold text-indigo-900">Indicator Signal Confluence</h2>
-                            </div>
-                            <div class="flex items-center gap-2">
-                                <button type="button"
-                                    onclick="resetConfluenceIndicatorsToDefaults()"
-                                    title="Reset indicators to defaults"
-                                    aria-label="Reset indicators to defaults"
-                                    class="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full border border-slate-200 bg-white text-slate-500 hover:text-indigo-700 hover:border-indigo-200 hover:bg-indigo-50 transition-colors shadow-sm">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.25" d="M3 7.5l8.5-4.5 9 9-4.5 8.5H10l-7-7V7.5z" />
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.25" d="M10 20l6.5-6.5" />
-                                    </svg>
-                                    <span class="text-[0.6rem] font-black uppercase tracking-widest">Reset</span>
-                                </button>
-                                <span
-                                    class="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700"
-                                    id="bullCount">0 Bullish</span>
-                                <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700"
-                                    id="bearCount">0 Bearish</span>
-                            </div>
+                    <!-- Webull-style interval bar -->
+                    <div class="chart-control-row chart-interval-row" id="chartTfBar">
+                        <button class="chart-tf-btn chart-tf-active" onclick="setChartTimeframe('1Min')"
+                            data-tf="1Min">1m</button>
+                        <button class="chart-tf-btn" onclick="setChartTimeframe('5Min')" data-tf="5Min">5m</button>
+                        <button class="chart-tf-btn" onclick="setChartTimeframe('15Min')" data-tf="15Min">15m</button>
+                        <button class="chart-tf-btn" onclick="setChartTimeframe('30Min')" data-tf="30Min">30m</button>
+                        <button class="chart-tf-btn" onclick="setChartTimeframe('1Hour')" data-tf="1Hour">1h</button>
+                        <button class="chart-tf-btn" onclick="setChartTimeframe('4Hour')" data-tf="4Hour">4h</button>
+                        <button class="chart-tf-btn" onclick="setChartTimeframe('1Day')" data-tf="1Day">1D</button>
+                    </div>
+
+                    <!-- OHLCV Crosshair Bar -->
+                    <div id="chartOhlcvBar"
+                        class="chart-ohlcv-bar mb-1 text-[0.65rem] font-mono text-slate-500 flex gap-3 flex-wrap">
+                        <span>O: <span id="ohlcvO" class="text-slate-700 font-bold">—</span></span>
+                        <span>H: <span id="ohlcvH" class="text-emerald-600 font-bold">—</span></span>
+                        <span>L: <span id="ohlcvL" class="text-red-500 font-bold">—</span></span>
+                        <span>C: <span id="ohlcvC" class="text-slate-700 font-bold">—</span></span>
+                        <span>Vol: <span id="ohlcvV" class="text-purple-600 font-bold">—</span></span>
+                    </div>
+
+                    <!-- Chart canvas -->
+                    <div class="chart-stage">
+                        <div class="chart-meta-strip">
+                            <span id="chartSessionStatus">Regular Hours</span>
+                            <span id="chartLastBarInfo">Last ticker/day: —</span>
                         </div>
-                        
-
-
-                        <div class="relative min-h-[120px]">
-                            <div id="gridLoading"
-                                class="hidden absolute inset-0 z-10 flex flex-col items-center justify-center bg-white/40 backdrop-blur-[2px] rounded-xl transition-all duration-300">
+                        <div class="w-full webull-main-chart" id="tradingChart"></div>
+                    </div>
+                    <!-- Oscillator sub-panes -->
+                    <div class="relative">
+                        <div class="chart-osc-label" id="rsiLabel" style="display: none;">RSI (14)<div
+                                class="group/tooltip relative inline-flex items-center ml-1">
+                                <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('RSI')"
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                    fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
                                 <div
-                                    class="w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mb-2">
+                                    class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                    Click to read guide
+                                    <div
+                                        class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                    </div>
                                 </div>
+                            </div>
+                        </div>
+                        <div class="chart-osc-pane" id="oscChart_rsi" style="display: none;"></div>
+                    </div>
+                    <div class="relative group">
+                        <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
+                            onclick="openIndicatorSettings('MACD')" id="macdLabel" style="display: none;">
+                            MACD (12, 26, 9)<div class="group/tooltip relative inline-flex items-center ml-1">
+                                <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('MACD')"
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                    fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                <div
+                                    class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                    Click to read guide
+                                    <div
+                                        class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                    </div>
+                                </div>
+                            </div>
+                            <svg class="w-3 h-3 opacity-70 hover:opacity-100 transition-opacity" fill="none"
+                                stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
+                                </path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                            </svg>
+                        </div>
+                        <div class="chart-osc-pane" id="oscChart_macd" style="display: none;"></div>
+                    </div>
+                    <div class="relative group">
+                        <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
+                            onclick="openIndicatorSettings('Mystic Pulse')" id="mysticPulseLabel"
+                            style="display: none;">
+                            Mystic Pulse<div class="group/tooltip relative inline-flex items-center ml-1">
+                                <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('Mystic Pulse')"
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                    fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                <div
+                                    class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                    Click to read guide
+                                    <div
+                                        class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                    </div>
+                                </div>
+                            </div>
+                            <svg class="w-3 h-3 opacity-70 hover:opacity-100 transition-opacity" fill="none"
+                                stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
+                                </path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                            </svg>
+                        </div>
+                        <div class="chart-osc-pane" id="oscChart_mystic" style="display: none;"></div>
+                    </div>
+                    <div class="relative group">
+                        <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
+                            onclick="openIndicatorSettings('ADX')" id="adxLabel" style="display: none;">
+                            ADX (14) / DI+ / DI-<div class="group/tooltip relative inline-flex items-center ml-1">
+                                <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('ADX Trend')"
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                    fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                <div
+                                    class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                    Click to read guide
+                                    <div
+                                        class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                    </div>
+                                </div>
+                            </div>
+                            <svg class="w-3 h-3 opacity-70 hover:opacity-100 transition-opacity" fill="none"
+                                stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
+                                </path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                            </svg>
+                        </div>
+                        <div class="chart-osc-pane" id="oscChart_adx" style="display: none;"></div>
+                    </div>
+                    <div class="relative group">
+                        <div class="chart-osc-label cursor-pointer hover:text-indigo-500 transition-colors flex items-center gap-1"
+                            onclick="openIndicatorSettings('BotBulls1')" id="botbulls1Label" style="display: none;">
+                            BotBulls1 (WaveTrend + MFI)
+                            <div class="group/tooltip relative inline-flex items-center ml-1">
+                                <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('BotBulls1')"
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors"
+                                    fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                <div
+                                    class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
+                                    Click to read guide
+                                    <div
+                                        class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-indigo-900">
+                                    </div>
+                                </div>
+                            </div>
+                            <svg class="w-3 h-3 opacity-70 hover:opacity-100 transition-opacity" fill="none"
+                                stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
+                                </path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                            </svg>
+                        </div>
+                        <div class="chart-osc-pane" id="oscChart_botbulls1" style="display: none;"></div>
+                    </div>
+
+                    <div class="chart-bottom-bar">
+                        <div class="chart-control-row chart-range-row" id="chartRangeBar">
+                            <button class="chart-range-btn chart-range-active" onclick="setChartRange('1D')"
+                                data-range="1D">1D</button>
+                            <button class="chart-range-btn" onclick="setChartRange('5D')" data-range="5D">5D</button>
+                            <button class="chart-range-btn" onclick="setChartRange('1M')" data-range="1M">1M</button>
+                            <button class="chart-range-btn" onclick="setChartRange('3M')" data-range="3M">3M</button>
+                            <button class="chart-range-btn" onclick="setChartRange('6M')" data-range="6M">6M</button>
+                            <button class="chart-range-btn" onclick="setChartRange('YTD')" data-range="YTD">YTD</button>
+                            <button class="chart-range-btn" onclick="setChartRange('1Y')" data-range="1Y">1Y</button>
+                            <button class="chart-range-btn" onclick="setChartRange('5Y')" data-range="5Y">5Y</button>
+                            <button class="chart-range-btn" onclick="setChartRange('MAX')" data-range="MAX">Max</button>
+                        </div>
+                        <div class="chart-session-controls">
+                            <button id="regularHoursBtn" class="chart-session-btn chart-session-active"
+                                onclick="setChartSession('regular')">Regular</button>
+                            <button id="extendedHoursBtn" class="chart-session-btn"
+                                onclick="setChartSession('extended')">Ext.</button>
+                            <button id="cryptoLiveBtn" class="chart-session-btn hidden"
+                                onclick="setChartSession('crypto24')">24h Live</button>
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- Signal Confluence Panel -->
+                <div class="panel-glass relative">
+                    <div class="panel-top-bar bg-gradient-to-r from-fuchsia-400 to-pink-400"></div>
+                    <div class="flex justify-between items-center mb-4">
+                        <div class="flex items-center gap-3">
+                            <h2 class="text-lg font-bold text-indigo-900">Indicator Signal Confluence</h2>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button type="button" onclick="resetConfluenceIndicatorsToDefaults()"
+                                title="Reset indicators to defaults" aria-label="Reset indicators to defaults"
+                                class="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full border border-slate-200 bg-white text-slate-500 hover:text-indigo-700 hover:border-indigo-200 hover:bg-indigo-50 transition-colors shadow-sm">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none"
+                                    viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.25"
+                                        d="M3 7.5l8.5-4.5 9 9-4.5 8.5H10l-7-7V7.5z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.25"
+                                        d="M10 20l6.5-6.5" />
+                                </svg>
+                                <span class="text-[0.6rem] font-black uppercase tracking-widest">Reset</span>
+                            </button>
+                            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700"
+                                id="bullCount">0 Bullish</span>
+                            <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700"
+                                id="bearCount">0 Bearish</span>
+                        </div>
+                    </div>
+
+
+
+                    <div class="relative min-h-[120px]">
+                        <div id="gridLoading"
+                            class="hidden absolute inset-0 z-10 flex flex-col items-center justify-center bg-white/40 backdrop-blur-[2px] rounded-xl transition-all duration-300">
+                            <div
+                                class="w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mb-2">
+                            </div>
+                            <span class="text-[0.65rem] font-bold text-indigo-600 uppercase tracking-widest">Fetching
+                                Signals</span>
+                        </div>
+                        <div id="signalGrid" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-2">
+                            <!-- Signals injected by JS -->
+                        </div>
+
+                        <!-- Premium Indicators Sub-Box -->
+                        <div class="mt-4 pt-3 border-t border-amber-200/60">
+                            <div class="flex items-center gap-2 mb-3">
+                                <h3 class="text-xs font-black text-amber-700 uppercase tracking-widest">
+                                    ✦ Premium Indicators
+                                </h3>
                                 <span
-                                    class="text-[0.65rem] font-bold text-indigo-600 uppercase tracking-widest">Fetching
-                                    Signals</span>
+                                    class="px-1.5 py-0.5 text-[9px] font-black bg-gradient-to-r from-amber-400 to-orange-500 text-white rounded-md uppercase tracking-wider shadow-sm">PRO</span>
                             </div>
-                            <div id="signalGrid" class="grid grid-cols-2 md:grid-cols-3 gap-3">
-                                <!-- Signals injected by JS -->
+                            <div id="premiumSignalGrid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+                                <!-- Premium signals injected by JS -->
                             </div>
 
-                            <!-- Premium Indicators Sub-Box -->
-                            <div class="mt-4 pt-3 border-t border-amber-200/60">
-                                <div class="flex items-center gap-2 mb-3">
-                                    <h3 class="text-xs font-black text-amber-700 uppercase tracking-widest">
-                                        ✦ Premium Indicators
-                                    </h3>
-                                    <span class="px-1.5 py-0.5 text-[9px] font-black bg-gradient-to-r from-amber-400 to-orange-500 text-white rounded-md uppercase tracking-wider shadow-sm">PRO</span>
-                                </div>
-                                <div id="premiumSignalGrid" class="grid grid-cols-1 md:grid-cols-3 gap-3">
-                                    <!-- Premium signals injected by JS -->
-                                </div>
 
-
-                            </div>
                         </div>
                     </div>
+                </div>
 
-                    <!-- BotBulls AI Analysis Section -->
-                    <div id="aiIndicatorSection">
-                        <div id="aiIndicatorCard" class="ai-indicator-card p-4 rounded-xl border border-amber-200/60 bg-gradient-to-br from-amber-50/50 to-orange-50/30 relative overflow-hidden transition-all duration-300">
-                            <div class="flex flex-wrap items-center justify-between gap-y-2 mb-3 relative z-10">
-                                <div class="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                                    <span class="text-base drop-shadow-sm">🤖</span>
-                                    <span class="font-black text-xs text-amber-900 tracking-wide uppercase" id="aiIndicatorHeader">BotBulls AI Analysis</span>
-                                    <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-amber-200 to-amber-300 text-amber-800 border border-amber-400/50 shadow-sm">GROQ AI</span>
-                                </div>
-                                <div class="flex items-center gap-2 relative z-30 shrink-0">
-                                    <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm">
-                                        ℹ
-                                    </button>
-                                    <button onclick="refreshAIIndicator()" title="Force refresh AI analysis" class="w-5 h-5 rounded-full flex items-center justify-center text-xs text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm">
-                                        ↻
-                                    </button>
-                                </div>
+                <!-- BotBulls AI Analysis Section -->
+                <div id="aiIndicatorSection">
+                    <div id="aiIndicatorCard"
+                        class="ai-indicator-card p-4 rounded-xl border border-amber-200/60 bg-gradient-to-br from-amber-50/50 to-orange-50/30 relative overflow-hidden transition-all duration-300">
+                        <div class="flex flex-wrap items-center justify-between gap-y-2 mb-3 relative z-10">
+                            <div class="flex flex-wrap items-center gap-1.5 sm:gap-2">
+                                <span class="text-base drop-shadow-sm">🤖</span>
+                                <span class="font-black text-xs text-amber-900 tracking-wide uppercase"
+                                    id="aiIndicatorHeader">BotBulls AI Analysis</span>
+                                <span
+                                    class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-amber-200 to-amber-300 text-amber-800 border border-amber-400/50 shadow-sm">GROQ
+                                    AI</span>
                             </div>
-                            <div id="aiSummary" class="text-[0.65rem] font-medium text-amber-800/80 relative z-10">Select a ticker to load AI analysis…</div>
+                            <div class="flex items-center gap-2 relative z-30 shrink-0">
+                                <button onclick="openAIInfoModal()" title="How AI analysis works"
+                                    class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm">
+                                    ℹ
+                                </button>
+                                <button onclick="refreshAIIndicator()" title="Force refresh AI analysis"
+                                    class="w-5 h-5 rounded-full flex items-center justify-center text-xs text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm">
+                                    ↻
+                                </button>
+                            </div>
                         </div>
+                        <div id="aiSummary" class="text-[0.65rem] font-medium text-amber-800/80 relative z-10">Select a
+                            ticker to load AI analysis…</div>
                     </div>
+                </div>
             </div>
 
             <!-- Execution Log moved to Active Bots page -->
@@ -706,7 +715,9 @@
                     <p>Bot Bulls — Autonomous Trading Core</p>
                     <span class="h-1.5 w-1.5 rounded-full bg-purple-400 opacity-50"></span>
                 </div>
-                <p class="text-[0.6rem] text-rose-400/80 max-w-md">⚠️ RISK DISCLAIMER: Algorithmic systems carry inherent market risks. Simulation runs do not guarantee live profitability or account for transaction slippage.</p>
+                <p class="text-[0.6rem] text-rose-400/80 max-w-md">⚠️ RISK DISCLAIMER: Algorithmic systems carry
+                    inherent market risks. Simulation runs do not guarantee live profitability or account for
+                    transaction slippage.</p>
             </div>
         </footer>
 
@@ -717,7 +728,8 @@
 
 
 
-    <script src="app.js?v=62"></script>
+    <script src="alpaca-status-cache.js?v=1"></script>
+    <script src="app.js?v=95"></script>
 
     <!-- Fear & Greed Sub-Components Modal -->
     <div id="fngModal"
@@ -749,7 +761,8 @@
                 </div>
                 <div class="mt-6 pt-4 border-t border-slate-100 flex items-center justify-center">
                     <p class="text-[0.65rem] text-slate-400 font-bold uppercase tracking-widest">
-                        Data sourced from <a href="https://feargreedchart.com" target="_blank" class="text-indigo-400 hover:text-indigo-600 transition-colors">feargreedchart.com</a>
+                        Data sourced from <a href="https://feargreedchart.com" target="_blank"
+                            class="text-indigo-400 hover:text-indigo-600 transition-colors">feargreedchart.com</a>
                     </p>
                 </div>
             </div>
@@ -781,9 +794,9 @@
                 <button onclick="resetIndicatorSettingsToDefaults()"
                     class="px-4 py-2 text-sm font-bold text-rose-500 hover:text-rose-700 transition-colors text-center sm:text-left"
                     title="Reset all fields to industry default values">Reset to Defaults</button>
-                <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
+                <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 justify-end sm:ml-auto">
                     <button onclick="closeIndicatorSettings()"
-                        class="px-4 py-2 text-sm font-bold text-slate-500 hover:text-indigo-600 transition-colors rounded-lg border border-slate-200 sm:border-0 py-2 sm:py-0">Cancel</button>
+                        class="px-4 py-2 text-sm font-bold text-slate-500 hover:text-indigo-600 transition-colors rounded-lg border border-slate-200 sm:border-0 py-2 sm:py-0">Close</button>
                     <button onclick="saveIndicatorSettings()"
                         class="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-bold shadow-lg shadow-indigo-200 transition-all text-center">Apply
                         Settings</button>
@@ -792,46 +805,59 @@
         </div>
     </div>
     <!-- Macro Events Modal -->
-    <div id="macroModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[200] hidden flex flex-col items-center justify-center p-4">
-        <div class="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-4xl border border-white/50 flex flex-col h-[700px] max-h-[90vh] overflow-hidden">
-            <div class="px-6 py-5 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white/95 backdrop-blur-xl z-10 rounded-t-2xl">
+    <div id="macroModal"
+        class="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[200] hidden flex flex-col items-center justify-center p-4">
+        <div
+            class="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-4xl border border-white/50 flex flex-col h-[700px] max-h-[90vh] overflow-hidden">
+            <div
+                class="px-6 py-5 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white/95 backdrop-blur-xl z-10 rounded-t-2xl">
                 <h3 class="text-xl font-black text-slate-800 tracking-tight flex items-center gap-2">
                     Macro Data
-                    <span class="text-xs font-bold bg-indigo-100 text-indigo-600 px-2 py-1 rounded-md uppercase tracking-widest ml-2">Live Data</span>
+                    <span
+                        class="text-xs font-bold bg-indigo-100 text-indigo-600 px-2 py-1 rounded-md uppercase tracking-widest ml-2">Live
+                        Data</span>
                 </h3>
-                <button onclick="closeMacroModal()" class="text-slate-400 hover:text-slate-700 transition-colors p-2 hover:bg-slate-100 rounded-full">
+                <button onclick="closeMacroModal()"
+                    class="text-slate-400 hover:text-slate-700 transition-colors p-2 hover:bg-slate-100 rounded-full">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
-                        <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+                        <path fill-rule="evenodd"
+                            d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                            clip-rule="evenodd" />
                     </svg>
                 </button>
             </div>
-            
+
             <!-- Tabs Navigation -->
             <div class="px-6 pt-4 border-b border-slate-100 bg-slate-50/50 flex gap-6">
-                <button onclick="switchMacroTab('calendar')" id="tab-macro-calendar" class="pb-3 text-sm font-bold border-b-2 border-indigo-600 text-indigo-700 transition-colors">Economic Calendar</button>
-                <button onclick="switchMacroTab('indicators')" id="tab-macro-indicators" class="pb-3 text-sm font-bold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors">Indicators</button>
+                <button onclick="switchMacroTab('calendar')" id="tab-macro-calendar"
+                    class="pb-3 text-sm font-bold border-b-2 border-indigo-600 text-indigo-700 transition-colors">Economic
+                    Calendar</button>
+                <button onclick="switchMacroTab('indicators')" id="tab-macro-indicators"
+                    class="pb-3 text-sm font-bold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors">Indicators</button>
             </div>
-            
+
             <div class="p-6 overflow-y-auto custom-scrollbar relative flex-1 h-[600px]" id="macro-events-container">
                 <div id="macro-events-loading" class="text-center py-10">
                     <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mx-auto mb-4"></div>
                     <p class="text-sm font-bold text-slate-400 uppercase tracking-widest">Loading Macro Data...</p>
                 </div>
-                
+
                 <!-- Calendar View -->
                 <div id="view-macro-calendar" class="w-full relative">
-                    <div class="absolute left-[38px] top-10 bottom-10 w-0.5 bg-indigo-100 hidden" id="macro-timeline-line"></div>
+                    <div class="absolute left-[38px] top-10 bottom-10 w-0.5 bg-indigo-100 hidden"
+                        id="macro-timeline-line"></div>
                     <div id="macro-calendar-list"></div>
                 </div>
-                
+
                 <!-- Indicators View -->
                 <div id="view-macro-indicators" class="w-full hidden">
                     <div id="macro-indicators-list"></div>
                 </div>
             </div>
-            
+
             <!-- Footer -->
-            <div class="px-6 py-3 border-t border-slate-100 flex items-center justify-center bg-white/95 backdrop-blur-xl z-10 rounded-b-2xl">
+            <div
+                class="px-6 py-3 border-t border-slate-100 flex items-center justify-center bg-white/95 backdrop-blur-xl z-10 rounded-b-2xl">
                 <p class="text-[0.65rem] text-slate-400 font-bold uppercase tracking-widest">
                     Data sourced concurrently from <span class="text-indigo-400">ForexFactory & yfinance</span>
                 </p>
@@ -840,50 +866,76 @@
     </div>
 
     <!-- Sector Heatmap Modal -->
-    <div id="sectorModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[200] hidden flex flex-col items-center justify-center p-4">
-        <div class="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-4xl border border-white/50 flex flex-col h-[700px] max-h-[90vh] overflow-hidden">
-            <div class="px-6 py-5 border-b border-slate-100 flex items-center justify-between bg-white/95 backdrop-blur-xl z-10">
+    <div id="sectorModal"
+        class="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[200] hidden flex flex-col items-center justify-center p-4">
+        <div
+            class="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-4xl border border-white/50 flex flex-col h-[700px] max-h-[90vh] overflow-hidden">
+            <div
+                class="px-6 py-5 border-b border-slate-100 flex items-center justify-between bg-white/95 backdrop-blur-xl z-10">
                 <h3 class="text-xl font-black text-slate-800 tracking-tight flex items-center gap-2">
                     Market Sector Heatmap
-                    <span class="text-xs font-bold bg-indigo-100 text-indigo-600 px-2 py-1 rounded-md uppercase tracking-widest ml-2">Live Data</span>
+                    <span
+                        class="text-xs font-bold bg-indigo-100 text-indigo-600 px-2 py-1 rounded-md uppercase tracking-widest ml-2">Live
+                        Data</span>
                 </h3>
-                <button onclick="closeSectorModal()" class="text-slate-400 hover:text-slate-700 transition-colors p-2 hover:bg-slate-100 rounded-full">
+                <button onclick="closeSectorModal()"
+                    class="text-slate-400 hover:text-slate-700 transition-colors p-2 hover:bg-slate-100 rounded-full">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
-                        <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+                        <path fill-rule="evenodd"
+                            d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                            clip-rule="evenodd" />
                     </svg>
                 </button>
             </div>
-            
+
             <!-- Tabs Navigation -->
             <div class="px-6 pt-4 border-b border-slate-100 bg-slate-50/50 flex gap-6 overflow-x-auto">
-                <button onclick="switchSectorTab('tech')" id="tab-tech" class="pb-3 text-sm font-bold border-b-2 border-indigo-600 text-indigo-700 transition-colors whitespace-nowrap">Technology</button>
-                <button onclick="switchSectorTab('financials')" id="tab-financials" class="pb-3 text-sm font-bold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Financials</button>
-                <button onclick="switchSectorTab('healthcare')" id="tab-healthcare" class="pb-3 text-sm font-bold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Healthcare & Retail</button>
-                <button onclick="switchSectorTab('energy')" id="tab-energy" class="pb-3 text-sm font-bold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Energy & Industrials</button>
-                <button onclick="switchSectorTab('crypto')" id="tab-crypto" class="pb-3 text-sm font-bold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Crypto</button>
+                <button onclick="switchSectorTab('tech')" id="tab-tech"
+                    class="pb-3 text-sm font-bold border-b-2 border-indigo-600 text-indigo-700 transition-colors whitespace-nowrap">Technology</button>
+                <button onclick="switchSectorTab('financials')" id="tab-financials"
+                    class="pb-3 text-sm font-bold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Financials</button>
+                <button onclick="switchSectorTab('healthcare')" id="tab-healthcare"
+                    class="pb-3 text-sm font-bold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Healthcare
+                    & Retail</button>
+                <button onclick="switchSectorTab('energy')" id="tab-energy"
+                    class="pb-3 text-sm font-bold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Energy
+                    & Industrials</button>
+                <button onclick="switchSectorTab('crypto')" id="tab-crypto"
+                    class="pb-3 text-sm font-bold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap">Crypto</button>
             </div>
 
             <!-- Heatmap Views -->
-            <div class="p-5 bg-slate-50/50 flex-1 overflow-y-auto custom-scrollbar">
-                
+            <div class="p-3 md:p-4 bg-slate-50/50 flex-1 overflow-y-auto custom-scrollbar">
+
                 <!-- Tech Tab -->
-                <div id="view-tech" class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2 w-full grid-flow-row-dense"></div>
-                
+                <div id="view-tech"
+                    class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-1.5 w-full grid-flow-row-dense">
+                </div>
+
                 <!-- Financials Tab -->
-                <div id="view-financials" class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2 w-full hidden grid-flow-row-dense"></div>
-                
+                <div id="view-financials"
+                    class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-1.5 w-full hidden grid-flow-row-dense">
+                </div>
+
                 <!-- Healthcare Tab -->
-                <div id="view-healthcare" class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2 w-full hidden grid-flow-row-dense"></div>
-                
+                <div id="view-healthcare"
+                    class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-1.5 w-full hidden grid-flow-row-dense">
+                </div>
+
                 <!-- Energy Tab -->
-                <div id="view-energy" class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2 w-full hidden grid-flow-row-dense"></div>
-                
+                <div id="view-energy"
+                    class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-1.5 w-full hidden grid-flow-row-dense">
+                </div>
+
                 <!-- Crypto Tab -->
-                <div id="view-crypto" class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2 w-full hidden grid-flow-row-dense"></div>
-                
+                <div id="view-crypto"
+                    class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-1.5 w-full hidden grid-flow-row-dense">
+                </div>
+
             </div>
             <!-- Footer -->
-            <div class="mt-auto px-6 py-3 border-t border-slate-100 flex items-center justify-center bg-white/95 backdrop-blur-xl z-10">
+            <div
+                class="mt-auto px-6 py-3 border-t border-slate-100 flex items-center justify-center bg-white/95 backdrop-blur-xl z-10">
                 <p class="text-[0.65rem] text-slate-400 font-bold uppercase tracking-widest">
                     Data sourced concurrently from <span class="text-indigo-400">yfinance</span>
                 </p>
@@ -892,113 +944,169 @@
     </div>
 
     <!-- Market Breadth Modal -->
-    <div id="breadthModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[200] hidden flex flex-col items-center justify-center p-4">
-        <div class="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-3xl border border-white/50 flex flex-col max-h-[88vh] overflow-hidden">
-            <div class="px-6 py-5 border-b border-slate-100 flex items-center justify-between bg-white/95 backdrop-blur-xl z-10">
+    <div id="breadthModal"
+        class="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[200] hidden flex flex-col items-center justify-center p-4">
+        <div
+            class="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-3xl border border-white/50 flex flex-col max-h-[88vh] overflow-hidden">
+            <div
+                class="px-6 py-5 border-b border-slate-100 flex items-center justify-between bg-white/95 backdrop-blur-xl z-10">
                 <h3 class="text-xl font-black text-slate-800 tracking-tight flex items-center gap-2">
-                    Internal Market Breadth
-                    <span class="text-xs font-bold bg-indigo-100 text-indigo-600 px-2 py-1 rounded-md uppercase tracking-widest ml-2">Live Data</span>
+                    Market Breadth
+                    <span
+                        class="text-xs font-bold bg-indigo-100 text-indigo-600 px-2 py-1 rounded-md uppercase tracking-widest ml-2">Live
+                        Data</span>
                 </h3>
-                <button onclick="closeBreadthModal()" class="text-slate-400 hover:text-slate-700 transition-colors p-2 hover:bg-slate-100 rounded-full">
+                <button onclick="closeBreadthModal()"
+                    class="text-slate-400 hover:text-slate-700 transition-colors p-2 hover:bg-slate-100 rounded-full">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
-                        <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+                        <path fill-rule="evenodd"
+                            d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                            clip-rule="evenodd" />
                     </svg>
                 </button>
             </div>
-            
+
             <div class="p-6 overflow-y-auto custom-scrollbar bg-slate-50/50 flex-1">
-                <p class="text-sm text-slate-500 mb-6 font-medium">Metrics tracking underlying participation for your active portfolio (Watchlist & Bots).</p>
-                
+                <p class="text-sm text-slate-500 mb-2 font-medium">Market-wide participation across a fixed liquid U.S.
+                    equity benchmark universe. The card score blends advancing stocks, 50-day trend participation,
+                    200-day trend participation, and new-high/new-low pressure. It does not use account, position,
+                    watchlist, or bot-profile data.</p>
+                <p id="bm-universe-label" class="text-[10px] text-indigo-500 mb-6 font-black uppercase tracking-widest">
+                    Fixed market benchmark universe</p>
+
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <!-- Metric 1: A/D Line -->
                     <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
                         <div class="flex items-center justify-between mb-4">
-                            <h4 class="font-black text-slate-800 text-[13px] tracking-wide uppercase">Advance / Decline</h4>
-                            <span id="bm-ad-label" class="text-slate-500 bg-slate-50 text-[10px] px-2 py-1 rounded font-bold uppercase tracking-widest shadow-sm">Calculating...</span>
+                            <h4 class="font-black text-slate-800 text-[13px] tracking-wide uppercase">Advance / Decline
+                            </h4>
+                            <span id="bm-ad-label"
+                                class="text-slate-500 bg-slate-50 text-[10px] px-2 py-1 rounded font-bold uppercase tracking-widest shadow-sm">Calculating...</span>
                         </div>
                         <div class="flex items-end justify-between mb-2">
-                            <div class="text-emerald-500 font-black text-2xl"><span id="bm-adv">--</span> <span class="text-xs text-slate-400 font-bold uppercase">Adv</span></div>
-                            <div class="text-red-500 font-black text-2xl"><span class="text-xs text-slate-400 font-bold uppercase">Dec</span> <span id="bm-dec">--</span></div>
+                            <div class="text-emerald-500 font-black text-2xl"><span id="bm-adv">--</span> <span
+                                    class="text-xs text-slate-400 font-bold uppercase">Adv</span></div>
+                            <div class="text-red-500 font-black text-2xl"><span
+                                    class="text-xs text-slate-400 font-bold uppercase">Dec</span> <span
+                                    id="bm-dec">--</span></div>
                         </div>
                         <!-- Progress bar -->
                         <div class="w-full bg-red-100 rounded-full h-3 overflow-hidden flex">
-                            <div id="bm-adv-bar" class="bg-emerald-500 h-full transition-all duration-1000 ease-out" style="width: 50%"></div>
-                            <div id="bm-dec-bar" class="bg-red-500 h-full transition-all duration-1000 ease-out" style="width: 50%"></div>
+                            <div id="bm-adv-bar" class="bg-emerald-500 h-full transition-all duration-1000 ease-out"
+                                style="width: 50%"></div>
+                            <div id="bm-dec-bar" class="bg-red-500 h-full transition-all duration-1000 ease-out"
+                                style="width: 50%"></div>
                         </div>
-                        <p id="bm-ad-ratio" class="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-3 text-center">Ratio: --</p>
+                        <p id="bm-ad-ratio"
+                            class="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-3 text-center">
+                            Ratio: --</p>
                     </div>
 
                     <!-- Metric 2: New Highs / Lows -->
                     <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
                         <div class="flex items-center justify-between mb-4">
-                            <h4 class="font-black text-slate-800 text-[13px] tracking-wide uppercase">New Highs vs Lows</h4>
-                            <span id="bm-hl-label" class="text-slate-500 bg-slate-50 text-[10px] px-2 py-1 rounded font-bold uppercase tracking-widest shadow-sm">Calculating...</span>
+                            <h4 class="font-black text-slate-800 text-[13px] tracking-wide uppercase">New Highs vs Lows
+                            </h4>
+                            <span id="bm-hl-label"
+                                class="text-slate-500 bg-slate-50 text-[10px] px-2 py-1 rounded font-bold uppercase tracking-widest shadow-sm">Calculating...</span>
                         </div>
                         <div class="flex items-center justify-center gap-8 mb-2">
                             <div class="flex flex-col items-center">
-                                <span class="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">52W Highs</span>
+                                <span class="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">52W
+                                    Highs</span>
                                 <span id="bm-highs" class="text-emerald-500 font-black text-3xl">--</span>
                             </div>
                             <div class="h-10 w-px bg-slate-200"></div>
                             <div class="flex flex-col items-center">
-                                <span class="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">52W Lows</span>
+                                <span class="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">52W
+                                    Lows</span>
                                 <span id="bm-lows" class="text-red-500 font-black text-3xl">--</span>
                             </div>
                         </div>
-                        <p id="bm-hl-text" class="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-4 text-center">--</p>
+                        <p id="bm-hl-text"
+                            class="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-4 text-center">--
+                        </p>
                     </div>
 
                     <!-- Metric 3: Moving Averages -->
                     <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm md:col-span-2">
                         <div class="flex items-center justify-between mb-6">
-                            <h4 class="font-black text-slate-800 text-[13px] tracking-wide uppercase">Trend Alignment (% Above MA)</h4>
+                            <h4 class="font-black text-slate-800 text-[13px] tracking-wide uppercase">Trend Alignment (%
+                                Above MA)</h4>
                         </div>
                         <div class="grid grid-cols-2 gap-8">
                             <!-- 50 Day -->
                             <div class="flex flex-col items-center">
                                 <div class="relative w-24 h-24 flex items-center justify-center mb-2">
                                     <svg class="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
-                                        <path class="text-slate-100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" stroke-width="4" />
-                                        <path id="bm-50-gauge" class="text-slate-300" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" />
+                                        <path class="text-slate-100"
+                                            d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                                            fill="none" stroke="currentColor" stroke-width="4" />
+                                        <path id="bm-50-gauge" class="text-slate-300" stroke-dasharray="0, 100"
+                                            d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                                            fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" />
                                     </svg>
                                     <div id="bm-50-val" class="absolute text-lg font-black text-slate-800">--%</div>
                                 </div>
-                                <span class="text-[10px] text-slate-500 font-bold uppercase tracking-widest text-center">Above 50-Day MA<br/>(Medium Term)</span>
+                                <span
+                                    class="text-[10px] text-slate-500 font-bold uppercase tracking-widest text-center">Above
+                                    50-Day MA<br />(Medium Term)</span>
                             </div>
-                            
+
                             <!-- 200 Day -->
                             <div class="flex flex-col items-center">
                                 <div class="relative w-24 h-24 flex items-center justify-center mb-2">
                                     <svg class="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
-                                        <path class="text-slate-100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" stroke-width="4" />
-                                        <path id="bm-200-gauge" class="text-slate-300" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" />
+                                        <path class="text-slate-100"
+                                            d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                                            fill="none" stroke="currentColor" stroke-width="4" />
+                                        <path id="bm-200-gauge" class="text-slate-300" stroke-dasharray="0, 100"
+                                            d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                                            fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" />
                                     </svg>
                                     <div id="bm-200-val" class="absolute text-lg font-black text-slate-800">--%</div>
                                 </div>
-                                <span class="text-[10px] text-slate-500 font-bold uppercase tracking-widest text-center">Above 200-Day MA<br/>(Long Term)</span>
+                                <span
+                                    class="text-[10px] text-slate-500 font-bold uppercase tracking-widest text-center">Above
+                                    200-Day MA<br />(Long Term)</span>
                             </div>
                         </div>
                     </div>
                 </div>
-                
-                <!-- Portfolio Ticker Breakdown Table -->
+
+                <!-- Benchmark Universe Breakdown Table -->
                 <div class="mt-6 pt-6 border-t border-slate-200">
-                    <h4 class="font-black text-slate-800 text-[13px] tracking-wide uppercase mb-4">Portfolio Ticker Breakdown</h4>
+                    <h4 class="font-black text-slate-800 text-[13px] tracking-wide uppercase mb-4">Benchmark Universe
+                        Breakdown</h4>
                     <div class="overflow-x-auto rounded-xl border border-slate-200 bg-white">
                         <table class="w-full text-left border-collapse">
                             <thead>
                                 <tr class="bg-slate-50 border-b border-slate-200">
-                                    <th class="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Ticker</th>
-                                    <th class="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Price</th>
-                                    <th class="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Change</th>
-                                    <th class="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">50-Day MA</th>
-                                    <th class="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">200-Day MA</th>
-                                    <th class="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">52W Status</th>
+                                    <th
+                                        class="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                                        Ticker</th>
+                                    <th
+                                        class="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">
+                                        Price</th>
+                                    <th
+                                        class="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">
+                                        Change</th>
+                                    <th
+                                        class="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">
+                                        50-Day MA</th>
+                                    <th
+                                        class="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">
+                                        200-Day MA</th>
+                                    <th
+                                        class="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">
+                                        52W Status</th>
                                 </tr>
                             </thead>
                             <tbody id="bm-ticker-rows">
                                 <tr>
-                                    <td colspan="6" class="px-4 py-8 text-center text-xs font-bold text-slate-400 uppercase tracking-widest">Loading Tickers...</td>
+                                    <td colspan="6"
+                                        class="px-4 py-8 text-center text-xs font-bold text-slate-400 uppercase tracking-widest">
+                                        Loading Tickers...</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1006,74 +1114,105 @@
                 </div>
             </div>
             <!-- Footer -->
-            <div class="mt-auto px-6 py-3 border-t border-slate-100 flex items-center justify-center bg-white/95 backdrop-blur-xl z-10">
+            <div
+                class="mt-auto px-6 py-3 border-t border-slate-100 flex items-center justify-center bg-white/95 backdrop-blur-xl z-10">
                 <p class="text-[0.65rem] text-slate-400 font-bold uppercase tracking-widest">
-                    Data sourced concurrently from <span class="text-indigo-400">yfinance</span> based on portfolio
+                    Data sourced from <span class="text-indigo-400">yfinance</span> for a fixed benchmark universe, not
+                    portfolio holdings
                 </p>
             </div>
         </div>
     </div>
 
     <!-- AI Analysis Info Modal -->
-    <div id="aiInfoModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[200] hidden flex flex-col items-center justify-center p-4">
-        <div class="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-xl border border-white/50 flex flex-col overflow-hidden animate-fade-in">
-            <div class="px-6 py-5 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white/95 backdrop-blur-xl z-10 rounded-t-2xl">
+    <div id="aiInfoModal"
+        class="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[200] hidden flex flex-col items-center justify-center p-4">
+        <div
+            class="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-xl border border-white/50 flex flex-col overflow-hidden animate-fade-in">
+            <div
+                class="px-6 py-5 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white/95 backdrop-blur-xl z-10 rounded-t-2xl">
                 <h3 class="text-lg font-black text-slate-800 tracking-tight flex items-center gap-2">
                     🤖 BotBulls AI Analysis
-                    <span class="text-[9px] font-bold bg-violet-100 text-violet-600 px-2 py-0.5 rounded-md uppercase tracking-wider ml-2">Premium Feature</span>
+                    <span
+                        class="text-[9px] font-bold bg-violet-100 text-violet-600 px-2 py-0.5 rounded-md uppercase tracking-wider ml-2">Premium
+                        Feature</span>
                 </h3>
-                <button onclick="closeAIInfoModal()" class="text-slate-400 hover:text-slate-700 transition-colors p-2 hover:bg-slate-100 rounded-full">
+                <button onclick="closeAIInfoModal()"
+                    class="text-slate-400 hover:text-slate-700 transition-colors p-2 hover:bg-slate-100 rounded-full">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                        <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+                        <path fill-rule="evenodd"
+                            d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                            clip-rule="evenodd" />
                     </svg>
                 </button>
             </div>
             <div class="p-6 space-y-3 text-xs text-slate-600 leading-relaxed overflow-y-auto max-h-[70vh]">
                 <p>
-                    The <strong>BotBulls AI Analysis</strong> is an institutional-grade quantitative trading advisor powered by advanced LLMs on <strong>Groq</strong> (utilizing <code>llama-3.3-70b-versatile</code> for standard market briefings and <code>llama-3.1-8b-instant</code> for dynamic news feeds).
+                    The <strong>BotBulls AI Analysis</strong> is an institutional-grade quantitative trading advisor
+                    powered by advanced LLMs on <strong>Groq</strong> (utilizing <code>llama-3.3-70b-versatile</code>
+                    for standard market briefings and <code>llama-3.1-8b-instant</code> for dynamic news feeds).
                 </p>
                 <div class="p-3 bg-violet-50/50 rounded-xl border border-violet-100/50 space-y-2">
-                    <h4 class="font-black text-violet-800 uppercase tracking-wider text-[10px]">What does it analyze?</h4>
+                    <h4 class="font-black text-violet-800 uppercase tracking-wider text-[10px]">What does it analyze?
+                    </h4>
                     <ul class="list-disc pl-4 space-y-1 text-slate-700">
-                        <li><strong>Technical Confluence:</strong> Evaluates RSI levels, MACD crossovers, Supertrends, and SMA-200.</li>
-                        <li><strong>Volatility Regimes:</strong> Measures ATR, Bollinger width, and current VIX indices to calibrate risk.</li>
+                        <li><strong>Technical Confluence:</strong> Evaluates RSI levels, MACD crossovers, Supertrends,
+                            and SMA-200.</li>
+                        <li><strong>Volatility Regimes:</strong> Measures ATR, Bollinger width, and current VIX indices
+                            to calibrate risk.</li>
                         <li>
-                            <strong>News & News Catalysts:</strong> Ingests live financial news feeds and scores real-time sentiment on a 0-100% percentage basis.
+                            <strong>News & News Catalysts:</strong> Ingests live financial news feeds and scores
+                            real-time sentiment on a 0-100% percentage basis.
                             <ul class="list-circle pl-4 mt-1 text-slate-500 text-[10px] space-y-0.5">
-                                <li><strong>Bullish Percentage:</strong> Score required to trigger a Buy signal (Default: 70%).</li>
-                                <li><strong>Bearish Percentage:</strong> Score below which triggers a Sell signal (Default: 30%).</li>
-                                <li>Scores falling between these percentages are considered <strong>Neutral</strong>.</li>
+                                <li><strong>Bullish Percentage:</strong> Score required to trigger a Buy signal
+                                    (Default: 70%).</li>
+                                <li><strong>Bearish Percentage:</strong> Score below which triggers a Sell signal
+                                    (Default: 30%).</li>
+                                <li>Scores falling between these percentages are considered <strong>Neutral</strong>.
+                                </li>
                             </ul>
                         </li>
-                        <li><strong>Portfolio Protection:</strong> Dynamically adjusts position sizing and leverage guidance.</li>
+                        <li><strong>Portfolio Protection:</strong> Dynamically adjusts position sizing and leverage
+                            guidance.</li>
                     </ul>
                 </div>
                 <div class="p-3 bg-fuchsia-50/50 rounded-xl border border-fuchsia-100/50 space-y-2">
-                    <h4 class="font-black text-fuchsia-800 uppercase tracking-wider text-[10px]">Manual Refresh & Caching</h4>
+                    <h4 class="font-black text-fuchsia-800 uppercase tracking-wider text-[10px]">Manual Refresh &
+                        Caching</h4>
                     <p class="text-slate-700">
-                        To preserve API limits and reduce latencies, results are cached for <strong>10 minutes</strong>. 
-                        Click the refresh button (<span class="inline-block text-violet-600">↻</span>) at the top right of the card to bypass the cache and fetch a real-time fresh analysis.
+                        To preserve API limits and reduce latencies, results are cached for <strong>10 minutes</strong>.
+                        Click the refresh button (<span class="inline-block text-violet-600">↻</span>) at the top right
+                        of the card to bypass the cache and fetch a real-time fresh analysis.
                     </p>
                 </div>
                 <p class="text-[10px] text-slate-400 italic">
-                    Note: AI Indicator suggestions are advisory only and do not constitute financial advice. Always verify stop loss levels and size sizes against your private broker configuration.
+                    Note: AI Indicator suggestions are advisory only and do not constitute financial advice. Always
+                    verify stop loss levels and size sizes against your private broker configuration.
                 </p>
             </div>
         </div>
     </div>
 
     <!-- Info Modal -->
-    <div id="infoModal" class="fixed inset-0 z-[9999] hidden items-center justify-center bg-slate-900/60 backdrop-blur-md transition-opacity opacity-0">
-        <div class="bg-white/95 backdrop-blur-xl border border-white/50 shadow-2xl rounded-2xl w-full max-w-xl flex flex-col overflow-hidden transform scale-95 transition-transform duration-300 mx-4">
-            <div class="px-6 py-5 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white/95 backdrop-blur-xl z-10 rounded-t-2xl">
-                <h3 id="infoModalTitle" class="text-lg font-black text-slate-800 tracking-tight flex items-center gap-2">Indicator Info</h3>
-                <button onclick="closeInfoModal()" class="text-slate-400 hover:text-slate-700 transition-colors p-2 hover:bg-slate-100 rounded-full">
+    <div id="infoModal"
+        class="fixed inset-0 z-[9999] hidden items-center justify-center bg-slate-900/60 backdrop-blur-md transition-opacity opacity-0">
+        <div
+            class="bg-white/95 backdrop-blur-xl border border-white/50 shadow-2xl rounded-2xl w-full max-w-xl flex flex-col overflow-hidden transform scale-95 transition-transform duration-300 mx-4">
+            <div
+                class="px-6 py-5 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white/95 backdrop-blur-xl z-10 rounded-t-2xl">
+                <h3 id="infoModalTitle"
+                    class="text-lg font-black text-slate-800 tracking-tight flex items-center gap-2">Indicator Info</h3>
+                <button onclick="closeInfoModal()"
+                    class="text-slate-400 hover:text-slate-700 transition-colors p-2 hover:bg-slate-100 rounded-full">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                        <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+                        <path fill-rule="evenodd"
+                            d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                            clip-rule="evenodd" />
                     </svg>
                 </button>
             </div>
-            <div id="infoModalContent" class="p-6 space-y-3 text-xs text-slate-600 leading-relaxed overflow-y-auto max-h-[70vh]">
+            <div id="infoModalContent"
+                class="p-6 space-y-3 text-xs text-slate-600 leading-relaxed overflow-y-auto max-h-[70vh]">
                 <!-- Content injected here -->
             </div>
         </div>
@@ -1100,21 +1239,135 @@
             'BotBulls1': `<b>BotBulls 1 (Premium Oscillator WaveTrend + Institutional MFI)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 1 is a professional cyclical momentum oscillator paired with institutional Money Flow Index (MFI) confirmation. It helps traders pinpoint high-probability reversal zones while filtering out fake bottoms where institutional volume is absent.<br><br><b class="text-slate-800">How it works:</b><br>It combines a double-smoothed WaveTrend momentum cycle curve with a 14-period Money Flow Index (MFI). A confirmed <b class="text-emerald-500">BUY</b> signal fires when the fast momentum curve crosses above the slow curve in deep oversold territory (-53 or below), provided MFI verifies that institutional money flow is actively accumulating.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>WaveTrend Channel Period (Default 10):</b> Lookback window for measuring price momentum cycles. Lower values make the oscillator faster and more sensitive.<br>• <b>WaveTrend Average Period (Default 21):</b> Exponential smoothing length applied to the WaveTrend curves to eliminate jagged noise.<br>• <b>MFI Confirm Threshold (Default 30):</b> Maximum Money Flow Index level allowed for buy confirmation. Lower values (e.g., 20–25) enforce stricter oversold volume requirements.`,
             'BotBulls2': `<b>BotBulls 2 (UT Bot — Universal Trailing Stop + Trend Tracer)</b><br><br><b class="text-amber-700">UT</b> stands for <b>Universal Trailing Stop</b> — a dynamic ATR-based trailing stop band that adapts to market volatility in real time, generating high-probability buy/sell signals when price crosses it.<br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 2 is a comprehensive multi-confluence trend and dynamic risk management suite. It protects capital by adapting trailing stop levels to real-time market volatility while filtering out choppy false breakouts through institutional momentum confirmation.<br><br><b class="text-slate-800">How it works:</b><br>It combines an adaptive Universal Trailing (UT) stop band, an institutional double-smoothed Trend Tracer EMA, and extreme statistical Reversal Zones.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>ATR Multiplier (Sensitivity):</b> Controls how tightly the trailing stop hugs price action. Lower values (e.g., 1.5–2.0) react faster for scalping; higher values (e.g., 2.5–3.0) give trades breathing room to ride extended trend swings without early shakeouts.<br>• <b>Trend Tracer Period:</b> Lookback window (default 50) for double-smoothed exponential trend alignment.<br>• <b>Reversal Zone Period:</b> Lookback window (default 50) for statistical deviation bands identifying overstretched extremes.`,
             'BotBulls3': `<b>BotBulls 3 (HA + UT — Heikin-Ashi Filtered Trail)</b><br><br><b class="text-amber-700">HA</b> stands for <b>Heikin-Ashi</b> (Japanese for “Average Bar”) — a technique that mathematically smooths candlestick data to eliminate market noise, making true trend direction far clearer.<br><br><b class="text-amber-700">UT</b> stands for <b>Universal Trailing Stop</b> — an adaptive ATR-based trailing stop band that tracks volatility and signals momentum flips.<br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 3 is a pure volatility breakout momentum engine designed for fast scalping and intraday momentum. By running an adaptive Universal Trailing stop directly on noise-filtered Heikin-Ashi candles, it eliminates false whipsaws seen on standard price action charts.<br><br><b class="text-slate-800">How it works:</b><br>It converts standard price action into Heikin-Ashi smoothed candles, then applies a hyper-sensitive Universal Trailing stop band. When volatility expands and price breaks above the trailing channel on the HA chart, a high-probability breakout signal is generated.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>ATR Period (Default 10):</b> Lookback window for measuring true range volatility on Heikin-Ashi candles.<br>• <b>ATR Multiplier / Sensitivity (Default 1.0):</b> Trailing stop sensitivity threshold. Lower values (e.g., 1.0) react immediately to breakout momentum for scalping; higher values (e.g., 1.5–2.0) provide a wider buffer against intraday noise.`,
-            'Botbulls4 News AI': `<b>BotBulls 4 News AI (Premium AI News Sentiment)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 4 is an AI-powered fundamental sentiment intelligence engine. While technical indicators analyze price action, BotBulls 4 reads market news, macro catalysts, and earnings reports in real time, acting as a crucial fundamental guardrail against trading into negative news.<br><br><b class="text-slate-800">How it works:</b><br>It continuously fetches live financial headlines and macro-economic data, processing them through large language models (LLMs) to calculate an objective sentiment score (0–100%). When news is overwhelmingly positive, it fires a bullish sentiment confirmation.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Sentiment Bullish Percentage (Default 70%):</b> Minimum AI confidence threshold required to confirm a bullish news catalyst. Higher values (e.g., 75–80%) require overwhelmingly positive news before signaling.<br>• <b>Sentiment Bearish Percentage (Default 30%):</b> Score threshold below which news is classified as bearish. Values below this trigger defensive alerts or short confirmation.`
+            'Botbulls4 News AI': `<b>BotBulls 4 News AI (Premium AI News Sentiment)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 4 is an AI-powered fundamental sentiment intelligence engine. While technical indicators analyze price action, BotBulls 4 reads market news, macro catalysts, and earnings reports in real time, acting as a crucial fundamental guardrail against trading into negative news.<br><br><b class="text-slate-800">How it works:</b><br>It continuously fetches live financial headlines and macro-economic data, processing them through large language models (LLMs) to calculate an objective sentiment score (0–100%). When news is overwhelmingly positive, it fires a bullish sentiment confirmation.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Sentiment Bullish Percentage (Default 70%):</b> Minimum AI confidence threshold required to confirm a bullish news catalyst. Higher values (e.g., 75–80%) require overwhelmingly positive news before signaling.<br>• <b>Sentiment Bearish Percentage (Default 30%):</b> Score threshold below which news is classified as bearish. Values below this trigger defensive alerts or short confirmation.`,
+            'Pro Bot Deployment Guide': `
+<div class="space-y-6 text-slate-700 leading-relaxed text-xs sm:text-sm">
+    <!-- Header Banner -->
+    <div class="p-4 sm:p-5 bg-gradient-to-br from-purple-200/60 via-purple-100/50 to-indigo-100/50 backdrop-blur-md rounded-2xl border border-purple-300/70 shadow-lg shadow-purple-500/10 relative overflow-hidden">
+        <div class="absolute -top-10 -right-10 w-32 h-32 bg-purple-400/20 rounded-full blur-2xl pointer-events-none"></div>
+        <div class="flex flex-wrap items-center gap-2 mb-1.5 relative z-10">
+            <span class="text-xl">🚀</span>
+            <h4 class="text-base sm:text-lg font-black tracking-tight text-indigo-950">Bot deployment guide</h4>
+            <span class="px-2 py-0.5 text-[0.6rem] font-black uppercase tracking-widest bg-purple-600 text-white border border-purple-500 rounded-full shadow-2xs">Pro Trader Edition</span>
+        </div>
+        <p class="text-xs sm:text-[0.8rem] text-indigo-950/80 font-medium leading-relaxed relative z-10">Designed for experienced traders transitioning to automated execution. Learn the exact pipeline, parameter overrides, confluence thresholds, and asset-specific guardrails across Regular Stocks, Crypto, and Options.</p>
+    </div>
+
+    <!-- Section 1: Architecture Overview -->
+    <div class="p-4 bg-indigo-50/60 border border-indigo-100 rounded-xl space-y-2.5">
+        <h5 class="font-black text-indigo-950 text-sm flex items-center gap-1.5"><span class="text-indigo-600">1.</span> Core Platform Architecture &amp; Flow</h5>
+        <ul class="space-y-2 list-disc list-inside text-slate-700 text-xs">
+            <li><b class="text-slate-900">One Bot Per Ticker Rule:</b> To guarantee clean order routing and prevent contradictory signals, our engine enforces exactly one active bot instance per ticker symbol (<code>ticker_settings</code>). If an active bot is running on <code>AAPL</code>, you must remove it before deploying a new configuration for <code>AAPL</code>. Removing an active bot automatically closes open positions and cancels working orders for that asset.</li>
+            <li><b class="text-slate-900">Trading Regime Switch (Regular vs. Options):</b> When configuring your strategy, the top switch selects your execution engine:
+                <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
+                    <li>• <b>Regular (Stocks &amp; Crypto):</b> Spot execution of share/token quantities directly via connected brokerages (Alpaca, Webull, Coinbase).</li>
+                    <li>• <b>Options (Calls &amp; Puts Derivatives):</b> Evaluates the underlying equity/ETF chart (e.g., SPY, QQQ, TSLA) and dynamically selects right-priced option contracts based on Strike/Delta and Expiration rules.</li>
+                </ul>
+            </li>
+            <li><b class="text-slate-900">Per-Bot Parameter Overrides:</b> Clicking the gear icon (<code>⚙</code>) next to any checked indicator in the strategy modal lets you customize specific calculation parameters (e.g., changing RSI period from 14 to 9 or Supertrend multiplier from 3.0 to 2.0). These overrides are saved uniquely to that ticker's deployed bot without modifying your global default templates.</li>
+            <li><b class="text-slate-900">Dynamic Confluence Scoring:</b> Every checked indicator that confirms in your chosen direction contributes <code>+1</code> to the live score. An entry fires strictly when <code>Live Score &gt;= Buy Signal Threshold</code>.</li>
+        </ul>
+    </div>
+
+    <!-- Section 2: Regular Stocks -->
+    <div class="p-4 bg-white border border-slate-200/80 rounded-xl shadow-sm space-y-2.5">
+        <h5 class="font-black text-slate-900 text-sm flex items-center gap-1.5"><span class="text-emerald-600">2.</span> Regular Stock Trading Setup (Spot Equities)</h5>
+        <ol class="space-y-2 list-decimal list-inside text-slate-700 text-xs">
+            <li><b class="text-slate-900">Search &amp; Select Ticker:</b> Type a valid equity symbol (e.g., <code>AAPL</code>, <code>NVDA</code>, <code>SPY</code>) in the search box and click <code>+ Add</code>.</li>
+            <li><b class="text-slate-900">Select 'Regular' Mode:</b> Ensure the top mode toggle is set to <code>Regular (Stocks &amp; Crypto)</code>.</li>
+            <li><b class="text-slate-900">Configure Entry &amp; Exit Strategies:</b>
+                <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
+                    <li>• <b>Entry Strategy Mode:</b> Choose <code>Technical Indicators (Confluence)</code> to enter when multiple indicators agree, choose structural breakouts like <code>ATR Stop Breakout</code>, <code>Pivot Points (S/R) Breakout</code>, or choose <code>Hybrid Modes (Dual-Confirmation)</code> which require both indicator confluence AND structural reclaim before entering.</li>
+                    <li>• <b>Exit Strategy Mode:</b> Choose <code>Dynamic Sell</code> to exit when bearish indicators hit threshold, or set hard target limits via <code>Stop-Loss / Take-Profit (SL/TP)</code> or <code>Hybrid Exits</code>.</li>
+                </ul>
+            </li>
+            <li><b class="text-slate-900">Trade Capital &amp; Risk Guardrails:</b>
+                <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
+                    <li>• <b>Sizing Mode:</b> Choose <code>Fixed Per Trade</code> (fixed dollar allocation, e.g., $1,000) or <code>Compound This Amount</code> (automatically reinvesting gains into position size over time).</li>
+                    <li>• <b>Stop-Loss &amp; Take-Profit (%):</b> Enter hard capital protection boundaries below/above entry.</li>
+                    <li>• <b>Trailing Stop (%):</b> Enable a dynamic trailing stop percentage (e.g., 1.5% to 2.5%) that ratchets up with price action to lock in unrealized profits.</li>
+                </ul>
+            </li>
+            <li><b class="text-slate-900">Smart Re-Entry &amp; Cooldown Controls:</b>
+                <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
+                    <li>• <b>Re-Entry Cooldown:</b> Set a resting window (e.g., 2 to 4 hours) after a position closes before a new signal can open a trade. This prevents overtrading during intraday consolidation.</li>
+                    <li>• <b>Signal Reset Logic:</b> Enable required signal reset so the underlying indicator must drop below threshold before firing a new buy signal.</li>
+                </ul>
+            </li>
+            <li><b class="text-slate-900">Deploy:</b> Click <code>Confirm &amp; Deploy</code>. The bot registers under your Active Trading Bots panel and runs continuously during market hours.</li>
+        </ol>
+    </div>
+
+    <!-- Section 3: Crypto 24/7 -->
+    <div class="p-4 bg-amber-50/40 border border-amber-200/80 rounded-xl space-y-2.5">
+        <h5 class="font-black text-amber-950 text-sm flex items-center gap-1.5"><span class="text-amber-600">3.</span> Crypto Trading Setup (24/7 Continuous Execution)</h5>
+        <ol class="space-y-2 list-decimal list-inside text-slate-700 text-xs">
+            <li><b class="text-slate-900">Search Crypto Pair:</b> Search your coin pair (e.g., <code>BTC-USD</code>, <code>ETH-USD</code>, <code>SOL-USD</code>).</li>
+            <li><b class="text-slate-900">Verify Spot Regime:</b> Crypto operates under the <code>Regular</code> spot engine using fractional token quantities.</li>
+            <li><b class="text-slate-900">Timeframe Selection for 24/7 Markets:</b> Unlike stocks that close overnight, crypto trades 24/7/365. For intraday momentum, select <code>15Min</code> or <code>1H</code> timeframes to filter out overnight liquidity drops. If running on <code>5Min</code>, raise your Buy Signal Threshold (e.g., 4 or 5) to enforce high confluence.</li>
+            <li><b class="text-slate-900">Overnight Risk Management:</b> Since you cannot monitor the screen 24/7, configuring a <b>Trailing Stop (e.g., 2.0% to 3.5%)</b> is essential. It acts as your automated overnight risk manager, ratcheting up with highs and closing out positions automatically if momentum rolls over.</li>
+            <li><b class="text-slate-900">Deploy:</b> Click <code>Confirm &amp; Deploy</code>. Your bot appears under the <code>Crypto</code> tab in the Active Trading Bots panel and executes 24/7.</li>
+        </ol>
+    </div>
+
+    <!-- Section 4: Options Derivatives -->
+    <div class="p-4 bg-purple-50/40 border border-purple-200/80 rounded-xl space-y-2.5">
+        <h5 class="font-black text-purple-950 text-sm flex items-center gap-1.5"><span class="text-purple-600">4.</span> Options Trading Setup (Calls &amp; Puts Derivatives)</h5>
+        <ol class="space-y-2 list-decimal list-inside text-slate-700 text-xs">
+            <li><b class="text-slate-900">Search Underlying Asset:</b> Search an options-eligible ticker (e.g., <code>SPY</code>, <code>QQQ</code>, <code>TSLA</code>, <code>NVDA</code>, <code>AAPL</code>) and click <code>+ Add</code>.</li>
+            <li><b class="text-slate-900">Toggle to 'Options' Mode:</b> Switch the top regime toggle from Regular to <code>Options (Calls &amp; Puts)</code>.</li>
+            <li><b class="text-slate-900">Select Directional Bias (Options Type):</b>
+                <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
+                    <li>• <b>Long Calls (Bullish):</b> Buys Call options when the underlying equity triggers a Buy signal.</li>
+                    <li>• <b>Long Puts (Bearish):</b> Buys Put options when the underlying triggers a Bearish breakdown (evaluates against Buy Signal Threshold for trade entry).</li>
+                    <li>• <b>Dynamic (Calls &amp; Puts):</b> Automatically buys Calls on bullish setups and Puts on bearish breakdown setups.</li>
+                </ul>
+            </li>
+            <li><b class="text-slate-900">Configure Expiration &amp; Strike Rules:</b>
+                <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
+                    <li>• <b>Target DTE (Days to Expiration):</b> Choose <code>0-1 DTE</code> for high-gamma scalping, <code>3-7 DTE</code> for weekly swing setups, or <code>14-30+ DTE</code> for macro directional moves.</li>
+                    <li>• <b>Strike Selection (Moneyness / Delta):</b> Choose <code>At-the-Money (ATM)</code> for highest liquidity (Delta ~0.50), <code>In-the-Money (ITM)</code> for high delta stock replacement (Delta 0.70+), or <code>Out-of-the-Money (OTM)</code> for high-gamma breakout payouts.</li>
+                </ul>
+            </li>
+            <li><b class="text-slate-900">Stop-Loss &amp; Take-Profit Pricing Basis:</b>
+                <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
+                    <li>• <b>Option Contract Premium (Default):</b> Evaluates SL/TP against the percentage change of the option contract's premium (e.g., +30% target or -15% stop on the contract itself).</li>
+                    <li>• <b>Underlying Stock Price:</b> Evaluates SL/TP against the underlying spot price (e.g., closing the option when SPY spot moves +1% or -0.5%).</li>
+                </ul>
+            </li>
+            <li><b class="text-slate-900">Contract Sizing Budget:</b> Set your dollar allocation (<code>Trade Amount</code>, e.g., $1,000). The bot calculates the exact contract quantity based on live chain ask prices (<code>Contracts = Floor($1,000 / (Option Ask * 100))</code>).</li>
+            <li><b class="text-slate-900">Deploy &amp; Automated Handling:</b> Click <code>Confirm &amp; Deploy</code>. The options engine automatically fetches live chains, filters bid/ask spreads, enters the trade, and exits when targets or expiration boundaries are met.</li>
+        </ol>
+    </div>
+
+    <!-- Pro Tips -->
+    <div class="p-3.5 bg-slate-100 border border-slate-300/80 rounded-xl text-slate-800 text-xs font-medium">
+        <b>💡 Pro Advice for Live Deployment:</b> Always run your configuration through the <b>Backtest Tab</b> over 30 to 60 days before live deployment to verify threshold behavior across historical volatility cycles. Once running live, you can pause, inspect indicators, adjust thresholds, or close positions directly from the bot card in the Active Trading Bots panel below.
+    </div>
+</div>`.trim()
         };
 
         function openInfoModal(indicator) {
             const modal = document.getElementById('infoModal');
             const title = document.getElementById('infoModalTitle');
             const content = document.getElementById('infoModalContent');
-            
+
             if (indicatorInfoMap[indicator]) {
-                title.innerText = indicator + " Explained";
+                const modalContainer = modal.children[0];
+                if (indicator === 'Pro Bot Deployment Guide') {
+                    modalContainer.classList.remove('max-w-xl');
+                    modalContainer.classList.add('max-w-3xl', 'sm:max-w-4xl');
+                    title.innerText = "📖 Pro Bot Deployment Masterclass Guide";
+                } else {
+                    modalContainer.classList.remove('max-w-3xl', 'sm:max-w-4xl');
+                    modalContainer.classList.add('max-w-xl');
+                    title.innerText = indicator + " Explained";
+                }
                 content.innerHTML = indicatorInfoMap[indicator];
-                
+
                 modal.classList.remove('hidden');
                 modal.classList.add('flex');
-                
+
                 setTimeout(() => {
                     modal.classList.remove('opacity-0');
                     modal.children[0].classList.remove('scale-95');
@@ -1133,4 +1386,5 @@
         }
     </script>
 </body>
+
 </html>

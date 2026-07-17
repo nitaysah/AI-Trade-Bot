@@ -16,7 +16,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
         rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=35">
+    <link rel="stylesheet" href="styles.css?v=43">
     <!-- Firebase Sentinel (Auth Guard) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
@@ -194,24 +194,24 @@
                     <div class="space-y-1 flex-1 flex flex-col justify-center relative z-10">
                         <div class="flex items-center justify-between gap-1">
                             <label
-                                class="text-[0.45rem] font-black text-indigo-900 uppercase tracking-widest leading-tight"
+                                class="text-[0.58rem] sm:text-[0.62rem] font-black text-indigo-900 uppercase tracking-wide leading-tight"
                                 title="Max Daily Drawdown %">Max Daily Drawdown</label>
-                            <div class="relative w-12 shrink-0">
+                            <div class="global-risk-percent-field w-12 max-sm:w-10 shrink-0">
                                 <input type="number" id="globalMaxDrawdown" value="5" min="0" step="1"
-                                    class="w-full bg-white/70 border border-indigo-100/50 rounded-md py-[0.15rem] pl-1 pr-3 text-[0.65rem] font-black text-indigo-900 text-right focus:outline-none focus:ring-1 focus:ring-indigo-500 shadow-inner">
+                                    class="global-risk-percent-input w-full bg-transparent border-0 p-0 text-[0.65rem] max-sm:text-[0.2rem] font-black text-indigo-900 text-right focus:outline-none">
                                 <span
-                                    class="absolute right-1 top-1/2 -translate-y-1/2 text-[0.55rem] font-black text-indigo-400">%</span>
+                                    class="global-risk-percent-symbol pointer-events-none text-[0.55rem] font-black text-indigo-400">%</span>
                             </div>
                         </div>
                         <div class="flex items-center justify-between gap-1">
                             <label
-                                class="text-[0.45rem] font-black text-indigo-900 uppercase tracking-widest leading-tight"
+                                class="text-[0.58rem] sm:text-[0.62rem] font-black text-indigo-900 uppercase tracking-wide leading-tight"
                                 title="Max Loss to Equity %">Max Loss to Equity</label>
-                            <div class="relative w-12 shrink-0">
+                            <div class="global-risk-percent-field w-12 max-sm:w-10 shrink-0">
                                 <input type="number" id="globalHardStop" value="10" min="0" step="1"
-                                    class="w-full bg-white/70 border border-indigo-100/50 rounded-md py-[0.15rem] pl-1 pr-3 text-[0.65rem] font-black text-indigo-900 text-right focus:outline-none focus:ring-1 focus:ring-indigo-500 shadow-inner">
+                                    class="global-risk-percent-input w-full bg-transparent border-0 p-0 text-[0.65rem] max-sm:text-[0.2rem] font-black text-indigo-900 text-right focus:outline-none">
                                 <span
-                                    class="absolute right-1 top-1/2 -translate-y-1/2 text-[0.55rem] font-black text-indigo-400">%</span>
+                                    class="global-risk-percent-symbol pointer-events-none text-[0.55rem] font-black text-indigo-400">%</span>
                             </div>
                         </div>
                     </div>
@@ -286,10 +286,22 @@
                 <!-- 1. DEPLOY NEW BOT -->
                 <div class="panel-glass relative overflow-visible z-20">
                     <div class="panel-top-bar bg-gradient-to-r from-blue-400 to-indigo-500"></div>
-                    <h2 class="text-[0.95rem] sm:text-lg font-bold text-indigo-900 mb-3">Deploy New Bot</h2>
-                    <div class="relative w-full z-50">
+                    <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+                        <div class="flex items-center gap-2">
+                            <h2 class="text-[0.95rem] sm:text-lg font-bold text-indigo-900">Deploy New Bot</h2>
+                        </div>
+                        <div class="flex items-center gap-1.5 sm:gap-2">
+                            <button onclick="openInfoModal('Pro Bot Deployment Guide')"
+                                class="h-7 sm:h-8 px-2.5 sm:px-3 rounded-xl border border-indigo-200/80 bg-gradient-to-r from-indigo-50 to-blue-50 hover:from-indigo-100 hover:to-blue-100 text-indigo-800 font-extrabold text-[0.68rem] sm:text-xs flex items-center gap-1.5 transition-all shadow-sm active:scale-95"
+                                title="Open Bot deployment guide">
+                                <span class="text-xs sm:text-sm">📖</span>
+                                <span>Bot deployment guide</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="relative w-full z-50 mb-1">
                         <input type="text" id="botSearchInput" autocomplete="off"
-                            placeholder="Search symbol or company (e.g. AAPL, Bitcoin)"
+                            placeholder="Search symbol or company (e.g. AAPL, Bitcoin, SPY)"
                             class="w-full bg-white border-2 border-indigo-100 rounded-xl px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm md:text-base text-indigo-900 font-bold placeholder:text-[10.5px] placeholder:sm:text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all shadow-sm">
                         <!-- Dropdown Results -->
                         <div id="botSearchResults"
@@ -667,21 +679,25 @@
                 </div>
 
 
-                <!-- Mode Toggle (Side-by-Side) -->
+                <!-- Mode Toggle (3 Tabs) -->
                 <div id="modeToggleContainer"
                     class="flex p-1 bg-indigo-900/5 backdrop-blur-md rounded-2xl w-full mx-auto relative border border-indigo-900/10 shadow-inner">
                     <div id="modeTogglePill"
-                        class="absolute left-1 top-1 bottom-1 w-[calc(50%-4px)] bg-white rounded-xl shadow-[0_0_35px_rgba(99,102,241,0.8)] ring-2 ring-indigo-400/60 transition-all duration-300 z-0 border border-indigo-100 translate-x-0">
+                        class="absolute left-1 top-1 bottom-1 w-[calc(33.333%-4px)] bg-white rounded-xl shadow-[0_0_35px_rgba(99,102,241,0.8)] ring-2 ring-indigo-400/60 transition-all duration-300 z-0 border border-indigo-100 translate-x-0">
                     </div>
                     <button id="btnRegularMode" onclick="toggleModeActive('regular')"
-                        class="flex-1 py-3 text-[0.7rem] font-black uppercase tracking-widest text-indigo-950 z-10 transition-colors">Regular
+                        class="flex-1 py-3 text-[0.65rem] sm:text-[0.7rem] font-black uppercase tracking-widest text-indigo-950 z-10 transition-colors">Regular
                         Trading</button>
                     <button id="btnOptionsMode" onclick="toggleModeActive('options')"
-                        class="flex-1 py-3 text-[0.7rem] font-black uppercase tracking-widest text-indigo-400 z-10 transition-colors relative group">
+                        class="flex-1 py-3 text-[0.65rem] sm:text-[0.7rem] font-black uppercase tracking-widest text-indigo-400 z-10 transition-colors relative group">
                         Options Trading
                         <div id="optionsCryptoDisableTooltip"
                             class="hidden absolute -top-10 left-1/2 -translate-x-1/2 bg-slate-800 text-white px-3 py-1.5 rounded-lg text-[0.6rem] whitespace-nowrap shadow-xl">
                             Not available for Crypto</div>
+                    </button>
+                    <button id="btnAiAutopilotMode" onclick="toggleModeActive('ai_autopilot')"
+                        class="flex-1 py-3 text-[0.65rem] sm:text-[0.7rem] font-black uppercase tracking-widest text-indigo-400 z-10 transition-colors flex items-center justify-center gap-1">
+                        <span>🤖</span> AI Autopilot
                     </button>
                 </div>
 
@@ -780,59 +796,7 @@
                         </div>
                     </div>
 
-                    <!-- AI Autopilot Toggle -->
-                    <div
-                        class="p-5 border border-purple-300/50 rounded-2xl bg-gradient-to-br from-purple-900/10 via-indigo-900/10 to-transparent backdrop-blur-md shadow-lg shadow-purple-500/5 space-y-3 relative overflow-hidden transition-all duration-300">
-                        <!-- Glassmorphism glowing background elements -->
-                        <div
-                            class="absolute -top-12 -left-12 w-24 h-24 bg-purple-500/10 rounded-full blur-2xl pointer-events-none">
-                        </div>
-                        <div
-                            class="absolute -bottom-12 -right-12 w-24 h-24 bg-indigo-500/10 rounded-full blur-2xl pointer-events-none">
-                        </div>
 
-                        <div class="flex items-center justify-between">
-                            <div class="flex items-center gap-3">
-                                <span class="text-xl">🤖</span>
-                                <div class="text-left">
-                                    <h4 class="text-xs font-black text-purple-950 uppercase tracking-widest">AI
-                                        Autopilot</h4>
-                                    <p
-                                        class="text-[0.6rem] font-semibold text-purple-400 uppercase tracking-tighter mt-0.5">
-                                        Llama 3.3-70B Sentient Agent</p>
-                                </div>
-                            </div>
-                            <label class="relative inline-flex items-center cursor-pointer">
-                                <input type="checkbox" id="strategyAiAutopilot" class="sr-only peer"
-                                    onchange="handleStrategyAutopilotToggle(this.checked)">
-                                <div
-                                    class="w-11 h-6 bg-indigo-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600 shadow-md">
-                                </div>
-                            </label>
-                        </div>
-                        <div id="strategyAiAutopilotSection"
-                            class="hidden space-y-3 pt-2 border-t border-purple-200/40">
-                            <div
-                                class="text-[0.65rem] text-purple-700/80 font-bold leading-normal bg-purple-50/50 border border-purple-200/50 p-2.5 rounded-xl text-left">
-                                ⚠️ <strong>AI Autopilot Active:</strong> The chosen model will autonomously
-                                handle all entry, exit, stop-loss, take-profit, and risk-management decisions.
-                                Manual strategy indicators are disabled while Autopilot is ON.
-                            </div>
-                            <div class="space-y-1 text-left">
-                                <label
-                                    class="block text-[0.55rem] font-black text-indigo-400 uppercase tracking-widest">Autopilot
-                                    AI Model</label>
-                                <select id="strategyAiModel"
-                                    class="w-full bg-white border border-indigo-100 rounded-xl px-3 py-2 text-xs font-black text-indigo-900 shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none cursor-pointer">
-                                    <option value="llama-3.3-70b-versatile" selected>llama-3.3-70b-versatile
-                                        (Default)</option>
-                                    <option value="mixtral-8x7b-32768">mixtral-8x7b-32768</option>
-                                    <option value="llama-3.1-8b-instant">llama-3.1-8b-instant (Fast /
-                                        Lightweight)</option>
-                                </select>
-                            </div>
-                        </div>
-                    </div>
 
                     <!-- Risk Management (Slide Toggle) -->
                     <div
@@ -3350,6 +3314,128 @@
             </div>
             </div>
 
+            <!-- AI Autopilot Trading Box -->
+            <div id="aiAutopilotTradingBox" class="mt-4 space-y-6 hidden animate-in fade-in duration-300">
+                <!-- Allocation + Schedule Rows -->
+                <div class="space-y-4">
+                    <div class="rounded-2xl border border-white/40 bg-white/20 backdrop-blur-md p-3 sm:p-4 space-y-3">
+                        <div class="flex items-center gap-3">
+                            <div class="h-5 w-1.5 bg-gradient-to-b from-emerald-400 to-green-500 rounded-full"></div>
+                            <div class="text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Trade Allocation</div>
+                        </div>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div class="space-y-2">
+                                <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Sizing Method</label>
+                                <div class="relative">
+                                    <select id="strategyAllocationMode_ai_autopilot"
+                                        onchange="if(window.updateAllocationModeUI) window.updateAllocationModeUI('ai_autopilot')"
+                                        class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none cursor-pointer appearance-none transition-all">
+                                        <option value="fixed" selected>Fixed Per Trade</option>
+                                        <option value="compound">Compound This Amount</option>
+                                    </select>
+                                    <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
+                                        </svg>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="space-y-2">
+                                <label id="strategyCapitalLabel_ai_autopilot" class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Amount Per Trade ($)</label>
+                                <input type="number" id="strategyCapital_ai_autopilot"
+                                    class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl px-2 sm:px-4 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
+                                    value="100">
+                                <div id="strategyCompoundAmountHint_ai_autopilot" class="hidden text-[0.62rem] sm:text-[0.68rem] font-bold leading-snug text-slate-500"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div class="space-y-2">
+                            <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Trading Timeframe</label>
+                            <div class="relative">
+                                <select id="strategyTimeframe_ai_autopilot"
+                                    onchange="if(window.fetchLiveAtrForPreview && window.currentStrategySymbol) window.fetchLiveAtrForPreview(window.currentStrategySymbol, this.value)"
+                                    class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none cursor-pointer appearance-none transition-all">
+                                    <option value="1Min">1 Minute (Scalp)</option>
+                                    <option value="5Min">5 Minutes (Intraday)</option>
+                                    <option value="15Min">15 Minutes (Active)</option>
+                                    <option value="30Min">30 Minutes (Active)</option>
+                                    <option value="1Hour" selected>1 Hour (Swing)</option>
+                                    <option value="4Hour">4 Hour (Macro)</option>
+                                    <option value="1Day">1 Day (Long Term)</option>
+                                </select>
+                                <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
+                                    </svg>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="space-y-2">
+                            <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Market Session</label>
+                            <div class="relative">
+                                <select id="strategyMarketSession_ai_autopilot"
+                                    onchange="if(window.updateMarketSessionNotice) window.updateMarketSessionNotice(); if(window.updateLivePreview_bots) window.updateLivePreview_bots('ai_autopilot', 'both')"
+                                    class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none cursor-pointer appearance-none transition-all">
+                                    <option value="Regular" selected>Regular Hours</option>
+                                    <option value="Extended">Extended Hours</option>
+                                    <option value="24h">24 hr</option>
+                                </select>
+                                <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
+                                    </svg>
+                                </div>
+                            </div>
+                            <div id="strategyMarketSessionNotice_ai_autopilot" class="text-[0.62rem] sm:text-[0.68rem] font-bold leading-snug text-slate-500">Regular-hours stock trading uses the normal order flow.</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AI Autopilot Active Card & Model Selector -->
+                <div class="p-5 border border-purple-300/50 rounded-2xl bg-gradient-to-br from-purple-900/10 via-indigo-900/10 to-transparent backdrop-blur-md shadow-lg shadow-purple-500/5 space-y-4 relative overflow-hidden">
+                    <div class="absolute -top-12 -left-12 w-24 h-24 bg-purple-500/10 rounded-full blur-2xl pointer-events-none"></div>
+                    <div class="absolute -bottom-12 -right-12 w-24 h-24 bg-indigo-500/10 rounded-full blur-2xl pointer-events-none"></div>
+
+                    <div class="text-[0.68rem] text-purple-900 font-medium leading-relaxed bg-purple-50/80 border border-purple-200/70 p-4 rounded-xl text-left shadow-sm space-y-2.5">
+                        <div class="flex items-start gap-2 text-purple-950 font-bold">
+                            <span class="text-base leading-none">⚠️</span>
+                            <span><strong>AI Autopilot Active:</strong> The chosen model will autonomously handle all entry, exit, stop-loss, take-profit, and risk-management decisions.</span>
+                        </div>
+                        <div class="border-t border-purple-200/60 pt-2 space-y-1.5 text-[0.65rem] text-purple-800/90 font-semibold">
+                            <div class="flex items-center gap-1.5">
+                                <span class="h-1.5 w-1.5 rounded-full bg-purple-500 shrink-0"></span>
+                                <span><strong>Multi-Timeframe Intelligence:</strong> Evaluates live price action, volatility, and order flow every candle interval.</span>
+                            </div>
+                            <div class="flex items-center gap-1.5">
+                                <span class="h-1.5 w-1.5 rounded-full bg-purple-500 shrink-0"></span>
+                                <span><strong>Dynamic Risk Adaptation:</strong> Continuously adjusts dynamic trailing stops and take-profit targets based on shifting market regimes.</span>
+                            </div>
+                            <div class="flex items-center gap-1.5">
+                                <span class="h-1.5 w-1.5 rounded-full bg-purple-500 shrink-0"></span>
+                                <span><strong>Predictive Confluence:</strong> Operates completely independently using deep neural pattern recognition across regular & crypto markets.</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="space-y-2 text-left">
+                        <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Autopilot AI Model</label>
+                        <div class="relative">
+                            <select id="strategyAiModel"
+                                class="w-full bg-white/60 backdrop-blur-md border border-white/60 rounded-2xl pl-4 pr-10 py-3 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/80 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none cursor-pointer appearance-none transition-all">
+                                <option value="llama-3.3-70b-versatile" selected>llama-3.3-70b-versatile (Default)</option>
+                                <option value="mixtral-8x7b-32768">mixtral-8x7b-32768</option>
+                                <option value="llama-3.1-8b-instant">llama-3.1-8b-instant (Fast / Lightweight)</option>
+                            </select>
+                            <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
+                                </svg>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Watchlist Option (Only shown when creating new bot) -->
             <div id="strategyWatchlistOption" class="mt-4 mb-4">
                 <label
@@ -3470,6 +3556,8 @@
                                     data-tf="1Hour">1h</button>
                                 <button class="chart-tf-btn" onclick="setBotChartPreviewTimeframe('4Hour')"
                                     data-tf="4Hour">4h</button>
+                                <button class="chart-tf-btn" onclick="setBotChartPreviewTimeframe('1Day')"
+                                    data-tf="1Day">1D</button>
                             </div>
 
                             <div id="botChartPreviewOhlcvBar"
@@ -3584,7 +3672,7 @@
                                         class="text-[0.65rem] font-bold text-indigo-600 uppercase tracking-widest">Fetching
                                         Signals</span>
                                 </div>
-                                <div id="botChartPreviewSignalGrid" class="grid grid-cols-2 md:grid-cols-3 gap-3">
+                                <div id="botChartPreviewSignalGrid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
                                     <!-- Signals injected by JS -->
                                 </div>
 
@@ -3596,7 +3684,7 @@
                                         <span
                                             class="px-1.5 py-0.5 text-[9px] font-black bg-gradient-to-r from-amber-400 to-orange-500 text-white rounded-md uppercase tracking-wider shadow-sm">PRO</span>
                                     </div>
-                                    <div id="botChartPreviewPremiumSignalGrid" class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                    <div id="botChartPreviewPremiumSignalGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                                         <!-- Premium signals injected by JS -->
                                     </div>
                                 </div>
@@ -3653,9 +3741,9 @@
                 <button onclick="resetIndicatorSettingsToDefaults()"
                     class="px-4 py-2 text-sm font-bold text-rose-500 hover:text-rose-700 transition-colors text-center sm:text-left"
                     title="Reset all fields to industry default values">Reset to Defaults</button>
-                <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
+                <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 justify-end sm:ml-auto">
                     <button onclick="closeIndicatorSettings()"
-                        class="px-4 py-2 text-sm font-bold text-slate-500 hover:text-indigo-600 transition-colors rounded-lg border border-slate-200 sm:border-0 py-2 sm:py-0">Cancel</button>
+                        class="px-4 py-2 text-sm font-bold text-slate-500 hover:text-indigo-600 transition-colors rounded-lg border border-slate-200 sm:border-0 py-2 sm:py-0">Close</button>
                     <button onclick="saveIndicatorSettings()"
                         class="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-bold shadow-lg shadow-indigo-200 transition-all text-center">Apply
                         Settings</button>
@@ -3794,7 +3882,8 @@
         </div>
     </div>
 
-    <script src="bots.js"></script>
+    <script src="alpaca-status-cache.js?v=1"></script>
+    <script src="bots.js?v=4"></script>
 
     <!-- Info Modal -->
     <div id="infoModal"
@@ -3842,7 +3931,112 @@
             'BotBulls1': `<b>BotBulls 1 (Premium Oscillator WaveTrend + Institutional MFI)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 1 is a professional cyclical momentum oscillator paired with institutional Money Flow Index (MFI) confirmation. It helps traders pinpoint high-probability reversal zones while filtering out fake bottoms where institutional volume is absent.<br><br><b class="text-slate-800">How it works:</b><br>It combines a double-smoothed WaveTrend momentum cycle curve with a 14-period Money Flow Index (MFI). A confirmed <b class="text-emerald-500">BUY</b> signal fires when the fast momentum curve crosses above the slow curve in deep oversold territory (-53 or below), provided MFI verifies that institutional money flow is actively accumulating.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>WaveTrend Channel Period (Default 10):</b> Lookback window for measuring price momentum cycles. Lower values make the oscillator faster and more sensitive.<br>• <b>WaveTrend Average Period (Default 21):</b> Exponential smoothing length applied to the WaveTrend curves to eliminate jagged noise.<br>• <b>MFI Confirm Threshold (Default 30):</b> Maximum Money Flow Index level allowed for buy confirmation. Lower values (e.g., 20–25) enforce stricter oversold volume requirements.`,
             'BotBulls2': `<b>BotBulls 2 (UT Bot — Universal Trailing Stop + Trend Tracer)</b><br><br><b class="text-amber-700">UT</b> stands for <b>Universal Trailing Stop</b> — a dynamic ATR-based trailing stop band that adapts to market volatility in real time, generating high-probability buy/sell signals when price crosses it.<br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 2 is a comprehensive multi-confluence trend and dynamic risk management suite. It protects capital by adapting trailing stop levels to real-time market volatility while filtering out choppy false breakouts through institutional momentum confirmation.<br><br><b class="text-slate-800">How it works:</b><br>It combines an adaptive Universal Trailing (UT) stop band, an institutional double-smoothed Trend Tracer EMA, and extreme statistical Reversal Zones.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>ATR Multiplier (Sensitivity):</b> Controls how tightly the trailing stop hugs price action. Lower values (e.g., 1.5–2.0) react faster for scalping; higher values (e.g., 2.5–3.0) give trades breathing room to ride extended trend swings without early shakeouts.<br>• <b>Trend Tracer Period:</b> Lookback window (default 50) for double-smoothed exponential trend alignment.<br>• <b>Reversal Zone Period:</b> Lookback window (default 50) for statistical deviation bands identifying overstretched extremes.`,
             'BotBulls3': `<b>BotBulls 3 (HA + UT — Heikin-Ashi Filtered Trail)</b><br><br><b class="text-amber-700">HA</b> stands for <b>Heikin-Ashi</b> (Japanese for “Average Bar”) — a technique that mathematically smooths candlestick data to eliminate market noise, making true trend direction far clearer.<br><br><b class="text-amber-700">UT</b> stands for <b>Universal Trailing Stop</b> — an adaptive ATR-based trailing stop band that tracks volatility and signals momentum flips.<br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 3 is a pure volatility breakout momentum engine designed for fast scalping and intraday momentum. By running an adaptive Universal Trailing stop directly on noise-filtered Heikin-Ashi candles, it eliminates false whipsaws seen on standard price action charts.<br><br><b class="text-slate-800">How it works:</b><br>It converts standard price action into Heikin-Ashi smoothed candles, then applies a hyper-sensitive Universal Trailing stop band. When volatility expands and price breaks above the trailing channel on the HA chart, a high-probability breakout signal is generated.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>ATR Period (Default 10):</b> Lookback window for measuring true range volatility on Heikin-Ashi candles.<br>• <b>ATR Multiplier / Sensitivity (Default 1.0):</b> Trailing stop sensitivity threshold. Lower values (e.g., 1.0) react immediately to breakout momentum for scalping; higher values (e.g., 1.5–2.0) provide a wider buffer against intraday noise.`,
-            'Botbulls4 News AI': `<b>BotBulls 4 News AI (Premium AI News Sentiment)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 4 is an AI-powered fundamental sentiment intelligence engine. While technical indicators analyze price action, BotBulls 4 reads market news, macro catalysts, and earnings reports in real time, acting as a crucial fundamental guardrail against trading into negative news.<br><br><b class="text-slate-800">How it works:</b><br>It continuously fetches live financial headlines and macro-economic data, processing them through large language models (LLMs) to calculate an objective sentiment score (0–100%). When news is overwhelmingly positive, it fires a bullish sentiment confirmation.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Sentiment Bullish Percentage (Default 70%):</b> Minimum AI confidence threshold required to confirm a bullish news catalyst. Higher values (e.g., 75–80%) require overwhelmingly positive news before signaling.<br>• <b>Sentiment Bearish Percentage (Default 30%):</b> Score threshold below which news is classified as bearish. Values below this trigger defensive alerts or short confirmation.`
+            'Botbulls4 News AI': `<b>BotBulls 4 News AI (Premium AI News Sentiment)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 4 is an AI-powered fundamental sentiment intelligence engine. While technical indicators analyze price action, BotBulls 4 reads market news, macro catalysts, and earnings reports in real time, acting as a crucial fundamental guardrail against trading into negative news.<br><br><b class="text-slate-800">How it works:</b><br>It continuously fetches live financial headlines and macro-economic data, processing them through large language models (LLMs) to calculate an objective sentiment score (0–100%). When news is overwhelmingly positive, it fires a bullish sentiment confirmation.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Sentiment Bullish Percentage (Default 70%):</b> Minimum AI confidence threshold required to confirm a bullish news catalyst. Higher values (e.g., 75–80%) require overwhelmingly positive news before signaling.<br>• <b>Sentiment Bearish Percentage (Default 30%):</b> Score threshold below which news is classified as bearish. Values below this trigger defensive alerts or short confirmation.`,
+            'Pro Bot Deployment Guide': `
+<div class="space-y-6 text-slate-700 leading-relaxed text-xs sm:text-sm">
+    <!-- Header Banner -->
+    <div class="p-4 sm:p-5 bg-gradient-to-br from-purple-200/60 via-purple-100/50 to-indigo-100/50 backdrop-blur-md rounded-2xl border border-purple-300/70 shadow-lg shadow-purple-500/10 relative overflow-hidden">
+        <div class="absolute -top-10 -right-10 w-32 h-32 bg-purple-400/20 rounded-full blur-2xl pointer-events-none"></div>
+        <div class="flex flex-wrap items-center gap-2 mb-1.5 relative z-10">
+            <span class="text-xl">🚀</span>
+            <h4 class="text-base sm:text-lg font-black tracking-tight text-indigo-950">Bot deployment guide</h4>
+            <span class="px-2 py-0.5 text-[0.6rem] font-black uppercase tracking-widest bg-purple-600 text-white border border-purple-500 rounded-full shadow-2xs">Pro Trader Edition</span>
+        </div>
+        <p class="text-xs sm:text-[0.8rem] text-indigo-950/80 font-medium leading-relaxed relative z-10">Designed for experienced traders transitioning to automated execution. Learn the exact pipeline, parameter overrides, confluence thresholds, and asset-specific guardrails across Regular Stocks, Crypto, and Options.</p>
+    </div>
+
+    <!-- Section 1: Architecture Overview -->
+    <div class="p-4 bg-indigo-50/60 border border-indigo-100 rounded-xl space-y-2.5">
+        <h5 class="font-black text-indigo-950 text-sm flex items-center gap-1.5"><span class="text-indigo-600">1.</span> Core Platform Architecture &amp; Flow</h5>
+        <ul class="space-y-2 list-disc list-inside text-slate-700 text-xs">
+            <li><b class="text-slate-900">One Bot Per Ticker Rule:</b> To guarantee clean order routing and prevent contradictory signals, our engine enforces exactly one active bot instance per ticker symbol (<code>ticker_settings</code>). If an active bot is running on <code>AAPL</code>, you must remove it before deploying a new configuration for <code>AAPL</code>. Removing an active bot automatically closes open positions and cancels working orders for that asset.</li>
+            <li><b class="text-slate-900">Trading Regime Switch (Regular vs. Options):</b> When configuring your strategy, the top switch selects your execution engine:
+                <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
+                    <li>• <b>Regular (Stocks &amp; Crypto):</b> Spot execution of share/token quantities directly via connected brokerages (Alpaca, Webull, Coinbase).</li>
+                    <li>• <b>Options (Calls &amp; Puts Derivatives):</b> Evaluates the underlying equity/ETF chart (e.g., SPY, QQQ, TSLA) and dynamically selects right-priced option contracts based on Strike/Delta and Expiration rules.</li>
+                </ul>
+            </li>
+            <li><b class="text-slate-900">Per-Bot Parameter Overrides:</b> Clicking the gear icon (<code>⚙</code>) next to any checked indicator in the strategy modal lets you customize specific calculation parameters (e.g., changing RSI period from 14 to 9 or Supertrend multiplier from 3.0 to 2.0). These overrides are saved uniquely to that ticker's deployed bot without modifying your global default templates.</li>
+            <li><b class="text-slate-900">Dynamic Confluence Scoring:</b> Every checked indicator that confirms in your chosen direction contributes <code>+1</code> to the live score. An entry fires strictly when <code>Live Score &gt;= Buy Signal Threshold</code>.</li>
+        </ul>
+    </div>
+
+    <!-- Section 2: Regular Stocks -->
+    <div class="p-4 bg-white border border-slate-200/80 rounded-xl shadow-sm space-y-2.5">
+        <h5 class="font-black text-slate-900 text-sm flex items-center gap-1.5"><span class="text-emerald-600">2.</span> Regular Stock Trading Setup (Spot Equities)</h5>
+        <ol class="space-y-2 list-decimal list-inside text-slate-700 text-xs">
+            <li><b class="text-slate-900">Search &amp; Select Ticker:</b> Type a valid equity symbol (e.g., <code>AAPL</code>, <code>NVDA</code>, <code>SPY</code>) in the search box and click <code>+ Add</code>.</li>
+            <li><b class="text-slate-900">Select 'Regular' Mode:</b> Ensure the top mode toggle is set to <code>Regular (Stocks &amp; Crypto)</code>.</li>
+            <li><b class="text-slate-900">Configure Entry &amp; Exit Strategies:</b>
+                <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
+                    <li>• <b>Entry Strategy Mode:</b> Choose <code>Technical Indicators (Confluence)</code> to enter when multiple indicators agree, choose structural breakouts like <code>ATR Stop Breakout</code>, <code>Pivot Points (S/R) Breakout</code>, or choose <code>Hybrid Modes (Dual-Confirmation)</code> which require both indicator confluence AND structural reclaim before entering.</li>
+                    <li>• <b>Exit Strategy Mode:</b> Choose <code>Dynamic Sell</code> to exit when bearish indicators hit threshold, or set hard target limits via <code>Stop-Loss / Take-Profit (SL/TP)</code> or <code>Hybrid Exits</code>.</li>
+                </ul>
+            </li>
+            <li><b class="text-slate-900">Trade Capital &amp; Risk Guardrails:</b>
+                <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
+                    <li>• <b>Sizing Mode:</b> Choose <code>Fixed Per Trade</code> (fixed dollar allocation, e.g., $1,000) or <code>Compound This Amount</code> (automatically reinvesting gains into position size over time).</li>
+                    <li>• <b>Stop-Loss &amp; Take-Profit (%):</b> Enter hard capital protection boundaries below/above entry.</li>
+                    <li>• <b>Trailing Stop (%):</b> Enable a dynamic trailing stop percentage (e.g., 1.5% to 2.5%) that ratchets up with price action to lock in unrealized profits.</li>
+                </ul>
+            </li>
+            <li><b class="text-slate-900">Smart Re-Entry &amp; Cooldown Controls:</b>
+                <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
+                    <li>• <b>Re-Entry Cooldown:</b> Set a resting window (e.g., 2 to 4 hours) after a position closes before a new signal can open a trade. This prevents overtrading during intraday consolidation.</li>
+                    <li>• <b>Signal Reset Logic:</b> Enable required signal reset so the underlying indicator must drop below threshold before firing a new buy signal.</li>
+                </ul>
+            </li>
+            <li><b class="text-slate-900">Deploy:</b> Click <code>Confirm &amp; Deploy</code>. The bot registers under your Active Trading Bots panel and runs continuously during market hours.</li>
+        </ol>
+    </div>
+
+    <!-- Section 3: Crypto 24/7 -->
+    <div class="p-4 bg-amber-50/40 border border-amber-200/80 rounded-xl space-y-2.5">
+        <h5 class="font-black text-amber-950 text-sm flex items-center gap-1.5"><span class="text-amber-600">3.</span> Crypto Trading Setup (24/7 Continuous Execution)</h5>
+        <ol class="space-y-2 list-decimal list-inside text-slate-700 text-xs">
+            <li><b class="text-slate-900">Search Crypto Pair:</b> Search your coin pair (e.g., <code>BTC-USD</code>, <code>ETH-USD</code>, <code>SOL-USD</code>).</li>
+            <li><b class="text-slate-900">Verify Spot Regime:</b> Crypto operates under the <code>Regular</code> spot engine using fractional token quantities.</li>
+            <li><b class="text-slate-900">Timeframe Selection for 24/7 Markets:</b> Unlike stocks that close overnight, crypto trades 24/7/365. For intraday momentum, select <code>15Min</code> or <code>1H</code> timeframes to filter out overnight liquidity drops. If running on <code>5Min</code>, raise your Buy Signal Threshold (e.g., 4 or 5) to enforce high confluence.</li>
+            <li><b class="text-slate-900">Overnight Risk Management:</b> Since you cannot monitor the screen 24/7, configuring a <b>Trailing Stop (e.g., 2.0% to 3.5%)</b> is essential. It acts as your automated overnight risk manager, ratcheting up with highs and closing out positions automatically if momentum rolls over.</li>
+            <li><b class="text-slate-900">Deploy:</b> Click <code>Confirm &amp; Deploy</code>. Your bot appears under the <code>Crypto</code> tab in the Active Trading Bots panel and executes 24/7.</li>
+        </ol>
+    </div>
+
+    <!-- Section 4: Options Derivatives -->
+    <div class="p-4 bg-purple-50/40 border border-purple-200/80 rounded-xl space-y-2.5">
+        <h5 class="font-black text-purple-950 text-sm flex items-center gap-1.5"><span class="text-purple-600">4.</span> Options Trading Setup (Calls &amp; Puts Derivatives)</h5>
+        <ol class="space-y-2 list-decimal list-inside text-slate-700 text-xs">
+            <li><b class="text-slate-900">Search Underlying Asset:</b> Search an options-eligible ticker (e.g., <code>SPY</code>, <code>QQQ</code>, <code>TSLA</code>, <code>NVDA</code>, <code>AAPL</code>) and click <code>+ Add</code>.</li>
+            <li><b class="text-slate-900">Toggle to 'Options' Mode:</b> Switch the top regime toggle from Regular to <code>Options (Calls &amp; Puts)</code>.</li>
+            <li><b class="text-slate-900">Select Directional Bias (Options Type):</b>
+                <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
+                    <li>• <b>Long Calls (Bullish):</b> Buys Call options when the underlying equity triggers a Buy signal.</li>
+                    <li>• <b>Long Puts (Bearish):</b> Buys Put options when the underlying triggers a Bearish breakdown (evaluates against Buy Signal Threshold for trade entry).</li>
+                    <li>• <b>Dynamic (Calls &amp; Puts):</b> Automatically buys Calls on bullish setups and Puts on bearish breakdown setups.</li>
+                </ul>
+            </li>
+            <li><b class="text-slate-900">Configure Expiration &amp; Strike Rules:</b>
+                <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
+                    <li>• <b>Target DTE (Days to Expiration):</b> Choose <code>0-1 DTE</code> for high-gamma scalping, <code>3-7 DTE</code> for weekly swing setups, or <code>14-30+ DTE</code> for macro directional moves.</li>
+                    <li>• <b>Strike Selection (Moneyness / Delta):</b> Choose <code>At-the-Money (ATM)</code> for highest liquidity (Delta ~0.50), <code>In-the-Money (ITM)</code> for high delta stock replacement (Delta 0.70+), or <code>Out-of-the-Money (OTM)</code> for high-gamma breakout payouts.</li>
+                </ul>
+            </li>
+            <li><b class="text-slate-900">Stop-Loss &amp; Take-Profit Pricing Basis:</b>
+                <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
+                    <li>• <b>Option Contract Premium (Default):</b> Evaluates SL/TP against the percentage change of the option contract's premium (e.g., +30% target or -15% stop on the contract itself).</li>
+                    <li>• <b>Underlying Stock Price:</b> Evaluates SL/TP against the underlying spot price (e.g., closing the option when SPY spot moves +1% or -0.5%).</li>
+                </ul>
+            </li>
+            <li><b class="text-slate-900">Contract Sizing Budget:</b> Set your dollar allocation (<code>Trade Amount</code>, e.g., $1,000). The bot calculates the exact contract quantity based on live chain ask prices (<code>Contracts = Floor($1,000 / (Option Ask * 100))</code>).</li>
+            <li><b class="text-slate-900">Deploy &amp; Automated Handling:</b> Click <code>Confirm &amp; Deploy</code>. The options engine automatically fetches live chains, filters bid/ask spreads, enters the trade, and exits when targets or expiration boundaries are met.</li>
+        </ol>
+    </div>
+
+    <!-- Pro Tips -->
+    <div class="p-3.5 bg-slate-100 border border-slate-300/80 rounded-xl text-slate-800 text-xs font-medium">
+        <b>💡 Pro Advice for Live Deployment:</b> Always run your configuration through the <b>Backtest Tab</b> over 30 to 60 days before live deployment to verify threshold behavior across historical volatility cycles. Once running live, you can pause, inspect indicators, adjust thresholds, or close positions directly from the bot card in the Active Trading Bots panel below.
+    </div>
+</div>`.trim()
         };
 
         function openInfoModal(indicator) {
@@ -3851,7 +4045,16 @@
             const content = document.getElementById('infoModalContent');
 
             if (indicatorInfoMap[indicator]) {
-                title.innerText = indicator + " Explained";
+                const modalContainer = modal.children[0];
+                if (indicator === 'Pro Bot Deployment Guide') {
+                    modalContainer.classList.remove('max-w-xl');
+                    modalContainer.classList.add('max-w-3xl', 'sm:max-w-4xl');
+                    title.innerText = "📖 Bot deployment guide";
+                } else {
+                    modalContainer.classList.remove('max-w-3xl', 'sm:max-w-4xl');
+                    modalContainer.classList.add('max-w-xl');
+                    title.innerText = indicator + " Explained";
+                }
                 content.innerHTML = indicatorInfoMap[indicator];
 
                 modal.classList.remove('hidden');

@@ -15,6 +15,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Outfit:wght@400;700;900&display=swap"
         rel="stylesheet">
     <link rel="stylesheet" href="styles.css?v=35">
+    <script src="alpaca-status-cache.js?v=1"></script>
     <!-- Firebase Sentinel (Auth Guard) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
@@ -80,6 +81,10 @@
             const statusText = document.getElementById('alpacaStatusText');
             const btnUnlink = document.getElementById('btnUnlinkAlpaca');
             if (!statusPill) return;
+            if (window.AlpacaStatusCache?.isFresh()) {
+                window.AlpacaStatusCache.render();
+                return;
+            }
 
             try {
                 const user = window.auth.currentUser;
@@ -88,8 +93,10 @@
                     ? { 'Authorization': `Bearer ${token}`, 'Bypass-Tunnel-Reminder': 'true' } 
                     : { 'Bypass-Tunnel-Reminder': 'true' };
 
-                const response = await fetch(`${API_BASE}/api/dashboard?mode=fast&source=strategy`, { headers });
+                const response = await fetch(`${API_BASE}/api/alpaca_status`, { headers });
                 const data = await response.json();
+                window.AlpacaStatusCache?.writeFromData(data);
+                if (window.AlpacaStatusCache?.render()) return;
 
                 if (data.simulation) {
                     if (data.has_keys) {
@@ -129,6 +136,8 @@
                 const data = await response.json();
                 if (data.status === 'success') {
                     alert(data.message);
+                    window.AlpacaStatusCache?.clear();
+                    window.AlpacaStatusCache?.render({ status: 'disconnected', has_keys: false, simulation: true, updatedAt: Date.now() });
                     pollAlpacaStatus();
                 }
             } catch (err) {}
@@ -137,6 +146,7 @@
         const checkAuth = setInterval(() => {
             if (window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true')) {
                 clearInterval(checkAuth);
+                window.AlpacaStatusCache?.render();
                 pollAlpacaStatus();
                 setInterval(pollAlpacaStatus, 30000);
             }

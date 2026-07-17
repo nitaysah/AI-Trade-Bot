@@ -11,6 +11,8 @@ var API_BASE = window.location.hostname === 'localhost' || window.location.hostn
 var REFRESH_INTERVAL = 60000; // 60 seconds (1 minute)
 var LAST_VIEWED_TICKER_KEY = 'lastViewedTicker';
 var DASHBOARD_CHART_CONTEXT_KEY = 'dashboardChartContext';
+var GENERIC_DASHBOARD_CARDS_CACHE_KEY = 'dashboardGenericCardsCacheV1';
+var GENERIC_DASHBOARD_CARDS_CLIENT_TTL_MS = 5 * 60 * 1000;
 
 function isDashboardPageActive() {
     const path = (window.location.pathname || '').toLowerCase();
@@ -283,6 +285,33 @@ function updateVisibleHighLow() {
     ];
 }
 
+function scheduleChartRangeUiRefresh() {
+    if (chartRangeUiFrame) return;
+    chartRangeUiFrame = requestAnimationFrame(() => {
+        chartRangeUiFrame = null;
+        updateVisibleHighLow();
+        _refreshOverlayPriceLineLabels();
+    });
+}
+
+function syncOscillatorRanges(range) {
+    if (!range) return;
+    try { if (oscChartRsi && _visibleIndicators.rsi) oscChartRsi.timeScale().setVisibleLogicalRange(range); } catch (e) { }
+    try { if (oscChartMacd && _visibleIndicators.macd) oscChartMacd.timeScale().setVisibleLogicalRange(range); } catch (e) { }
+    try { if (oscChartMystic && _visibleIndicators.mystic) oscChartMystic.timeScale().setVisibleLogicalRange(range); } catch (e) { }
+    try { if (oscChartAdx && _visibleIndicators.adx) oscChartAdx.timeScale().setVisibleLogicalRange(range); } catch (e) { }
+    try { if (oscChartBotbulls1 && _visibleIndicators.botbulls1) oscChartBotbulls1.timeScale().setVisibleLogicalRange(range); } catch (e) { }
+}
+
+function scheduleOscillatorRangeSync(range) {
+    if (!range) return;
+    if (chartOscSyncFrame) cancelAnimationFrame(chartOscSyncFrame);
+    chartOscSyncFrame = requestAnimationFrame(() => {
+        chartOscSyncFrame = null;
+        syncOscillatorRanges(range);
+    });
+}
+
 function formatPrice(n, forceTicker = null) {
     if (isNaN(n) || n === null) return '---';
     const t = forceTicker || document.getElementById('chartTickerLabel')?.textContent;
@@ -326,6 +355,8 @@ let livePriceRequestSerial = 0;
 let chartIndexedDbPromise = null;
 let legacyChartLocalStorageCleared = false;
 let signalRefreshRequestSerial = 0;
+let chartRangeUiFrame = null;
+let chartOscSyncFrame = null;
 
 const CHART_INTERVALS = {
     "30Sec": { label: "30s", seconds: 30, backend: "30Sec" },
@@ -411,6 +442,8 @@ async function unlinkAlpacaDashboard() {
         const data = await response.json();
         if (data.status === 'success') {
             alert(data.message);
+            window.AlpacaStatusCache?.clear();
+            window.AlpacaStatusCache?.render({ status: 'disconnected', has_keys: false, simulation: true, updatedAt: Date.now() });
             fetchDashboard('heavy');
         } else {
             alert("Error unlinking account.");
@@ -556,13 +589,28 @@ function initChart() {
 
 
     lwChart = LightweightCharts.createChart(container, {
+        handleScroll: {
+            mouseWheel: true,
+            pressedMouseMove: true,
+            horzTouchDrag: true,
+            vertTouchDrag: true,
+        },
+        handleScale: {
+            axisPressedMouseMove: true,
+            mouseWheel: true,
+            pinch: true,
+        },
         layout: { background: { color: '#ffffff' }, textColor: '#334155' },
         grid: {
             vertLines: { color: 'rgba(168, 85, 247, 0.05)' },
             horzLines: { color: 'rgba(168, 85, 247, 0.05)' },
         },
         crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-        rightPriceScale: { borderColor: 'rgba(197, 203, 206, 0.8)', minimumWidth: 75 },
+        rightPriceScale: {
+            borderColor: 'rgba(197, 203, 206, 0.8)',
+            minimumWidth: 64,
+            scaleMargins: { top: 0.08, bottom: 0.08 },
+        },
         localization: {
             timeFormatter: time => {
                 return `${formatChartTime(time, false)} CT`;
@@ -589,7 +637,12 @@ function initChart() {
     extHoursSeries = lwChart.addHistogramSeries({
         color: 'rgba(100, 116, 139, 0.1)', // Slight grey background
         priceFormat: { type: 'volume' },
-        priceScaleId: '', // Overlay independently
+        priceScaleId: 'ext-hours-bg',
+        scaleMargins: { top: 0, bottom: 0 },
+    });
+    lwChart.priceScale('ext-hours-bg').applyOptions({
+        visible: false,
+        autoScale: false,
         scaleMargins: { top: 0, bottom: 0 },
     });
 
@@ -597,6 +650,7 @@ function initChart() {
         upColor: '#10b981', downColor: '#ef4444',
         borderVisible: false,
         wickUpColor: '#10b981', wickDownColor: '#ef4444',
+        priceScaleId: 'right',
     });
 
     let lastChartWidth = 0;
@@ -619,8 +673,7 @@ function initChart() {
 
     _initOscPane();
     lwChart.timeScale().subscribeVisibleTimeRangeChange(() => {
-        updateVisibleHighLow();
-        _refreshOverlayPriceLineLabels();
+        scheduleChartRangeUiRefresh();
     });
 }
 
@@ -752,13 +805,7 @@ function _initOscPane() {
 
     // Sync all time scales to main chart (guarded by visibility and wrapped in try/catch to prevent uncaught "Value is null" library errors)
     lwChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
-        if (range) {
-            try { if (oscChartRsi && _visibleIndicators.rsi) oscChartRsi.timeScale().setVisibleLogicalRange(range); } catch (e) { }
-            try { if (oscChartMacd && _visibleIndicators.macd) oscChartMacd.timeScale().setVisibleLogicalRange(range); } catch (e) { }
-            try { if (oscChartMystic && _visibleIndicators.mystic) oscChartMystic.timeScale().setVisibleLogicalRange(range); } catch (e) { }
-            try { if (oscChartAdx && _visibleIndicators.adx) oscChartAdx.timeScale().setVisibleLogicalRange(range); } catch (e) { }
-            try { if (oscChartBotbulls1 && _visibleIndicators.botbulls1) oscChartBotbulls1.timeScale().setVisibleLogicalRange(range); } catch (e) { }
-        }
+        scheduleOscillatorRangeSync(range);
     });
 }
 
@@ -786,6 +833,13 @@ function updateChart(priceHistory, ticker) {
     window._confirmedPriceHistory = rawSorted;
     window._confirmedDisplayPriceHistory = sorted;
     lastCompletedChartBarTime = Number(sorted[sorted.length - 1]?.time || 0);
+    let shouldFollowRealtime = true;
+    try {
+        const scrollPosition = lwChart?.timeScale?.().scrollPosition?.();
+        shouldFollowRealtime = !Number.isFinite(scrollPosition) || scrollPosition < 3;
+    } catch (e) {
+        shouldFollowRealtime = true;
+    }
     // Background highlight for Extended Hours
     if (extHoursSeries) {
         if (!isCryptoTicker(ticker) && currentChartSession === 'extended' && currentBackendTf !== '1Day') {
@@ -804,6 +858,9 @@ function updateChart(priceHistory, ticker) {
     }
 
     candleSeries.setData(sorted.map(b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })));
+    if (shouldFollowRealtime) {
+        try { lwChart.timeScale().scrollToRealTime(); } catch (e) {}
+    }
 
     // Crosshair OHLCV subscription (wire once)
     if (!window._crosshairWired) {
@@ -845,13 +902,7 @@ function updateChart(priceHistory, ticker) {
 
     updateVisibleHighLow();
     const visibleRange = lwChart.timeScale().getVisibleLogicalRange();
-    if (visibleRange) {
-        try { if (oscChartRsi && _visibleIndicators.rsi) oscChartRsi.timeScale().setVisibleLogicalRange(visibleRange); } catch (e) { }
-        try { if (oscChartMacd && _visibleIndicators.macd) oscChartMacd.timeScale().setVisibleLogicalRange(visibleRange); } catch (e) { }
-        try { if (oscChartMystic && _visibleIndicators.mystic) oscChartMystic.timeScale().setVisibleLogicalRange(visibleRange); } catch (e) { }
-        try { if (oscChartAdx && _visibleIndicators.adx) oscChartAdx.timeScale().setVisibleLogicalRange(visibleRange); } catch (e) { }
-        try { if (oscChartBotbulls1 && _visibleIndicators.botbulls1) oscChartBotbulls1.timeScale().setVisibleLogicalRange(visibleRange); } catch (e) { }
-    }
+    syncOscillatorRanges(visibleRange);
 }
 
 function _getOrCreate(map, key, chartInst, options) {
@@ -1384,7 +1435,7 @@ function _refreshOscillators(bars) {
         if (!_oscSeries['macd_hist']) {
             _oscSeries['macd_hist'] = oscChartMacd.addHistogramSeries({
                 base: 0,
-                priceFormat: { type: 'price', precision: 4, minMove: 0.0001 }
+                priceFormat: { type: 'price', precision: 2, minMove: 0.01 }
             });
         }
         const histData = bars.filter(b => b.macd_hist != null).map(b => ({
@@ -1397,13 +1448,13 @@ function _refreshOscillators(bars) {
         _getOrCreate(_oscSeries, 'macd_line', oscChartMacd, { 
             color: IND_COLORS.macd_line, 
             lineWidth: 1,
-            priceFormat: { type: 'price', precision: 4, minMove: 0.0001 }
+            priceFormat: { type: 'price', precision: 2, minMove: 0.01 }
         }).setData(clean(bars.filter(b => b.macd_line != null).map(b => ({ time: b.time, value: b.macd_line }))));
         
         _getOrCreate(_oscSeries, 'macd_signal', oscChartMacd, { 
             color: IND_COLORS.macd_signal, 
             lineWidth: 1,
-            priceFormat: { type: 'price', precision: 4, minMove: 0.0001 }
+            priceFormat: { type: 'price', precision: 2, minMove: 0.01 }
         }).setData(clean(bars.filter(b => b.macd_signal != null).map(b => ({ time: b.time, value: b.macd_signal }))));
         
         try { oscChartMacd.timeScale().fitContent(); } catch (e) { }
@@ -1587,13 +1638,25 @@ function _refreshOscillators(bars) {
 // Called by toolbar buttons
 function toggleChartIndicator(key) {
     _visibleIndicators[key] = !_visibleIndicators[key];
+    const isEnabled = !!_visibleIndicators[key];
     localStorage.setItem('visibleIndicators', JSON.stringify(_visibleIndicators));
     const btn = document.getElementById(`ind_btn_${key}`);
     if (btn) {
-        btn.classList.toggle('ind-btn-active', _visibleIndicators[key]);
-        btn.classList.toggle('ind-btn-inactive', !_visibleIndicators[key]);
+        btn.classList.toggle('ind-btn-active', isEnabled);
+        btn.classList.toggle('ind-btn-inactive', !isEnabled);
     }
-    // Re-draw immediately from cache — no server call needed
+    if (isEnabled && typeof SIGNAL_TO_CHART_KEY !== 'undefined') {
+        const signalEntry = Object.entries(SIGNAL_TO_CHART_KEY).find(([, chartKey]) => chartKey === key);
+        if (signalEntry) {
+            setGlobalIndicatorPref(signalEntry[0], true, { refreshChart: true });
+            return;
+        }
+    }
+    if (isEnabled && typeof loadSelectedTickerChart === 'function') {
+        loadSelectedTickerChart({ force: true, renderCached: false });
+        return;
+    }
+    // Hiding an indicator can redraw immediately from cache.
     if (window._lastPriceHistory) updateChart(window._lastPriceHistory, window._lastTicker || selectedTicker);
 }
 
@@ -1745,6 +1808,7 @@ function renderFastChartPayload(data, requestedTicker) {
     const signals = scan?.signals || payload?.signals || {};
     if (signals && Object.keys(signals).length > 0) {
         window._lastSignals = signals;
+        window._lastSignalsTicker = ticker;
         renderSignals(
             signals,
             scan.action || payload.action || 'HOLD',
@@ -1883,12 +1947,14 @@ async function loadTickerChartFast(ticker, options = {}) {
             console.warn('[chart] IndexedDB chart cache save failed:', e);
         });
         renderFastChartPayload(data, requestedTicker);
+        return data;
     } catch (e) {
         if (isRequestTimeout(e) || isRequestAbort(e)) {
             console.warn(`[chart] Refresh skipped: ${e.message || e.name}`);
         } else {
             console.error('[chart] Fast chart load failed:', e);
         }
+        return null;
     }
 }
 
@@ -1908,6 +1974,11 @@ async function refreshCompletedCandlesIfDue() {
     lastCompletedChartAttemptedCloseTime = latestSafeClosedBarTime;
     try {
         await loadSelectedTickerChart({ force: true, renderCached: false, fetchFresh: true });
+        if (lastCompletedChartBarTime < latestSafeClosedBarTime) {
+            // Webull can lag completed candles by 1-2 minutes. Do not suppress
+            // retries for a candle that the provider has not actually returned.
+            lastCompletedChartAttemptedCloseTime = Math.max(0, lastCompletedChartBarTime);
+        }
     } finally {
         activeChartRefreshInFlight = false;
     }
@@ -2015,6 +2086,7 @@ function showTickerChangeLoadingState(ticker, options = {}) {
 
     updateActiveTickerDisplay(normalized);
     window._lastSignals = null;
+    window._lastSignalsTicker = normalized;
     livePriceRequestSerial++;
     chartRequestSerial++;
     _aiIndicatorFetchId++;
@@ -2038,8 +2110,9 @@ function showTickerChangeLoadingState(ticker, options = {}) {
     const grid = document.getElementById('signalGrid');
     const premiumGrid = document.getElementById('premiumSignalGrid');
     const loading = document.getElementById('gridLoading');
-    if (grid) grid.innerHTML = '';
-    if (premiumGrid) premiumGrid.innerHTML = '';
+    if (grid || premiumGrid) {
+        renderSignals({}, 'HOLD', `Loading ${normalized} indicator signals...`, 0, 0, { allowEmpty: true });
+    }
     if (loading) loading.classList.remove('hidden');
 
     const summaryEl = document.getElementById('aiSummary');
@@ -2297,8 +2370,30 @@ let currentEditingIndicator = null;
 const GLOBAL_INDICATOR_PREFS_KEY = 'globalIndicatorPrefs';
 const ALL_SIGNAL_NAMES = [
     'RSI', 'MACD', 'EMA Cross', 'ADX Trend', 'Supertrend',
-    'Bollinger', 'VWAP', 'Volume Profile', 'SMA', 'Prior Day High/Low', 'Pivot Points (S/R)', 'Swing Points', 'Mystic Pulse', 'Candle Patterns', 'Botbulls4 News AI'
+    'Bollinger', 'VWAP', 'Volume Profile', 'SMA', 'Prior Day High/Low',
+    'Pivot Points (S/R)', 'Swing Points', 'Mystic Pulse', 'Candle Patterns',
+    'BotBulls1', 'BotBulls2', 'BotBulls3', 'Botbulls4 News AI'
 ];
+const INDICATOR_TOGGLE_KEYS = {
+    'RSI': 'ENABLE_RSI',
+    'MACD': 'ENABLE_MACD',
+    'EMA Cross': 'ENABLE_EMA',
+    'Supertrend': 'ENABLE_SUPERTREND',
+    'Bollinger': 'ENABLE_BOLLINGER',
+    'VWAP': 'ENABLE_VWAP',
+    'Mystic Pulse': 'ENABLE_MYSTIC_PULSE',
+    'ADX Trend': 'ENABLE_ADX_TREND',
+    'SMA': 'ENABLE_SMA',
+    'Prior Day High/Low': 'ENABLE_DAILY_HIGH_LOW',
+    'Pivot Points (S/R)': 'ENABLE_PIVOT_POINTS',
+    'Volume Profile': 'ENABLE_VOLUME_PROFILE',
+    'Swing Points': 'ENABLE_SWING_POINTS',
+    'Candle Patterns': 'ENABLE_CANDLE_PATTERNS',
+    'Botbulls4 News AI': 'ENABLE_AI_SENTIMENT',
+    'BotBulls1': 'ENABLE_BOTBULLS1',
+    'BotBulls2': 'ENABLE_BOTBULLS2',
+    'BotBulls3': 'ENABLE_BOTBULLS3',
+};
 
 function getGlobalIndicatorPrefs() {
     try {
@@ -2306,35 +2401,74 @@ function getGlobalIndicatorPrefs() {
     } catch { return {}; }
 }
 
-function setGlobalIndicatorPref(indicatorName, enabled) {
+function allIndicatorPrefs(enabled = false) {
+    return Object.fromEntries(ALL_SIGNAL_NAMES.map(name => [name, enabled]));
+}
+
+function setGlobalIndicatorPref(indicatorName, enabled, options = {}) {
     const prefs = getGlobalIndicatorPrefs();
     prefs[indicatorName] = enabled;
     localStorage.setItem(GLOBAL_INDICATOR_PREFS_KEY, JSON.stringify(prefs));
     recomputeConfluence();
 
     // Sync to backend via existing toggleIndicator logic in background
-    if (window._lastSignals && window._lastSignals[indicatorName]) {
-        const toggleKey = window._lastSignals[indicatorName].toggle_key;
-        if (toggleKey) {
-            // we do this without triggering the full redraw since recomputeConfluence handles it
-            const wasDebouncing = window._indicatorToggleDebounce;
-            // Prevent fetchDashboard from ruining our optimistic UI
-            if (!wasDebouncing) window._indicatorToggleDebounce = setTimeout(() => { window._indicatorToggleDebounce = null; }, 2000);
-
-            getAuthHeaders().then(headers => {
-                fetchWithTimeout(`${API_BASE}/api/settings/indicators?context=dashboard`, {
-                    method: 'POST',
-                    headers: headers,
-                    body: JSON.stringify({ [toggleKey]: enabled })
-                }, 8000).catch(e => console.error('Error saving setting:', e));
-            });
+    const shouldRefreshChart = (options.refreshChart === true || enabled === true) && indicatorName !== 'Botbulls4 News AI';
+    const shouldRefreshNewsAI = enabled === true && indicatorName === 'Botbulls4 News AI';
+    const refreshChartOnce = async () => {
+        if (!shouldRefreshChart) return;
+        clearTimeout(window._indicatorToggleDebounce);
+        window._indicatorToggleDebounce = null;
+        window._indicatorRefreshRenderAllowed = true;
+        try {
+            if (typeof loadSelectedTickerChart === 'function') {
+                return await loadSelectedTickerChart({ force: true, renderCached: false });
+            } else if (typeof refreshActiveTickerSignals === 'function') {
+                return await refreshActiveTickerSignals({ force: true });
+            }
+            return null;
+        } finally {
+            window._indicatorRefreshRenderAllowed = false;
         }
+    };
+    const refreshNewsAIOnce = async () => {
+        if (!shouldRefreshNewsAI || typeof fetchAIIndicator !== 'function') return;
+        clearTimeout(window._indicatorToggleDebounce);
+        window._indicatorToggleDebounce = null;
+        window._indicatorRefreshRenderAllowed = true;
+        try {
+            await fetchAIIndicator(selectedTicker, currentBackendTf, false);
+        } finally {
+            window._indicatorRefreshRenderAllowed = false;
+        }
+    };
+    const toggleKey = window._lastSignals?.[indicatorName]?.toggle_key || INDICATOR_TOGGLE_KEYS[indicatorName];
+    if (toggleKey) {
+        // we do this without triggering the full redraw since recomputeConfluence handles it
+        const wasDebouncing = window._indicatorToggleDebounce;
+        // Prevent fetchDashboard from ruining our optimistic UI
+        if (!wasDebouncing) window._indicatorToggleDebounce = setTimeout(() => { window._indicatorToggleDebounce = null; }, 2000);
+
+        getAuthHeaders().then(async headers => {
+            const response = await fetchWithTimeout(`${API_BASE}/api/settings/indicators?context=dashboard`, {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify({ [toggleKey]: enabled })
+            }, 8000);
+            if (response.ok) {
+                await refreshChartOnce();
+                await refreshNewsAIOnce();
+            }
+        }).catch(e => console.error('Error saving setting:', e));
+    } else {
+        refreshChartOnce();
+        refreshNewsAIOnce();
     }
 }
 
 async function resetConfluenceIndicatorsToDefaults() {
     try {
-        localStorage.setItem(GLOBAL_INDICATOR_PREFS_KEY, JSON.stringify({}));
+        const disabledPrefs = allIndicatorPrefs(false);
+        localStorage.setItem(GLOBAL_INDICATOR_PREFS_KEY, JSON.stringify(disabledPrefs));
         localStorage.setItem('visibleIndicators', JSON.stringify(_defaultVisibleIndicators));
 
         _visibleIndicators = { ..._defaultVisibleIndicators };
@@ -2350,6 +2484,21 @@ async function resetConfluenceIndicatorsToDefaults() {
             window.lastDashboardData.indicator_overrides = {};
             window.lastDashboardData.indicator_toggle_overrides = {};
             window.lastDashboardData.indicator_parameters = { ...INDICATOR_DEFAULTS };
+            if (window.lastDashboardData.primaryScan?.signals) {
+                for (const signal of Object.values(window.lastDashboardData.primaryScan.signals)) {
+                    signal.enabled = false;
+                }
+            }
+            if (window.lastDashboardData.signals) {
+                for (const signal of Object.values(window.lastDashboardData.signals)) {
+                    signal.enabled = false;
+                }
+            }
+        }
+        if (window._lastSignals) {
+            for (const signal of Object.values(window._lastSignals)) {
+                signal.enabled = false;
+            }
         }
         recomputeConfluence();
     } catch (e) {
@@ -2358,11 +2507,17 @@ async function resetConfluenceIndicatorsToDefaults() {
 
     try {
         const headers = await getAuthHeaders();
-        await fetchWithTimeout(`${API_BASE}/api/settings/indicators?context=dashboard`, {
+        const response = await fetchWithTimeout(`${API_BASE}/api/settings/indicators?context=dashboard`, {
             method: 'POST',
             headers: headers,
             body: JSON.stringify({ reset_confluence: true })
         }, 8000);
+        const resetPayload = response.ok ? await response.json().catch(() => null) : null;
+        if (resetPayload?.toggles && window.lastDashboardData) {
+            window.lastDashboardData.indicator_toggle_overrides = { ...resetPayload.toggles };
+            window.lastDashboardData.indicator_overrides = {};
+            window.lastDashboardData.indicator_parameters = { ...INDICATOR_DEFAULTS };
+        }
 
         clearTimeout(window._indicatorToggleDebounce);
         window._indicatorToggleDebounce = null;
@@ -2534,6 +2689,13 @@ function getCachedNewsAISentiment(ticker, timeframe = currentBackendTf) {
         summary: data.sentiment_summary || data.summary || '',
         confidence: Number(data.sentiment_confidence ?? data.confidence ?? 0),
     };
+}
+
+function renderCachedAIIndicatorForTicker(ticker = selectedTicker, timeframe = currentBackendTf) {
+    const cached = getCachedAIAnalysisForTicker(ticker, timeframe);
+    if (!cached?.data) return false;
+    renderAIIndicatorCard(cached.data, true);
+    return true;
 }
 
 function applyCachedNewsAISignal(signal, options = {}) {
@@ -2783,9 +2945,6 @@ function renderAIIndicatorCard(data, fromCache = false) {
     const catalyst = data.key_catalyst || '';
     const risks = data.risk_factors || '';
     const regime = data.volatility_regime || 'NORMAL';
-    const posUsd = data.position_size_usd;
-    const posPct = data.position_size_pct;
-    const leverage = data.leverage || '1x';
     const headlineCount = data.headline_count || 0;
     const cached = fromCache || data.cached || false;
 
@@ -2793,9 +2952,6 @@ function renderAIIndicatorCard(data, fromCache = false) {
     const sentKeyFactor = data.sentiment_key_factor || 'Mixed Catalysts';
     const sentConfidence = data.sentiment_confidence != null ? data.sentiment_confidence : confidence;
     const sentConfPct = Math.round(sentConfidence * 100);
-
-    const fmtPrice = (v) => (v == null || parseFloat(v) === 0) ? '—' : `$${formatPrice(parseFloat(v), data?.ticker || selectedTicker)}`;
-    const fmtUsd = (v) => (v == null || parseFloat(v) === 0) ? '—' : `$${parseFloat(v).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 
     const confBarWidth = `${confPct}%`;
     const confBarColor = confPct >= 70 ? 'bg-emerald-500' : confPct >= 45 ? 'bg-amber-500' : 'bg-rose-500';
@@ -2897,51 +3053,6 @@ function renderAIIndicatorCard(data, fromCache = false) {
             </div>
         </div>
 
-        <div class="grid grid-cols-3 gap-2 mb-3.5 relative z-10">
-            <div class="p-1.5 rounded-lg bg-white/40 border border-slate-200/50 text-center">
-                <div class="text-[0.5rem] text-slate-400 uppercase tracking-wider mb-0.5">Entry Price</div>
-                <div class="text-[0.65rem] font-black text-slate-800">${fmtPrice(data.entry_price !== undefined ? data.entry_price : data.price)}</div>
-            </div>
-            <div class="p-1.5 rounded-lg bg-white/40 border border-slate-200/50 text-center">
-                <div class="text-[0.5rem] text-slate-400 uppercase tracking-wider mb-0.5">Stop Loss</div>
-                <div class="text-[0.65rem] font-black text-rose-600">${fmtPrice(data.stop_loss)}</div>
-            </div>
-            <div class="p-1.5 rounded-lg bg-white/40 border border-slate-200/50 text-center">
-                <div class="text-[0.5rem] text-slate-400 uppercase tracking-wider mb-0.5">Sell Target</div>
-                <div class="text-[0.65rem] font-black text-emerald-600">${fmtPrice(data.sell_target !== undefined ? data.sell_target : data.target_price)}</div>
-            </div>
-        </div>
-
-        <div class="flex items-center gap-2 mb-3 relative z-10 p-1.5 rounded-lg bg-white/40 border border-violet-200/60">
-            <div class="flex-1 text-center">
-                <div class="text-[0.5rem] text-violet-500 uppercase tracking-wider mb-0.5 flex items-center justify-center gap-1 group/tooltip relative">
-                    Position Size
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-violet-400 hover:text-violet-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-violet-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal normal-case tracking-normal">
-                        Position Size is scaled (10% - 35%) based on the AI's Conviction Score.
-                        <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-violet-900"></div>
-                    </div>
-                </div>
-                <div class="text-[0.6rem] font-black text-violet-900">${(posPct == null || parseFloat(posPct) === 0) ? '—' : `${Math.round(posPct * 100)}%`}</div>
-            </div>
-            <div class="w-px h-6 bg-violet-200/60"></div>
-            <div class="flex-1 text-center">
-                <div class="text-[0.5rem] text-violet-500 uppercase tracking-wider mb-0.5 flex items-center justify-center gap-1 group/tooltip relative">
-                    Leverage
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-violet-400 hover:text-violet-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2.5 bg-violet-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none text-center font-normal normal-case tracking-normal">
-                        Leverage is dictated strictly by the broader market VIX (Volatility).<br><span class="text-violet-300">Low fear = 1.5x<br>High fear = 0.5x</span>
-                        <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-violet-900"></div>
-                    </div>
-                </div>
-                <div class="text-[0.6rem] font-black text-violet-900">${leverage}</div>
-            </div>
-        </div>
-
         <div class="mb-3 p-2 rounded-lg bg-fuchsia-50/50 border border-fuchsia-200/50 text-left relative z-10">
             <span class="text-[0.52rem] font-black text-fuchsia-600 uppercase tracking-widest block mb-0.5">🔥 Key Market Factor</span>
             <p class="text-[0.65rem] font-bold text-fuchsia-800 leading-snug">${sentKeyFactor}</p>
@@ -3019,19 +3130,32 @@ const PREMIUM_INFO = {
     'BotBulls3': 'Heikin-Ashi noise filter + ATR-based trailing stop. Generates buy/sell alerts only on confirmed momentum flips — removing false signals from choppy markets.',
     'Botbulls4 News AI': 'Groq-powered real-time AI news sentiment analysis. Parses current headlines and financial catalysts to determine market direction.',
 };
+const PREMIUM_SIGNAL_NAMES = new Set(['BotBulls1', 'BotBulls2', 'BotBulls3', 'Botbulls4 News AI']);
 
-function renderSignals(signals, action, reason, bullishCount, bearishCount) {
+function buildMissingSignalPlaceholder(name, prefs) {
+    const locallyEnabled = prefs && prefs[name] === true;
+    return {
+        signal: 'NEUTRAL',
+        reason: locallyEnabled ? 'Waiting for refreshed values...' : 'Disabled - click to enable',
+        enabled: locallyEnabled,
+        toggle_key: INDICATOR_TOGGLE_KEYS[name],
+        premium: PREMIUM_SIGNAL_NAMES.has(name),
+    };
+}
+
+function renderSignals(signals, action, reason, bullishCount, bearishCount, options = {}) {
     // If the user is currently rapid-fire toggling indicators, ignore incoming dashboard data
     // to prevent reverting their optimistic UI changes. The final debounce will fetch the real state.
-    if (window._indicatorToggleDebounce) return;
+    if (window._indicatorToggleDebounce && !window._indicatorRefreshRenderAllowed) return;
 
     const grid = document.getElementById('signalGrid');
     const premiumGrid = document.getElementById('premiumSignalGrid');
     const loading = document.getElementById('gridLoading');
+    signals = signals || {};
 
-    if (!signals || Object.keys(signals).length === 0) {
+    if (Object.keys(signals).length === 0 && !options.allowEmpty) {
         if (loading) loading.classList.remove('hidden');
-        grid.innerHTML = '';
+        if (grid) grid.innerHTML = '';
         if (premiumGrid) premiumGrid.innerHTML = '';
         return;
     }
@@ -3041,14 +3165,22 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
     const activeIds = new Set();
     const premiumActiveIds = new Set();
     const prefs = getGlobalIndicatorPrefs();
-
+    const displaySignals = {};
+    for (const name of ALL_SIGNAL_NAMES) {
+        displaySignals[name] = signals[name] || buildMissingSignalPlaceholder(name, prefs);
+    }
     for (const [name, data] of Object.entries(signals)) {
+        if (!displaySignals[name]) displaySignals[name] = data;
+    }
+
+    for (const [name, data] of Object.entries(displaySignals)) {
         const isPremium = data.premium === true;
         const targetGrid = isPremium ? premiumGrid : grid;
         if (!targetGrid) continue;
 
         // Local prefs override backend 'enabled' flag
-        const isEnabled = prefs[name] === true;
+        const hasLocalPref = Object.prototype.hasOwnProperty.call(prefs, name);
+        const isEnabled = hasLocalPref ? prefs[name] === true : data.enabled !== false;
 
         // Sync Botbulls4 News AI with actual cached AI Indicator score before style evaluation
         if (name === 'Botbulls4 News AI') {
@@ -3137,11 +3269,11 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
             if (isPremium) {
                 // Premium card with ⓘ info tooltip
                 card.innerHTML = `
-                    <div class="flex items-center justify-between mb-1">
-                        <div class="flex items-center gap-1.5">
-                            <span class="font-bold text-xs text-amber-800 ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${name}</span>
+                    <div class="flex items-start justify-between">
+                        <div class="flex items-start gap-1">
+                            <span class="font-bold text-amber-800 ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${name}</span>
                             <div class="group/tooltip relative inline-flex items-center">
-                                <svg onclick="event.stopPropagation(); event.preventDefault(); typeof openInfoModal === 'function' ? openInfoModal('${name}') : null" xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <svg onclick="event.stopPropagation(); event.preventDefault(); typeof openInfoModal === 'function' ? openInfoModal('${name}') : null" xmlns="http://www.w3.org/2000/svg" class="text-amber-400 hover:text-amber-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                 </svg>
                                 <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
@@ -3152,7 +3284,7 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
                             <button class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-100/50" 
                                     onclick="event.stopPropagation(); openIndicatorSettings('${name}')"
                                     title="Indicator Settings">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                                 </svg>
@@ -3160,16 +3292,16 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
                         </div>
                         <span class="${iconColor} text-sm font-bold ${!isEnabled ? 'opacity-50 grayscale' : ''} transition-all duration-300">${icon}</span>
                     </div>
-                    <p class="text-[0.65rem] text-amber-700 leading-tight ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${reasonHtml}</p>
+                    <p class="text-amber-700 ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${reasonHtml}</p>
                 `;
             } else {
                 // Standard signal card
                 card.innerHTML = `
-                    <div class="flex items-center justify-between mb-1">
-                        <div class="flex items-center gap-1.5">
-                            <span class="font-bold text-xs text-indigo-900 ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${name}</span>
+                    <div class="flex items-start justify-between">
+                        <div class="flex items-start gap-1">
+                            <span class="font-bold text-indigo-900 ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${name}</span>
                             <div class="group/tooltip relative inline-flex items-center">
-                                <svg onclick="event.stopPropagation(); event.preventDefault(); typeof openInfoModal === 'function' ? openInfoModal('${name}') : null" xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <svg onclick="event.stopPropagation(); event.preventDefault(); typeof openInfoModal === 'function' ? openInfoModal('${name}') : null" xmlns="http://www.w3.org/2000/svg" class="text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                 </svg>
                                 <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
@@ -3178,11 +3310,11 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
                                 </div>
                             </div>
                         </div>
-                        <div class="flex items-center gap-2">
+                        <div class="flex items-center gap-1">
                             <button class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" 
                                     onclick="event.stopPropagation(); openIndicatorSettings('${name}')"
                                     title="Indicator Settings">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                                 </svg>
@@ -3190,7 +3322,7 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount) {
                             <span class="${iconColor} text-sm font-bold ${!isEnabled ? 'opacity-50 grayscale' : ''} transition-all duration-300">${icon}</span>
                         </div>
                     </div>
-                    <p class="text-[0.65rem] text-purple-600 leading-normal ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${reasonHtml}</p>
+                    <p class="text-purple-600 ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${reasonHtml}</p>
                 `;
             }
             card.dataset.cacheKey = cacheKey;
@@ -3522,7 +3654,9 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders) {
                 ? 'text-red-500 font-bold'
                 : 'text-purple-500 font-medium';
 
-        const signalBadge = trade.bullish_count !== undefined
+        const signalBadge = trade.exit_monitoring && trade.exit_signal_label
+            ? trade.exit_signal_label
+            : trade.bullish_count !== undefined
             ? `${trade.bullish_count}B / ${trade.bearish_count}S`
             : '—';
 
@@ -3666,44 +3800,8 @@ async function fetchDashboard(mode = 'heavy', options = {}) {
             updateChartControlState(selectedTicker);
         }
 
-        // Update Alpaca Link / Connected Button State (Identical to bots page)
-        const redirectBtn = document.getElementById('alpacaLinkRedirectBtn');
-        const statusSpan = document.getElementById('alpacaLinkStatus');
-        const dotEl = document.getElementById('alpacaStatusDot');
-        const textEl = document.getElementById('alpacaStatusText');
-        const btnUnlink = document.getElementById('btnUnlinkAlpaca');
-
-        if (redirectBtn && statusSpan && dotEl && textEl && btnUnlink) {
-            if (data.brokerConnected || data.brokerStatus === 'connected') {
-                // Connected to Alpaca: Hide Connect redirect button and show active link pill
-                redirectBtn.classList.add('hidden');
-                statusSpan.classList.remove('hidden');
-                statusSpan.style.display = 'flex';
-
-                statusSpan.className = 'flex items-center justify-center h-9 text-xs font-black px-5 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider bg-emerald-50 text-emerald-600 border-emerald-100';
-                dotEl.className = 'h-2 w-2 rounded-full mr-2 bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]';
-                textEl.textContent = 'Alpaca';
-                btnUnlink.classList.remove('hidden');
-            } else {
-                if (data.has_keys) {
-                    // Keys exist, but the latest account check did not confirm live connection.
-                    redirectBtn.classList.add('hidden');
-                    statusSpan.classList.remove('hidden');
-                    statusSpan.style.display = 'flex';
-
-                    statusSpan.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-amber-50 text-amber-600 border-2 border-amber-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
-                    dotEl.className = "h-2 w-2 rounded-full mr-2 bg-amber-500 animate-pulse";
-                    textEl.textContent = data.brokerStatusReason ? "ALPACA CHECK" : "RETRYING...";
-                    statusSpan.title = data.brokerStatusReason || "Alpaca keys are saved, but the latest account check did not confirm a live connection yet.";
-                    btnUnlink.classList.remove('hidden');
-                } else {
-                    // Not connected / No keys: Show the original Connect Alpaca button
-                    redirectBtn.classList.remove('hidden');
-                    statusSpan.classList.add('hidden');
-                    statusSpan.style.display = '';
-                }
-            }
-        }
+        window.AlpacaStatusCache?.writeFromData(data);
+        window.AlpacaStatusCache?.render();
 
         // Log diagnostic info from backend
         if (data.debug_logs && data.debug_logs.length > 0) {
@@ -3770,8 +3868,11 @@ async function fetchDashboard(mode = 'heavy', options = {}) {
                 summaryEl.classList.remove('italic');
                 if (cardSentSummary) cardSentSummary.textContent = data.sentiment_summary;
             } else {
-                summaryEl.textContent = `Waiting for next ${selectedTicker} scan analysis...`;
-                if (cardSentSummary) cardSentSummary.textContent = `Fetching latest news for ${selectedTicker}...`;
+                const renderedCachedAI = renderCachedAIIndicatorForTicker(selectedTicker, currentBackendTf);
+                if (!renderedCachedAI) {
+                    summaryEl.textContent = `Waiting for next ${selectedTicker} scan analysis...`;
+                    if (cardSentSummary) cardSentSummary.textContent = `Fetching latest news for ${selectedTicker}...`;
+                }
             }
         }
 
@@ -3779,8 +3880,7 @@ async function fetchDashboard(mode = 'heavy', options = {}) {
         // Portfolio stats removed from dashboard (migrated to active bots)
         const sentEl = document.getElementById('aiSentiment');
 
-        // Fetch dynamic Market Sentiment (Fear & Greed)
-        fetchFearAndGreed();
+        // Generic market-context cards are refreshed through the shared cache loop below.
 
         // Update new Macro, Breadth, and Sector trading cards
         updateTradingCards(data);
@@ -3841,10 +3941,10 @@ async function fetchDashboard(mode = 'heavy', options = {}) {
 
         // Signals
         if (activeScan && mode !== 'fast') {
-            window._lastSignals = activeScan.signals || null;
+            if (normalizeTicker(data.primaryTicker) === normalizeTicker(selectedTicker)) {
+                window._lastSignalsTicker = normalizeTicker(selectedTicker);
+            }
             updateSizingPanel(activeScan);
-        } else if (data.signals && mode !== 'fast' && !isStaleTickerResponse) {
-            window._lastSignals = data.signals || null;
         }
 
         if (mode !== 'fast' && !isStaleTickerResponse) {
@@ -4054,7 +4154,11 @@ async function toggleIndicator(key, value) {
 
         clearTimeout(window._indicatorToggleDebounce);
         window._indicatorToggleDebounce = setTimeout(() => {
-            refreshActiveTickerSignals({ force: true });
+            if (typeof loadSelectedTickerChart === 'function') {
+                loadSelectedTickerChart({ force: true, renderCached: false });
+            } else {
+                refreshActiveTickerSignals({ force: true });
+            }
             window._indicatorToggleDebounce = null; // Unblock the heartbeat
         }, 1000);
     } catch (e) {
@@ -4135,6 +4239,9 @@ async function prefetchBotsData() {
 document.addEventListener('DOMContentLoaded', () => {
     console.log('[dashboard] Initializing components...');
     clearLegacyChartLocalStorageCaches();
+    window.AlpacaStatusCache?.render();
+    renderCachedGenericDashboardCards();
+    renderCachedAIIndicatorForTicker(selectedTicker, currentBackendTf);
 
     // Attach event listeners first (DOM is now ready)
     attachEventListeners();
@@ -4198,8 +4305,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 fetchDashboard('heavy', { queueIfBusy: true });
                 const runBackground = async () => {
                     if (!shouldRunDashboardRefresh()) return;
-                    fetchMarketData();
-                    fetchMacroEvents();
+                    fetchGenericDashboardCards();
                     await loadOllamaModels();
                 };
                 if (window.requestIdleCallback) {
@@ -4218,7 +4324,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }, REFRESH_INTERVAL);
             setInterval(() => {
                 if (!shouldRunDashboardRefresh()) return;
-                fetchMarketData();
+                fetchGenericDashboardCards();
             }, 60000);
         }
     }, 50);
@@ -4226,7 +4332,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('visibilitychange', () => {
         if (shouldRunDashboardRefresh()) {
             fetchDashboard('fast');
-            fetchMarketData();
+            fetchGenericDashboardCards();
             fetchLivePriceForActiveTicker();
             refreshCompletedCandlesIfDue();
         }
@@ -4761,80 +4867,154 @@ async function saveIndicatorSettings() {
 function updateTradingCards(data) {
     if (!data || !data.watchlistScans) return;
 
-    // 1. Calculate Market Breadth dynamically from watchlist/botlist scans
-    let totalTickers = 0;
-    let bullishCount = 0;
-
-    // Combine watchlist and botScans to get a broad view
-    const allScans = { ...data.watchlistScans, ...data.botScans };
-
-    for (const ticker in allScans) {
-        const scan = allScans[ticker];
-        if (scan && scan.sentiment_score !== undefined) {
-            totalTickers++;
-            if (scan.sentiment_score > 0) bullishCount++;
-        }
+    // Market breadth is intentionally updated only from /api/market-data.
+    // It must remain market-context data, not portfolio/watchlist/bot-profile data.
+    if (!window._marketBreadthLoaded) {
+        setBreadthSummaryCard(null);
     }
+}
 
+function setBreadthSummaryCard(breadth) {
     const breadthScoreEl = document.getElementById('breadthScore');
     const breadthLabelEl = document.getElementById('breadthLabel');
+    const breadthSubLabelEl = document.getElementById('breadthSubLabel');
     const breadthProgressEl = document.getElementById('breadthProgress');
+    if (!breadthScoreEl || !breadthProgressEl || !breadthLabelEl) return;
 
-    if (breadthScoreEl && breadthProgressEl) {
-        if (totalTickers > 0) {
-            const breadthPct = Math.round((bullishCount / totalTickers) * 100);
-            breadthScoreEl.textContent = `${breadthPct}%`;
-            breadthProgressEl.setAttribute('stroke-dasharray', `${breadthPct}, 100`);
-
-            // Color mapping based on breadth
-            if (breadthPct >= 60) {
-                breadthProgressEl.className.baseVal = "text-emerald-500";
-                breadthLabelEl.textContent = "Bullish Trend";
-                breadthLabelEl.className = "text-xs font-bold text-emerald-600 mt-2 uppercase tracking-wide";
-            } else if (breadthPct <= 40) {
-                breadthProgressEl.className.baseVal = "text-red-500";
-                breadthLabelEl.textContent = "Bearish Trend";
-                breadthLabelEl.className = "text-xs font-bold text-red-600 mt-2 uppercase tracking-wide";
-            } else {
-                breadthProgressEl.className.baseVal = "text-yellow-500";
-                breadthLabelEl.textContent = "Neutral Trend";
-                breadthLabelEl.className = "text-xs font-bold text-yellow-600 mt-2 uppercase tracking-wide";
-            }
-        } else {
-            breadthScoreEl.textContent = `--%`;
-            breadthProgressEl.setAttribute('stroke-dasharray', `0, 100`);
-            breadthLabelEl.textContent = "Waiting for data...";
-        }
+    const total = Number(breadth?.advancing || 0) + Number(breadth?.declining || 0);
+    const analyzedCount = Number(breadth?.analyzed_count || breadth?.tickers?.length || 0);
+    if (!breadth || analyzedCount <= 0) {
+        breadthScoreEl.textContent = `--%`;
+        breadthProgressEl.setAttribute('stroke-dasharray', `0, 100`);
+        breadthProgressEl.className.baseVal = "text-slate-300";
+        breadthLabelEl.textContent = "Loading Market...";
+        breadthLabelEl.className = "text-xs font-bold text-slate-500 mt-2 uppercase tracking-wide";
+        if (breadthSubLabelEl) breadthSubLabelEl.textContent = "Composite breadth score";
+        return;
     }
 
-    // 2. Sector Heatmap (Populated dynamically via fetchMarketData live averages)
-    // We let the fetchMarketData live updates control this container to ensure perfect, mathematical alignment.
+    const breadthPct = Number.isFinite(Number(breadth.breadth_score))
+        ? Number(breadth.breadth_score)
+        : Number.isFinite(Number(breadth.advance_pct))
+            ? Number(breadth.advance_pct)
+        : total > 0
+            ? Math.round((Number(breadth.advancing || 0) / total) * 100)
+            : 50;
+    breadthScoreEl.textContent = `${breadthPct}%`;
+    breadthProgressEl.setAttribute('stroke-dasharray', `${breadthPct}, 100`);
+    if (breadthSubLabelEl) breadthSubLabelEl.textContent = "Composite breadth score";
 
-    // 3. Macro Events (Mocked high-impact events)
-    // Could eventually be populated by a finnhub/alphavantage economic calendar API.
+    if (breadthPct >= 65) {
+        breadthProgressEl.className.baseVal = "text-emerald-500";
+        breadthLabelEl.textContent = "Healthy Breadth";
+        breadthLabelEl.className = "text-xs font-bold text-emerald-600 mt-2 uppercase tracking-wide";
+    } else if (breadthPct <= 45) {
+        breadthProgressEl.className.baseVal = "text-red-500";
+        breadthLabelEl.textContent = "Weak Breadth";
+        breadthLabelEl.className = "text-xs font-bold text-red-600 mt-2 uppercase tracking-wide";
+    } else {
+        breadthProgressEl.className.baseVal = "text-yellow-500";
+        breadthLabelEl.textContent = "Mixed Breadth";
+        breadthLabelEl.className = "text-xs font-bold text-yellow-600 mt-2 uppercase tracking-wide";
+    }
 }
 let lastFngScore = null;
 let lastFngComponents = [];
 let lastFngFetch = 0;
 
+function applyFearAndGreedData(data) {
+    const score = data?.score ?? data?.raw_score?.score;
+    if (score === undefined || score === null) return false;
+    lastFngScore = Number(score);
+    lastFngComponents = data.components || data.raw_score?.components || [];
+    lastFngFetch = Date.now();
+    updateFearAndGreedUI(lastFngScore);
+    return true;
+}
+
+function readCachedGenericDashboardCards() {
+    try {
+        const cached = JSON.parse(sessionStorage.getItem(GENERIC_DASHBOARD_CARDS_CACHE_KEY) || 'null');
+        if (!cached || !cached.payload || !cached.fetchedAt) return null;
+        return cached;
+    } catch (e) {
+        console.warn('[dashboard] Could not read generic cards cache:', e);
+        return null;
+    }
+}
+
+function writeCachedGenericDashboardCards(payload) {
+    try {
+        sessionStorage.setItem(GENERIC_DASHBOARD_CARDS_CACHE_KEY, JSON.stringify({
+            payload,
+            fetchedAt: Date.now()
+        }));
+    } catch (e) {
+        console.warn('[dashboard] Could not save generic cards cache:', e);
+    }
+}
+
+async function applyGenericDashboardCardsPayload(payload) {
+    if (!payload) return false;
+    if (payload.fear_greed) applyFearAndGreedData(payload.fear_greed);
+    if (payload.market_data) await fetchMarketData(payload.market_data);
+    if (payload.macro_events) await fetchMacroEvents(payload.macro_events);
+    return Boolean(payload.fear_greed || payload.market_data || payload.macro_events);
+}
+
+async function renderCachedGenericDashboardCards(maxAgeMs = Infinity) {
+    const cached = readCachedGenericDashboardCards();
+    if (!cached) return false;
+    if (Date.now() - cached.fetchedAt > maxAgeMs) return false;
+    return applyGenericDashboardCardsPayload(cached.payload);
+}
+
 async function fetchFearAndGreed() {
     const now = Date.now();
-    // Cache for 5 minutes
-    if (lastFngScore !== null && (now - lastFngFetch < 300000)) {
+    // Browser reads the server-wide hourly cache; keep a short client cache to avoid duplicate paints.
+    if (lastFngScore !== null && (now - lastFngFetch < 60000)) {
         updateFearAndGreedUI(lastFngScore);
         return;
     }
     try {
-        const res = await fetch("https://feargreedchart.com/api/");
+        const headers = await getAuthHeaders();
+        const res = await fetch(`${API_BASE}/api/fear-greed`, { headers });
+        if (!res.ok) return;
         const data = await res.json();
-        if (data && data.score && data.score.score !== undefined) {
-            lastFngScore = data.score.score;
-            lastFngComponents = data.score.components || [];
-            lastFngFetch = now;
-            updateFearAndGreedUI(lastFngScore);
-        }
+        applyFearAndGreedData(data);
     } catch (e) {
         console.error("Failed to fetch Fear and Greed:", e);
+    }
+}
+
+async function fetchGenericDashboardCards(options = {}) {
+    if (!shouldRunDashboardRefresh()) {
+        return;
+    }
+    const { allowRecentCache = true, paintCachedFirst = true } = options;
+    const cached = readCachedGenericDashboardCards();
+    if (cached && paintCachedFirst) {
+        await applyGenericDashboardCardsPayload(cached.payload);
+    }
+    if (
+        allowRecentCache
+        && cached
+        && Date.now() - cached.fetchedAt < GENERIC_DASHBOARD_CARDS_CLIENT_TTL_MS
+    ) {
+        return;
+    }
+    try {
+        const headers = await getAuthHeaders();
+        const req = await fetch(`${API_BASE}/api/generic-dashboard-cards`, { headers });
+        if (!req.ok) throw new Error(`Generic card cache request failed (${req.status})`);
+        const payload = await req.json();
+        writeCachedGenericDashboardCards(payload);
+        await applyGenericDashboardCardsPayload(payload);
+    } catch (e) {
+        console.warn("[dashboard] Combined generic-card cache failed; falling back to individual cached endpoints.", e);
+        fetchFearAndGreed();
+        fetchMarketData();
+        fetchMacroEvents();
     }
 }
 
@@ -4945,7 +5125,13 @@ function openFngModal() {
 
 function openMacroModal() {
     const modal = document.getElementById('macroModal');
-    if (modal) modal.classList.remove('hidden');
+    if (modal) {
+        switchMacroTab('calendar');
+        modal.classList.remove('hidden');
+        if (!window._macroDataLoaded) {
+            fetchMacroEvents();
+        }
+    }
 }
 
 function closeMacroModal() {
@@ -4989,17 +5175,20 @@ function closeBreadthModal() {
     if (modal) modal.classList.add('hidden');
 }
 
-async function fetchMarketData() {
+async function fetchMarketData(cachedData = null) {
     if (!shouldRunDashboardRefresh()) {
         return;
     }
     try {
-        const headers = await getAuthHeaders();
-        const req = await fetch(`${API_BASE}/api/market-data`, {
-            headers: headers
-        });
-        if (!req.ok) return;
-        const data = await req.json();
+        let data = cachedData;
+        if (!data) {
+            const headers = await getAuthHeaders();
+            const req = await fetch(`${API_BASE}/api/market-data`, {
+                headers: headers
+            });
+            if (!req.ok) return;
+            data = await req.json();
+        }
 
         // Update Sector Heatmap Modal (Dynamic Webull-Style Grid)
         if (data.sectors) {
@@ -5007,6 +5196,8 @@ async function fetchMarketData() {
             const techList = ["AAPL", "MSFT", "GOOG", "NVDA", "META", "TSLA", "AVGO", "AMD", "QCOM", "NFLX", "AMZN", "ADBE", "CRM", "INTC", "CSCO", "ORCL"];
             const cryptoList = ["BTC-USD", "ETH-USD", "SOL-USD", "ADA-USD", "XRP-USD", "DOGE-USD", "DOT-USD", "LINK-USD", "LTC-USD", "NEAR-USD", "BCH-USD", "AVAX-USD"];
             const energyList = ["XOM", "CVX", "COP", "OXY", "SLB", "CAT", "GE", "HON", "UNP", "LMT", "DE", "MMM"];
+            const financialsList = ["JPM", "BAC", "WFC", "MS", "GS", "V", "MA", "AXP", "BLK", "C", "SCHW", "HDB"];
+            const healthcareList = ["LLY", "UNH", "JNJ", "MRK", "ABBV", "PFE", "WMT", "COST", "PG", "KO", "PEP", "NKE", "MCD", "EL"];
 
             const calcAvg = (list) => {
                 let sum = 0;
@@ -5023,28 +5214,29 @@ async function fetchMarketData() {
             const techAvg = calcAvg(techList);
             const cryptoAvg = calcAvg(cryptoList);
             const energyAvg = calcAvg(energyList);
+            const financialsAvg = calcAvg(financialsList);
+            const healthcareAvg = calcAvg(healthcareList);
 
             const mainSectorContainer = document.getElementById('sectorHeatmapContainer');
             if (mainSectorContainer) {
                 const getPill = (avg) => {
                     const isUp = avg >= 0;
                     const pillColor = isUp ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700';
-                    return `<span class="px-2 py-1 rounded text-xs font-bold ${pillColor}">${isUp ? '+' : ''}${avg.toFixed(2)}%</span>`;
+                    return `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold ${pillColor}">${isUp ? '+' : ''}${avg.toFixed(2)}%</span>`;
                 };
+                const row = (label, avg) => `
+                    <div class="flex items-center justify-between gap-2 leading-tight">
+                        <span class="text-[11px] font-bold text-slate-600 truncate">${label}</span>
+                        ${getPill(avg)}
+                    </div>
+                `;
 
                 mainSectorContainer.innerHTML = `
-                    <div class="flex items-center justify-between">
-                        <span class="text-sm font-bold text-slate-600">Technology</span>
-                        ${getPill(techAvg)}
-                    </div>
-                    <div class="flex items-center justify-between">
-                        <span class="text-sm font-bold text-slate-600">Crypto</span>
-                        ${getPill(cryptoAvg)}
-                    </div>
-                    <div class="flex items-center justify-between">
-                        <span class="text-sm font-bold text-slate-600">Energy & Industrials</span>
-                        ${getPill(energyAvg)}
-                    </div>
+                    ${row('Technology', techAvg)}
+                    ${row('Financials', financialsAvg)}
+                    ${row('Healthcare & Retail', healthcareAvg)}
+                    ${row('Energy & Industrials', energyAvg)}
+                    ${row('Crypto', cryptoAvg)}
                 `;
             }
 
@@ -5069,6 +5261,50 @@ async function fetchMarketData() {
                 "CVX": 2, "SOL-USD": 2
             };
 
+            const renderSectorSummaryCard = (summary) => {
+                if (!summary) return '';
+                const benchmarkMove = Number(summary.benchmark_change_pct);
+                const avgMove = Number(summary.avg_constituent_change_pct || 0);
+                const participation = Number(summary.participation_pct || 0);
+                const isBenchmarkUp = Number.isFinite(benchmarkMove) ? benchmarkMove >= 0 : avgMove >= 0;
+                const moveText = Number.isFinite(benchmarkMove)
+                    ? `${benchmarkMove >= 0 ? '+' : ''}${benchmarkMove.toFixed(2)}%`
+                    : 'N/A';
+                const moveClass = isBenchmarkUp ? 'text-emerald-600 bg-emerald-50 border-emerald-100' : 'text-red-600 bg-red-50 border-red-100';
+                const participationClass = participation >= 60
+                    ? 'text-emerald-600'
+                    : participation <= 40
+                        ? 'text-red-600'
+                        : 'text-amber-600';
+                return `
+                    <div class="col-span-full rounded-xl border border-slate-200 bg-white/90 px-3 py-2 shadow-sm">
+                        <div class="flex items-start justify-between gap-2">
+                            <div>
+                                <p class="text-[11px] font-black text-slate-800 uppercase tracking-wide">${summary.label || 'Sector'} Summary</p>
+                                <p class="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Proxy: ${summary.benchmark || '--'}</p>
+                            </div>
+                            <span class="px-2 py-1 rounded-lg border text-[10px] font-black ${moveClass}">${moveText}</span>
+                        </div>
+                        <div class="mt-2 grid grid-cols-3 gap-2 text-center">
+                            <div>
+                                <p class="text-[9px] font-black text-slate-400 uppercase">Positive</p>
+                                <p class="text-sm font-black text-emerald-600">${summary.positive_count ?? 0}</p>
+                            </div>
+                            <div>
+                                <p class="text-[9px] font-black text-slate-400 uppercase">Negative</p>
+                                <p class="text-sm font-black text-red-600">${summary.negative_count ?? 0}</p>
+                            </div>
+                            <div>
+                                <p class="text-[9px] font-black text-slate-400 uppercase">Part.</p>
+                                <p class="text-sm font-black ${participationClass}">${participation}%</p>
+                            </div>
+                        </div>
+                        <p class="mt-1 text-[10px] text-slate-400 font-bold">Analyzed: ${summary.analyzed_count ?? 0} • Avg constituents: ${avgMove >= 0 ? '+' : ''}${avgMove.toFixed(2)}%${summary.flat_count ? ` • Flat: ${summary.flat_count}` : ''}</p>
+                    </div>
+                `;
+            };
+            const sectorSummary = data.sector_summary || {};
+
             for (const [sectorName, tickers] of Object.entries(SECTOR_TICKERS)) {
                 const gridContainer = document.getElementById(`view-${sectorName}`);
                 if (!gridContainer) continue;
@@ -5080,7 +5316,7 @@ async function fetchMarketData() {
                     return wB - wA;
                 });
 
-                let html = '';
+                let html = renderSectorSummaryCard(sectorSummary[sectorName]);
                 sortedTickers.forEach(ticker => {
                     const pct = data.sectors[ticker] !== undefined ? data.sectors[ticker] : 0.0;
                     const cleanSymbol = ticker.replace('-USD', '');
@@ -5101,17 +5337,17 @@ async function fetchMarketData() {
 
                     // Sizing and spanning classes based on relative market cap weight
                     const weight = TICKER_WEIGHTS[ticker] || 1;
-                    let spanClass = 'col-span-1 row-span-1 p-1.5 md:p-2 min-h-[50px] flex flex-col justify-center';
+                    let spanClass = 'col-span-1 row-span-1 p-1.5 min-h-[42px] flex flex-col justify-center';
                     let fontClass = 'text-xs font-bold';
                     let changeFontClass = 'text-[9px]';
 
                     if (weight === 3) {
-                        spanClass = 'col-span-2 row-span-2 p-3 md:p-4 flex flex-col justify-center min-h-[108px]';
-                        fontClass = 'text-base md:text-lg font-black tracking-widest';
-                        changeFontClass = 'text-xs font-bold';
+                        spanClass = 'col-span-2 row-span-2 p-2 md:p-3 flex flex-col justify-center min-h-[88px]';
+                        fontClass = 'text-sm md:text-base font-black tracking-widest';
+                        changeFontClass = 'text-[10px] font-bold';
                     } else if (weight === 2) {
-                        spanClass = 'col-span-2 row-span-1 p-2 md:p-3 flex flex-col justify-center min-h-[50px]';
-                        fontClass = 'text-sm font-black tracking-wider';
+                        spanClass = 'col-span-2 row-span-1 p-1.5 md:p-2 flex flex-col justify-center min-h-[42px]';
+                        fontClass = 'text-xs md:text-sm font-black tracking-wider';
                         changeFontClass = 'text-[10px] font-bold';
                     }
 
@@ -5133,27 +5369,37 @@ async function fetchMarketData() {
 
         // Update Market Breadth Modal
         if (data.breadth) {
+            window._marketBreadthLoaded = true;
+            setBreadthSummaryCard(data.breadth);
+            const universeEl = document.getElementById('bm-universe-label');
+            if (universeEl) {
+                const analyzed = data.breadth.analyzed_count ?? data.breadth.tickers?.length ?? 0;
+                const universe = data.breadth.universe || 'Fixed market benchmark universe';
+                universeEl.innerText = `${universe} • ${analyzed}/${data.breadth.universe_count || analyzed} symbols analyzed`;
+            }
             document.getElementById('bm-adv').innerText = data.breadth.advancing;
             document.getElementById('bm-dec').innerText = data.breadth.declining;
 
             const total = data.breadth.advancing + data.breadth.declining;
-            const adv_pct = total > 0 ? (data.breadth.advancing / total) * 100 : 50;
-            const dec_pct = total > 0 ? (data.breadth.declining / total) * 100 : 50;
+            const adv_pct = Number.isFinite(Number(data.breadth.advance_pct))
+                ? Number(data.breadth.advance_pct)
+                : (total > 0 ? (data.breadth.advancing / total) * 100 : 50);
+            const dec_pct = Math.max(0, 100 - adv_pct);
 
             document.getElementById('bm-adv-bar').style.width = `${adv_pct}%`;
             document.getElementById('bm-dec-bar').style.width = `${dec_pct}%`;
 
             if (data.breadth.declining > 0) {
-                document.getElementById('bm-ad-ratio').innerText = `Ratio: ${(data.breadth.advancing / data.breadth.declining).toFixed(2)}`;
+                document.getElementById('bm-ad-ratio').innerText = `Ratio: ${(data.breadth.advancing / data.breadth.declining).toFixed(2)} • ${Math.round(adv_pct)}% advancing${data.breadth.unchanged ? ` • ${data.breadth.unchanged} unchanged` : ''}`;
             } else {
-                document.getElementById('bm-ad-ratio').innerText = `Ratio: ${data.breadth.advancing} Adv / 0 Dec`;
+                document.getElementById('bm-ad-ratio').innerText = `Ratio: ${data.breadth.advancing} Adv / 0 Dec${data.breadth.unchanged ? ` • ${data.breadth.unchanged} unchanged` : ''}`;
             }
 
             const ad_label = document.getElementById('bm-ad-label');
-            if (adv_pct > 60) {
+            if (adv_pct >= 60) {
                 ad_label.innerText = 'Bullish Bias';
                 ad_label.className = 'text-emerald-500 bg-emerald-50 text-[10px] px-2 py-1 rounded font-bold uppercase tracking-widest shadow-sm';
-            } else if (dec_pct > 60) {
+            } else if (dec_pct >= 60) {
                 ad_label.innerText = 'Bearish Bias';
                 ad_label.className = 'text-red-500 bg-red-50 text-[10px] px-2 py-1 rounded font-bold uppercase tracking-widest shadow-sm';
             } else {
@@ -5241,12 +5487,48 @@ async function fetchMarketData() {
     }
 }
 
-async function fetchMacroEvents() {
+function macroEventActualDisplay(event, isPast) {
+    const hasActual = event.actual !== undefined && event.actual !== null && String(event.actual).trim() !== '';
+    if (hasActual) {
+        return {
+            text: event.actual,
+            cls: 'text-indigo-600 font-black',
+            note: event.actual_period ? `Period: ${event.actual_period}` : '',
+        };
+    }
+    if (!isPast) {
+        return { text: 'Pending', cls: 'text-slate-400 italic', note: '' };
+    }
+    if (event.actual_status === 'not_available') {
+        const reason = event.actual_unavailable_reason || 'Actual not available from source';
+        return { text: 'Not available', cls: 'text-slate-500 font-bold', note: reason };
+    }
+    return { text: 'Not available', cls: 'text-slate-500 font-bold', note: 'Calendar source did not provide actual value.' };
+}
+
+function macroEventSurpriseDisplay(event) {
+    if (!event.surprise) {
+        return { text: 'N/A', cls: 'text-slate-400 font-semibold' };
+    }
+    const cls = event.surprise_bias === 'positive'
+        ? 'text-emerald-600 font-black'
+        : event.surprise_bias === 'negative'
+            ? 'text-red-600 font-black'
+            : 'text-slate-600 font-bold';
+    return { text: event.surprise, cls };
+}
+
+async function fetchMacroEvents(cachedData = null) {
     try {
-        const headers = await getAuthHeaders();
-        const req = await fetch(`${API_BASE}/api/macro-events`, { headers });
-        if (!req.ok) return;
-        const data = await req.json();
+        let data = cachedData;
+        if (!data) {
+            const headers = await getAuthHeaders();
+            const req = await fetch(`${API_BASE}/api/macro-events`, { headers });
+            if (!req.ok) return;
+            data = await req.json();
+        }
+        window._macroDataLoaded = true;
+        window._macroData = data;
 
         const loader = document.getElementById('macro-events-loading');
         if (loader) loader.style.display = 'none';
@@ -5301,47 +5583,103 @@ async function fetchMacroEvents() {
             indList.innerHTML = html;
         }
 
-        // Render Calendar
+        // Render Calendar (All week data grouped by day, past vs upcoming styled)
         const calList = document.getElementById('macro-calendar-list');
         const line = document.getElementById('macro-timeline-line');
         if (calList && data.calendar) {
             let html = '';
-            if (data.calendar.length > 0) {
-                line.classList.remove('hidden');
-                data.calendar.forEach(e => {
+            const sortedCalendar = [...data.calendar].sort((a, b) => new Date(a.date) - new Date(b.date));
+            if (sortedCalendar.length > 0) {
+                if (line) line.classList.remove('hidden');
+                const now = new Date();
+                let currentGroupDay = '';
+
+                sortedCalendar.forEach(e => {
                     const dateObj = new Date(e.date);
-                    const dayStr = dateObj.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+                    const dayGroupStr = dateObj.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
                     const timeStr = dateObj.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+                    const isPast = dateObj < now;
+
+                    if (dayGroupStr !== currentGroupDay) {
+                        currentGroupDay = dayGroupStr;
+                        const isTodayGroup = dateObj.toDateString() === now.toDateString();
+                        const headerBg = isTodayGroup ? 'bg-indigo-600 text-white ring-2 ring-indigo-200' : 'bg-slate-200/80 text-slate-700';
+                        html += `
+                        <div class="sticky top-0 z-10 py-1.5 px-3 rounded-md text-xs font-black uppercase tracking-wider mb-5 ${headerBg} shadow-sm inline-block">
+                            ${dayGroupStr} ${isTodayGroup ? '• Today' : ''}
+                        </div>`;
+                    }
+
+                    let impactColor = 'bg-red-100 text-red-600';
+                    let dotStyle = 'bg-red-500 ring-red-100 animate-pulse';
+                    if (e.impact === 'Medium' || e.impact === 'Medium/Low') {
+                        impactColor = 'bg-orange-100 text-orange-600';
+                        dotStyle = 'bg-orange-500 ring-orange-100';
+                    } else if (e.impact === 'Low') {
+                        impactColor = 'bg-yellow-100 text-yellow-600';
+                        dotStyle = 'bg-yellow-500 ring-yellow-100';
+                    }
+
+                    if (isPast) {
+                        dotStyle = 'bg-slate-300 ring-slate-100';
+                    }
+
+                    const cardBg = isPast ? 'bg-slate-50/70 border-slate-100 opacity-80' : 'bg-white border-indigo-100/80 shadow-sm ring-1 ring-indigo-50 hover:shadow-md';
+                    const statusBadge = isPast
+                        ? `<span class="px-1.5 py-0.5 rounded text-[9px] font-black bg-slate-200 text-slate-500 uppercase tracking-widest ml-2">Completed</span>`
+                        : `<span class="px-1.5 py-0.5 rounded text-[9px] font-black bg-indigo-100 text-indigo-700 uppercase tracking-widest ml-2">Upcoming</span>`;
+                    const actualDisplay = macroEventActualDisplay(e, isPast);
+                    const surpriseDisplay = macroEventSurpriseDisplay(e);
+                    const sourceHtml = e.actual_source
+                        ? `<p class="mt-2 text-[9px] font-bold text-slate-400 uppercase tracking-wide">Actual source: ${e.actual_source}${e.actual_period ? ` • ${e.actual_period}` : ''}</p>`
+                        : '';
+                    const actualNoteHtml = actualDisplay.note
+                        ? `<p class="mt-1 text-[9px] font-medium text-slate-400 leading-snug">${actualDisplay.note}</p>`
+                        : '';
+                    const macroReadHtml = e.macro_read
+                        ? `<div class="mt-3 rounded-lg border border-indigo-100 bg-indigo-50/70 px-3 py-2 text-[10px] font-bold text-indigo-800 leading-snug">Quant read: ${e.macro_read}</div>`
+                        : '';
 
                     html += `
-                    <div class="relative pl-12 mb-8">
-                        <div class="absolute left-[-5px] top-1.5 w-3 h-3 bg-red-500 rounded-full border-4 border-white shadow-sm ring-2 ring-red-100"></div>
-                        <div class="bg-slate-50 border border-slate-100 rounded-lg p-4 hover:shadow-md transition-all">
-                            <div class="flex items-center justify-between mb-2">
-                                <span class="text-xs font-black text-slate-500 uppercase tracking-widest">${dayStr} • ${timeStr}</span>
-                                <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-600 uppercase">${e.impact}</span>
-                            </div>
-                            <h4 class="text-lg font-bold text-slate-800 mb-1">${e.title}</h4>
-                            <div class="flex items-center gap-4 text-sm font-medium text-slate-600 bg-white p-2 rounded-md border border-slate-100 mt-3">
-                                <div><span class="text-slate-400 text-xs">Previous:</span> ${e.previous || 'N/A'}</div>
-                                <div><span class="text-slate-400 text-xs">Forecast:</span> ${e.forecast || 'N/A'}</div>
-                            </div>
+                    <div class="relative pl-12 mb-6">
+                        <div class="absolute left-[-5px] top-4 w-3.5 h-3.5 ${dotStyle} rounded-full border-2 border-white shadow-sm ring-4"></div>
+                        <div class="border rounded-xl p-4 transition-all ${cardBg}">
+                            <div class="flex items-center justify-between mb-1.5">
+                                <div class="flex items-center">
+                                    <span class="text-xs font-black text-slate-500 uppercase tracking-wider">${timeStr} • ${e.country || 'USD'}</span>
+                                    ${statusBadge}
+                                </div>
+	                                <span class="px-2 py-0.5 rounded text-[10px] font-black ${impactColor} uppercase">${e.impact || 'High'}</span>
+	                            </div>
+	                            <h4 class="text-base font-bold text-slate-800 mb-2">${e.title}</h4>
+	                            <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs font-medium bg-slate-50/80 p-2.5 rounded-lg border border-slate-100/80">
+	                                <div><span class="text-slate-400 font-bold block text-[10px] uppercase">Previous</span><span class="text-slate-700 font-semibold">${e.previous || 'N/A'}</span></div>
+	                                <div><span class="text-slate-400 font-bold block text-[10px] uppercase">Forecast</span><span class="text-slate-700 font-semibold">${e.forecast || 'N/A'}</span></div>
+	                                <div><span class="text-slate-400 font-bold block text-[10px] uppercase">Actual</span><span class="${actualDisplay.cls}">${actualDisplay.text}</span>${actualNoteHtml}</div>
+	                                <div><span class="text-slate-400 font-bold block text-[10px] uppercase">Surprise</span><span class="${surpriseDisplay.cls}">${surpriseDisplay.text}</span></div>
+	                            </div>
+                                ${sourceHtml}
+                                ${macroReadHtml}
                         </div>
                     </div>`;
                 });
             } else {
-                html = `<p class="text-center text-slate-500 font-bold mt-10">No high impact USD events this week.</p>`;
-                line.classList.add('hidden');
+                html = `<p class="text-center text-slate-500 font-bold mt-10">No high impact USD events scheduled for this week.</p>`;
+                if (line) line.classList.add('hidden');
             }
             calList.innerHTML = html;
         }
 
-        // Render mini dashboard card with live calendar events
+        // Render mini dashboard card with upcoming calendar events
         const miniContainer = document.getElementById('macroEventsContainer');
         if (miniContainer && data.calendar) {
             let miniHtml = '';
-            if (data.calendar.length > 0) {
-                const topEvents = data.calendar.slice(0, 3);
+            const sortedCalendar = [...data.calendar].sort((a, b) => new Date(a.date) - new Date(b.date));
+            const now = new Date();
+            const upcomingEvents = sortedCalendar.filter(e => new Date(e.date) >= now);
+
+            if (upcomingEvents.length > 0) {
+                const topEvents = upcomingEvents.slice(0, 3);
                 topEvents.forEach(e => {
                     let badgeColor = 'bg-red-100 text-red-600';
                     if (e.impact === 'Medium' || e.impact === 'Medium/Low') {
@@ -5350,23 +5688,45 @@ async function fetchMacroEvents() {
                         badgeColor = 'bg-yellow-100 text-yellow-600';
                     }
 
-                    // Format date & time dynamically for the mini card
                     const dateObj = new Date(e.date);
-                    const today = new Date();
                     let dayStr = dateObj.toLocaleDateString(undefined, { weekday: 'short' });
-                    if (dateObj.toDateString() === today.toDateString()) {
+                    if (dateObj.toDateString() === now.toDateString()) {
                         dayStr = 'Today';
+                    } else if (dateObj.toDateString() === new Date(now.getTime() + 86400000).toDateString()) {
+                        dayStr = 'Tomorrow';
                     }
                     const timeStr = dateObj.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
                     const country = e.country || 'USD';
 
                     miniHtml += `
-                        <div class="flex flex-col gap-0.5 w-full">
-                            <div class="flex items-center justify-between text-[8px] text-slate-400 font-bold uppercase tracking-wider">
-                                <span>${dayStr} • ${timeStr} • ${country}</span>
+                        <div class="flex flex-col gap-0.5 w-full py-0.5 border-b border-slate-100/60 last:border-0">
+                            <div class="flex items-center justify-between text-[8.5px] text-slate-500 font-bold uppercase tracking-wider">
+                                <span class="flex items-center gap-1.5 truncate">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse shrink-0"></span>
+                                    <span>${dayStr} • ${timeStr} • ${country}</span>
+                                </span>
                                 <span class="px-1.5 py-0.1 rounded-[2.5px] text-[7px] font-black ${badgeColor} uppercase shrink-0">${e.impact || 'High'}</span>
                             </div>
-                            <span class="font-bold text-slate-700 text-[10.5px] truncate w-full" title="${e.title}">${e.title}</span>
+                            <span class="font-bold text-slate-800 text-[11px] truncate w-full group-hover:text-indigo-600 transition-colors" title="${e.title}">${e.title}</span>
+                        </div>
+                    `;
+                });
+            } else if (sortedCalendar.length > 0) {
+                // All weekly events have passed, display the 3 most recent completed events
+                const pastEvents = sortedCalendar.slice(-3);
+                miniHtml = `<div class="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1 text-center">All weekly events completed</div>`;
+                pastEvents.forEach(e => {
+                    let badgeColor = e.impact === 'High' ? 'bg-red-100 text-red-600' : (e.impact === 'Medium' ? 'bg-orange-100 text-orange-600' : 'bg-yellow-100 text-yellow-600');
+                    const dateObj = new Date(e.date);
+                    const dayStr = dateObj.toLocaleDateString(undefined, { weekday: 'short' });
+                    const timeStr = dateObj.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+                    miniHtml += `
+                        <div class="flex flex-col gap-0.5 w-full py-0.5 border-b border-slate-100/60 last:border-0 opacity-75">
+                            <div class="flex items-center justify-between text-[8px] text-slate-400 font-bold uppercase tracking-wider">
+                                <span class="truncate">[Done] ${dayStr} • ${timeStr}</span>
+                                <span class="px-1.5 py-0.1 rounded-[2.5px] text-[7px] font-black ${badgeColor} uppercase shrink-0">${e.impact || 'High'}</span>
+                            </div>
+                            <span class="font-bold text-slate-600 text-[10.5px] truncate w-full" title="${e.title}">${e.title}</span>
                         </div>
                     `;
                 });

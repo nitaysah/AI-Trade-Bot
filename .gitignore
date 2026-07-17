@@ -27,6 +27,9 @@ venv/
 *.log
 backend/trades.json
 backend/settings.json
+backend/.cache/
+backend/manual_targeted_validation.json
+backend/refinement_validation.json
 backend/data/
 backend/venv/
 frontend/*.tmp

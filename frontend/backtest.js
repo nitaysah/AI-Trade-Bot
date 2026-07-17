@@ -10,6 +10,10 @@ function getIndicatorOverrides() {
     return overrides;
 }
 
+let backtestRequestInProgress = false;
+let alpacaStatusPollInFlight = false;
+let alpacaStatusPollTimer = null;
+
 const BT_AI_INDICATOR_CACHE_TTL = 30 * 60 * 1000;
 
 function normalizeBtAIIndicatorTicker(ticker) {
@@ -501,6 +505,7 @@ function placeDailyHighLowBacktestIndicatorCards(container) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    window.AlpacaStatusCache?.render();
     ensureDailyHighLowBacktestIndicatorCards();
     disableBacktestBotBulls4Indicator();
 
@@ -635,23 +640,38 @@ document.addEventListener('DOMContentLoaded', () => {
             disableBacktestBotBulls4Indicator();
             pollAlpacaStatus();
             loadBacktestOllamaModels();
-            setInterval(pollAlpacaStatus, 30000); // Check every 30s
+            if (!alpacaStatusPollTimer) {
+                alpacaStatusPollTimer = setInterval(pollAlpacaStatus, 30000); // Check every 30s
+            }
         }
     }, 500);
 });
 
 async function pollAlpacaStatus() {
+    if (backtestRequestInProgress || alpacaStatusPollInFlight) return;
     const statusPill = document.getElementById('alpacaLinkStatus');
     const statusDot = document.getElementById('alpacaStatusDot');
     const statusText = document.getElementById('alpacaStatusText');
     const btnUnlink = document.getElementById('btnUnlinkAlpaca');
     if (!statusPill) return;
+    if (window.AlpacaStatusCache?.isFresh()) {
+        window.AlpacaStatusCache.render();
+        return;
+    }
 
     try {
+        alpacaStatusPollInFlight = true;
         const headers = await getAuthHeaders();
-        const response = await fetch(`${window.BACKTEST_API_BASE}/api/dashboard?mode=fast&source=backtest`, { headers });
+        const response = await fetch(`${window.BACKTEST_API_BASE}/api/alpaca_status`, { headers });
         const data = await response.json();
-        window.lastBacktestData = data;
+        window.lastBacktestData = {
+            ...(window.lastBacktestData || {}),
+            ...data,
+            indicator_overrides: window.lastBacktestData?.indicator_overrides || {},
+            indicator_parameters: window.lastBacktestData?.indicator_parameters || {},
+        };
+        window.AlpacaStatusCache?.writeFromData(data);
+        if (window.AlpacaStatusCache?.render()) return;
 
         if (data.simulation) {
             if (data.has_keys) {
@@ -672,6 +692,8 @@ async function pollAlpacaStatus() {
         }
     } catch (e) {
         console.error('[backtest] Alpaca status check failed:', e);
+    } finally {
+        alpacaStatusPollInFlight = false;
     }
 }
 
@@ -687,6 +709,8 @@ window.unlinkAlpaca = async () => {
         const data = await response.json();
         if (data.status === 'success') {
             alert(data.message);
+            window.AlpacaStatusCache?.clear();
+            window.AlpacaStatusCache?.render({ status: 'disconnected', has_keys: false, simulation: true, updatedAt: Date.now() });
             pollAlpacaStatus();
         } else {
             alert("Error unlinking account.");
@@ -847,6 +871,7 @@ async function runBacktest(options = {}) {
     document.getElementById('btLoading').classList.remove('hidden');
 
     try {
+        backtestRequestInProgress = true;
         const headers = await getAuthHeaders();
         let response;
 
@@ -1094,12 +1119,19 @@ async function runBacktest(options = {}) {
         console.error("BACKTEST FETCH ERROR:", err);
         alert(`Connection Failed: ${err.message}\n\nTroubleshooting:\n1. Ensure you have a stable internet connection.\n2. If on mobile, try disabling VPN or Private Relay.\n3. Try a Hard Refresh (Cmd+Shift+R or clear mobile cache).`);
         resetBacktestUI();
+    } finally {
+        backtestRequestInProgress = false;
     }
 }
 
 // 3. Results Rendering
 function displayResults(res) {
     document.getElementById('btLoading').classList.add('hidden');
+    const runBtn = document.getElementById('runBtBtn');
+    if (runBtn) {
+        runBtn.disabled = false;
+        runBtn.classList.remove('hidden');
+    }
     
     // Show Modal
     const modal = document.getElementById('btResultsModal');

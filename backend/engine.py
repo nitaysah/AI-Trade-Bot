@@ -1417,7 +1417,11 @@ class UserEngine:
                                     has_this_pos = any(p['symbol'].replace("/", "").upper() == ticker_norm and float(p.get('qty', 0)) > 0 for p in all_positions)
                                     has_open_order = any(o['symbol'] == ticker_norm and o['side'].lower() == 'buy' for o in all_orders)
                                     pos_info = next((p for p in all_positions if p['symbol'].replace("/", "").upper() == ticker_norm), None)
- 
+
+                                result["has_position"] = has_this_pos
+                                if not has_this_pos:
+                                    result["exit_monitoring"] = False
+
                                 enable_cooldown = t_settings.get("enable_cooldown", True)
                                 if enable_cooldown and not has_this_pos:
                                     # Use custom cooldown if set, otherwise default to 4 candles
@@ -1752,12 +1756,13 @@ class UserEngine:
                                             result['reason'] = exit_reason
                                         else:
                                             result['option_intent'] = 'HOLD'
-                                            _mark_exit_signal_watch(
-                                                result,
-                                                t_settings,
-                                                is_long=(opt_type == 'CALL'),
-                                                prefix="Option position open",
-                                            )
+                                            if not result.get('exit_monitoring'):
+                                                _mark_exit_signal_watch(
+                                                    result,
+                                                    t_settings,
+                                                    is_long=(opt_type == 'CALL'),
+                                                    prefix="Option position open",
+                                                )
 
                                     else:
                                         # Standard Stock/Crypto Sell Mode Logic
@@ -1792,6 +1797,14 @@ class UserEngine:
                                                     if current_price >= take_profit:
                                                         result['action'] = 'SELL'
                                                         result['reason'] = f'AI Take Profit Hit (${current_price:.2f} >= ${take_profit:.2f})'
+                                                if result.get('action') != 'SELL' and not result.get('exit_monitoring'):
+                                                    watch_lbl = "AI SL/TP" if t_settings.get('ai_autopilot', False) else "SL/TP Exit"
+                                                    _mark_exit_level_watch(
+                                                        result,
+                                                        watch_lbl,
+                                                        f"Position open. Checking {watch_lbl} exits: Price ${current_price:.2f}, SL ${stop_loss if stop_loss else 0:.2f}, TP ${take_profit if take_profit else 0:.2f}.",
+                                                        {"price": current_price, "stop_loss": stop_loss, "take_profit": take_profit},
+                                                    )
                                         else:
                                             if sell_mode == 'custom_sltp':
                                                 custom_sl = _safe_float(t_settings.get('custom_stop_loss_price'), 0.0)
@@ -1996,10 +2009,11 @@ class UserEngine:
                                                         result['reason'] = f'Take Profit Hit (${current_price:.{precision}f} >= ${take_profit:.{precision}f})'
                                                     elif result.get('action') != 'SELL':
                                                         trail_desc = f", Trail {trail_mult:.2f}x ATR" if enable_atr_trail else ""
+                                                        watch_lbl = "ATR Exit" if sell_mode in ['atr', 'hybrid_atr'] else "SL/TP Exit"
                                                         _mark_exit_level_watch(
                                                             result,
-                                                            "ATR Exit",
-                                                            f"Position open. Checking ATR exits: Price ${current_price:.{precision}f}, SL ${stop_loss:.{precision}f}, TP ${take_profit:.{precision}f}, ATR ${atr_value:.{precision}f}{trail_desc}.",
+                                                            watch_lbl,
+                                                            f"Position open. Checking {watch_lbl}s: Price ${current_price:.{precision}f}, SL ${stop_loss:.{precision}f}, TP ${take_profit:.{precision}f}{', ATR $' + f'{atr_value:.{precision}f}' + trail_desc if sell_mode in ['atr', 'hybrid_atr'] else ''}.",
                                                             {
                                                                 "price": current_price,
                                                                 "stop_loss": stop_loss,
@@ -2590,6 +2604,10 @@ class UserEngine:
                                     return f"{t_str}_{log_entry.get('ticker','')}_{log_entry.get('action','')}"
                                 except: return ""
                                 
+                            if is_active:
+                                self._record_bot_scan(result)
+                            else:
+                                self._record_scan(result)
                             if not any(_get_log_key(log) == log_key for log in self.trade_log):
                                 if is_active:
                                     self.trade_log.insert(0, result)

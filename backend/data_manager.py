@@ -13,10 +13,8 @@ from datetime import datetime, timedelta
 
 try:
     import config
-    from webull_broker import WebullBroker
 except ImportError:
     config = None
-    WebullBroker = None
 
 DATA_DIR = os.path.realpath(os.path.join(os.path.dirname(__file__), "data"))
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -90,7 +88,8 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
     # Strict sanitization to prevent path traversal
     clean_ticker = re.sub(r'[^A-Za-z0-9.\-]', '', ticker).upper()
     clean_timeframe = re.sub(r'[^A-Za-z0-9]', '', timeframe)
-    filename = os.path.basename(f"{clean_ticker}_{clean_timeframe}.csv")
+    source_suffix = "_yahoo" if force_yahoo else ""
+    filename = os.path.basename(f"{clean_ticker}_{clean_timeframe}{source_suffix}.csv")
     
     # Resolve absolute path and restrict to DATA_DIR
     filepath = os.path.realpath(os.path.join(DATA_DIR, filename))
@@ -108,7 +107,7 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
     # 1. Try the local cache
     # ------------------------------------------------------------------
     df = None
-    if not force_yahoo and os.path.exists(filepath):
+    if os.path.exists(filepath):
         try:
             df = pd.read_csv(filepath, index_col=0, parse_dates=True)
             if not df.empty:
@@ -139,6 +138,7 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
 
     if not force_yahoo and config and getattr(config, "WEBULL_APP_KEY", ""):
         try:
+            from webull_broker import WebullBroker
             print(f"[data] Attempting Webull fetch for {ticker} ({timeframe})...")
             wb_map = {
                 "30Sec": "s30",

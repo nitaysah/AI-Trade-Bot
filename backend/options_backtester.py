@@ -341,8 +341,23 @@ class OptionsBacktester:
         if self.raw_df is not None:
             raw_df = self.raw_df
         else:
-            # Fetch with 100 days padding
-            padded_start = self.start_date - datetime.timedelta(days=100)
+            # Fetch with padding where the provider can actually satisfy it.
+            yahoo_intraday_limits = {
+                "1Min": 7,
+                "2Min": 60,
+                "3Min": 60,
+                "5Min": 60,
+                "10Min": 60,
+                "15Min": 60,
+                "30Min": 60,
+                "1Hour": 730,
+                "2Hour": 730,
+                "4Hour": 730,
+            }
+            requested_days = max(1, (self.end_date - self.start_date).days)
+            max_days = yahoo_intraday_limits.get(self.timeframe)
+            warmup_days = 100 if max_days is None else max(0, min(100, max_days - requested_days))
+            padded_start = self.start_date - datetime.timedelta(days=warmup_days)
             raw_df = get_historical_data(self.ticker, self.timeframe, padded_start, self.end_date, force_yahoo=True)
 
         if raw_df is None or raw_df.empty:
@@ -375,7 +390,13 @@ class OptionsBacktester:
 
         # 2. Add technical indicators (skip if already present like BotBulls3)
         if "UT_Above" not in raw_df.columns:
-            res = calculate_indicators_for_df(raw_df, self.timeframe, self.ticker, settings=self.indicator_settings)
+            calc_settings = {
+                **(self.indicator_settings or {}),
+                "enabled_indicators": self.enabled_indicators,
+                "buy_mode": self.buy_mode,
+                "sell_mode": self.sell_mode,
+            }
+            res = calculate_indicators_for_df(raw_df, self.timeframe, self.ticker, settings=calc_settings)
             self.df = res["df"] if isinstance(res, dict) and "df" in res else res
         else:
             self.df = raw_df
@@ -619,7 +640,12 @@ class OptionsBacktester:
 
                 # Strategy D: Indicator Reversal (Indicator/Hybrid modes)
                 if not exit_triggered and configured_exit_modes.intersection({"indicator", "hybrid", "hybrid_pct", "hybrid_pivot", "hybrid_high_low", "hybrid_swing"}):
-                    signals = _generate_signals(current_bar, prev_bar, recent_bars=self.df.iloc[max(0, i - 4) : i + 1])
+                    signals = _generate_signals(
+                        current_bar,
+                        prev_bar,
+                        settings={"enabled_indicators": self.enabled_indicators},
+                        recent_bars=self.df.iloc[max(0, i - 4) : i + 1],
+                    )
                     filtered_signals = {k: v for k, v in signals.items() if k in self.enabled_indicators}
                     bearish_count = sum(s.get('weight', 1) for s in filtered_signals.values() if s['signal'] == 'BEARISH')
                     bullish_count = sum(s.get('weight', 1) for s in filtered_signals.values() if s['signal'] == 'BULLISH')
@@ -713,7 +739,12 @@ class OptionsBacktester:
 
             # Evaluate entries if no position is held
             else:
-                signals = _generate_signals(current_bar, prev_bar, recent_bars=self.df.iloc[max(0, i - 4) : i + 1])
+                signals = _generate_signals(
+                    current_bar,
+                    prev_bar,
+                    settings={"enabled_indicators": self.enabled_indicators},
+                    recent_bars=self.df.iloc[max(0, i - 4) : i + 1],
+                )
                 filtered_signals = {k: v for k, v in signals.items() if k in self.enabled_indicators}
                 
                 bullish_count = sum(s.get('weight', 1) for s in filtered_signals.values() if s['signal'] == 'BULLISH')

@@ -195,6 +195,7 @@ class UserConfig:
                     self.parameters[key] = value
 
 _active_user_config = contextvars.ContextVar('active_user_config', default=None)
+_default_user_config = None
 
 def set_draft_ticker_settings(settings_map: dict):
     normalized = {}
@@ -213,8 +214,11 @@ def set_user_config(uc: UserConfig):
     return _active_user_config.set(uc)
 
 def get_user_config() -> UserConfig:
+    global _default_user_config
     uc = _active_user_config.get()
     if uc is None:
         # Fallback to a default one if running outside a user context (e.g. tests or startup initialization)
-        return UserConfig("default")
+        if _default_user_config is None:
+            _default_user_config = UserConfig("default")
+        return _default_user_config
     return uc

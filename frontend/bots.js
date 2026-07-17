@@ -206,40 +206,45 @@ function getMarketSessionForStrategy(mode = 'regular') {
 }
 
 function applyMarketSessionForSymbol(symbol, settings = {}) {
-    const select = document.getElementById('strategyMarketSession_regular');
-    if (!select) return;
-    const crypto = isCrypto((symbol || '').toUpperCase());
-    const savedSession = settings.market_session === 'Crypto24' ? '24h' : (settings.market_session || 'Regular');
-    select.value = crypto ? '24h' : savedSession;
-    select.disabled = crypto;
-    select.title = crypto ? 'Crypto trades 24 hours, so all candles are used.' : '';
-    select.classList.toggle('opacity-70', crypto);
+    ['regular', 'ai_autopilot'].forEach(mode => {
+        const select = document.getElementById(`strategyMarketSession_${mode}`);
+        if (!select) return;
+        const crypto = isCrypto((symbol || '').toUpperCase());
+        const savedSession = settings.market_session === 'Crypto24' ? '24h' : (settings.market_session || 'Regular');
+        select.value = crypto ? '24h' : savedSession;
+        select.disabled = crypto;
+        select.title = crypto ? 'Crypto trades 24 hours, so all candles are used.' : '';
+        select.classList.toggle('opacity-70', crypto);
+    });
     if (window.updateMarketSessionNotice) window.updateMarketSessionNotice();
 }
 
 function setMarketSessionNotice(message = '', state = 'info') {
-    const notice = document.getElementById('strategyMarketSessionNotice_regular');
-    if (!notice) return;
-    if (!message) {
-        notice.classList.add('hidden');
-        notice.textContent = '';
-        return;
-    }
-    notice.textContent = message;
-    notice.classList.remove('hidden', 'text-slate-500', 'text-emerald-600', 'text-amber-600', 'text-rose-600');
-    const colorClass = state === 'success' ? 'text-emerald-600' : state === 'warning' ? 'text-amber-600' : state === 'error' ? 'text-rose-600' : 'text-slate-500';
-    notice.classList.add(colorClass);
+    ['regular', 'ai_autopilot'].forEach(mode => {
+        const notice = document.getElementById(`strategyMarketSessionNotice_${mode}`);
+        if (!notice) return;
+        if (!message) {
+            notice.classList.add('hidden');
+            notice.textContent = '';
+            return;
+        }
+        notice.textContent = message;
+        notice.classList.remove('hidden', 'text-slate-500', 'text-emerald-600', 'text-amber-600', 'text-rose-600');
+        const colorClass = state === 'success' ? 'text-emerald-600' : state === 'warning' ? 'text-amber-600' : state === 'error' ? 'text-rose-600' : 'text-slate-500';
+        notice.classList.add(colorClass);
+    });
 }
 
 window.updateMarketSessionNotice = async function () {
     const symbol = (window.currentStrategySymbol || '').toUpperCase();
-    const select = document.getElementById('strategyMarketSession_regular');
+    const mode = window.activeTradingMode || 'regular';
+    const select = document.getElementById(`strategyMarketSession_${mode}`) || document.getElementById('strategyMarketSession_regular');
     if (!select || !symbol) {
         setMarketSessionNotice('');
         return { allowed: true };
     }
 
-    const session = getMarketSessionForStrategy('regular');
+    const session = getMarketSessionForStrategy(mode);
     if (isCrypto(symbol)) {
         setMarketSessionNotice('Crypto uses 24 hr market session automatically.', 'success');
         return { allowed: true };
@@ -338,6 +343,41 @@ window.toggleBotArrangeMode = function () {
     updateBotArrangeToggleUI(totalCount);
     renderTradelist(window.lastBotsData?.botScans || window.lastBotsData?.watchlistScans, window.lastBotsData?.tradelist, window.lastBotsData?.tickerAmounts);
 };
+
+window.toggleBotDeployGuideDrawer = function () {
+    const drawer = document.getElementById('botDeployGuideDrawer');
+    const arrow = document.getElementById('botDeployGuideArrow');
+    if (!drawer) return;
+    if (drawer.classList.contains('hidden')) {
+        drawer.classList.remove('hidden');
+        if (arrow) arrow.classList.add('rotate-180');
+    } else {
+        drawer.classList.add('hidden');
+        if (arrow) arrow.classList.remove('rotate-180');
+    }
+};
+
+window.switchGuideTab = function (tabId) {
+    const tabs = ['overview', 'stocks', 'crypto', 'options'];
+    tabs.forEach(t => {
+        const btn = document.getElementById(`gtab-btn-${t}`);
+        const content = document.getElementById(`gtab-content-${t}`);
+        if (t === tabId) {
+            if (btn) btn.className = "px-3 py-1.5 text-[0.7rem] font-black rounded-lg transition-all bg-indigo-500 text-white shadow-sm";
+            if (content) {
+                content.classList.remove('hidden');
+                content.classList.add('block');
+            }
+        } else {
+            if (btn) btn.className = "px-3 py-1.5 text-[0.7rem] font-black rounded-lg transition-all text-indigo-300 hover:text-white hover:bg-indigo-800/60";
+            if (content) {
+                content.classList.remove('block');
+                content.classList.add('hidden');
+            }
+        }
+    });
+};
+
 
 function buildFullOrderFromVisible(newVisibleTickers) {
     const currentFullList = window.lastBotsData?.tradelist || [];
@@ -2025,8 +2065,9 @@ window.updateAllocationModeUI = function (mode = 'regular', settings = null) {
 
 function getStrategyModeSettings(mode = 'regular') {
     const isRegular = mode === 'regular';
+    const isAutopilot = mode === 'ai_autopilot';
     return {
-        allocation_mode: mode === 'regular' ? getAllocationMode('regular') : undefined,
+        allocation_mode: (isRegular || isAutopilot) ? getAllocationMode(mode) : undefined,
         options_allocation_mode: mode === 'options' ? getAllocationMode('options') : undefined,
         buy_mode: document.getElementById(`strategyBuyMode_${mode}`)?.value || 'indicator',
         custom_buy_price: parseFloat(document.getElementById(`strategyCustomBuyPrice_${mode}`)?.value || 0),
@@ -2047,9 +2088,9 @@ function getStrategyModeSettings(mode = 'regular') {
         enable_risk_management: document.getElementById(`strategyEnableRisk_${mode}`)?.checked || false,
         enable_atr_trail: getStrategyExitChecked(mode, 'strategyEnableAtrTrail', 'strategyEnableAtrTrail_options', true),
         enable_pct_trail: getStrategyExitChecked(mode, 'strategyEnablePctTrail', 'strategyEnablePctTrail_options', true),
-        regular_stop_loss_pct: isRegular ? parseFloat(document.getElementById('strategyRegularSlPct')?.value || 5) / 100.0 : undefined,
-        regular_take_profit_pct: isRegular ? parseFloat(document.getElementById('strategyRegularTpPct')?.value || 10) / 100.0 : undefined,
-        regular_trailing_pct: isRegular ? parseFloat(document.getElementById('strategyRegularTrailPct')?.value || 3) / 100.0 : undefined,
+        regular_stop_loss_pct: (isRegular || isAutopilot) ? parseFloat(document.getElementById('strategyRegularSlPct')?.value || 5) / 100.0 : undefined,
+        regular_take_profit_pct: (isRegular || isAutopilot) ? parseFloat(document.getElementById('strategyRegularTpPct')?.value || 10) / 100.0 : undefined,
+        regular_trailing_pct: (isRegular || isAutopilot) ? parseFloat(document.getElementById('strategyRegularTrailPct')?.value || 3) / 100.0 : undefined,
         options_trailing_pct: mode === 'options' ? parseFloat(document.getElementById('strategyOptionsTrailPct')?.value || OPTIONS_DEFAULT_TRAIL_PCT) / 100.0 : undefined,
     };
 }
@@ -2097,17 +2138,22 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
 
         // Defaults for deployment
         document.getElementById('strategyCapital').value = 100;
+        if (document.getElementById('strategyCapital_ai_autopilot')) document.getElementById('strategyCapital_ai_autopilot').value = 100;
         if (document.getElementById('strategyOptionsTradeAmount')) document.getElementById('strategyOptionsTradeAmount').value = 100;
         if (document.getElementById('strategyAllocationMode_regular')) document.getElementById('strategyAllocationMode_regular').value = 'fixed';
         if (document.getElementById('strategyAllocationMode_options')) document.getElementById('strategyAllocationMode_options').value = 'fixed';
+        if (document.getElementById('strategyAllocationMode_ai_autopilot')) document.getElementById('strategyAllocationMode_ai_autopilot').value = 'fixed';
         window.updateAllocationModeUI?.('regular');
         window.updateAllocationModeUI?.('options');
+        window.updateAllocationModeUI?.('ai_autopilot');
         document.getElementById('strategyBuyThreshold_regular').value = 0;
         document.getElementById('strategyBuyThreshold_options').value = 0;
         document.getElementById('strategySellThreshold_regular').value = 0;
         document.getElementById('strategySellThreshold_options').value = 0;
         document.getElementById('strategyTimeframe_regular').value = "1Hour";
         document.getElementById('strategyTimeframe_options').value = "5Min";
+        if (document.getElementById('strategyTimeframe_ai_autopilot')) document.getElementById('strategyTimeframe_ai_autopilot').value = "1Hour";
+        if (document.getElementById('strategyAiModel')) document.getElementById('strategyAiModel').value = "llama-3.3-70b-versatile";
         if (document.getElementById('strategyBuyMode_regular')) document.getElementById('strategyBuyMode_regular').value = "indicator";
         if (document.getElementById('strategyBuyMode_options')) document.getElementById('strategyBuyMode_options').value = "indicator";
         if (document.getElementById('strategyCustomBuyPrice_regular')) document.getElementById('strategyCustomBuyPrice_regular').value = "";
@@ -2217,11 +2263,14 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         const settings = (window.lastBotsData?.ticker_settings || {})[currentStrategySymbol] || {};
         setStrategyDraftIndicatorOverrides(settings.indicator_overrides || {});
         document.getElementById('strategyCapital').value = settings.amount || '';
+        if (document.getElementById('strategyCapital_ai_autopilot')) document.getElementById('strategyCapital_ai_autopilot').value = settings.amount || '';
         if (document.getElementById('strategyOptionsTradeAmount')) document.getElementById('strategyOptionsTradeAmount').value = settings.options_trade_amount !== undefined ? settings.options_trade_amount : 100;
         if (document.getElementById('strategyAllocationMode_regular')) document.getElementById('strategyAllocationMode_regular').value = settings.allocation_mode || 'fixed';
         if (document.getElementById('strategyAllocationMode_options')) document.getElementById('strategyAllocationMode_options').value = settings.options_allocation_mode || settings.allocation_mode || 'fixed';
+        if (document.getElementById('strategyAllocationMode_ai_autopilot')) document.getElementById('strategyAllocationMode_ai_autopilot').value = settings.allocation_mode || 'fixed';
         window.updateAllocationModeUI?.('regular', settings);
         window.updateAllocationModeUI?.('options', settings);
+        window.updateAllocationModeUI?.('ai_autopilot', settings);
         const buySignals = settings.min_buy_signals !== undefined ? settings.min_buy_signals : (INDICATOR_DEFAULTS['MIN_BULLISH_SIGNALS'] || 4);
         document.getElementById('strategyBuyThreshold_regular').value = buySignals;
         document.getElementById('strategyBuyThreshold_options').value = buySignals;
@@ -2230,6 +2279,7 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategySellThreshold_options').value = sellSignals;
         document.getElementById('strategyTimeframe_regular').value = settings.timeframe || '1Hour';
         document.getElementById('strategyTimeframe_options').value = settings.timeframe || '1Hour';
+        if (document.getElementById('strategyTimeframe_ai_autopilot')) document.getElementById('strategyTimeframe_ai_autopilot').value = settings.timeframe || '1Hour';
         if (document.getElementById('strategyBuyMode_regular')) document.getElementById('strategyBuyMode_regular').value = settings.buy_mode || 'indicator';
         if (document.getElementById('strategyBuyMode_options')) document.getElementById('strategyBuyMode_options').value = settings.buy_mode || 'indicator';
         if (document.getElementById('strategyCustomBuyPrice_regular')) document.getElementById('strategyCustomBuyPrice_regular').value = settings.custom_buy_price || '';
@@ -2268,17 +2318,20 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         window._strategyPaused = settings.paused || false;
 
         const aiAutopilot = settings.ai_autopilot || false;
-        const autopilotEl = document.getElementById('strategyAiAutopilot');
-        if (autopilotEl) autopilotEl.checked = aiAutopilot;
-        window.handleStrategyAutopilotToggle(aiAutopilot);
+        const optEnabled = settings.options_trading || false;
+        if (typeof populateStrategyAiModelSelect === 'function') populateStrategyAiModelSelect();
         const aiModelSelect = document.getElementById('strategyAiModel');
         if (aiModelSelect) {
             aiModelSelect.value = settings.ai_model || 'llama-3.3-70b-versatile';
         }
 
-        // Load Options settings
-        const optEnabled = settings.options_trading || false;
-        window.toggleModeActive(optEnabled ? 'options' : 'regular');
+        if (aiAutopilot) {
+            window.toggleModeActive('ai_autopilot');
+        } else if (optEnabled) {
+            window.toggleModeActive('options');
+        } else {
+            window.toggleModeActive('regular');
+        }
         const savedOptionsType = settings.options_type === 'puts_only' ? 'puts_only' : 'calls_only';
         const optionsTypeEl = document.getElementById('strategyOptionsType');
         optionsTypeEl.value = savedOptionsType;
@@ -2737,6 +2790,15 @@ window.validateStrategyPreflight = function (symbol, mode = 'regular') {
                 message: `The options expiration timeframe (Expiry Days) must be at least 1 day.\n\nHow to fix: Enter a valid number of days (e.g. 7 or 30) in the Expiry Days field.`
             };
         }
+    } else if (mode === 'ai_autopilot') {
+        const capital = parseFloat(document.getElementById('strategyCapital_ai_autopilot')?.value || 0);
+        if (!Number.isFinite(capital) || capital <= 0) {
+            return {
+                valid: false,
+                title: "❌ Invalid Capital Allocation",
+                message: `The trade capital allocated for ${symbol} must be greater than $0.00.\n\nHow to fix: Enter a valid dollar amount in the Amount Per Trade ($) field.`
+            };
+        }
     }
 
     // 2. UPPER MIDDLE: Timeframe Validation
@@ -2747,6 +2809,9 @@ window.validateStrategyPreflight = function (symbol, mode = 'regular') {
             title: "❌ No Timeframe Selected",
             message: `Please select a chart timeframe (e.g., 1Hour, 5Min) for ${symbol} at the top of the strategy settings.`
         };
+    }
+    if (mode === 'ai_autopilot') {
+        return { valid: true };
     }
 
     // Gather Indicator checks for Entry & Exit evaluation
@@ -2932,15 +2997,15 @@ async function saveTickerSettings() {
         add_to_watchlist: document.getElementById('strategyAddWatchlist')?.checked || false,
         settings: {
             ...getStrategyModeSettings(mode),
-            amount: mode === 'regular' ? (parseFloat(document.getElementById('strategyCapital')?.value || '') || null) : undefined,
-            timeframe: document.getElementById(`strategyTimeframe_${mode}`).value || null,
-            min_buy_signals: buyThresholdVal,
-            min_sell_signals: sellThresholdVal,
+            amount: mode === 'regular' ? (parseFloat(document.getElementById('strategyCapital')?.value || '') || null) : mode === 'ai_autopilot' ? (parseFloat(document.getElementById('strategyCapital_ai_autopilot')?.value || '') || null) : undefined,
+            timeframe: document.getElementById(`strategyTimeframe_${mode}`)?.value || null,
+            min_buy_signals: mode === 'ai_autopilot' ? 4 : buyThresholdVal,
+            min_sell_signals: mode === 'ai_autopilot' ? 4 : sellThresholdVal,
             sell_mode: document.getElementById(`strategySellMode_${mode}`)?.value || 'hybrid',
-            indicators: indicators,
-            indicator_overrides: getStrategyDraftIndicatorOverrides(),
+            indicators: mode === 'ai_autopilot' ? [] : indicators,
+            indicator_overrides: mode === 'ai_autopilot' ? {} : getStrategyDraftIndicatorOverrides(),
             paused: window._strategyPaused || false,
-            ai_autopilot: document.getElementById('strategyAiAutopilot')?.checked || false,
+            ai_autopilot: mode === 'ai_autopilot',
             ai_model: document.getElementById('strategyAiModel')?.value || 'llama-3.3-70b-versatile',
             risk_per_trade: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyRiskPerTrade' : 'strategyOptionsRiskPerTrade')?.value || 2.0) / 100.0 : null,
             max_daily_drawdown: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxDailyDrawdown' : 'strategyOptionsMaxDailyDrawdown')?.value || (mode === 'regular' ? 5.0 : 50.0)) / 100.0 : null,
@@ -2971,7 +3036,7 @@ async function saveTickerSettings() {
 
     const targetTicker = currentStrategySymbol;
     try {
-        if (mode === 'regular' && window.updateMarketSessionNotice) {
+        if ((mode === 'regular' || mode === 'ai_autopilot') && window.updateMarketSessionNotice) {
             const sessionCheck = await window.updateMarketSessionNotice();
             if (sessionCheck && sessionCheck.allowed === false) {
                 alert(sessionCheck.message || 'This ticker is not eligible for the selected market session.');
@@ -3113,6 +3178,8 @@ function applyBotsData(data) {
     }
     // Connection status
     isAlpacaLinked = !data.simulation && data.has_keys;
+    window.AlpacaStatusCache?.writeFromData(data);
+    window.AlpacaStatusCache?.render();
     updateAlpacaStatus(isAlpacaLinked, data);
 
     const connPrompt = document.getElementById('connectionPrompt');
@@ -3312,6 +3379,8 @@ async function submitAlpacaConfig() {
         const data = await response.json();
         if (data.status === 'success') {
             alert("Connection Successful! Your Alpaca account is now linked.");
+            window.AlpacaStatusCache?.writeFromData({ simulation: false, has_keys: true, brokerConnected: true, brokerStatus: 'connected' });
+            window.AlpacaStatusCache?.render();
             closeAlpacaModal();
             fetchBotsData({ force: true });
         } else {
@@ -3338,6 +3407,8 @@ async function unlinkAlpaca() {
         const data = await response.json();
         if (data.status === 'success') {
             alert(data.message);
+            window.AlpacaStatusCache?.clear();
+            window.AlpacaStatusCache?.render({ status: 'disconnected', has_keys: false, simulation: true, updatedAt: Date.now() });
             fetchBotsData({ force: true });
         } else {
             alert("Error unlinking account.");
@@ -3518,6 +3589,8 @@ let botChartPreviewRange = '1M';
 let botChartPreviewSession = 'regular';
 let botChartPreviewOverlayPriceLines = {};
 let botChartPreviewOverlayLabelMeta = {};
+let botChartPreviewRangeUiFrame = null;
+let botChartPreviewOscSyncFrame = null;
 
 function formatBotChartPreviewPrice(value) {
     const number = Number(value);
@@ -3914,6 +3987,33 @@ function updateBotChartPreviewVisibleHighLow() {
     }
 }
 
+function scheduleBotChartPreviewRangeUiRefresh() {
+    if (botChartPreviewRangeUiFrame) return;
+    botChartPreviewRangeUiFrame = requestAnimationFrame(() => {
+        botChartPreviewRangeUiFrame = null;
+        updateBotChartPreviewVisibleHighLow();
+        refreshBotChartPreviewPriceLineLabels();
+    });
+}
+
+function syncBotChartPreviewOscillatorRanges(range) {
+    if (!range) return;
+    Object.values(botChartPreviewOscCharts).forEach(chart => {
+        try {
+            if (chart) chart.timeScale().setVisibleLogicalRange(range);
+        } catch (e) {}
+    });
+}
+
+function scheduleBotChartPreviewOscillatorRangeSync(range) {
+    if (!range) return;
+    if (botChartPreviewOscSyncFrame) cancelAnimationFrame(botChartPreviewOscSyncFrame);
+    botChartPreviewOscSyncFrame = requestAnimationFrame(() => {
+        botChartPreviewOscSyncFrame = null;
+        syncBotChartPreviewOscillatorRanges(range);
+    });
+}
+
 function ensureBotChartPreviewChart() {
     const container = document.getElementById('botChartPreviewChart');
     if (!container || typeof LightweightCharts === 'undefined') return null;
@@ -3922,6 +4022,17 @@ function ensureBotChartPreviewChart() {
     botChartPreviewChart = LightweightCharts.createChart(container, {
         width: Math.max(container.clientWidth, 280),
         height: Math.max(container.clientHeight, 240),
+        handleScroll: {
+            mouseWheel: true,
+            pressedMouseMove: true,
+            horzTouchDrag: true,
+            vertTouchDrag: true,
+        },
+        handleScale: {
+            axisPressedMouseMove: true,
+            mouseWheel: true,
+            pinch: true,
+        },
         layout: {
             background: { color: 'transparent' },
             textColor: '#64748b',
@@ -3999,21 +4110,13 @@ function ensureBotChartPreviewChart() {
     initBotChartPreviewOscPanes();
 
     botChartPreviewChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
-        if (range) {
-            Object.values(botChartPreviewOscCharts).forEach(chart => {
-                try {
-                    if (chart) chart.timeScale().setVisibleLogicalRange(range);
-                } catch (e) {}
-            });
-        }
-        updateBotChartPreviewVisibleHighLow();
-        refreshBotChartPreviewPriceLineLabels();
+        scheduleBotChartPreviewOscillatorRangeSync(range);
+        scheduleBotChartPreviewRangeUiRefresh();
     });
 
     try {
         botChartPreviewChart.timeScale().subscribeVisibleTimeRangeChange(() => {
-            updateBotChartPreviewVisibleHighLow();
-            refreshBotChartPreviewPriceLineLabels();
+            scheduleBotChartPreviewRangeUiRefresh();
         });
     } catch (e) {}
 
@@ -4465,7 +4568,7 @@ function refreshBotChartPreviewOscillators(bars = [], enabledSet = new Set(), se
         }
         _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'macd_hist', oscMacd, {
             base: 0,
-            priceFormat: { type: 'price', precision: 4, minMove: 0.0001 }
+            priceFormat: { type: 'price', precision: 2, minMove: 0.01 }
         }, 'histogram').setData(clean(bars.filter(b => b.macd_hist != null).map(b => ({
             time: b.time,
             value: b.macd_hist,
@@ -4474,12 +4577,12 @@ function refreshBotChartPreviewOscillators(bars = [], enabledSet = new Set(), se
         _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'macd_line', oscMacd, {
             color: '#06b6d4',
             lineWidth: 1,
-            priceFormat: { type: 'price', precision: 4, minMove: 0.0001 }
+            priceFormat: { type: 'price', precision: 2, minMove: 0.01 }
         }).setData(clean(bars.filter(b => b.macd_line != null).map(b => ({ time: b.time, value: b.macd_line }))));
         _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'macd_signal', oscMacd, {
             color: '#f97316',
             lineWidth: 1,
-            priceFormat: { type: 'price', precision: 4, minMove: 0.0001 }
+            priceFormat: { type: 'price', precision: 2, minMove: 0.01 }
         }).setData(clean(bars.filter(b => b.macd_signal != null).map(b => ({ time: b.time, value: b.macd_signal }))));
         try { oscMacd.timeScale().fitContent(); } catch (e) {}
     }
@@ -5166,11 +5269,11 @@ window.confirmAndDeployBot = async function () {
     }
 
     // Gather Settings
-    const capital = (mode === 'options' ? document.getElementById('strategyOptionsTradeAmount')?.value : document.getElementById('strategyCapital')?.value) || 100;
-    const threshold = document.getElementById(`strategyBuyThreshold_${mode}`).value;
-    const sellThreshold = document.getElementById(`strategySellThreshold_${mode}`).value;
+    const capital = (mode === 'options' ? document.getElementById('strategyOptionsTradeAmount')?.value : mode === 'ai_autopilot' ? document.getElementById('strategyCapital_ai_autopilot')?.value : document.getElementById('strategyCapital')?.value) || 100;
+    const threshold = document.getElementById(`strategyBuyThreshold_${mode}`)?.value || 4;
+    const sellThreshold = document.getElementById(`strategySellThreshold_${mode}`)?.value || 4;
     const sellMode = document.getElementById(`strategySellMode_${mode}`)?.value || 'hybrid';
-    const timeframe = document.getElementById(`strategyTimeframe_${mode}`).value;
+    const timeframe = document.getElementById(`strategyTimeframe_${mode}`)?.value || '1Hour';
 
     // Gather Indicators
     const indicators = [];
@@ -5189,7 +5292,7 @@ window.confirmAndDeployBot = async function () {
     const symbol = currentStrategySymbol;
     const tradelistContainer = document.getElementById('tradelistContainer');
 
-    if (mode === 'regular' && window.updateMarketSessionNotice) {
+    if ((mode === 'regular' || mode === 'ai_autopilot') && window.updateMarketSessionNotice) {
         const sessionCheck = await window.updateMarketSessionNotice();
         if (sessionCheck && sessionCheck.allowed === false) {
             alert(sessionCheck.message || 'This ticker is not eligible for the selected market session.');
@@ -5224,14 +5327,14 @@ window.confirmAndDeployBot = async function () {
             add_to_watchlist: addToWatchlist,
             ...getStrategyModeSettings(mode),
             capital: parseFloat(capital) || 100,
-            threshold: normalizedBuyThreshold,
-            sell_threshold: normalizedSellThreshold,
+            threshold: mode === 'ai_autopilot' ? 4 : normalizedBuyThreshold,
+            sell_threshold: mode === 'ai_autopilot' ? 4 : normalizedSellThreshold,
             sell_mode: sellMode,
-            indicators: indicators,
-            indicator_overrides: getStrategyDraftIndicatorOverrides(),
+            indicators: mode === 'ai_autopilot' ? [] : indicators,
+            indicator_overrides: mode === 'ai_autopilot' ? {} : getStrategyDraftIndicatorOverrides(),
             timeframe: timeframe,
             paused: window._strategyPaused || false,
-            ai_autopilot: document.getElementById('strategyAiAutopilot')?.checked || false,
+            ai_autopilot: mode === 'ai_autopilot',
             ai_model: document.getElementById('strategyAiModel')?.value || 'llama-3.3-70b-versatile',
             risk_per_trade: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyRiskPerTrade' : 'strategyOptionsRiskPerTrade')?.value || 2.0) / 100.0 : null,
             max_daily_drawdown: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxDailyDrawdown' : 'strategyOptionsMaxDailyDrawdown')?.value || (mode === 'regular' ? 5.0 : 50.0)) / 100.0 : null,
@@ -5291,6 +5394,8 @@ async function unlinkAlpaca() {
         const data = await response.json();
         if (data.status === 'success') {
             alert(data.message);
+            window.AlpacaStatusCache?.clear();
+            window.AlpacaStatusCache?.render({ status: 'disconnected', has_keys: false, simulation: true, updatedAt: Date.now() });
             // Refresh based on which page we are on
             if (typeof fetchDashboard === 'function') fetchDashboard();
             else if (typeof fetchBotsData === 'function') fetchBotsData();
@@ -6454,9 +6559,6 @@ function renderAIIndicatorCard(data, fromCache = false) {
     const catalyst = data.key_catalyst || '';
     const risks = data.risk_factors || '';
     const regime = data.volatility_regime || 'NORMAL';
-    const posUsd = data.position_size_usd;
-    const posPct = data.position_size_pct;
-    const leverage = data.leverage || '1x';
     const headlineCount = data.headline_count || 0;
     const cached = fromCache || data.cached || false;
 
@@ -6464,9 +6566,6 @@ function renderAIIndicatorCard(data, fromCache = false) {
     const sentKeyFactor = data.sentiment_key_factor || 'Mixed Catalysts';
     const sentConfidence = data.sentiment_confidence != null ? data.sentiment_confidence : confidence;
     const sentConfPct = Math.round(sentConfidence * 100);
-
-    const fmtPrice = (v) => (v == null || parseFloat(v) === 0) ? '—' : (parseFloat(v) < 10 ? `$${parseFloat(v).toFixed(4)}` : `$${parseFloat(v).toFixed(2)}`);
-    const fmtUsd = (v) => (v == null || parseFloat(v) === 0) ? '—' : `$${parseFloat(v).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 
     const confBarWidth = `${confPct}%`;
     const confBarColor = confPct >= 70 ? 'bg-emerald-500' : confPct >= 45 ? 'bg-amber-500' : 'bg-rose-500';
@@ -6568,33 +6667,6 @@ function renderAIIndicatorCard(data, fromCache = false) {
             </div>
         </div>
 
-        <div class="grid grid-cols-3 gap-2 mb-3.5 relative z-10">
-            <div class="p-1.5 rounded-lg bg-white/40 border border-slate-200/50 text-center">
-                <div class="text-[0.5rem] text-slate-400 uppercase tracking-wider mb-0.5">Entry Price</div>
-                <div class="text-[0.65rem] font-black text-slate-800">${fmtPrice(data.entry_price !== undefined ? data.entry_price : data.price)}</div>
-            </div>
-            <div class="p-1.5 rounded-lg bg-white/40 border border-slate-200/50 text-center">
-                <div class="text-[0.5rem] text-slate-400 uppercase tracking-wider mb-0.5">Stop Loss</div>
-                <div class="text-[0.65rem] font-black text-rose-600">${fmtPrice(data.stop_loss)}</div>
-            </div>
-            <div class="p-1.5 rounded-lg bg-white/40 border border-slate-200/50 text-center">
-                <div class="text-[0.5rem] text-slate-400 uppercase tracking-wider mb-0.5">Sell Target</div>
-                <div class="text-[0.65rem] font-black text-emerald-600">${fmtPrice(data.sell_target !== undefined ? data.sell_target : data.target_price)}</div>
-            </div>
-        </div>
-
-        <div class="flex items-center gap-2 mb-3 relative z-10 p-1.5 rounded-lg bg-white/40 border border-violet-200/60">
-            <div class="flex-1 text-center">
-                <div class="text-[0.5rem] text-violet-500 uppercase tracking-wider mb-0.5">Position Size</div>
-                <div class="text-[0.6rem] font-black text-violet-900">${(posUsd == null || parseFloat(posUsd) === 0) ? '—' : `${fmtUsd(posUsd)} <span class="text-violet-500 font-normal">(${Math.round(posPct * 100)}%)</span>`}</div>
-            </div>
-            <div class="w-px h-6 bg-violet-200/60"></div>
-            <div class="flex-1 text-center">
-                <div class="text-[0.5rem] text-violet-500 uppercase tracking-wider mb-0.5">Leverage</div>
-                <div class="text-[0.6rem] font-black text-violet-900">${leverage}</div>
-            </div>
-        </div>
-
         <div class="mb-3 p-2 rounded-lg bg-fuchsia-50/50 border border-fuchsia-200/50 text-left relative z-10">
             <span class="text-[0.52rem] font-black text-fuchsia-600 uppercase tracking-widest block mb-0.5">🔥 Key Market Factor</span>
             <p class="text-[0.65rem] font-bold text-fuchsia-800 leading-snug">${sentKeyFactor}</p>
@@ -6667,34 +6739,46 @@ window.closeAIInfoModal = function () {
 window.toggleModeActive = function (mode) {
     const regBox = document.getElementById('regularTradingBox');
     const optBox = document.getElementById('optionsTradingBox');
+    const aiBox = document.getElementById('aiAutopilotTradingBox');
     const pill = document.getElementById('modeTogglePill');
     const btnReg = document.getElementById('btnRegularMode');
     const btnOpt = document.getElementById('btnOptionsMode');
+    const btnAi = document.getElementById('btnAiAutopilotMode');
     
     // Prevent options if disabled
     if (mode === 'options' && btnOpt && btnOpt.disabled) {
         return;
     }
 
+    window.activeTradingMode = mode;
+
+    [btnReg, btnOpt, btnAi].forEach(btn => {
+        if (!btn) return;
+        btn.classList.remove('text-indigo-950');
+        btn.classList.add('text-indigo-400');
+    });
+    if (regBox) regBox.classList.add('hidden');
+    if (optBox) optBox.classList.add('hidden');
+    if (aiBox) aiBox.classList.add('hidden');
+
     if (mode === 'regular') {
-        window.activeTradingMode = 'regular';
         if (pill) pill.style.transform = 'translateX(0)';
         if (btnReg) { btnReg.classList.remove('text-indigo-400'); btnReg.classList.add('text-indigo-950'); }
-        if (btnOpt) { btnOpt.classList.remove('text-indigo-950'); btnOpt.classList.add('text-indigo-400'); }
         if (regBox) regBox.classList.remove('hidden');
-        if (optBox) optBox.classList.add('hidden');
         window.updateStrategySignalLabels('regular');
-    } else {
-        window.activeTradingMode = 'options';
+    } else if (mode === 'options') {
         if (pill) pill.style.transform = 'translateX(100%)';
-        if (btnReg) { btnReg.classList.remove('text-indigo-950'); btnReg.classList.add('text-indigo-400'); }
         if (btnOpt) { btnOpt.classList.remove('text-indigo-400'); btnOpt.classList.add('text-indigo-950'); }
         if (optBox) optBox.classList.remove('hidden');
-        if (regBox) regBox.classList.add('hidden');
         window.updateStrategySignalLabels('options');
+    } else if (mode === 'ai_autopilot') {
+        if (pill) pill.style.transform = 'translateX(200%)';
+        if (btnAi) { btnAi.classList.remove('text-indigo-400'); btnAi.classList.add('text-indigo-950'); }
+        if (aiBox) aiBox.classList.remove('hidden');
+        if (typeof populateStrategyAiModelSelect === 'function') populateStrategyAiModelSelect();
     }
 
-    if (typeof window.updateSwingSettingsVisibility === 'function') {
+    if (typeof window.updateSwingSettingsVisibility === 'function' && mode !== 'ai_autopilot') {
         window.updateSwingSettingsVisibility(mode);
     }
     if (typeof window.updateAllocationModeUI === 'function') {
@@ -7841,6 +7925,7 @@ async function saveGlobalRiskSettings() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    window.AlpacaStatusCache?.render();
     ensureDailyHighLowBotIndicatorCards();
     const dd = document.getElementById('globalMaxDrawdown');
     const hs = document.getElementById('globalHardStop');

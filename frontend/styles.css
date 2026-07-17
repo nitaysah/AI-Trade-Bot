@@ -8,6 +8,81 @@
     textarea {
         font-size: 16px !important;
     }
+
+    #globalMaxDrawdown,
+    #globalHardStop {
+        font-size: 0.6rem !important;
+        height: auto !important;
+        padding: 0 !important;
+        line-height: 1 !important;
+        text-align: right !important;
+    }
+
+    .global-risk-percent-field {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: flex-end !important;
+        gap: 0.08rem !important;
+        min-height: 1.05rem !important;
+        padding: 0 0.22rem !important;
+        border: 1px solid rgba(224, 231, 255, 0.5) !important;
+        border-radius: 0.375rem !important;
+        background: rgba(255, 255, 255, 0.7) !important;
+        box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.05) !important;
+        line-height: 1 !important;
+    }
+
+    .global-risk-percent-input {
+        min-width: 0 !important;
+        flex: 1 1 auto !important;
+        background: transparent !important;
+        box-shadow: none !important;
+    }
+
+    .global-risk-percent-symbol {
+        display: flex !important;
+        align-items: center !important;
+        font-size: 0.6rem !important;
+        flex: 0 0 auto !important;
+        line-height: 1 !important;
+    }
+
+    #globalMaxDrawdown::-webkit-outer-spin-button,
+    #globalMaxDrawdown::-webkit-inner-spin-button,
+    #globalHardStop::-webkit-outer-spin-button,
+    #globalHardStop::-webkit-inner-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+    }
+}
+
+.global-risk-percent-field {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.08rem;
+    min-height: 1.25rem;
+    padding: 0 0.25rem;
+    border: 1px solid rgba(224, 231, 255, 0.5);
+    border-radius: 0.375rem;
+    background: rgba(255, 255, 255, 0.7);
+    box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.05);
+    line-height: 1;
+}
+
+.global-risk-percent-input {
+    min-width: 0;
+    flex: 1 1 auto;
+    background: transparent !important;
+    box-shadow: none !important;
+    line-height: 1;
+}
+
+.global-risk-percent-symbol {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    line-height: 1;
 }
 
 /* ── Glass Cards ── */
@@ -47,7 +122,8 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: #7e22ce;
+    color: #7e22ce !important;
+    text-shadow: 0 1px 10px rgba(126, 34, 206, 0.12);
     position: relative;
     z-index: 1;
 }
@@ -68,6 +144,67 @@
     display: block;
     position: relative;
     z-index: 1;
+}
+
+/* ── Dashboard Context Cards ── */
+.dashboard-context-grid {
+    align-items: stretch;
+    grid-auto-rows: 190px;
+}
+
+.dashboard-context-card {
+    height: 190px;
+    min-height: 190px;
+    padding: 1rem !important;
+}
+
+.dashboard-fng-gauge {
+    max-width: 210px !important;
+    margin-top: 1.25rem !important;
+}
+
+.dashboard-breadth-preview {
+    margin-top: 1.25rem !important;
+}
+
+.dashboard-breadth-ring {
+    width: 4.75rem !important;
+    height: 4.75rem !important;
+}
+
+.dashboard-sector-preview {
+    margin-top: 2rem !important;
+}
+
+.dashboard-card-loading {
+    width: 100%;
+    flex: 1;
+    min-width: 0;
+    min-height: 100%;
+    align-items: center !important;
+    justify-content: center !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    white-space: nowrap;
+}
+
+.dashboard-macro-preview:has(.dashboard-card-loading),
+.dashboard-sector-preview:has(.dashboard-card-loading) {
+    position: absolute !important;
+    inset: 0 !important;
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+    margin-top: 0 !important;
+    padding: 0 0.75rem !important;
+}
+
+.dashboard-card-loading span {
+    display: inline-block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* ── Panel Glass ── */
@@ -93,11 +230,61 @@
 
 /* ── Signal Cards ── */
 .signal-card {
-    padding: 0.75rem;
-    border-radius: 0.75rem;
+    padding: 0.5rem 0.55rem;
+    border-radius: 0.65rem;
     border: 1px solid rgba(192, 132, 252, 0.15);
     background: rgba(255, 255, 255, 0.5);
     transition: all 0.2s ease;
+    min-width: 0;
+    overflow: visible;
+    word-break: normal;
+    overflow-wrap: anywhere;
+    min-height: 4.35rem;
+}
+
+.signal-card > div:first-child {
+    min-width: 0;
+    gap: 0.35rem;
+    margin-bottom: 0.2rem !important;
+}
+
+.signal-card > div:first-child > div:first-child {
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.signal-card > div:first-child > div:last-child,
+.signal-card > div:first-child > span:last-child {
+    flex: 0 0 auto;
+    gap: 0.25rem;
+}
+
+.signal-card span.font-bold {
+    min-width: 0;
+    line-height: 1.05;
+    font-size: 0.67rem;
+}
+
+.signal-card p {
+    overflow-wrap: anywhere;
+    word-break: normal;
+    line-height: 1.12;
+    font-size: 0.57rem;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.signal-card svg {
+    width: 0.7rem;
+    height: 0.7rem;
+}
+
+.signal-card .text-sm {
+    font-size: 0.72rem;
+    line-height: 1;
 }
 
 .signal-card:hover {
@@ -299,6 +486,152 @@
     .card-label {
         font-size: 0.6rem;
     }
+
+    .dashboard-context-grid {
+        grid-auto-rows: 148px;
+    }
+
+    .dashboard-context-card {
+        height: 148px;
+        min-height: 148px;
+        padding: 0.75rem !important;
+    }
+
+    .dashboard-context-card .card-label {
+        font-size: 0.54rem !important;
+        letter-spacing: 0.075em;
+        line-height: 1;
+    }
+
+    .dashboard-context-card > .card-label.absolute {
+        top: 0.75rem !important;
+        left: 0.75rem !important;
+        right: 2.1rem !important;
+    }
+
+    .dashboard-context-card > .absolute.top-4.right-4 {
+        top: 0.72rem !important;
+        right: 0.72rem !important;
+    }
+
+    .dashboard-fng-gauge {
+        max-width: 150px !important;
+        margin-top: 1.25rem !important;
+    }
+
+    .dashboard-macro-preview {
+        gap: 0.18rem !important;
+        justify-content: center;
+        min-height: 0;
+        overflow: hidden;
+    }
+
+    .dashboard-sector-preview {
+        gap: 0.22rem !important;
+        margin-top: 1.8rem !important;
+        min-height: 0;
+        overflow: hidden;
+    }
+
+    .dashboard-breadth-preview {
+        margin-top: 1.25rem !important;
+        min-height: 0;
+    }
+
+    .dashboard-breadth-ring {
+        width: 4.35rem !important;
+        height: 4.35rem !important;
+    }
+
+    #breadthScore {
+        font-size: 1rem !important;
+    }
+
+    #breadthLabel {
+        max-width: 100%;
+        margin-top: 0.3rem !important;
+        font-size: 0.6rem !important;
+        line-height: 1.05;
+        text-align: center;
+        white-space: nowrap;
+    }
+
+    #breadthSubLabel {
+        max-width: 100%;
+        margin-top: 0.15rem !important;
+        font-size: 0.45rem !important;
+        line-height: 1;
+        text-align: center;
+        white-space: nowrap;
+    }
+
+    #macroEventsContainer > div {
+        padding-top: 0.08rem !important;
+        padding-bottom: 0.08rem !important;
+    }
+
+    #macroEventsContainer span,
+    #sectorHeatmapContainer span {
+        line-height: 1.05;
+    }
+
+    #sectorHeatmapContainer > div {
+        gap: 0.35rem !important;
+    }
+
+    #sectorHeatmapContainer > div > span:first-child {
+        font-size: 0.58rem !important;
+    }
+
+    #sectorHeatmapContainer > div > span:last-child {
+        font-size: 0.52rem !important;
+        padding: 0.08rem 0.28rem !important;
+    }
+}
+
+@media (max-width: 420px) {
+    .dashboard-context-grid {
+        gap: 0.55rem;
+        grid-auto-rows: 136px;
+    }
+
+    .dashboard-context-card {
+        height: 136px;
+        min-height: 136px;
+        padding: 0.65rem !important;
+    }
+
+    .dashboard-context-card .card-label {
+        font-size: 0.5rem !important;
+    }
+
+    .dashboard-fng-gauge {
+        max-width: 132px !important;
+        margin-top: 1.1rem !important;
+    }
+
+    .dashboard-breadth-ring {
+        width: 3.9rem !important;
+        height: 3.9rem !important;
+    }
+
+    .dashboard-sector-preview {
+        gap: 0.16rem !important;
+        margin-top: 1.65rem !important;
+    }
+
+    #macroEventsContainer span.font-bold.text-slate-800,
+    #macroEventsContainer span.font-bold.text-slate-600 {
+        font-size: 0.56rem !important;
+    }
+
+    #sectorHeatmapContainer > div > span:first-child {
+        font-size: 0.53rem !important;
+    }
+
+    #sectorHeatmapContainer > div > span:last-child {
+        font-size: 0.48rem !important;
+    }
 }
 
 /* ── Timeframe Buttons ── */
@@ -495,7 +828,8 @@
 }
 
 .webull-main-chart {
-    height: 460px;
+    height: clamp(460px, 50vh, 660px);
+    min-height: 460px;
 }
 
 .chart-meta-strip {
@@ -613,7 +947,8 @@
 
 @media (max-width: 768px) {
     .webull-main-chart {
-        height: 360px;
+        height: clamp(330px, 48vh, 450px);
+        min-height: 330px;
     }
 
     .chart-bottom-bar {

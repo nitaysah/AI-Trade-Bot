@@ -41,6 +41,48 @@ EVAL_CACHE_TTL = 45 # seconds
 IN_FLIGHT_EVALS = {}
 IN_FLIGHT_LOCK = threading.Lock()
 
+SIGNAL_TO_TOGGLE = {
+    'RSI': 'ENABLE_RSI',
+    'MACD': 'ENABLE_MACD',
+    'EMA Cross': 'ENABLE_EMA',
+    'Supertrend': 'ENABLE_SUPERTREND',
+    'Bollinger': 'ENABLE_BOLLINGER',
+    'VWAP': 'ENABLE_VWAP',
+    'Mystic Pulse': 'ENABLE_MYSTIC_PULSE',
+    'Candle Patterns': 'ENABLE_CANDLE_PATTERNS',
+    'ADX Trend': 'ENABLE_ADX_TREND',
+    'SMA': 'ENABLE_SMA',
+    'Prior Day High/Low': 'ENABLE_DAILY_HIGH_LOW',
+    'Pivot Points (S/R)': 'ENABLE_PIVOT_POINTS',
+    'Volume Profile': 'ENABLE_VOLUME_PROFILE',
+    'Swing Points': 'ENABLE_SWING_POINTS',
+    'BotBulls1': 'ENABLE_BOTBULLS1',
+    'BotBulls2': 'ENABLE_BOTBULLS2',
+    'BotBulls3': 'ENABLE_BOTBULLS3',
+}
+
+
+def _analysis_settings_for_trade(uc, ticker_settings: dict, use_bot_settings: bool) -> dict:
+    """Pass enabled indicators into calculations so disabled UI signals do not all compute."""
+    if use_bot_settings:
+        settings = dict((ticker_settings or {}).get("indicator_overrides", {}) or {})
+        indicators = (ticker_settings or {}).get("indicators")
+        if isinstance(indicators, list):
+            settings["enabled_indicators"] = [
+                str(indicator) for indicator in indicators
+                if str(indicator or "").strip()
+            ]
+        return settings
+
+    settings = dict(uc.active_parameters or {})
+    toggles = uc.active_toggles or {}
+    settings["enabled_indicators"] = [
+        name for name, toggle_key in SIGNAL_TO_TOGGLE.items()
+        if name != "Botbulls4 News AI" and bool(toggles.get(toggle_key, True))
+    ]
+    return settings
+
+
 def _evaluation_cache_key(uc, ticker_key: str, timeframe_key: str, data_source: str, use_bot_settings: bool, account_equity, available_cash):
     """Scope cached evaluations to one user and their active strategy/risk inputs."""
     ticker_settings = getattr(uc, 'TICKER_SETTINGS', {}).get(ticker_key, {})
@@ -597,7 +639,15 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         try:
             tech_ctx = contextvars.copy_context()
             ai_ctx = contextvars.copy_context()
-            tech_future = executor.submit(tech_ctx.run, get_full_analysis, ticker_key, timeframe=timeframe, data_source=data_source)
+            analysis_settings = _analysis_settings_for_trade(uc, ticker_settings, use_bot_settings)
+            tech_future = executor.submit(
+                tech_ctx.run,
+                get_full_analysis,
+                ticker_key,
+                timeframe=timeframe,
+                data_source=data_source,
+                settings=analysis_settings,
+            )
             ai_future = executor.submit(ai_ctx.run, get_ai_sentiment, ticker_key)
             return tech_future.result(), ai_future.result()
         finally:

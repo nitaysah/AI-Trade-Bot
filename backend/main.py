@@ -15,9 +15,10 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*utcnow
 warnings.filterwarnings("ignore", category=DeprecationWarning, module=".*webull.*")
 
 from fastapi import FastAPI, Query, Header, HTTPException, Depends, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from pydantic import BaseModel
 from typing import Optional, Any
 import asyncio
@@ -56,6 +57,7 @@ from user_config import (
 )
 from ai_indicator import get_ai_indicator, get_ai_sentiment, clear_ai_cache
 from cache_manager import TTLCacheStore, stable_cache_key
+from macro_actuals import enrich_macro_calendar_events
 
 # Global threading event for cancelling backtests on page reload
 global_backtest_cancel = threading.Event()
@@ -150,6 +152,27 @@ DASHBOARD_CONFLUENCE_TOGGLE_KEYS = [
     "ENABLE_BOTBULLS3",
 ]
 
+DASHBOARD_SIGNAL_TO_TOGGLE = {
+    "RSI": "ENABLE_RSI",
+    "MACD": "ENABLE_MACD",
+    "EMA Cross": "ENABLE_EMA",
+    "Supertrend": "ENABLE_SUPERTREND",
+    "Bollinger": "ENABLE_BOLLINGER",
+    "VWAP": "ENABLE_VWAP",
+    "Mystic Pulse": "ENABLE_MYSTIC_PULSE",
+    "Botbulls4 News AI": "ENABLE_AI_SENTIMENT",
+    "Candle Patterns": "ENABLE_CANDLE_PATTERNS",
+    "ADX Trend": "ENABLE_ADX_TREND",
+    "SMA": "ENABLE_SMA",
+    "Prior Day High/Low": "ENABLE_DAILY_HIGH_LOW",
+    "Pivot Points (S/R)": "ENABLE_PIVOT_POINTS",
+    "Volume Profile": "ENABLE_VOLUME_PROFILE",
+    "Swing Points": "ENABLE_SWING_POINTS",
+    "BotBulls1": "ENABLE_BOTBULLS1",
+    "BotBulls2": "ENABLE_BOTBULLS2",
+    "BotBulls3": "ENABLE_BOTBULLS3",
+}
+
 INDICATOR_PARAMETER_KEYS = [
     "BOTBULLS1_WT_CHANNEL",
     "BOTBULLS1_WT_AVERAGE",
@@ -227,6 +250,32 @@ def _chart_cache_ttl(timeframe: str) -> int:
 
 def _normalize_analysis_context(source: str = "dashboard") -> str:
     return source if source in {"dashboard", "bots", "backtest"} else "dashboard"
+
+
+def _enabled_indicator_names_from_toggles(toggles: dict) -> list[str]:
+    """Return confluence indicator names that should be computed for the active context."""
+    return [
+        name for name, toggle_key in DASHBOARD_SIGNAL_TO_TOGGLE.items()
+        if name != "Botbulls4 News AI" and bool((toggles or {}).get(toggle_key, True))
+    ]
+
+
+def _chart_analysis_settings(eng: UserEngine, ticker: str, prefer_bot: bool = False) -> dict:
+    """Build indicator settings for chart analysis without losing the enabled filter."""
+    ticker_key = _normalize_quote_symbol(ticker)
+    if prefer_bot:
+        settings = dict(eng.config.TICKER_SETTINGS.get(ticker_key, {}) or {})
+        indicators = settings.get("indicators")
+        if isinstance(indicators, list):
+            settings["enabled_indicators"] = [
+                str(indicator) for indicator in indicators
+                if str(indicator or "").strip()
+            ]
+        return settings
+
+    settings = dict(eng.config.active_parameters or {})
+    settings["enabled_indicators"] = _enabled_indicator_names_from_toggles(eng.config.active_toggles)
+    return settings
 
 
 @contextmanager
@@ -340,11 +389,25 @@ def _get_cached_chart_analysis(ticker: str, timeframe: str, eng: UserEngine, for
         stale_cached, stale_age = _chart_analysis_cache.peek_with_age(cache_key)
         if stale_cached:
             return stale_cached["analysis"], True, stale_age
+        # Another request is already doing the Webull + indicator work. Wait a
+        # short window for it to populate cache instead of launching duplicate
+        # calculations that can make both browser requests time out.
+        wait_deadline = time.time() + 8.0
+        while time.time() < wait_deadline:
+            if fetch_lock.acquire(blocking=False):
+                try:
+                    cached, age = _chart_analysis_cache.peek_with_age(cache_key)
+                    if cached:
+                        return cached["analysis"], True, age
+                    break
+                finally:
+                    fetch_lock.release()
+            time.sleep(0.1)
 
-        analysis = get_full_analysis(ticker_key, timeframe=timeframe_key, data_source="webull", settings=settings)
-        if analysis:
-            _chart_analysis_cache.set(cache_key, {"analysis": analysis})
-        return analysis, False, 0.0
+        stale_cached, stale_age = _chart_analysis_cache.peek_with_age(cache_key)
+        if stale_cached:
+            return stale_cached["analysis"], True, stale_age
+        return None, False, 0.0
 
     try:
         cached, age = _chart_analysis_cache.get_with_age(cache_key, _chart_cache_ttl(timeframe_key))
@@ -805,14 +868,37 @@ async def verify_token(authorization: str = Header(None)):
     except Exception as e:
         raise HTTPException(status_code=401, detail="Invalid or expired authentication credentials")
 
-async def get_user_engine(user: dict = Depends(verify_token)) -> UserEngine:
+async def get_user_engine(request: Request, user: dict = Depends(verify_token)) -> UserEngine:
     eng = user_manager.get_engine(user['uid'])
     if not getattr(eng, 'loaded_from_cloud', False):
         async with eng.load_lock:
             if not eng.loaded_from_cloud:
                 await eng.load_from_cloud()
                 eng.loaded_from_cloud = True
-    if not eng.bot_running:
+
+    path = request.url.path
+    query = request.query_params
+    is_backtest_status = (
+        path == "/api/alpaca_status"
+        or (
+            path == "/api/dashboard"
+            and query.get("source") == "backtest"
+            and not query.get("ticker")
+            and not query.get("timeframe")
+        )
+    )
+    is_backtest_execution = path in {"/api/backtest", "/api/options/backtest", "/api/backtest/optimize"}
+    is_chart_only_request = (
+        path.startswith("/api/chart/")
+        or path == "/api/signals/"
+        or path.startswith("/api/signals/")
+        or path == "/api/ai-indicator"
+        or path == "/api/quote/"
+        or path.startswith("/api/quote/")
+        or path == "/api/market-data"
+    )
+
+    if not eng.bot_running and not is_backtest_status and not is_backtest_execution and not is_chart_only_request:
         async with eng.load_lock:
             if not eng.bot_running:
                 eng.task = asyncio.create_task(eng.trading_loop())
@@ -832,8 +918,14 @@ class AlpacaConfig(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await user_manager.start_all()
-    yield
-    await user_manager.stop_all()
+    generic_cards_task = asyncio.create_task(_generic_dashboard_card_cache_loop())
+    try:
+        yield
+    finally:
+        generic_cards_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await generic_cards_task
+        await user_manager.stop_all()
 
 app = FastAPI(
     title="Bot Bulls",
@@ -927,6 +1019,18 @@ def unlink_alpaca(eng: UserEngine = Depends(get_user_engine)):
     return {"status": "success", "message": "Alpaca account unlinked. Switched to simulation mode."}
 
 
+@app.get("/api/alpaca_status")
+def get_alpaca_status(eng: UserEngine = Depends(get_user_engine)):
+    """Lightweight broker status for pages that do not need a full dashboard scan."""
+    has_keys = bool(getattr(eng.config, "ALPACA_API_KEY", ""))
+    broker_simulation = bool(getattr(eng.broker, "simulation_mode", True))
+    return {
+        "status": "success",
+        "simulation": (not has_keys) or broker_simulation,
+        "has_keys": has_keys,
+    }
+
+
 @app.get("/api/portfolio/history")
 async def get_portfolio_history(
     period: str = "1M",
@@ -958,146 +1062,391 @@ async def get_portfolio_history(
             print(f"[api] Fallback generation failed: {fallback_err}")
             return {"timestamp": [], "equity": [], "profit_loss": [], "profit_loss_pct": [], "base_value": 0}
 import time as time_module
+GENERIC_DASHBOARD_CARD_CACHE_MIN_TTL_SECONDS = 300
+
+def _parse_generic_dashboard_card_cache_ttl():
+    raw_value = os.getenv("GENERIC_DASHBOARD_CARD_CACHE_TTL_SECONDS", "3600")
+    try:
+        ttl = int(raw_value)
+    except (TypeError, ValueError):
+        print(f"[generic-cache] Invalid GENERIC_DASHBOARD_CARD_CACHE_TTL_SECONDS={raw_value!r}; using 3600")
+        ttl = 3600
+    if ttl < GENERIC_DASHBOARD_CARD_CACHE_MIN_TTL_SECONDS:
+        print(
+            "[generic-cache] GENERIC_DASHBOARD_CARD_CACHE_TTL_SECONDS "
+            f"{ttl}s is too low; using {GENERIC_DASHBOARD_CARD_CACHE_MIN_TTL_SECONDS}s"
+        )
+        ttl = GENERIC_DASHBOARD_CARD_CACHE_MIN_TTL_SECONDS
+    return ttl
+
+GENERIC_DASHBOARD_CARD_CACHE_TTL_SECONDS = _parse_generic_dashboard_card_cache_ttl()
+GENERIC_DASHBOARD_CARD_CACHE_SCHEMA_VERSION = 2
+GENERIC_DASHBOARD_CARD_CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache")
+GENERIC_DASHBOARD_CARD_CACHE_FILE = os.path.join(GENERIC_DASHBOARD_CARD_CACHE_DIR, "generic_dashboard_cards.json")
+GENERIC_DASHBOARD_CARD_CACHE_LOCK_FILE = os.path.join(GENERIC_DASHBOARD_CARD_CACHE_DIR, "generic_dashboard_cards.lock")
 _MARKET_DATA_CACHE = None
 _MARKET_DATA_LAST_FETCH = 0
+_MARKET_DATA_LOCK = asyncio.Lock()
+_MACRO_EVENTS_CACHE = None
+_MACRO_EVENTS_LAST_FETCH = 0
+_MACRO_EVENTS_LOCK = asyncio.Lock()
+_FEAR_GREED_CACHE = None
+_FEAR_GREED_LAST_FETCH = 0
+_FEAR_GREED_LOCK = asyncio.Lock()
+
+@contextmanager
+def _generic_dashboard_card_disk_lock():
+    os.makedirs(GENERIC_DASHBOARD_CARD_CACHE_DIR, exist_ok=True)
+    with open(GENERIC_DASHBOARD_CARD_CACHE_LOCK_FILE, "a+") as lock_file:
+        try:
+            import fcntl
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        except Exception:
+            # Best-effort fallback on platforms without fcntl. Atomic replace still protects readers.
+            pass
+        try:
+            yield
+        finally:
+            try:
+                import fcntl
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+
+
+def _read_generic_dashboard_card_disk_cache():
+    try:
+        with open(GENERIC_DASHBOARD_CARD_CACHE_FILE, "r", encoding="utf-8") as cache_file:
+            data = json.load(cache_file)
+            return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        print(f"[generic-cache] Could not read shared cache file: {e}")
+        return {}
+
+
+def _write_generic_dashboard_card_disk_cache(cache_doc):
+    os.makedirs(GENERIC_DASHBOARD_CARD_CACHE_DIR, exist_ok=True)
+    tmp_path = f"{GENERIC_DASHBOARD_CARD_CACHE_FILE}.{os.getpid()}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as cache_file:
+        json.dump(jsonable_encoder(cache_doc), cache_file, separators=(",", ":"))
+    os.replace(tmp_path, GENERIC_DASHBOARD_CARD_CACHE_FILE)
+
+
+def _load_persisted_generic_card(card_key):
+    cache_doc = _read_generic_dashboard_card_disk_cache()
+    entry = cache_doc.get(card_key)
+    if not isinstance(entry, dict):
+        return None, 0
+    if int(entry.get("schema_version") or 0) != GENERIC_DASHBOARD_CARD_CACHE_SCHEMA_VERSION:
+        return None, 0
+    fetched_at_epoch = float(entry.get("fetched_at_epoch") or 0)
+    data = entry.get("data")
+    if data and time_module.time() - fetched_at_epoch < GENERIC_DASHBOARD_CARD_CACHE_TTL_SECONDS:
+        return data, fetched_at_epoch
+    return None, 0
+
+
+def _save_persisted_generic_card(card_key, data):
+    with _generic_dashboard_card_disk_lock():
+        cache_doc = _read_generic_dashboard_card_disk_cache()
+        cache_doc[card_key] = {
+            "schema_version": GENERIC_DASHBOARD_CARD_CACHE_SCHEMA_VERSION,
+            "fetched_at_epoch": time_module.time(),
+            "data": data,
+        }
+        _write_generic_dashboard_card_disk_cache(cache_doc)
+
+
+def _mark_generic_card_from_shared_cache(data):
+    if not isinstance(data, dict):
+        return data
+    marked = dict(data)
+    marked["cache"] = {
+        **marked.get("cache", {}),
+        "scope": "server-shared",
+        "shared_snapshot": True,
+    }
+    return marked
+
+MARKET_SECTOR_TICKERS = (
+    "XLK XLF XLV XLE "
+    "AAPL MSFT GOOG NVDA META TSLA AVGO AMD QCOM NFLX AMZN ADBE CRM INTC CSCO ORCL "
+    "JPM BAC WFC MS GS V MA AXP BLK C SCHW HDB "
+    "LLY UNH JNJ MRK ABBV PFE WMT COST PG KO PEP NKE MCD EL "
+    "XOM CVX COP OXY SLB CAT GE HON UNP LMT DE MMM "
+    "BTC-USD ETH-USD SOL-USD ADA-USD XRP-USD DOGE-USD DOT-USD LINK-USD LTC-USD NEAR-USD BCH-USD AVAX-USD"
+)
+MARKET_SECTOR_SUMMARY_GROUPS = {
+    "tech": {
+        "label": "Technology",
+        "benchmark": "XLK",
+        "tickers": ["AAPL", "MSFT", "GOOG", "NVDA", "META", "TSLA", "AVGO", "AMD", "QCOM", "NFLX", "AMZN", "ADBE", "CRM", "INTC", "CSCO", "ORCL"],
+    },
+    "financials": {
+        "label": "Financials",
+        "benchmark": "XLF",
+        "tickers": ["JPM", "BAC", "WFC", "MS", "GS", "V", "MA", "AXP", "BLK", "C", "SCHW", "HDB"],
+    },
+    "healthcare": {
+        "label": "Healthcare & Retail",
+        "benchmark": "XLV",
+        "tickers": ["LLY", "UNH", "JNJ", "MRK", "ABBV", "PFE", "WMT", "COST", "PG", "KO", "PEP", "NKE", "MCD", "EL"],
+    },
+    "energy": {
+        "label": "Energy & Industrials",
+        "benchmark": "XLE",
+        "tickers": ["XOM", "CVX", "COP", "OXY", "SLB", "CAT", "GE", "HON", "UNP", "LMT", "DE", "MMM"],
+    },
+    "crypto": {
+        "label": "Crypto",
+        "benchmark": "BTC-USD",
+        "tickers": ["BTC-USD", "ETH-USD", "SOL-USD", "ADA-USD", "XRP-USD", "DOGE-USD", "DOT-USD", "LINK-USD", "LTC-USD", "NEAR-USD", "BCH-USD", "AVAX-USD"],
+    },
+}
+MARKET_BREADTH_UNIVERSE = (
+    "AAPL MSFT GOOG GOOGL NVDA META TSLA AVGO AMD QCOM NFLX AMZN ADBE CRM INTC CSCO ORCL "
+    "JPM BAC WFC MS GS V MA AXP BLK C SCHW "
+    "LLY UNH JNJ MRK ABBV PFE ISRG TMO ABT DHR "
+    "WMT COST PG KO PEP NKE MCD HD LOW TGT "
+    "XOM CVX COP OXY SLB EOG CAT GE HON UNP LMT DE MMM "
+    "NEE DUK SO PLD AMT LIN"
+)
+
+def _fetch_market_data_sync():
+    # This card data is generic market context, not user/account data.
+    import yfinance as yf
+
+    # 1. Fetch Sector Data
+    sector_tickers = MARKET_SECTOR_TICKERS
+    df_sector = yf.download(sector_tickers, period="5d", progress=False)
+
+    sector_data = {}
+    for ticker in sector_tickers.split():
+        try:
+            valid_closes = df_sector['Close'][ticker].dropna()
+            if len(valid_closes) >= 2:
+                current_price = valid_closes.iloc[-1]
+                prev_price = valid_closes.iloc[-2]
+                pct_change = ((current_price / prev_price) - 1) * 100
+                sector_data[ticker] = round(pct_change, 2)
+            else:
+                sector_data[ticker] = 0.0
+        except Exception:
+            sector_data[ticker] = 0.0
+
+    sector_summary = {}
+    for key, group in MARKET_SECTOR_SUMMARY_GROUPS.items():
+        moves = [
+            sector_data[ticker] for ticker in group["tickers"]
+            if ticker in sector_data
+        ]
+        positive_count = sum(1 for value in moves if value > 0)
+        negative_count = sum(1 for value in moves if value < 0)
+        flat_count = max(0, len(moves) - positive_count - negative_count)
+        directional_count = positive_count + negative_count
+        participation_pct = round((positive_count / directional_count) * 100) if directional_count else 50
+        avg_change = round(sum(moves) / len(moves), 2) if moves else 0.0
+        benchmark = group["benchmark"]
+        benchmark_change = sector_data.get(benchmark)
+        sector_summary[key] = {
+            "label": group["label"],
+            "benchmark": benchmark,
+            "benchmark_change_pct": round(float(benchmark_change), 2) if benchmark_change is not None else None,
+            "avg_constituent_change_pct": avg_change,
+            "positive_count": positive_count,
+            "negative_count": negative_count,
+            "flat_count": flat_count,
+            "participation_pct": participation_pct,
+            "analyzed_count": len(moves),
+        }
+
+    # 2. Market Breadth: fixed benchmark universe only.
+    combined_list = MARKET_BREADTH_UNIVERSE.split()
+
+    advancing = 0
+    declining = 0
+    unchanged = 0
+    new_highs = 0
+    new_lows = 0
+    above_50 = 0
+    above_200 = 0
+    ma50_count = 0
+    ma200_count = 0
+    tickers_list = []
+
+    if len(combined_list) > 0:
+        df_breadth = yf.download(" ".join(combined_list), period="1y", progress=False)
+        for ticker in combined_list:
+            try:
+                if len(combined_list) == 1:
+                    valid_closes = df_breadth['Close'].dropna()
+                    valid_highs = df_breadth['High'].dropna()
+                    valid_lows = df_breadth['Low'].dropna()
+                else:
+                    valid_closes = df_breadth['Close'][ticker].dropna()
+                    valid_highs = df_breadth['High'][ticker].dropna()
+                    valid_lows = df_breadth['Low'][ticker].dropna()
+
+                if len(valid_closes) >= 2:
+                    curr = valid_closes.iloc[-1]
+                    prev = valid_closes.iloc[-2]
+
+                    is_adv = bool(curr > prev)
+                    is_dec = bool(curr < prev)
+                    if is_adv:
+                        advancing += 1
+                    elif is_dec:
+                        declining += 1
+                    else:
+                        unchanged += 1
+
+                    prior_highs = valid_highs.iloc[:-1]
+                    prior_lows = valid_lows.iloc[:-1]
+                    latest_high = valid_highs.iloc[-1] if len(valid_highs) else curr
+                    latest_low = valid_lows.iloc[-1] if len(valid_lows) else curr
+                    year_high = prior_highs.max() if len(prior_highs) else valid_highs.max()
+                    year_low = prior_lows.min() if len(prior_lows) else valid_lows.min()
+
+                    is_high = bool(latest_high >= year_high)
+                    is_low = bool(latest_low <= year_low)
+                    if is_high:
+                        new_highs += 1
+                    if is_low:
+                        new_lows += 1
+
+                    above_50_status = None
+                    if len(valid_closes) >= 50:
+                        ma50_count += 1
+                        sma50 = float(valid_closes.iloc[-50:].mean())
+                        above_50_status = bool(curr > sma50)
+                        if above_50_status:
+                            above_50 += 1
+
+                    above_200_status = None
+                    if len(valid_closes) >= 200:
+                        ma200_count += 1
+                        sma200 = float(valid_closes.iloc[-200:].mean())
+                        above_200_status = bool(curr > sma200)
+                        if above_200_status:
+                            above_200 += 1
+
+                    tickers_list.append({
+                        "ticker": ticker,
+                        "price": round(float(curr), 2),
+                        "change_pct": round(float(((curr / prev) - 1) * 100), 2) if prev else 0.0,
+                        "above_50": above_50_status,
+                        "above_200": above_200_status,
+                        "is_high": is_high,
+                        "is_low": is_low
+                    })
+            except Exception:
+                pass
+
+    directional_total = advancing + declining
+    advance_pct = round((advancing / directional_total) * 100) if directional_total else 50
+    above_50_pct = round((above_50 / ma50_count) * 100) if ma50_count else 0
+    above_200_pct = round((above_200 / ma200_count) * 100) if ma200_count else 0
+    high_low_total = new_highs + new_lows
+    high_low_pct = round(50 + (((new_highs - new_lows) / high_low_total) * 50)) if high_low_total else 50
+    high_low_pct = max(0, min(100, high_low_pct))
+    breadth_score = round(
+        (advance_pct * 0.35)
+        + (above_50_pct * 0.30)
+        + (above_200_pct * 0.25)
+        + (high_low_pct * 0.10)
+    )
+    breadth_data = {
+        "advancing": advancing,
+        "declining": declining,
+        "unchanged": unchanged,
+        "advance_pct": advance_pct,
+        "new_highs": new_highs,
+        "new_lows": new_lows,
+        "above_50_pct": above_50_pct,
+        "above_200_pct": above_200_pct,
+        "high_low_pct": high_low_pct,
+        "breadth_score": breadth_score,
+        "breadth_score_components": {
+            "advance_pct_weight": 35,
+            "above_50_pct_weight": 30,
+            "above_200_pct_weight": 25,
+            "high_low_pct_weight": 10,
+        },
+        "universe": "Fixed US large-cap benchmark universe",
+        "universe_count": len(combined_list),
+        "analyzed_count": len(tickers_list),
+        "tickers": tickers_list
+    }
+
+    return {
+        "sectors": sector_data,
+        "sector_summary": sector_summary,
+        "breadth": breadth_data,
+        "cache": {
+            "scope": "server",
+            "refresh_interval_seconds": GENERIC_DASHBOARD_CARD_CACHE_TTL_SECONDS,
+            "fetched_at": datetime.utcnow().isoformat() + "Z",
+        }
+    }
+
+
+async def _get_cached_market_data(force: bool = False):
+    global _MARKET_DATA_CACHE, _MARKET_DATA_LAST_FETCH
+    now = time_module.time()
+    if (
+        not force
+        and _MARKET_DATA_CACHE
+        and now - _MARKET_DATA_LAST_FETCH < GENERIC_DASHBOARD_CARD_CACHE_TTL_SECONDS
+    ):
+        return _MARKET_DATA_CACHE
+    if not force:
+        persisted_data, persisted_at = _load_persisted_generic_card("market_data")
+        if persisted_data:
+            _MARKET_DATA_CACHE = _mark_generic_card_from_shared_cache(persisted_data)
+            _MARKET_DATA_LAST_FETCH = persisted_at
+            return _MARKET_DATA_CACHE
+
+    async with _MARKET_DATA_LOCK:
+        now = time_module.time()
+        if (
+            not force
+            and _MARKET_DATA_CACHE
+            and now - _MARKET_DATA_LAST_FETCH < GENERIC_DASHBOARD_CARD_CACHE_TTL_SECONDS
+        ):
+            return _MARKET_DATA_CACHE
+        if not force:
+            persisted_data, persisted_at = _load_persisted_generic_card("market_data")
+            if persisted_data:
+                _MARKET_DATA_CACHE = _mark_generic_card_from_shared_cache(persisted_data)
+                _MARKET_DATA_LAST_FETCH = persisted_at
+                return _MARKET_DATA_CACHE
+        try:
+            data = await asyncio.to_thread(_fetch_market_data_sync)
+            _MARKET_DATA_CACHE = data
+            _MARKET_DATA_LAST_FETCH = time_module.time()
+            await asyncio.to_thread(_save_persisted_generic_card, "market_data", data)
+            print("[generic-cache] Refreshed market breadth + sector heatmap cache")
+            return data
+        except Exception as e:
+            print(f"Error fetching market data: {e}")
+            import traceback
+            traceback.print_exc()
+            if _MARKET_DATA_CACHE:
+                stale_data = dict(_MARKET_DATA_CACHE)
+                stale_data["cache"] = {
+                    **stale_data.get("cache", {}),
+                    "stale": True,
+                    "last_error": str(e),
+                }
+                return stale_data
+            raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/api/market-data")
-async def get_market_data(eng: UserEngine = Depends(get_user_engine)):
-    global _MARKET_DATA_CACHE, _MARKET_DATA_LAST_FETCH
-    # Cache for 60 seconds
-    if _MARKET_DATA_CACHE and time_module.time() - _MARKET_DATA_LAST_FETCH < 60:
-        return _MARKET_DATA_CACHE
-    try:
-        # Run yfinance operations in a background thread to prevent blocking the async event loop
-        def fetch_data():
-            import yfinance as yf
-            # 1. Fetch Sector Data
-            sector_tickers = (
-                "AAPL MSFT GOOG NVDA META TSLA AVGO AMD QCOM NFLX AMZN ADBE CRM INTC CSCO ORCL "
-                "JPM BAC WFC MS GS V MA AXP BLK C SCHW HDB "
-                "LLY UNH JNJ MRK ABBV PFE WMT COST PG KO PEP NKE MCD EL "
-                "XOM CVX COP OXY SLB CAT GE HON UNP LMT DE MMM "
-                "BTC-USD ETH-USD SOL-USD ADA-USD XRP-USD DOGE-USD DOT-USD LINK-USD LTC-USD NEAR-USD BCH-USD AVAX-USD"
-            )
-            # Disable yfinance logging
-            df_sector = yf.download(sector_tickers, period="5d", progress=False)
-            
-            sector_data = {}
-            for ticker in sector_tickers.split():
-                try:
-                    valid_closes = df_sector['Close'][ticker].dropna()
-                    if len(valid_closes) >= 2:
-                        current_price = valid_closes.iloc[-1]
-                        prev_price = valid_closes.iloc[-2]
-                        pct_change = ((current_price / prev_price) - 1) * 100
-                        sector_data[ticker] = round(pct_change, 2)
-                    else:
-                        sector_data[ticker] = 0.0
-                except:
-                    sector_data[ticker] = 0.0
-
-            # 2. Market Breadth via Watchlist
-            user_config = eng.config
-            raw_list = list(set(user_config.WATCHLIST + user_config.TRADELIST))
-            
-            # Fallback to market leaders if watchlist and tradelist are empty
-            if not raw_list:
-                raw_list = ["AAPL", "MSFT", "GOOG", "NVDA", "TSLA", "META", "AMD", "NFLX", "AMZN", "COIN"]
-            
-            # yfinance requires hyphens for crypto (e.g., BTC-USD instead of BTCUSD)
-            combined_list = []
-            for t in raw_list:
-                if t.endswith("USD") and "-" not in t:
-                    combined_list.append(t.replace("USD", "-USD"))
-                else:
-                    combined_list.append(t)
-            
-            advancing = 0
-            declining = 0
-            new_highs = 0
-            new_lows = 0
-            above_50 = 0
-            above_200 = 0
-            tickers_list = []
-            
-            if len(combined_list) > 0:
-                df_breadth = yf.download(" ".join(combined_list), period="200d", progress=False)
-                for ticker in combined_list:
-                    try:
-                        if len(combined_list) == 1:
-                            valid_closes = df_breadth['Close'].dropna()
-                            valid_highs = df_breadth['High'].dropna()
-                            valid_lows = df_breadth['Low'].dropna()
-                        else:
-                            valid_closes = df_breadth['Close'][ticker].dropna()
-                            valid_highs = df_breadth['High'][ticker].dropna()
-                            valid_lows = df_breadth['Low'][ticker].dropna()
-                            
-                        if len(valid_closes) >= 2:
-                            curr = valid_closes.iloc[-1]
-                            prev = valid_closes.iloc[-2]
-                            
-                            is_adv = bool(curr > prev)
-                            if is_adv: advancing += 1
-                            else: declining += 1
-                            
-                            year_high = valid_highs.max()
-                            year_low = valid_lows.min()
-                            
-                            is_high = bool(curr >= year_high * 0.98)
-                            is_low = bool(curr <= year_low * 1.02)
-                            if is_high: new_highs += 1
-                            if is_low: new_lows += 1
-                            
-                            sma50 = None
-                            above_50_status = None
-                            if len(valid_closes) >= 50:
-                                sma50 = float(valid_closes.iloc[-50:].mean())
-                                above_50_status = bool(curr > sma50)
-                                if above_50_status: above_50 += 1
-                                
-                            sma200 = None
-                            above_200_status = None
-                            if len(valid_closes) >= 200:
-                                sma200 = float(valid_closes.iloc[-200:].mean())
-                                above_200_status = bool(curr > sma200)
-                                if above_200_status: above_200 += 1
-                                
-                            tickers_list.append({
-                                "ticker": ticker,
-                                "price": round(float(curr), 2),
-                                "change_pct": round(float(((curr / prev) - 1) * 100), 2) if prev else 0.0,
-                                "above_50": above_50_status,
-                                "above_200": above_200_status,
-                                "is_high": is_high,
-                                "is_low": is_low
-                            })
-                    except Exception:
-                        pass
-                        
-            total = max(1, len(tickers_list))
-            breadth_data = {
-                "advancing": advancing,
-                "declining": declining,
-                "new_highs": new_highs,
-                "new_lows": new_lows,
-                "above_50_pct": round((above_50 / total) * 100),
-                "above_200_pct": round((above_200 / total) * 100),
-                "tickers": tickers_list
-            }
-            
-            return {
-                "sectors": sector_data,
-                "breadth": breadth_data
-            }
-            
-        data = await asyncio.to_thread(fetch_data)
-        return data
-    except Exception as e:
-        print(f"Error fetching market data: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+async def get_market_data(user: dict = Depends(verify_token)):
+    return await _get_cached_market_data(force=False)
 
 
 @app.get("/api/quote/{ticker}")
@@ -1125,51 +1474,246 @@ async def get_live_quote(ticker: str, eng: UserEngine = Depends(get_user_engine)
 
 _macro_calendar_cache = {"data": [], "timestamp": 0}
 
-@app.get("/api/macro-events")
-async def get_macro_events():
-    try:
-        from macro_service import get_macro_data
-        
-        def fetch_calendar():
-            global _macro_calendar_cache
-            import time
-            now = time.time()
-            # Cache for 1 hour
-            if now - _macro_calendar_cache["timestamp"] < 3600 and _macro_calendar_cache["data"]:
-                return _macro_calendar_cache["data"]
+async def _fetch_macro_events_uncached():
+    from macro_service import get_macro_data
 
-            import requests
-            try:
-                url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-                r = requests.get(url, headers=headers, timeout=5)
-                r.raise_for_status()
-                data = r.json()
-                
-                # Expand to High/Medium USD and High major global economies
-                def is_relevant(e):
-                    if e.get('country') == 'USD' and e.get('impact') in ['High', 'Medium']: return True
-                    if e.get('country') in ['EUR', 'GBP', 'CNY', 'JPY'] and e.get('impact') == 'High': return True
-                    return False
-                    
-                result = [e for e in data if is_relevant(e)]
-                _macro_calendar_cache["data"] = result
-                _macro_calendar_cache["timestamp"] = now
-                return result
-            except Exception as e:
-                print(f"Error fetching forex calendar: {e}")
-                return _macro_calendar_cache["data"]
-                
-        # Run both operations concurrently
-        indicators_task = asyncio.to_thread(get_macro_data, False)
-        calendar_task = asyncio.to_thread(fetch_calendar)
-        
-        indicators, calendar = await asyncio.gather(indicators_task, calendar_task)
-        
-        return {"status": "success", "indicators": indicators, "calendar": calendar}
+    def fetch_calendar():
+        global _macro_calendar_cache
+        import time
+        now = time.time()
+        # Cache the remote calendar separately because the provider changes slowly.
+        if now - _macro_calendar_cache["timestamp"] < 3600 and _macro_calendar_cache["data"]:
+            return _macro_calendar_cache["data"]
+
+        import requests
+        try:
+            url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            r = requests.get(url, headers=headers, timeout=5)
+            r.raise_for_status()
+            data = r.json()
+
+            # Expand to High/Medium USD and High major global economies
+            def is_relevant(e):
+                if e.get('country') == 'USD' and e.get('impact') in ['High', 'Medium']:
+                    return True
+                if e.get('country') in ['EUR', 'GBP', 'CNY', 'JPY'] and e.get('impact') == 'High':
+                    return True
+                return False
+
+            result = [e for e in data if is_relevant(e)]
+
+            # Sort events chronologically by date string
+            def get_timestamp(ev):
+                try:
+                    return datetime.fromisoformat(ev.get('date', '')).timestamp()
+                except Exception:
+                    return 0
+            result.sort(key=get_timestamp)
+            result = enrich_macro_calendar_events(result)
+
+            _macro_calendar_cache["data"] = result
+            _macro_calendar_cache["timestamp"] = now
+            return result
+        except Exception as e:
+            print(f"Error fetching forex calendar: {e}")
+            return _macro_calendar_cache["data"]
+
+    indicators_task = asyncio.to_thread(get_macro_data, False)
+    calendar_task = asyncio.to_thread(fetch_calendar)
+    indicators, calendar = await asyncio.gather(indicators_task, calendar_task)
+    return {
+        "status": "success",
+        "indicators": indicators,
+        "calendar": calendar,
+        "cache": {
+            "scope": "server",
+            "refresh_interval_seconds": GENERIC_DASHBOARD_CARD_CACHE_TTL_SECONDS,
+            "fetched_at": datetime.utcnow().isoformat() + "Z",
+        }
+    }
+
+
+async def _get_cached_macro_events(force: bool = False):
+    global _MACRO_EVENTS_CACHE, _MACRO_EVENTS_LAST_FETCH
+    now = time_module.time()
+    if (
+        not force
+        and _MACRO_EVENTS_CACHE
+        and now - _MACRO_EVENTS_LAST_FETCH < GENERIC_DASHBOARD_CARD_CACHE_TTL_SECONDS
+    ):
+        return _MACRO_EVENTS_CACHE
+    if not force:
+        persisted_data, persisted_at = _load_persisted_generic_card("macro_events")
+        if persisted_data:
+            _MACRO_EVENTS_CACHE = _mark_generic_card_from_shared_cache(persisted_data)
+            _MACRO_EVENTS_LAST_FETCH = persisted_at
+            return _MACRO_EVENTS_CACHE
+
+    async with _MACRO_EVENTS_LOCK:
+        now = time_module.time()
+        if (
+            not force
+            and _MACRO_EVENTS_CACHE
+            and now - _MACRO_EVENTS_LAST_FETCH < GENERIC_DASHBOARD_CARD_CACHE_TTL_SECONDS
+        ):
+            return _MACRO_EVENTS_CACHE
+        if not force:
+            persisted_data, persisted_at = _load_persisted_generic_card("macro_events")
+            if persisted_data:
+                _MACRO_EVENTS_CACHE = _mark_generic_card_from_shared_cache(persisted_data)
+                _MACRO_EVENTS_LAST_FETCH = persisted_at
+                return _MACRO_EVENTS_CACHE
+        try:
+            data = await _fetch_macro_events_uncached()
+            _MACRO_EVENTS_CACHE = data
+            _MACRO_EVENTS_LAST_FETCH = time_module.time()
+            await asyncio.to_thread(_save_persisted_generic_card, "macro_events", data)
+            print("[generic-cache] Refreshed macro events cache")
+            return data
+        except Exception as e:
+            print(f"Error fetching macro events: {e}")
+            if _MACRO_EVENTS_CACHE:
+                stale_data = dict(_MACRO_EVENTS_CACHE)
+                stale_data["cache"] = {
+                    **stale_data.get("cache", {}),
+                    "stale": True,
+                    "last_error": str(e),
+                }
+                return stale_data
+            return {"status": "error", "message": str(e), "indicators": {}, "calendar": []}
+
+
+def _fetch_fear_greed_sync():
+    import requests
+
+    url = "https://feargreedchart.com/api/"
+    headers = {'User-Agent': 'Mozilla/5.0 (compatible; BotBulls/2.0)'}
+    response = requests.get(url, headers=headers, timeout=8)
+    response.raise_for_status()
+    raw = response.json()
+    score_block = raw.get("score") or {}
+    return {
+        "status": "success",
+        "score": score_block.get("score"),
+        "components": score_block.get("components") or [],
+        "raw_score": score_block,
+        "source": "feargreedchart.com",
+        "cache": {
+            "scope": "server",
+            "refresh_interval_seconds": GENERIC_DASHBOARD_CARD_CACHE_TTL_SECONDS,
+            "fetched_at": datetime.utcnow().isoformat() + "Z",
+        }
+    }
+
+
+async def _get_cached_fear_greed(force: bool = False):
+    global _FEAR_GREED_CACHE, _FEAR_GREED_LAST_FETCH
+    now = time_module.time()
+    if (
+        not force
+        and _FEAR_GREED_CACHE
+        and now - _FEAR_GREED_LAST_FETCH < GENERIC_DASHBOARD_CARD_CACHE_TTL_SECONDS
+    ):
+        return _FEAR_GREED_CACHE
+    if not force:
+        persisted_data, persisted_at = _load_persisted_generic_card("fear_greed")
+        if persisted_data:
+            _FEAR_GREED_CACHE = _mark_generic_card_from_shared_cache(persisted_data)
+            _FEAR_GREED_LAST_FETCH = persisted_at
+            return _FEAR_GREED_CACHE
+
+    async with _FEAR_GREED_LOCK:
+        now = time_module.time()
+        if (
+            not force
+            and _FEAR_GREED_CACHE
+            and now - _FEAR_GREED_LAST_FETCH < GENERIC_DASHBOARD_CARD_CACHE_TTL_SECONDS
+        ):
+            return _FEAR_GREED_CACHE
+        if not force:
+            persisted_data, persisted_at = _load_persisted_generic_card("fear_greed")
+            if persisted_data:
+                _FEAR_GREED_CACHE = _mark_generic_card_from_shared_cache(persisted_data)
+                _FEAR_GREED_LAST_FETCH = persisted_at
+                return _FEAR_GREED_CACHE
+        try:
+            data = await asyncio.to_thread(_fetch_fear_greed_sync)
+            _FEAR_GREED_CACHE = data
+            _FEAR_GREED_LAST_FETCH = time_module.time()
+            await asyncio.to_thread(_save_persisted_generic_card, "fear_greed", data)
+            print("[generic-cache] Refreshed Fear & Greed cache")
+            return data
+        except Exception as e:
+            print(f"Error fetching Fear & Greed: {e}")
+            if _FEAR_GREED_CACHE:
+                stale_data = dict(_FEAR_GREED_CACHE)
+                stale_data["cache"] = {
+                    **stale_data.get("cache", {}),
+                    "stale": True,
+                    "last_error": str(e),
+                }
+                return stale_data
+            return {
+                "status": "error",
+                "message": str(e),
+                "score": None,
+                "components": [],
+                "source": "feargreedchart.com",
+            }
+
+
+async def _refresh_generic_dashboard_card_caches(force: bool = False):
+    results = await asyncio.gather(
+        _get_cached_fear_greed(force=force),
+        _get_cached_market_data(force=force),
+        _get_cached_macro_events(force=force),
+        return_exceptions=True,
+    )
+    for name, result in zip(("fear_greed", "market_data", "macro_events"), results):
+        if isinstance(result, Exception):
+            print(f"[generic-cache] {name} refresh failed: {result}")
+
+
+async def _generic_dashboard_card_cache_loop():
+    await asyncio.sleep(2)
+    while True:
+        await _refresh_generic_dashboard_card_caches(force=False)
+        await asyncio.sleep(GENERIC_DASHBOARD_CARD_CACHE_TTL_SECONDS)
+
+
+@app.get("/api/macro-events")
+async def get_macro_events(user: dict = Depends(verify_token)):
+    return await _get_cached_macro_events(force=False)
+
+
+@app.get("/api/fear-greed")
+async def get_fear_greed(user: dict = Depends(verify_token)):
+    return await _get_cached_fear_greed(force=False)
+
+
+@app.get("/api/generic-dashboard-cards")
+async def get_generic_dashboard_cards(user: dict = Depends(verify_token)):
+    try:
+        fear_greed, market_data, macro_events = await asyncio.gather(
+            _get_cached_fear_greed(force=False),
+            _get_cached_market_data(force=False),
+            _get_cached_macro_events(force=False),
+        )
+        return {
+            "status": "success",
+            "fear_greed": fear_greed,
+            "market_data": market_data,
+            "macro_events": macro_events,
+            "cache": {
+                "scope": "server",
+                "refresh_interval_seconds": GENERIC_DASHBOARD_CARD_CACHE_TTL_SECONDS,
+                "served_at": datetime.utcnow().isoformat() + "Z",
+            }
+        }
     except Exception as e:
-        print(f"Error fetching macro events: {e}")
-        return {"status": "error", "message": str(e), "indicators": {}, "calendar": []}
+        print(f"Error fetching generic dashboard cards: {e}")
+        return {"status": "error", "message": str(e)}
 
 
 def _get_threshold_setting(settings, keys, default_value):
@@ -2741,6 +3285,17 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
     from user_config import active_evaluation_context
     ctx = source if source in ["dashboard", "bots", "backtest"] else "dashboard"
     active_evaluation_context.set(ctx)
+
+    if ctx == "backtest" and not ticker and not timeframe:
+        has_keys = bool(getattr(eng.config, "ALPACA_API_KEY", ""))
+        broker_simulation = bool(getattr(eng.broker, "simulation_mode", True))
+        return {
+            "simulation": (not has_keys) or broker_simulation,
+            "has_keys": has_keys,
+            "indicator_overrides": eng.config.contexts.get("backtest", {}).get("parameters", {}),
+            "indicator_parameters": eng.config.contexts.get("backtest", {}).get("parameters", {}),
+        }
+
     overall_start = time.perf_counter()
     account_start = time.perf_counter()
 
@@ -2828,7 +3383,7 @@ async def get_dashboard(request: Request, mode: str = "fast", ticker: str = None
     
     # Check cache first for primary ticker scan
     primary_scan = None
-    prefer_bot_for_primary = is_active_bot and ctx in ("dashboard", "bots")
+    prefer_bot_for_primary = is_active_bot and ctx == "bots"
     if prefer_bot_for_primary and ctx == "bots":
         bot_tf = eng.config.TICKER_SETTINGS.get(primary_ticker, {}).get('timeframe')
         if bot_tf:
@@ -3445,12 +4000,12 @@ async def get_chart_data(
         return {"error": "Invalid ticker format"}
 
     timeframe = timeframe or eng.config.TICKER_SETTINGS.get(ticker, {}).get('timeframe') or eng.config.DEFAULT_TIMEFRAME
-    prefer_bot = ticker in eng.config.TRADELIST and source in ("dashboard", "bots")
+    prefer_bot = ticker in eng.config.TRADELIST and source == "bots"
     analysis_source = "bots" if prefer_bot else source
-    chart_settings = eng.config.TICKER_SETTINGS.get(ticker, {}) if prefer_bot else eng.config.active_parameters
     started = time.perf_counter()
 
     with _analysis_request_context(analysis_source, ticker, prefer_bot):
+        chart_settings = _chart_analysis_settings(eng, ticker, prefer_bot)
         try:
             analysis, cached, cache_age = await asyncio.wait_for(
                 asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, eng, force, analysis_source, chart_settings),
@@ -3661,10 +4216,10 @@ async def get_fast_signals(
         return {"error": "Invalid ticker format"}
 
     timeframe = timeframe or eng.config.TICKER_SETTINGS.get(ticker, {}).get('timeframe') or eng.config.DEFAULT_TIMEFRAME
-    prefer_bot = ticker in eng.config.TRADELIST and source in ("dashboard", "bots")
+    prefer_bot = ticker in eng.config.TRADELIST and source == "bots"
     analysis_source = "bots" if prefer_bot else source
-    chart_settings = eng.config.TICKER_SETTINGS.get(ticker, {}) if prefer_bot else None
     with _analysis_request_context(analysis_source, ticker, prefer_bot):
+        chart_settings = _chart_analysis_settings(eng, ticker, prefer_bot)
         try:
             analysis, cached, cache_age = await asyncio.wait_for(
                 asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, eng, force, analysis_source, chart_settings),
@@ -5180,6 +5735,15 @@ def _format_trade_for_ui(trade: dict) -> dict:
         "total_signals": trade.get("total_signals", 0),
         "timeframe": tf,
         "log_type": trade.get("log_type", "Active Bot"),
+        "exit_monitoring": trade.get("exit_monitoring", False),
+        "exit_signal_label": trade.get("exit_signal_label", ""),
+        "exit_signal_count": trade.get("exit_signal_count", 0),
+        "exit_signal_threshold": trade.get("exit_signal_threshold", 0),
+        "exit_signal_direction": trade.get("exit_signal_direction", ""),
+        "exit_watch_type": trade.get("exit_watch_type", ""),
+        "exit_watch_details": trade.get("exit_watch_details", {}),
+        "option_intent": trade.get("option_intent", "HOLD"),
+        "has_position": trade.get("has_position", False),
     }
 
 
@@ -5480,6 +6044,15 @@ def _format_scan_for_ui(scan: dict, use_global_settings: bool = False) -> dict:
         "forecast_entry_static": scan.get("forecast_entry_static", ""),
         "forecast_exit_static": scan.get("forecast_exit_static", ""),
         "scan_log": scan.get("scan_log"),
+        "exit_monitoring": scan.get("exit_monitoring", False),
+        "exit_signal_label": scan.get("exit_signal_label", ""),
+        "exit_signal_count": scan.get("exit_signal_count", 0),
+        "exit_signal_threshold": scan.get("exit_signal_threshold", 0),
+        "exit_signal_direction": scan.get("exit_signal_direction", ""),
+        "exit_watch_type": scan.get("exit_watch_type", ""),
+        "exit_watch_details": scan.get("exit_watch_details", {}),
+        "option_intent": scan.get("option_intent", "HOLD"),
+        "has_position": scan.get("has_position", False),
     }
 
 @app.get("/api/debug-doge")
