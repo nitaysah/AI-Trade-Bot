@@ -2322,7 +2322,7 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         if (typeof populateStrategyAiModelSelect === 'function') populateStrategyAiModelSelect();
         const aiModelSelect = document.getElementById('strategyAiModel');
         if (aiModelSelect) {
-            aiModelSelect.value = settings.ai_model || 'llama-3.3-70b-versatile';
+            aiModelSelect.value = normalizeBotAIModel(settings.ai_model || 'llama-3.3-70b-versatile');
         }
 
         if (aiAutopilot) {
@@ -2659,16 +2659,26 @@ function updateStrategyPauseButton() {
     }
 }
 
+function normalizeBotAIModel(model) {
+    const value = String(model || '').trim();
+    const migrations = {
+        'mixtral-8x7b-32768': 'llama-3.3-70b-versatile',
+        'mistral-saba-24b': 'llama-3.3-70b-versatile',
+        'openai/gpt-oss-120b': 'llama-3.3-70b-versatile',
+        'openai/gpt-oss-20b': 'llama-3.1-8b-instant'
+    };
+    return migrations[value] || value || 'llama-3.3-70b-versatile';
+}
+
 function populateStrategyAiModelSelect() {
     const select = document.getElementById('strategyAiModel');
     if (!select) return;
-    const currentValue = select.value;
+    const currentValue = normalizeBotAIModel(select.value);
 
     let html = '';
     html += '<optgroup label="Groq AI (Cloud)">';
-    html += '  <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile (Default)</option>';
-    html += '  <option value="mixtral-8x7b-32768">mixtral-8x7b-32768</option>';
-    html += '  <option value="llama-3.1-8b-instant">llama-3.1-8b-instant (Fast / Lightweight)</option>';
+    html += '  <option value="llama-3.3-70b-versatile">Llama 3.3 70B (Recommended)</option>';
+    html += '  <option value="llama-3.1-8b-instant">Llama 3.1 8B (Fast / Lightweight)</option>';
     html += '</optgroup>';
     html += '<optgroup label="Ollama (Local)">';
     if (window.ollamaModels && window.ollamaModels.length > 0) {
@@ -3006,7 +3016,7 @@ async function saveTickerSettings() {
             indicator_overrides: mode === 'ai_autopilot' ? {} : getStrategyDraftIndicatorOverrides(),
             paused: window._strategyPaused || false,
             ai_autopilot: mode === 'ai_autopilot',
-            ai_model: document.getElementById('strategyAiModel')?.value || 'llama-3.3-70b-versatile',
+            ai_model: normalizeBotAIModel(document.getElementById('strategyAiModel')?.value || 'llama-3.3-70b-versatile'),
             risk_per_trade: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyRiskPerTrade' : 'strategyOptionsRiskPerTrade')?.value || 2.0) / 100.0 : null,
             max_daily_drawdown: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxDailyDrawdown' : 'strategyOptionsMaxDailyDrawdown')?.value || (mode === 'regular' ? 5.0 : 50.0)) / 100.0 : null,
             max_position_pct: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxPositionPct' : 'strategyOptionsMaxPositionPct')?.value || 100.0) / 100.0 : null,
@@ -3270,7 +3280,7 @@ function applyBotsData(data) {
         const globalAiStr = localStorage.getItem('latest_global_ai_analysis');
         if (globalAiStr) {
             const globalAi = JSON.parse(globalAiStr);
-            const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+            const selectedModel = normalizeBotAIModel(localStorage.getItem('selected_ai_model'));
             if (isAICacheForContext(globalAi, selectedTicker, currentBackendTf, selectedModel)) {
                 renderAIIndicatorCard(globalAi.data, true);
                 mirrored = true;
@@ -3479,7 +3489,7 @@ const BOT_CHART_PREVIEW_OVERLAY_INDICATORS = new Set([
 ]);
 
 const BOT_CHART_PREVIEW_PREMIUM_INFO = {
-    'BotBulls1': 'WaveTrend momentum oscillator + Money Flow analysis. Detects reversals when momentum and institutional volume flow align.',
+    'BotBulls1': 'Confirmed WaveTrend reversal with MFI reclaim/rejection, then price confirmation within the BB1 window. Confluence stays bullish after the last BB1 BUY marker and bearish after the last BB1 SELL marker.',
     'BotBulls2': 'Adaptive ATR trailing stop with trend-smoothed EMA and reversal zone detection. Fires on trend flips confirmed by confluence scoring.',
     'BotBulls3': 'Heikin-Ashi noise filter + ATR-based trailing stop. Generates buy/sell alerts on confirmed momentum flips.',
     'Volume Profile': 'Prior-session volume-at-price profile. Draws POC, VAH, and VAL to identify institutional acceptance/rejection zones.',
@@ -4649,9 +4659,10 @@ function refreshBotChartPreviewOscillators(bars = [], enabledSet = new Set(), se
     if (hasBb1 && oscBb1) {
         const wtChannel = getBotIndicatorParam(settings, 'BOTBULLS1_WT_CHANNEL', 10);
         const wtAvg = getBotIndicatorParam(settings, 'BOTBULLS1_WT_AVERAGE', 21);
-        const mfiConfirm = getBotIndicatorParam(settings, 'BOTBULLS1_MFI_CONFIRM', 30);
+        const mfiBuy = getBotIndicatorParam(settings, 'BOTBULLS1_MFI_BUY_RECLAIM', 35);
+        const mfiSell = getBotIndicatorParam(settings, 'BOTBULLS1_MFI_SELL_REJECT', 65);
         if (bb1Label) {
-            bb1Label.textContent = `BotBulls1 (WT: ${wtChannel}, ${wtAvg} | MFI: ${mfiConfirm})`;
+            bb1Label.textContent = `BotBulls1 (WT: ${wtChannel}, ${wtAvg} | MFI: ${mfiBuy}/${mfiSell})`;
         }
         _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'wt1', oscBb1, { color: '#0ea5e9', lineWidth: 1.5 })
             .setData(clean(bars.filter(b => b.wt1 != null).map(b => ({ time: b.time, value: b.wt1 }))));
@@ -5335,7 +5346,7 @@ window.confirmAndDeployBot = async function () {
             timeframe: timeframe,
             paused: window._strategyPaused || false,
             ai_autopilot: mode === 'ai_autopilot',
-            ai_model: document.getElementById('strategyAiModel')?.value || 'llama-3.3-70b-versatile',
+            ai_model: normalizeBotAIModel(document.getElementById('strategyAiModel')?.value || 'llama-3.3-70b-versatile'),
             risk_per_trade: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyRiskPerTrade' : 'strategyOptionsRiskPerTrade')?.value || 2.0) / 100.0 : null,
             max_daily_drawdown: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxDailyDrawdown' : 'strategyOptionsMaxDailyDrawdown')?.value || (mode === 'regular' ? 5.0 : 50.0)) / 100.0 : null,
             max_position_pct: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxPositionPct' : 'strategyOptionsMaxPositionPct')?.value || 100.0) / 100.0 : null,
@@ -5532,7 +5543,7 @@ const INDICATOR_TOOLTIPS = {
     "Volume Profile": "Prior-session volume-at-price profile using POC, VAH, and VAL. Purpose: Finds institutional acceptance/rejection zones where the most volume traded.",
     "Swing Points": "Rolling swing support/resistance clusters from recent local highs/lows. Purpose: Finds structural bounce, rejection, reclaim, and breakdown zones.",
     "Strategy Confidence": "Strategy Confidence combines multiple indicator signals into a single probability score. Purpose: Measures the overall conviction of a bullish or bearish trend.",
-    "BotBulls1": "WaveTrend momentum oscillator + Money Flow analysis. Detects reversals when momentum and institutional volume flow align at oversold/overbought extremes.",
+    "BotBulls1": "Confirmed WaveTrend reversal with MFI reclaim/rejection, then price confirmation within the BB1 window. Confluence stays bullish after the last BB1 BUY marker and bearish after the last BB1 SELL marker.",
     "BotBulls2": "Adaptive ATR trailing stop with trend-smoothed EMA and reversal zone detection. Fires on trend flips confirmed by multi-condition confluence scoring (1-4 strength rating).",
     "BotBulls3": "Heikin-Ashi noise filter + ATR-based trailing stop. Generates buy/sell alerts only on confirmed momentum flips — removing false signals from choppy markets.",
     "Prior Day High/Low": "Uses the previous completed trading session's high and low as breakout/breakdown levels. Buffer is entered as %, with dotted trigger lines when non-zero.",
@@ -5556,7 +5567,7 @@ const INDICATOR_CONFIG_MAP = {
     'ATR Volatility': ['ATR_PERIOD', 'ATR_STOP_MULTIPLIER', 'ATR_TRAIL_MULTIPLIER', 'ATR_TAKE_PROFIT_MULTIPLIER'],
     'Strategy Confidence': ['MIN_BULLISH_SIGNALS', 'MIN_BEARISH_SIGNALS'],
     'Botbulls4 News AI': ['SENTIMENT_BULLISH_PERCENTAGE', 'SENTIMENT_BEARISH_PERCENTAGE'],
-    'BotBulls1': ['BOTBULLS1_WT_CHANNEL', 'BOTBULLS1_WT_AVERAGE', 'BOTBULLS1_MFI_CONFIRM'],
+    'BotBulls1': ['BOTBULLS1_WT_CHANNEL', 'BOTBULLS1_WT_AVERAGE', 'BOTBULLS1_WT_OVERSOLD', 'BOTBULLS1_WT_OVERBOUGHT', 'BOTBULLS1_MFI_BUY_RECLAIM', 'BOTBULLS1_MFI_SELL_REJECT', 'BOTBULLS1_CONFIRM_LOOKBACK', 'BOTBULLS1_REQUIRE_MFI_CONFIRM', 'BOTBULLS1_REQUIRE_CANDLE_CONFIRM', 'BOTBULLS1_REQUIRE_PRICE_CONFIRM', 'BOTBULLS1_PRICE_CONFIRM_EMA', 'BOTBULLS1_PRICE_CONFIRM_LOOKBACK'],
     'BotBulls2': ['BOTBULLS2_ATR_MULT', 'BOTBULLS2_TREND_TRACER_PERIOD', 'BOTBULLS2_REVERSAL_ZONE_PERIOD'],
     'BotBulls3': ['BOTBULLS3_ATR_PERIOD', 'BOTBULLS3_ATR_MULT']
 };
@@ -5565,6 +5576,16 @@ const INDICATOR_DEFAULTS = {
     'BOTBULLS1_WT_CHANNEL': 10,
     'BOTBULLS1_WT_AVERAGE': 21,
     'BOTBULLS1_MFI_CONFIRM': 30,
+    'BOTBULLS1_WT_OVERSOLD': -55,
+    'BOTBULLS1_WT_OVERBOUGHT': 55,
+    'BOTBULLS1_MFI_BUY_RECLAIM': 35,
+    'BOTBULLS1_MFI_SELL_REJECT': 65,
+    'BOTBULLS1_CONFIRM_LOOKBACK': 3,
+    'BOTBULLS1_REQUIRE_MFI_CONFIRM': 1,
+    'BOTBULLS1_REQUIRE_CANDLE_CONFIRM': 1,
+    'BOTBULLS1_REQUIRE_PRICE_CONFIRM': 1,
+    'BOTBULLS1_PRICE_CONFIRM_EMA': 9,
+    'BOTBULLS1_PRICE_CONFIRM_LOOKBACK': 4,
     'BOTBULLS2_ATR_MULT': 2.0,
     'BOTBULLS2_TREND_TRACER_PERIOD': 50,
     'BOTBULLS2_REVERSAL_ZONE_PERIOD': 50,
@@ -5655,6 +5676,18 @@ function openIndicatorSettings(indicatorName) {
         SWING_POINTS_LOOKBACK_DAYS: 'Swing Lookback Days',
         SWING_POINTS_ENTRY_MODE: 'Swing Entry Mode',
         SWING_POINTS_LEVEL_COUNT: 'S/R Levels To Draw (1-5)',
+        BOTBULLS1_WT_CHANNEL: 'WaveTrend Channel Period',
+        BOTBULLS1_WT_AVERAGE: 'WaveTrend Average Period',
+        BOTBULLS1_WT_OVERSOLD: 'WT Oversold Level',
+        BOTBULLS1_WT_OVERBOUGHT: 'WT Overbought Level',
+        BOTBULLS1_MFI_BUY_RECLAIM: 'MFI Buy Reclaim Level (0-100)',
+        BOTBULLS1_MFI_SELL_REJECT: 'MFI Sell Reject Level (0-100)',
+        BOTBULLS1_CONFIRM_LOOKBACK: 'WT Extreme Lookback Candles',
+        BOTBULLS1_REQUIRE_MFI_CONFIRM: 'Require MFI Confirmation (1=On, 0=Off)',
+        BOTBULLS1_REQUIRE_CANDLE_CONFIRM: 'Require Candle Confirmation (1=On, 0=Off)',
+        BOTBULLS1_REQUIRE_PRICE_CONFIRM: 'Require Price EMA Confirmation (1=On, 0=Off)',
+        BOTBULLS1_PRICE_CONFIRM_EMA: 'Price Confirmation EMA Period',
+        BOTBULLS1_PRICE_CONFIRM_LOOKBACK: 'Price Confirmation Window Candles',
     };
 
     configKeys.forEach(key => {
@@ -5668,6 +5701,16 @@ function openIndicatorSettings(indicatorName) {
                 ? 'min="1" max="5" step="1"'
                 : key === 'SWING_POINTS_LOOKBACK_DAYS'
                     ? 'min="1" max="365" step="1"'
+                    : key === 'BOTBULLS1_CONFIRM_LOOKBACK'
+                        ? 'min="1" max="10" step="1"'
+                        : key === 'BOTBULLS1_REQUIRE_MFI_CONFIRM' || key === 'BOTBULLS1_REQUIRE_CANDLE_CONFIRM' || key === 'BOTBULLS1_REQUIRE_PRICE_CONFIRM'
+                            ? 'min="0" max="1" step="1"'
+                            : key === 'BOTBULLS1_PRICE_CONFIRM_EMA'
+                                ? 'min="5" max="50" step="1"'
+                            : key === 'BOTBULLS1_PRICE_CONFIRM_LOOKBACK'
+                                ? 'min="0" max="10" step="1"'
+                            : key === 'BOTBULLS1_MFI_BUY_RECLAIM' || key === 'BOTBULLS1_MFI_SELL_REJECT'
+                                ? 'min="0" max="100" step="1"'
             : key === 'VOLUME_PROFILE_ROWS'
                 ? 'min="12" max="120" step="1"'
                 : key === 'VOLUME_PROFILE_CONFIRMATION_CANDLES'
@@ -6261,7 +6304,8 @@ function normalizeCachedAISentimentScore(rawScore) {
 function getCachedAIAnalysisForTicker(ticker, timeframe = currentBackendTf) {
     const normalizedTicker = normalizeAIIndicatorTicker(ticker);
     if (!normalizedTicker) return null;
-    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const selectedModel = normalizeBotAIModel(localStorage.getItem('selected_ai_model'));
+    localStorage.setItem('selected_ai_model', selectedModel);
     const exact = getAICache(getAIIndicatorCacheKey(normalizedTicker, timeframe, selectedModel));
     if (exact?.data?.sentiment_score != null) return exact;
 
@@ -6337,7 +6381,7 @@ function setAICache(key, data, meta = {}) {
 async function fetchAIIndicator(ticker, timeframe, force = false) {
     if (!ticker) return;
     const normalizedTicker = normalizeAIIndicatorTicker(ticker);
-    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const selectedModel = normalizeBotAIModel(localStorage.getItem('selected_ai_model'));
     const key = getAIIndicatorCacheKey(normalizedTicker, timeframe, selectedModel);
     if (!force && aiIndicatorInFlightKey === key && aiIndicatorInFlightPromise) {
         return aiIndicatorInFlightPromise;
@@ -6422,8 +6466,7 @@ function _getAIModelSelectHtml(selectedModel, isError = false) {
     let optionsHtml = '';
     optionsHtml += '<optgroup label="Groq AI (Cloud)">';
     const groqModels = [
-        { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B' },
-        { value: 'mixtral-8x7b-32768', label: 'Mixtral 8x7B' },
+        { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B (Recommended)' },
         { value: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B (Fast)' }
     ];
     groqModels.forEach(m => {
@@ -6453,6 +6496,7 @@ function _getAIModelSelectHtml(selectedModel, isError = false) {
 }
 
 window.changeAIIndicatorModel = async function (model) {
+    model = normalizeBotAIModel(model);
     localStorage.setItem('selected_ai_model', model);
     try {
         const headers = await getAuthHeaders();
@@ -6478,7 +6522,7 @@ function _showAIIndicatorLoading(ticker) {
     const el = document.getElementById('aiIndicatorCard');
     if (!el) return;
 
-    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const selectedModel = normalizeBotAIModel(localStorage.getItem('selected_ai_model'));
     const isOllamaActive = selectedModel.startsWith('ollama/') || selectedModel.startsWith('ollama:');
     const badgeHtml = isOllamaActive
         ? `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-indigo-500 to-blue-600 text-white border border-indigo-600/50 shadow-sm">OLLAMA</span>`
@@ -6523,7 +6567,7 @@ function _showAIIndicatorError(err, ticker) {
     const el = document.getElementById('aiIndicatorCard');
     if (!el) return;
 
-    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const selectedModel = normalizeBotAIModel(localStorage.getItem('selected_ai_model'));
     const selectHtml = _getAIModelSelectHtml(selectedModel, true);
 
     el.className = 'ai-indicator-card ai-indicator-error relative overflow-hidden p-4 rounded-xl border transition-all duration-300';
@@ -6602,7 +6646,7 @@ function renderAIIndicatorCard(data, fromCache = false) {
         ? `<span class="text-[0.5rem] text-amber-600 opacity-60 ml-1">cached</span>`
         : '';
 
-    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const selectedModel = normalizeBotAIModel(localStorage.getItem('selected_ai_model'));
     const isOllamaActive = selectedModel.startsWith('ollama/') || selectedModel.startsWith('ollama:');
     const badgeHtml = isOllamaActive
         ? `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-indigo-500 to-blue-600 text-white border border-indigo-600/50 shadow-sm">OLLAMA</span>`

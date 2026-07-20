@@ -28,8 +28,8 @@ def _safe_chart_bool(row, key):
     except Exception:
         return False
 
-def _chart_indicator_fields(row, digits=4):
-    return {
+def _chart_indicator_fields(row, digits=4, enabled_indicators=None, buy_mode="", sell_mode=""):
+    fields = {
         "ema_fast": _safe_chart_level(row, "EMA_Fast", digits),
         "ema_slow": _safe_chart_level(row, "EMA_Slow", digits),
         "sma": _safe_chart_level(row, "SMA", digits),
@@ -93,6 +93,8 @@ def _chart_indicator_fields(row, digits=4):
         "ut_trail": _safe_chart_level(row, "UT_Trail", digits),
         "ba1_buy": _safe_chart_bool(row, "BA1_Buy"),
         "ba1_sell": _safe_chart_bool(row, "BA1_Sell"),
+        "ba1_bullish": _safe_chart_bool(row, "BA1_Bullish"),
+        "ba1_bearish": _safe_chart_bool(row, "BA1_Bearish"),
         "ba2_buy": _safe_chart_bool(row, "BA2_Buy"),
         "ba2_sell": _safe_chart_bool(row, "BA2_Sell"),
         "ba3_buy": _safe_chart_bool(row, "BA3_Buy"),
@@ -101,6 +103,37 @@ def _chart_indicator_fields(row, digits=4):
         "cdl_bullish": _safe_chart_bool(row, "cdl_bullish"),
         "cdl_bearish": _safe_chart_bool(row, "cdl_bearish"),
     }
+    if enabled_indicators is None:
+        return fields
+
+    enabled = set(enabled_indicators)
+    keys = set()
+    groups = {
+        "EMA Cross": {"ema_fast", "ema_slow"},
+        "SMA": {"sma"},
+        "VWAP": {"vwap"},
+        "Supertrend": {"supertrend", "supertrend_up"},
+        "Bollinger": {"boll_upper", "boll_middle", "boll_lower"},
+        "RSI": {"rsi"},
+        "MACD": {"macd_line", "macd_signal", "macd_hist"},
+        "ADX Trend": {"adx", "di_plus", "di_minus"},
+        "Volume Profile": {"volume_profile_poc", "volume_profile_vah", "volume_profile_val", "volume_profile_bullish", "volume_profile_bearish"},
+        "BotBulls1": {"wt1", "wt2", "mfi", "ba1_buy", "ba1_sell", "ba1_bullish", "ba1_bearish"},
+        "BotBulls2": {"lx_smart_trail", "lx_trend_tracer", "lx_rz_upper", "lx_rz_lower", "ba2_buy", "ba2_sell"},
+        "BotBulls3": {"ha_close", "ut_trail", "ba3_buy", "ba3_sell"},
+        "Candle Patterns": {"cdl_name", "cdl_bullish", "cdl_bearish"},
+    }
+    for indicator in enabled:
+        keys.update(groups.get(indicator, set()))
+
+    modes = {str(buy_mode or ""), str(sell_mode or "")}
+    if "Prior Day High/Low" in enabled or modes & {"high_low", "hybrid_high_low"}:
+        keys.update(key for key in fields if key.startswith("daily_high_low_"))
+    if "Pivot Points (S/R)" in enabled or modes & {"pivot_points", "hybrid_pivot"}:
+        keys.update(key for key in fields if key.startswith("pivot_"))
+    if "Swing Points" in enabled or modes & {"swing", "hybrid_swing"}:
+        keys.update(key for key in fields if key.startswith("swing_"))
+    return {key: fields[key] for key in keys}
 
 class OptionsBacktester:
     def __init__(
@@ -1072,10 +1105,9 @@ class OptionsBacktester:
             buy_hold_equity = (end_price / start_price) * self.initial_capital if start_price > 0 else self.initial_capital
             buy_hold_roi = ((end_price - start_price) / start_price) * 100.0 if start_price > 0 else 0.0
             total_bars = len(self.df) if self.df is not None else 0
-            step = max(1, total_bars // 500) if total_bars else 1
             candles = []
             if self.df is not None:
-                for i in range(0, total_bars, step):
+                for i in range(total_bars):
                     row = self.df.iloc[i]
                     ts = self.df.index[i]
                     try:
@@ -1086,30 +1118,12 @@ class OptionsBacktester:
                             "low": round(float(row.get('Low', row.get('low', 0))), 4),
                             "close": round(float(row.get('Close', row.get('close', 0))), 4),
                             "volume": int(row.get('Volume', row.get('volume', 0))),
-                            **_chart_indicator_fields(row, 4),
-                            "daily_high_low_high": _safe_chart_level(row, "Daily_HighLow_High"),
-                            "daily_high_low_low": _safe_chart_level(row, "Daily_HighLow_Low"),
-                            "daily_high_low_high_trigger": _safe_chart_level(row, "Daily_HighLow_High_Trigger"),
-                            "daily_high_low_low_trigger": _safe_chart_level(row, "Daily_HighLow_Low_Trigger"),
-                            "pivot_p": _safe_chart_level(row, "Pivot_P"),
-                            "pivot_r1": _safe_chart_level(row, "Pivot_R1"),
-                            "pivot_s1": _safe_chart_level(row, "Pivot_S1"),
-                            "pivot_r2": _safe_chart_level(row, "Pivot_R2"),
-                            "pivot_s2": _safe_chart_level(row, "Pivot_S2"),
-                            "pivot_r3": _safe_chart_level(row, "Pivot_R3"),
-                            "pivot_s3": _safe_chart_level(row, "Pivot_S3"),
-                            "pivot_r4": _safe_chart_level(row, "Pivot_R4"),
-                            "pivot_s4": _safe_chart_level(row, "Pivot_S4"),
-                            "pivot_r5": _safe_chart_level(row, "Pivot_R5"),
-                            "pivot_s5": _safe_chart_level(row, "Pivot_S5"),
-                            "cdl_name": str(row.get('cdl_name', 'Neutral')),
-                            "cdl_bullish": bool(row.get('cdl_bullish', False)),
-                            "cdl_bearish": bool(row.get('cdl_bearish', False)),
+                            **_chart_indicator_fields(row, 4, self.enabled_indicators, self.buy_mode, self.sell_mode),
                         })
                     except Exception:
                         continue
             # Mask out candlestick patterns for all candles except the single last candle to eliminate chart noise
-            if len(candles) > 1:
+            if "Candle Patterns" in self.enabled_indicators and len(candles) > 1:
                 for c in candles[:-1]:
                     c["cdl_name"] = "Neutral"
                     c["cdl_bullish"] = False
@@ -1186,10 +1200,10 @@ class OptionsBacktester:
         losing_pl = df_trades[df_trades['pl'] <= 0]['pl'].abs()
         gross_profit = winning_pl.sum()
         gross_loss = losing_pl.sum()
-        profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else float('inf')
+        profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (None if gross_profit > 0 else 0.0)
         avg_win = round(winning_pl.mean(), 2) if len(winning_pl) > 0 else 0.0
         avg_loss = round(losing_pl.mean(), 2) if len(losing_pl) > 0 else 0.0
-        win_loss_ratio = round(avg_win / avg_loss, 2) if avg_loss > 0 else float('inf')
+        win_loss_ratio = round(avg_win / avg_loss, 2) if avg_loss > 0 else (None if avg_win > 0 else 0.0)
         avg_win_pct = round(df_trades[df_trades['pl'] > 0]['pl_pct'].mean(), 2) if len(winning_pl) > 0 else 0.0
         avg_loss_pct = round(df_trades[df_trades['pl'] <= 0]['pl_pct'].mean(), 2) if len(losing_pl) > 0 else 0.0
         wr = win_rate / 100.0
@@ -1237,9 +1251,8 @@ class OptionsBacktester:
         buy_hold_roi = ((end_price - start_price) / start_price) * 100.0
 
         total_bars = len(self.df)
-        step = max(1, total_bars // 500)
         candles = []
-        for i in range(0, total_bars, step):
+        for i in range(total_bars):
             row = self.df.iloc[i]
             ts = self.df.index[i]
             try:
@@ -1251,31 +1264,13 @@ class OptionsBacktester:
                     "low": round(float(row.get('Low', row.get('low', 0))), 4),
                     "close": round(float(row.get('Close', row.get('close', 0))), 4),
                     "volume": int(row.get('Volume', row.get('volume', 0))),
-                    **_chart_indicator_fields(row, 4),
-                    "daily_high_low_high": _safe_chart_level(row, "Daily_HighLow_High"),
-                    "daily_high_low_low": _safe_chart_level(row, "Daily_HighLow_Low"),
-                    "daily_high_low_high_trigger": _safe_chart_level(row, "Daily_HighLow_High_Trigger"),
-                    "daily_high_low_low_trigger": _safe_chart_level(row, "Daily_HighLow_Low_Trigger"),
-                    "pivot_p": _safe_chart_level(row, "Pivot_P"),
-                    "pivot_r1": _safe_chart_level(row, "Pivot_R1"),
-                    "pivot_s1": _safe_chart_level(row, "Pivot_S1"),
-                    "pivot_r2": _safe_chart_level(row, "Pivot_R2"),
-                    "pivot_s2": _safe_chart_level(row, "Pivot_S2"),
-                    "pivot_r3": _safe_chart_level(row, "Pivot_R3"),
-                    "pivot_s3": _safe_chart_level(row, "Pivot_S3"),
-                    "pivot_r4": _safe_chart_level(row, "Pivot_R4"),
-                    "pivot_s4": _safe_chart_level(row, "Pivot_S4"),
-                    "pivot_r5": _safe_chart_level(row, "Pivot_R5"),
-                    "pivot_s5": _safe_chart_level(row, "Pivot_S5"),
-                    "cdl_name": str(row.get('cdl_name', 'Neutral')),
-                    "cdl_bullish": bool(row.get('cdl_bullish', False)),
-                    "cdl_bearish": bool(row.get('cdl_bearish', False)),
+                    **_chart_indicator_fields(row, 4, self.enabled_indicators, self.buy_mode, self.sell_mode),
                 })
             except Exception:
                 continue
 
         # Mask out candlestick patterns for all candles except the single last candle to eliminate chart noise
-        if len(candles) > 1:
+        if "Candle Patterns" in self.enabled_indicators and len(candles) > 1:
             for c in candles[:-1]:
                 c["cdl_name"] = "Neutral"
                 c["cdl_bullish"] = False

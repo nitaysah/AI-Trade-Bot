@@ -1311,8 +1311,8 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
 
         # --- BotBulls1: Premium Oscillator WaveTrend + Institutional MFI --------
         try:
-            _n1 = int(_param("BOTBULLS1_WT_CHANNEL", 10))   # Channel Length
-            _n2 = int(_param("BOTBULLS1_WT_AVERAGE", 21))   # Average Length
+            _n1 = max(5, min(50, int(float(_param("BOTBULLS1_WT_CHANNEL", 10)))))   # Channel Length
+            _n2 = max(5, min(100, int(float(_param("BOTBULLS1_WT_AVERAGE", 21)))))  # Average Length
             ap = (high + low + close) / 3  # hlc3
             esa = ta_lib.trend.ema_indicator(ap, window=_n1)
             d_wt = ta_lib.trend.ema_indicator((ap - esa).abs(), window=_n1)
@@ -1329,24 +1329,106 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
             )
             df["MFI_14"] = mfi_ind.money_flow_index()
 
-            # Signal: WT1 crosses WT2 at extremes + MFI confirmation
+            # Signal: confirmed WaveTrend reversal from an extreme pocket.
+            # BUY waits for money flow to recover; SELL waits for flow to weaken.
             wt1_arr = df["WT1"].values
             wt2_arr = df["WT2"].values
             mfi_arr = df["MFI_14"].values
+            close_arr = close.to_numpy()
+            open_arr = df["Open"].to_numpy()
+            price_confirm_ema_period = max(5, min(50, int(float(_param("BOTBULLS1_PRICE_CONFIRM_EMA", 9)))))
+            price_confirm_ema = ta_lib.trend.ema_indicator(close, window=price_confirm_ema_period).to_numpy()
             ba1_buy = np.zeros(len(df), dtype=bool)
             ba1_sell = np.zeros(len(df), dtype=bool)
+            ba1_bullish = np.zeros(len(df), dtype=bool)
+            ba1_bearish = np.zeros(len(df), dtype=bool)
+            wt_oversold = min(-10.0, max(-100.0, float(_param("BOTBULLS1_WT_OVERSOLD", -55))))
+            wt_overbought = max(10.0, min(100.0, float(_param("BOTBULLS1_WT_OVERBOUGHT", 55))))
+            mfi_buy_reclaim = min(60.0, max(5.0, float(_param("BOTBULLS1_MFI_BUY_RECLAIM", 35))))
+            mfi_sell_reject = max(40.0, min(95.0, float(_param("BOTBULLS1_MFI_SELL_REJECT", 65))))
+            confirm_lookback = max(1, min(10, int(float(_param("BOTBULLS1_CONFIRM_LOOKBACK", 3)))))
+            require_mfi_confirm = bool(int(float(_param("BOTBULLS1_REQUIRE_MFI_CONFIRM", 1))))
+            require_candle_confirm = bool(int(float(_param("BOTBULLS1_REQUIRE_CANDLE_CONFIRM", 1))))
+            require_price_confirm = bool(int(float(_param("BOTBULLS1_REQUIRE_PRICE_CONFIRM", 1))))
+            price_confirm_window = max(0, min(10, int(float(_param("BOTBULLS1_PRICE_CONFIRM_LOOKBACK", 4)))))
+            pending_buy_idx = None
+            pending_sell_idx = None
             for i in range(1, len(df)):
                 if not (np.isnan(wt1_arr[i]) or np.isnan(wt2_arr[i]) or np.isnan(wt1_arr[i-1]) or np.isnan(wt2_arr[i-1])):
                     cross_up = wt1_arr[i] > wt2_arr[i] and wt1_arr[i-1] <= wt2_arr[i-1]
                     cross_dn = wt1_arr[i] < wt2_arr[i] and wt1_arr[i-1] >= wt2_arr[i-1]
                     mfi_v = mfi_arr[i] if not np.isnan(mfi_arr[i]) else 50
-                    mfi_thres = int(_param("BOTBULLS1_MFI_CONFIRM", 30))
-                    if cross_up and wt1_arr[i] < -53 and mfi_v < mfi_thres:
+                    mfi_prev = mfi_arr[i - 1] if not np.isnan(mfi_arr[i - 1]) else mfi_v
+                    start = max(0, i - confirm_lookback + 1)
+                    recent_wt = wt1_arr[start:i + 1]
+                    recent_low = np.nanmin(recent_wt) if len(recent_wt) else wt1_arr[i]
+                    recent_high = np.nanmax(recent_wt) if len(recent_wt) else wt1_arr[i]
+                    mfi_buy_ok = mfi_v >= mfi_buy_reclaim and mfi_v > mfi_prev
+                    mfi_sell_ok = mfi_v <= mfi_sell_reject and mfi_v < mfi_prev
+                    bull_candle = close_arr[i] > close_arr[i - 1] and close_arr[i] >= open_arr[i]
+                    bear_candle = close_arr[i] < close_arr[i - 1] and close_arr[i] <= open_arr[i]
+                    ema_v = price_confirm_ema[i] if not np.isnan(price_confirm_ema[i]) else close_arr[i]
+                    ema_prev = price_confirm_ema[i - 1] if not np.isnan(price_confirm_ema[i - 1]) else ema_v
+                    price_buy_ok = close_arr[i] >= ema_v and ema_v >= ema_prev
+                    price_sell_ok = close_arr[i] <= ema_v and ema_v <= ema_prev
+                    buy_setup = (
+                        cross_up
+                        and recent_low <= wt_oversold
+                        and (mfi_buy_ok or not require_mfi_confirm)
+                        and (bull_candle or not require_candle_confirm)
+                    )
+                    sell_setup = (
+                        cross_dn
+                        and recent_high >= wt_overbought
+                        and (mfi_sell_ok or not require_mfi_confirm)
+                        and (bear_candle or not require_candle_confirm)
+                    )
+
+                    if buy_setup:
+                        pending_buy_idx = i
+                        pending_sell_idx = None
+                    elif sell_setup:
+                        pending_sell_idx = i
+                        pending_buy_idx = None
+
+                    if require_price_confirm:
+                        buy_pending_valid = pending_buy_idx is not None and (i - pending_buy_idx) <= price_confirm_window
+                        sell_pending_valid = pending_sell_idx is not None and (i - pending_sell_idx) <= price_confirm_window
+                        buy_confirmed = buy_pending_valid and price_buy_ok and (bull_candle or not require_candle_confirm)
+                        sell_confirmed = sell_pending_valid and price_sell_ok and (bear_candle or not require_candle_confirm)
+                    else:
+                        buy_confirmed = buy_setup
+                        sell_confirmed = sell_setup
+
+                    if buy_confirmed:
                         ba1_buy[i] = True
-                    elif cross_dn and wt1_arr[i] > 53 and mfi_v > (100 - mfi_thres):
+                        pending_buy_idx = None
+                        pending_sell_idx = None
+                    elif sell_confirmed:
                         ba1_sell[i] = True
+                        pending_buy_idx = None
+                        pending_sell_idx = None
+
+                    if pending_buy_idx is not None and (i - pending_buy_idx) > price_confirm_window:
+                        pending_buy_idx = None
+                    if pending_sell_idx is not None and (i - pending_sell_idx) > price_confirm_window:
+                        pending_sell_idx = None
+
+            # Continuous state used by confluence/bots/backtests.
+            # This state is driven only by confirmed chart markers:
+            # after BB1 BUY -> bullish until the next BB1 SELL, and vice versa.
+            bb1_state = 0
+            for i in range(len(df)):
+                if ba1_buy[i]:
+                    bb1_state = 1
+                elif ba1_sell[i]:
+                    bb1_state = -1
+                ba1_bullish[i] = bb1_state == 1
+                ba1_bearish[i] = bb1_state == -1
             df["BA1_Buy"] = ba1_buy
             df["BA1_Sell"] = ba1_sell
+            df["BA1_Bullish"] = ba1_bullish
+            df["BA1_Bearish"] = ba1_bearish
         except Exception as e:
             print(f"[indicators] BotBulls1 error: {e}")
             df["WT1"] = 0.0
@@ -1354,6 +1436,8 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
             df["MFI_14"] = 50.0
             df["BA1_Buy"] = False
             df["BA1_Sell"] = False
+            df["BA1_Bullish"] = False
+            df["BA1_Bearish"] = False
 
         # --- BotBulls2: UT (Universal Trailing Stop) + Trend Tracer + Reversal Zones ---
         try:
@@ -1660,6 +1744,8 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
                     "mfi":            _safe(row.get("MFI_14")),
                     "ba1_buy":        bool(row.get("BA1_Buy", False)),
                     "ba1_sell":       bool(row.get("BA1_Sell", False)),
+                    "ba1_bullish":    bool(row.get("BA1_Bullish", False)),
+                    "ba1_bearish":    bool(row.get("BA1_Bearish", False)),
                     "lx_smart_trail": _safe(row.get("LX_SmartTrail")),
                     "lx_smart_trend": bool(row.get("LX_SmartTrend", True)),
                     "lx_trend_tracer":_safe(row.get("LX_TrendTracer")),
@@ -2105,13 +2191,15 @@ def _generate_signals(latest, prev, settings=None, recent_bars=None, chart_lates
             # ═══════════════ Premium Indicators ═══════════════
             "BotBulls1": {
                 "signal": (
-                    "BULLISH" if bool(latest.get("BA1_Buy", False))
-                    else "BEARISH" if bool(latest.get("BA1_Sell", False))
+                    "BULLISH" if bool(latest.get("BA1_Buy", False)) or bool(latest.get("BA1_Bullish", False))
+                    else "BEARISH" if bool(latest.get("BA1_Sell", False)) or bool(latest.get("BA1_Bearish", False))
                     else "NEUTRAL"
                 ),
                 "reason": (
-                    f"BB1 BUY (WT Cross ↑ Oversold {float(latest.get('WT1', 0)):.0f}) + MFI {float(latest.get('MFI_14', 50)):.0f}" if bool(latest.get("BA1_Buy", False))
-                    else f"BB1 SELL (WT Cross ↓ Overbought {float(latest.get('WT1', 0)):.0f}) + MFI {float(latest.get('MFI_14', 50)):.0f}" if bool(latest.get("BA1_Sell", False))
+                    f"BB1 BUY (WT reclaim {float(latest.get('WT1', 0)):.0f}) confirmed above EMA" if bool(latest.get("BA1_Buy", False))
+                    else f"BB1 SELL (WT rejection {float(latest.get('WT1', 0)):.0f}) confirmed below EMA" if bool(latest.get("BA1_Sell", False))
+                    else f"BB1 bullish after last confirmed BUY (MFI {float(latest.get('MFI_14', 50)):.0f})" if bool(latest.get("BA1_Bullish", False))
+                    else f"BB1 bearish after last confirmed SELL (MFI {float(latest.get('MFI_14', 50)):.0f})" if bool(latest.get("BA1_Bearish", False))
                     else f"WT1: {float(latest.get('WT1', 0)):.1f} | MFI: {float(latest.get('MFI_14', 50)):.0f}"
                 ),
                 "weight": 1,

@@ -3,168 +3,480 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Bot Bulls — Authorize Terminal</title>
-    <meta name="description"
-        content="High-performance bot trading engine with real-time AI sentiment analysis.">
-    <link rel="icon"
-        href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔮</text></svg>">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BotBulls — Your Automated Trading Command Center</title>
+    <meta name="description" content="BotBulls helps you research, backtest, and automate trading strategies with disciplined risk controls.">
+    <link rel="icon" type="image/png" href="assets/bot_bulls_logo.png">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
-        rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        body {
-            font-family: 'Inter', sans-serif;
-            -webkit-font-smoothing: antialiased;
+        :root { color-scheme: light; }
+        * { box-sizing: border-box; }
+        body { font-family: 'Space Grotesk', sans-serif; background: linear-gradient(135deg, #fdf4ff 0%, #f3e8ff 50%, #e0e7ff 100%); color: #312e81; }
+        .mono { font-family: 'DM Mono', monospace; }
+        .grid-bg {
+            background-image: linear-gradient(rgba(139,92,246,.09) 1px, transparent 1px), linear-gradient(90deg, rgba(139,92,246,.09) 1px, transparent 1px);
+            background-size: 46px 46px;
+            mask-image: linear-gradient(to bottom, black 20%, transparent 92%);
         }
-        .login-card {
-            background: rgba(255, 255, 255, 0.85);
-            backdrop-filter: blur(20px);
-            border: 1px solid rgba(255, 255, 255, 1);
-            box-shadow: 0 25px 50px -12px rgba(139, 92, 246, 0.25);
-        }
-        .google-btn {
-            background: white;
-            color: #1f2937;
-            border: 1px solid #e5e7eb;
-            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-        }
-        .google-btn:hover {
-            border-color: #d1d5db;
-            background: #f9fafb;
-            transform: translateY(-1px);
-        }
-        .system-ticker {
-            font-family: 'Courier New', Courier, monospace;
-        }
-        @media (max-width: 640px) {
-            .login-card {
-                padding: 2rem 1rem;
-                box-shadow: none;
-                border: none;
-                background: transparent;
-            }
-            .google-btn {
-                padding: 0.875rem 1rem;
-                font-size: 0.8125rem;
-            }
+        .glow { box-shadow: 0 20px 70px rgba(139,92,246,.18), 0 4px 20px rgba(236,72,153,.08); }
+        .edge-glow { box-shadow: inset 0 0 110px rgba(139,92,246,.16), inset 0 0 28px rgba(217,70,239,.08); }
+        .hero-orb { animation: drift 9s ease-in-out infinite alternate; }
+        .hero-orb.two { animation-delay: -3s; animation-duration: 12s; }
+        @keyframes drift { from { transform: translate3d(-12px, 8px, 0) scale(1); } to { transform: translate3d(18px, -18px, 0) scale(1.12); } }
+        @keyframes pulseLine { 0%, 100% { opacity: .25; transform: scaleX(.65); } 50% { opacity: 1; transform: scaleX(1); } }
+        @keyframes scan { 0% { transform: translateY(-120%); } 100% { transform: translateY(480%); } }
+        @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+        .pulse-line { animation: pulseLine 2.2s ease-in-out infinite; transform-origin: left; }
+        .scan-line { animation: scan 3.8s linear infinite; }
+        .float-card { animation: float 5s ease-in-out infinite; }
+        .float-card.delay { animation-delay: -2s; }
+        .auth-card { background: linear-gradient(145deg, rgba(255,255,255,.82), rgba(255,255,255,.58)); backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px); border: 1px solid rgba(255,255,255,.92); box-shadow: 0 24px 80px rgba(99,102,241,.17), 0 4px 18px rgba(139,92,246,.08); }
+        .google-btn { transition: transform .2s ease, box-shadow .2s ease, background .2s ease; }
+        .google-btn:not(:disabled):hover { transform: translateY(-2px); box-shadow: 0 12px 28px rgba(34,211,238,.18); background: #f8fafc; }
+        .google-btn:disabled { cursor: not-allowed; opacity: .42; }
+        .check-wrap input:checked + span { background: #22d3ee; border-color: #22d3ee; }
+        .check-wrap input:checked + span svg { opacity: 1; }
+        .terms-link { display: inline-flex; align-items: center; justify-content: center; min-height: 30px; padding: 0 12px; border: 1px solid rgba(168,85,247,.48); border-radius: 999px; background: linear-gradient(135deg, rgba(250,232,255,.86), rgba(216,180,254,.58) 52%, rgba(165,180,252,.52)); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); color: #6b21a8; text-decoration: none; box-shadow: 0 5px 14px rgba(139,92,246,.18), inset 0 1px 0 rgba(255,255,255,.85); transition: transform .2s ease, box-shadow .2s ease, filter .2s ease; }
+        .terms-link:hover { transform: translateY(-1px); filter: saturate(1.12); border-color: rgba(126,34,206,.62); box-shadow: 0 8px 20px rgba(139,92,246,.28), inset 0 1px 0 rgba(255,255,255,.92); }
+        .terms-link:focus-visible { outline: 3px solid rgba(217,70,239,.35); outline-offset: 3px; }
+        .terms-modal-header { background: linear-gradient(135deg, rgba(250,245,255,.9), rgba(233,213,255,.72) 52%, rgba(224,231,255,.78)); border-color: rgba(196,181,253,.62) !important; box-shadow: inset 0 -1px 0 rgba(255,255,255,.7); }
+        .terms-modal-footer { background: linear-gradient(135deg, rgba(250,245,255,.74), rgba(238,242,255,.76)); border-color: rgba(196,181,253,.52) !important; }
+        .terms-modal-accept { background: linear-gradient(135deg, rgba(192,132,252,.92), rgba(129,140,248,.92)); border: 1px solid rgba(126,34,206,.38); color: #3b0764; box-shadow: 0 7px 18px rgba(139,92,246,.22), inset 0 1px 0 rgba(255,255,255,.65); }
+        .terms-modal-accept:hover { background: linear-gradient(135deg, rgba(216,180,254,.98), rgba(165,180,252,.98)); box-shadow: 0 10px 24px rgba(139,92,246,.3), inset 0 1px 0 rgba(255,255,255,.78); }
+        .modal-backdrop { background: rgba(2,6,23,.78); backdrop-filter: blur(12px); }
+        .modal-panel { animation: modalIn .22s ease-out both; }
+        @keyframes modalIn { from { opacity: 0; transform: translateY(12px) scale(.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+        @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
+        /* Match the dashboard's bright purple glass language. */
+        .dashboard-like .text-white { color: #312e81 !important; }
+        .dashboard-like .text-slate-200 { color: #37306f !important; }
+        .dashboard-like .text-slate-300 { color: #4c4780 !important; }
+        .dashboard-like .text-slate-400 { color: #6d6498 !important; }
+        .dashboard-like .text-slate-500 { color: #8178aa !important; }
+        .dashboard-like .text-slate-600 { color: #9188b7 !important; }
+        .dashboard-like .border-slate-800 { border-color: rgba(196,181,253,.45) !important; }
+        .dashboard-like .bg-slate-900\/45 { background: rgba(255,255,255,.46) !important; backdrop-filter: blur(12px); }
+        .dashboard-like .bg-slate-900\/80 { background: rgba(255,255,255,.56) !important; backdrop-filter: blur(12px); }
+        .dashboard-like .bg-slate-950 { background: rgba(255,255,255,.96) !important; }
+        .dashboard-like .bg-slate-900\/60 { background: rgba(245,243,255,.82) !important; }
+        .dashboard-like .bg-cyan-300\/5 { background: rgba(192,132,252,.12) !important; }
+        .dashboard-like .border-cyan-300\/20 { border-color: rgba(192,132,252,.35) !important; }
+        .dashboard-like .text-cyan-300, .dashboard-like .text-cyan-200 { color: #7e22ce !important; }
+        .dashboard-like .bg-cyan-300 { background: #a855f7 !important; }
+        .dashboard-like .bg-emerald-300 { background: #34d399 !important; }
+        .dashboard-like .text-emerald-200 { color: #047857 !important; }
+        .dashboard-like .text-amber-200 { color: #b45309 !important; }
+        .dashboard-like .border-amber-300\/20 { border-color: rgba(251,191,36,.35) !important; }
+        .dashboard-like .bg-amber-300\/\[\.06\] { background: rgba(254,243,199,.55) !important; }
+        .dashboard-like .text-amber-100 { color: #92400e !important; }
+        .dashboard-like .text-amber-100\/65 { color: rgba(146,64,14,.78) !important; }
+        .dashboard-like .text-rose-100 { color: #9f1239 !important; }
+        .dashboard-like .text-rose-200 { color: #be123c !important; }
+        .dashboard-like .text-rose-300 { color: #be123c !important; }
+        .dashboard-like .bg-gradient-to-r.from-cyan-300 { background-image: linear-gradient(to right, #e879f9, #8b5cf6, #6366f1) !important; }
+        .dashboard-like .modal-backdrop { background: rgba(49,46,129,.28); }
+        .dashboard-like .modal-panel { border-color: rgba(196,181,253,.6); box-shadow: 0 24px 80px rgba(76,29,149,.22); }
+        @media (max-width: 639px) {
+            body > header { padding-top: .7rem !important; padding-bottom: .7rem !important; }
+            body > header img { height: 2.5rem; width: 2.5rem; }
+            body > main { display: flex; flex-direction: column; gap: 0; padding-top: .15rem !important; padding-bottom: 1.5rem !important; }
+            body > main > section:first-child { order: 1; text-align: center; }
+            body > main > section:nth-child(2) { order: 2; max-width: 26rem; margin-top: -.7rem !important; }
+            body > main > .mobile-bottom-content { order: 3; }
+            body > main > section:first-child > .mb-7 { margin-bottom: .5rem !important; }
+            body > main > section:first-child h1 { font-size: 1.7rem; line-height: 1.08; }
+            body > main > section:first-child > p { margin-top: .5rem !important; font-size: .78rem; line-height: 1.3rem; }
+            body > main > section:first-child > .grid { margin-top: .8rem !important; padding-top: .7rem !important; padding-bottom: .7rem !important; }
+            body > main > section:first-child > .grid > div > div:last-child { font-size: .62rem; line-height: .9rem; }
+            body > main > section:first-child > .grid:last-child { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .4rem; }
+            body > main > section:first-child > .grid:last-child > div { padding: .55rem .4rem; border-radius: .9rem; }
+            body > main > section:first-child > .grid:last-child > div > div:nth-child(2) { margin-top: .3rem; font-size: .68rem; }
+            body > main > section:first-child > .grid:last-child > div > div:last-child { font-size: .58rem; line-height: .8rem; }
+            .mobile-bottom-content { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .4rem; }
+            body > main > .mobile-bottom-content { margin-top: .8rem; }
+            .mobile-bottom-content > div { padding: .55rem .4rem; border-radius: .9rem; }
+            .mobile-bottom-content > div > div:nth-child(2) { margin-top: .3rem; font-size: .68rem; }
+            .mobile-bottom-content > div > div:last-child { font-size: .58rem; line-height: .8rem; }
+            .auth-card { padding: .78rem !important; border-radius: 1.2rem; }
+            .auth-card h2 { margin-top: .3rem; font-size: 1.12rem; line-height: 1.12; }
+            .auth-card > .relative > p { margin-top: .45rem !important; font-size: .72rem; line-height: 1.1rem; }
+            .auth-card .mt-7 { margin-top: .55rem !important; }
+            .auth-card .mt-6 { margin-top: .6rem !important; }
+            .auth-card .mt-5 { margin-top: .5rem !important; }
+            .auth-card .rounded-2xl { padding: .55rem !important; }
+            .auth-card .space-y-3 > :not([hidden]) ~ :not([hidden]) { margin-top: .45rem; }
+            #loginBtn { margin-top: .65rem !important; padding-top: .65rem; padding-bottom: .65rem; }
+            body > footer { padding-top: 1rem !important; padding-bottom: 1rem !important; }
         }
     </style>
 </head>
 
-<body class="bg-gradient-to-br from-fuchsia-50 via-purple-100 to-indigo-100 text-indigo-950 min-h-screen flex flex-col relative overflow-hidden">
-    
-    <!-- Ethereal background overlays -->
-    <div class="fixed inset-0 z-[-1] bg-[radial-gradient(ellipse_at_top_left,_var(--tw-gradient-stops))] from-white/80 via-purple-200/20 to-transparent"></div>
-    <div class="fixed inset-0 z-[-1] bg-[radial-gradient(ellipse_at_bottom_right,_var(--tw-gradient-stops))] from-indigo-200/30 via-transparent to-transparent"></div>
+<body class="dashboard-like min-h-screen overflow-x-hidden">
+    <div class="fixed inset-0 grid-bg pointer-events-none"></div>
+    <div class="edge-glow fixed inset-0 z-0 pointer-events-none"></div>
+    <div class="fixed -left-24 top-16 h-72 w-72 rounded-full bg-cyan-500/10 blur-3xl hero-orb pointer-events-none"></div>
+    <div class="fixed right-0 top-1/3 h-96 w-96 rounded-full bg-amber-400/10 blur-3xl hero-orb two pointer-events-none"></div>
+    <div class="fixed left-0 top-0 h-1 w-full bg-gradient-to-r from-cyan-400 via-emerald-400 to-amber-300"></div>
 
-    <!-- Top Accent Bar -->
-    <div class="fixed top-0 left-0 w-full h-1 bg-gradient-to-r from-fuchsia-500 via-purple-500 to-indigo-500 z-50"></div>
+    <header class="relative z-10 mx-auto flex max-w-5xl items-center justify-between px-4 py-6">
+        <div class="flex items-center gap-3">
+            <img src="assets/bot_bulls_logo.png" alt="BotBulls logo" class="h-10 w-10 rounded-xl border border-purple-200/80 bg-white/80 object-cover shadow-lg shadow-purple-500/15">
+            <div>
+                <div class="text-lg font-bold tracking-tight">Bot<span class="text-cyan-300">Bulls</span></div>
+                <div class="mono text-[9px] uppercase tracking-[.25em] text-slate-500">Autonomous trading lab</div>
+            </div>
+        </div>
+        <div class="hidden items-center gap-5 text-xs font-medium text-slate-400 sm:flex">
+            <span class="flex items-center gap-2"><span class="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_10px_#34d399]"></span>Systems online</span>
+            <span class="rounded-full border border-slate-700/80 px-3 py-1.5">Paper-first by design</span>
+        </div>
+    </header>
 
-    <div class="flex-grow flex flex-col justify-center px-4 py-8 md:py-12 lg:px-8">
-        
-        <div class="sm:mx-auto sm:w-full sm:max-w-md">
-            <!-- Branding -->
-            <div class="text-center mb-10">
-                <h1 class="text-3xl md:text-4xl font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600">
-                    ✦ Bot Bulls
-                </h1>
-                <p class="text-[10px] font-bold text-purple-400 uppercase tracking-[0.25em] mt-2">
-                    Quantitative Intelligence Hub
-                </p>
+    <main class="relative z-10 mx-auto grid max-w-5xl items-center gap-12 px-4 pb-12 pt-4 lg:grid-cols-[1.08fr_.92fr] lg:gap-12 lg:pb-20 lg:pt-12">
+        <section class="min-w-0">
+            <div class="mb-7 inline-flex items-center gap-2 rounded-full border border-cyan-300/20 bg-cyan-300/5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[.18em] text-cyan-200">
+                <span class="h-1.5 w-1.5 rounded-full bg-cyan-300"></span> A calmer way to trade
+            </div>
+            <h1 class="max-w-3xl text-4xl font-bold leading-[1.05] tracking-[-.045em] text-white sm:text-6xl lg:text-7xl">Give your strategy a <span class="bg-gradient-to-r from-cyan-300 via-emerald-300 to-amber-200 bg-clip-text text-transparent">disciplined engine.</span></h1>
+            <p class="mt-6 max-w-xl text-base leading-7 text-slate-400 sm:text-lg">BotBulls connects market data, technical signals, AI analysis, backtesting, and broker execution in one command center—so every trade has a plan before it has a position.</p>
+
+            <div class="mt-9 grid max-w-xl grid-cols-3 gap-3 border-y border-slate-800/80 py-5">
+                <div><div class="mono text-lg text-cyan-200">01</div><div class="mt-1 text-[11px] leading-4 text-slate-500">Build a strategy</div></div>
+                <div><div class="mono text-lg text-emerald-200">02</div><div class="mt-1 text-[11px] leading-4 text-slate-500">Backtest the idea</div></div>
+                <div><div class="mono text-lg text-amber-200">03</div><div class="mt-1 text-[11px] leading-4 text-slate-500">Automate with guardrails</div></div>
             </div>
 
-            <!-- Login Card -->
-            <div class="login-card sm:rounded-[3rem] p-8 md:p-14 text-center border border-white/50 relative overflow-hidden">
-                <div class="inline-flex items-center justify-center w-20 h-20 bg-gradient-to-tr from-fuchsia-50 to-indigo-50 rounded-3xl mb-8 shadow-sm border border-white relative">
-                    <span class="text-4xl animate-pulse">📡</span>
-                    <div class="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-2 border-white"></div>
+            <div class="relative mt-10 hidden max-w-xl sm:block" aria-label="How BotBulls automates a trade">
+                <div class="absolute left-[12%] right-[12%] top-10 h-px bg-gradient-to-r from-cyan-300/30 via-emerald-300/70 to-amber-300/30"></div>
+                <div class="pulse-line absolute left-[12%] top-10 h-px w-1/3 bg-cyan-200 blur-[1px]"></div>
+                <div class="grid grid-cols-4 gap-3">
+                    <div class="float-card relative text-center"><div class="mx-auto flex h-20 w-20 items-center justify-center rounded-2xl border border-cyan-300/25 bg-slate-900/80 text-2xl shadow-lg shadow-cyan-500/10">◌</div><div class="mt-3 text-xs font-semibold text-slate-200">Market data</div><div class="mt-1 text-[10px] text-slate-500">Price + volume</div></div>
+                    <div class="float-card delay relative text-center"><div class="mx-auto flex h-20 w-20 items-center justify-center rounded-2xl border border-emerald-300/25 bg-slate-900/80 text-2xl shadow-lg shadow-emerald-500/10">⌁</div><div class="mt-3 text-xs font-semibold text-slate-200">Signal engine</div><div class="mt-1 text-[10px] text-slate-500">Confluence check</div></div>
+                    <div class="float-card relative text-center"><div class="mx-auto flex h-20 w-20 items-center justify-center rounded-2xl border border-violet-300/25 bg-slate-900/80 text-2xl shadow-lg shadow-violet-500/10">✦</div><div class="mt-3 text-xs font-semibold text-slate-200">AI review</div><div class="mt-1 text-[10px] text-slate-500">Context + sentiment</div></div>
+                    <div class="float-card delay relative text-center"><div class="mx-auto flex h-20 w-20 items-center justify-center rounded-2xl border border-amber-300/25 bg-slate-900/80 text-2xl shadow-lg shadow-amber-500/10">↗</div><div class="mt-3 text-xs font-semibold text-slate-200">Risk-aware order</div><div class="mt-1 text-[10px] text-slate-500">Size + exits</div></div>
                 </div>
-                <h2 class="text-3xl font-black text-indigo-950 tracking-tight mb-2">Authorize Terminal</h2>
-                <p class="text-slate-500 font-semibold mb-12 text-sm leading-relaxed px-4">
-                    Establish a secure link to the high-performance trading engine powered by real-time AI sentiment analysis.
-                </p>
+            </div>
 
-                <div class="space-y-4">
-                    <button id="loginBtn" class="google-btn w-full flex items-center justify-center gap-4 py-4 px-8 rounded-2xl font-bold text-sm shadow-sm transition-all active:scale-95">
-                        <svg class="w-5 h-5" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                            <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
-                            <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-                            <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
-                            <path d="M12 5.38c1.62 0 3.06.56 4.21 1.66l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-                        </svg>
+        </section>
+
+        <section class="mx-auto w-full max-w-md lg:mx-0 lg:ml-auto">
+            <div class="auth-card glow relative overflow-hidden rounded-[2rem] p-6 sm:p-8">
+                <div class="scan-line pointer-events-none absolute left-0 right-0 top-0 h-20 bg-gradient-to-b from-transparent via-cyan-300/5 to-transparent"></div>
+                <div class="relative">
+                    <div class="flex items-start justify-between gap-4">
+                        <div><div class="mono text-[10px] uppercase tracking-[.25em] text-cyan-300">Welcome to the desk</div><h2 class="mt-3 text-2xl font-bold tracking-tight">Start with your own command center.</h2></div>
+                        <div class="rounded-xl border border-emerald-300/20 bg-emerald-300/10 px-2.5 py-2 text-center"><div class="h-2 w-2 mx-auto rounded-full bg-emerald-300 shadow-[0_0_12px_#6ee7b7]"></div><div class="mt-1 text-[9px] font-bold uppercase tracking-wider text-emerald-200">Ready</div></div>
+                    </div>
+                    <p class="mt-4 text-sm leading-6 text-slate-400">Sign in to save watchlists, bot settings, backtests, and execution history to your private workspace.</p>
+
+                    <div class="mt-7 rounded-2xl border border-amber-300/20 bg-amber-300/[.06] p-4">
+                        <div class="flex gap-3"><span class="mt-0.5 text-amber-200">⚠</span><div><div class="text-xs font-bold text-amber-100">Trading involves real risk</div><p class="mt-1 text-[11px] leading-5 text-amber-100/65">BotBulls is software—not an investment adviser. You remain responsible for your account, settings, and orders.</p></div></div>
+                    </div>
+
+                    <div class="mt-6 space-y-3 text-left">
+                    <div class="check-wrap flex items-start gap-3">
+                        <input id="termsCheck" type="checkbox" class="sr-only">
+                        <span class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-slate-600 bg-slate-950 transition-colors"><svg class="h-3.5 w-3.5 opacity-0 transition-opacity" viewBox="0 0 20 20" fill="none" stroke="#05202a" stroke-width="3"><path d="m4 10 4 4 8-8"/></svg></span>
+                        <label for="termsCheck" class="text-[11px] leading-5 text-slate-400">I have read and agree to the BotBulls Terms, Risk Disclosure, and Electronic Consent. I understand that automated and AI-assisted trading can lose money.</label>
+                        <button id="termsOpen" type="button" class="terms-link shrink-0 text-[11px] font-bold" aria-label="Read BotBulls Terms and Risk Disclosure">Read terms</button>
+                    </div>
+                    <label class="check-wrap flex cursor-pointer items-start gap-3">
+                        <input id="paperCheck" type="checkbox" class="sr-only">
+                        <span class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-slate-600 bg-slate-950 transition-colors"><svg class="h-3.5 w-3.5 opacity-0 transition-opacity" viewBox="0 0 20 20" fill="none" stroke="#05202a" stroke-width="3"><path d="m4 10 4 4 8-8"/></svg></span>
+                        <span class="text-[11px] leading-5 text-slate-400">I understand that paper trading is simulated, live trading can send real broker orders, and no live trading is enabled without my separate configuration and confirmation.</span>
+                    </label>
+                    </div>
+
+                    <button id="loginBtn" disabled class="google-btn mt-6 flex w-full items-center justify-center gap-3 rounded-xl bg-white px-5 py-4 text-sm font-bold text-slate-900">
+                        <svg class="h-5 w-5" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.66l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
                         Continue with Google
                     </button>
-                    
-                    <div id="status" class="text-center text-[10px] font-black text-purple-500 uppercase tracking-widest opacity-0 transition-opacity pt-4">
-                        Authenticating Handshake...
-                    </div>
-                </div>
-
-                <!-- Live System Ticker -->
-                <div class="mt-12 pt-8 border-t border-purple-100 flex flex-col gap-4 text-center">
-                    <div class="system-ticker flex justify-center gap-4 text-[9px] font-bold text-indigo-300 uppercase tracking-tighter">
-                        <span class="flex items-center"><span class="w-1.5 h-1.5 bg-green-500 rounded-full mr-1.5"></span> ALGO_CORE</span>
-                        <span class="flex items-center"><span class="w-1.5 h-1.5 bg-green-500 rounded-full mr-1.5"></span> SENTIMENT_SYNC</span>
-                        <span class="flex items-center"><span class="w-1.5 h-1.5 bg-amber-500 rounded-full mr-1.5"></span> ALPHA_STREAM</span>
-                    </div>
-                    <p class="text-[9px] font-black text-indigo-200 uppercase tracking-[0.4em]">
-                        Security Protocol v2.0
-                    </p>
+                    <div id="status" class="min-h-5 pt-3 text-center text-[10px] font-bold uppercase tracking-[.15em] text-cyan-300"></div>
+                    <div class="mt-5 flex flex-wrap items-center justify-center gap-2 text-[10px] text-slate-600"><span>Firebase-authenticated</span><span>•</span><span>User-isolated workspace</span><span>•</span><span>Paper trading available</span></div>
                 </div>
             </div>
+            <p class="mt-5 text-center text-[10px] leading-5 text-slate-600">By continuing, you are creating an account and accepting the latest agreement version shown above. Legal protections depend on your applicable law and operating practices.</p>
+        </section>
 
-            <!-- Footer -->
-            <p class="mt-12 text-center text-[10px] font-bold text-indigo-300 uppercase tracking-[0.2em]">
-                &copy; 2026 Elite Quant Group • All Systems Operational
-            </p>
+        <section class="mobile-bottom-content mx-auto grid w-full max-w-md gap-3 sm:grid-cols-3 lg:col-span-2 lg:max-w-5xl" aria-label="BotBulls platform benefits">
+            <div class="rounded-2xl border border-slate-800 bg-slate-900/45 p-4"><div class="text-lg">◈</div><div class="mt-3 text-sm font-semibold">Research</div><div class="mt-1 text-xs leading-5 text-slate-500">See the signals behind every decision.</div></div>
+            <div class="rounded-2xl border border-slate-800 bg-slate-900/45 p-4"><div class="text-lg">⌁</div><div class="mt-3 text-sm font-semibold">Simulate</div><div class="mt-1 text-xs leading-5 text-slate-500">Test ideas before risking capital.</div></div>
+            <div class="rounded-2xl border border-slate-800 bg-slate-900/45 p-4"><div class="text-lg">⛨</div><div class="mt-3 text-sm font-semibold">Control risk</div><div class="mt-1 text-xs leading-5 text-slate-500">Keep your limits above the algorithm.</div></div>
+        </section>
+    </main>
+
+    <footer class="relative z-10 mx-auto flex w-full max-w-5xl flex-col gap-2 border-t border-slate-800/70 px-4 py-6 text-[10px] text-slate-600 sm:flex-row sm:items-center sm:justify-between"><span>© 2026 BotBulls. Built for disciplined experimentation.</span><span class="mono uppercase tracking-[.2em]">AI-assisted • User-controlled • Risk-aware</span></footer>
+
+    <div id="termsModal" class="modal-backdrop fixed inset-0 z-50 hidden items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="termsTitle">
+        <div class="modal-panel flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-slate-700 bg-slate-950 shadow-2xl shadow-black/60">
+            <div class="terms-modal-header flex items-start justify-between gap-5 border-b px-6 py-5"><div><div class="mono text-[9px] uppercase tracking-[.25em] text-purple-700">Required before access</div><h2 id="termsTitle" class="mt-2 text-xl font-bold text-indigo-950">Terms, Risk Disclosure & Consent</h2><p class="mt-1 text-xs text-slate-500">Agreement version: BB-2026.07</p></div><button id="termsClose" class="rounded-lg p-2 text-slate-500 hover:bg-purple-100 hover:text-indigo-900" aria-label="Close terms">✕</button></div>
+            <div class="overflow-y-auto px-6 py-6 text-sm leading-6 text-slate-400">
+                <div class="mb-6 rounded-2xl border border-rose-400/25 bg-rose-400/[.07] p-4 text-xs leading-5 text-rose-100"><strong class="text-rose-200">Important:</strong> Trading can result in partial or total loss of capital. Do not use money needed for living expenses, debt payments, or financial security.</div>
+                <div class="space-y-5">
+                    <section><h3 class="font-bold text-white">1. Software-only service</h3><p class="mt-1">BotBulls provides software tools for market research, backtesting, signal generation, AI-assisted analysis, automation, and broker connectivity. BotBulls does not provide investment, financial, tax, accounting, legal, or personalized trading advice, and no communication through the platform creates an adviser-client or fiduciary relationship.</p></section>
+                    <section><h3 class="font-bold text-white">2. User controls and responsibility</h3><p class="mt-1">You are solely responsible for your account, broker relationship, credentials, selected assets, strategies, prompts, risk limits, orders, and all trading decisions. You must review settings and monitor activity. You may pause or disable automation at any time, but pausing may not cancel an order already submitted to a broker.</p></section>
+                    <section><h3 class="font-bold text-white">3. Automated and AI-assisted trading risk</h3><p class="mt-1">AI models, indicators, backtests, alerts, and automated rules may be inaccurate, incomplete, delayed, unavailable, or unsuitable. The system may produce false signals, unexpected orders, duplicate actions, or no action. You agree not to rely on AI output as a guarantee, prediction, or recommendation.</p></section>
+                    <section><h3 class="font-bold text-white">4. Market, broker, and technology risk</h3><p class="mt-1">You accept risks from volatility, gaps, slippage, liquidity limits, spreads, halted markets, option decay, data errors, latency, outages, bugs, cybersecurity events, broker API changes, rejected orders, partial fills, and stop-losses that execute at prices materially different from their trigger.</p></section>
+                    <section><h3 class="font-bold text-white">5. No performance guarantee</h3><p class="mt-1">Past performance, simulated results, optimization results, and paper trading do not predict future results. Backtests may not reflect commissions, spreads, slippage, market impact, survivorship bias, or live execution. Losses can exceed expectations, especially with leveraged or derivative products.</p></section>
+                    <section><h3 class="font-bold text-white">6. Paper and live trading modes</h3><p class="mt-1">Paper trading is simulated and may not match live execution. Live trading requires a supported broker connection and your explicit configuration. BotBulls does not guarantee that a pause, stop, or cancellation will prevent an order already accepted by a broker from filling.</p></section>
+                    <section><h3 class="font-bold text-white">7. Limitation of liability and indemnification</h3><p class="mt-1">To the maximum extent permitted by applicable law, BotBulls and its owners, operators, developers, affiliates, and service providers are not liable for trading losses, lost profits, lost data, indirect or consequential damages, or losses arising from your use of or inability to use the platform, including automated execution, AI output, broker connectivity, or technical failures. You agree to defend, indemnify, and hold them harmless from claims arising from your use, violation of this agreement, or trading activity.</p></section>
+                    <section><h3 class="font-bold text-white">8. Eligibility and lawful use</h3><p class="mt-1">You represent that you are legally able to use the service, are permitted to trade through your selected broker and jurisdiction, and will comply with applicable laws, regulations, broker terms, and tax obligations. You will not use the platform for unlawful activity or provide access to unauthorized persons.</p></section>
+                    <section><h3 class="font-bold text-white">9. Electronic acceptance</h3><p class="mt-1">By checking the acknowledgement and selecting “Continue with Google,” you agree that your electronic acceptance is legally binding, confirm that you read and understood this agreement, and consent to the current version being associated with your account. BotBulls may update these terms; continued use after an update constitutes acceptance where permitted by law.</p></section>
+                </div>
+                <p class="mt-7 border-t border-slate-800 pt-5 text-xs text-slate-600">This template is not a substitute for advice from a qualified attorney. Have counsel review the final agreement, entity structure, disclosures, privacy practices, jurisdiction, and regulatory obligations before accepting live users or live funds.</p>
+            </div>
+            <div class="terms-modal-footer flex flex-col-reverse gap-3 border-t px-6 py-4 sm:flex-row sm:justify-end"><button id="termsDismiss" class="rounded-xl border border-purple-200 bg-white/55 px-5 py-3 text-sm font-semibold text-indigo-700 hover:bg-purple-100">Close</button><button id="termsAccept" class="terms-modal-accept rounded-xl px-5 py-3 text-sm font-bold">I have read and understand</button></div>
         </div>
     </div>
 
-    <!-- Firebase Logic -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-        import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+        import { getAuth, signInWithPopup, signInWithRedirect, getRedirectResult, GoogleAuthProvider, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
         import { firebaseConfig } from "./firebase-config.js";
 
+        const TERMS_VERSION = "BB-2026.07";
+        const TERMS_KEY = "botbulls_terms_acknowledgement";
+        const PAPER_KEY = "botbulls_paper_trading_acknowledgement";
+        const REDIRECT_PENDING_KEY = "botbulls_google_redirect_pending";
+        const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://localhost:8000' : 'https://207-211-184-22.sslip.io';
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const provider = new GoogleAuthProvider();
-        provider.setCustomParameters({
-            prompt: 'select_account'
-        });
-
+        provider.setCustomParameters({ prompt: 'select_account' });
         const loginBtn = document.getElementById('loginBtn');
+        const termsCheck = document.getElementById('termsCheck');
+        const paperCheck = document.getElementById('paperCheck');
         const status = document.getElementById('status');
+        const modal = document.getElementById('termsModal');
+        let redirecting = false;
+        const isMobileBrowser = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.innerWidth <= 768;
 
-        onAuthStateChanged(auth, (user) => {
+        function readRedirectPending() {
+            try { return sessionStorage.getItem(REDIRECT_PENDING_KEY) === '1'; } catch (_) { return false; }
+        }
+        function setRedirectPending(value) {
+            try {
+                if (value) sessionStorage.setItem(REDIRECT_PENDING_KEY, '1');
+                else sessionStorage.removeItem(REDIRECT_PENDING_KEY);
+            } catch (_) {}
+        }
+        const redirectParams = new URLSearchParams(window.location.search);
+        const returningFromGoogleRedirect = readRedirectPending() || redirectParams.get('auth_return') === '1';
+
+        function markGoogleRedirect() {
+            setRedirectPending(true);
+            try {
+                const url = new URL(window.location.href);
+                url.searchParams.set('auth_return', '1');
+                window.history.replaceState({}, document.title, url.toString());
+            } catch (_) {}
+        }
+        function clearGoogleRedirectMarker() {
+            setRedirectPending(false);
+            try {
+                const url = new URL(window.location.href);
+                ['auth_return', 'terms', 'paper'].forEach((key) => url.searchParams.delete(key));
+                window.history.replaceState({}, document.title, url.pathname + url.search + url.hash);
+            } catch (_) {}
+        }
+
+        function readStoredVersion(key) {
+            for (const storage of [localStorage, sessionStorage]) {
+                try { if (JSON.parse(storage.getItem(key) || 'null')?.version === TERMS_VERSION) return true; } catch (_) {}
+            }
+            return false;
+        }
+        function writeConsent(key) {
+            const value = JSON.stringify({ version: TERMS_VERSION, accepted_at: new Date().toISOString() });
+            for (const storage of [localStorage, sessionStorage]) {
+                try { storage.setItem(key, value); } catch (_) {}
+            }
+        }
+        function clearConsent(key) {
+            for (const storage of [localStorage, sessionStorage]) {
+                try { storage.removeItem(key); } catch (_) {}
+            }
+        }
+        function hasAcceptedTerms() {
+            return readStoredVersion(TERMS_KEY);
+        }
+        function setStatus(message, tone = 'cyan') {
+            status.textContent = message;
+            status.className = `min-h-5 pt-3 text-center text-[10px] font-bold uppercase tracking-[.15em] text-${tone}-300`;
+        }
+        function hasAcceptedPaperMode() {
+            return readStoredVersion(PAPER_KEY);
+        }
+        function syncConsent() { loginBtn.disabled = !(termsCheck.checked && paperCheck.checked); }
+        function openTerms() { modal.classList.remove('hidden'); modal.classList.add('flex'); document.body.classList.add('overflow-hidden'); }
+        function closeTerms() { modal.classList.add('hidden'); modal.classList.remove('flex'); document.body.classList.remove('overflow-hidden'); }
+        function acceptTerms() { termsCheck.checked = true; writeConsent(TERMS_KEY); syncConsent(); closeTerms(); setStatus('Agreement read · complete the paper-trading acknowledgement'); }
+
+        document.getElementById('termsOpen').addEventListener('click', openTerms);
+        document.getElementById('termsClose').addEventListener('click', closeTerms);
+        document.getElementById('termsDismiss').addEventListener('click', closeTerms);
+        document.getElementById('termsAccept').addEventListener('click', acceptTerms);
+        modal.addEventListener('click', (event) => { if (event.target === modal) closeTerms(); });
+        document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeTerms(); });
+        termsCheck.nextElementSibling.addEventListener('click', () => termsCheck.click());
+        termsCheck.addEventListener('change', () => {
+            if (termsCheck.checked) writeConsent(TERMS_KEY); else clearConsent(TERMS_KEY);
+            syncConsent();
+        });
+        paperCheck.addEventListener('change', () => {
+            if (paperCheck.checked) writeConsent(PAPER_KEY); else clearConsent(PAPER_KEY);
+            syncConsent();
+        });
+        // Require an explicit acknowledgement on every normal visit. Preserve
+        // it only while Firebase is returning from the Google redirect flow.
+        if (returningFromGoogleRedirect) {
+            // Never treat URL parameters as legal consent. The checkboxes are
+            // restored only from storage written by the user's explicit clicks.
+            termsCheck.checked = hasAcceptedTerms();
+            paperCheck.checked = hasAcceptedPaperMode();
+        } else {
+            termsCheck.checked = false;
+            paperCheck.checked = false;
+            clearConsent(TERMS_KEY);
+            clearConsent(PAPER_KEY);
+        }
+        syncConsent();
+
+        async function syncAcceptanceToServer(user) {
+            const token = await user.getIdToken();
+            const response = await fetch(`${API_BASE}/api/legal/acceptance`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ terms_version: TERMS_VERSION, paper_trading_acknowledged: paperCheck.checked })
+            });
+            if (!response.ok) {
+                let detail = 'Unable to record the agreement';
+                try {
+                    const errorBody = await response.json();
+                    detail = errorBody.detail?.message || errorBody.detail || detail;
+                } catch (_) {}
+                throw new Error(detail);
+            }
+            return response.json();
+        }
+
+        async function completeAuthenticatedUser(user) {
+            if (!user || redirecting) return;
+            if (hasAcceptedTerms() && hasAcceptedPaperMode()) {
+                redirecting = true;
+                setStatus('Recording agreement · initializing');
+                try {
+                    await syncAcceptanceToServer(user);
+                    clearGoogleRedirectMarker();
+                    localStorage.setItem('loginTimestamp', Date.now().toString());
+                    setTimeout(() => { window.location.href = "dashboard.html"; }, 850);
+                } catch (error) {
+                    redirecting = false;
+                    clearGoogleRedirectMarker();
+                    const message = String(error?.message || '').toLowerCase();
+                    const reason = message.includes('failed to fetch') || message.includes('network')
+                        ? 'backend connection failed'
+                        : 'agreement could not be recorded';
+                    setStatus(`${reason} · retry`, 'rose');
+                    syncConsent();
+                }
+            } else if (!hasAcceptedTerms()) {
+                setStatus('Please review the agreement before continuing', 'amber');
+            } else if (!hasAcceptedPaperMode()) {
+                setStatus('Please acknowledge paper and live trading modes', 'amber');
+            }
+        }
+
+        onAuthStateChanged(auth, async (user) => {
             if (user) {
-                status.innerText = "Link Established. Initializing...";
-                status.classList.remove('opacity-0');
-                localStorage.setItem('loginTimestamp', Date.now().toString());
-                setTimeout(() => {
-                    window.location.href = "dashboard.html";
-                }, 1000);
+                if (returningFromGoogleRedirect) setStatus('Google sign-in complete · finishing setup');
+                await completeAuthenticatedUser(user);
             }
         });
+
+        async function waitForRedirectUser(timeoutMs = 5000) {
+            const startedAt = Date.now();
+            while (!auth.currentUser && Date.now() - startedAt < timeoutMs) {
+                await new Promise((resolve) => window.setTimeout(resolve, 250));
+            }
+            return auth.currentUser;
+        }
 
         loginBtn.addEventListener('click', async () => {
+            if (!termsCheck.checked) { openTerms(); return; }
+            if (!paperCheck.checked) { setStatus('Acknowledge paper and live trading modes first', 'amber'); return; }
             try {
                 loginBtn.disabled = true;
-                loginBtn.classList.add('opacity-50');
-                status.innerText = "Initializing Secure Link...";
-                status.classList.remove('opacity-0');
+                if (auth.currentUser) {
+                    await completeAuthenticatedUser(auth.currentUser);
+                    return;
+                }
+                // localhost:3000 is served outside Firebase Hosting. Popup is
+                // the reliable first path there, especially when a browser
+                // blocks third-party storage used by redirect sign-in.
+                setStatus(isMobileBrowser ? 'Opening Google sign-in' : 'Opening secure Google sign-in');
                 await signInWithPopup(auth, provider);
             } catch (error) {
-                console.error("Auth Error:", error);
-                status.innerText = "Link Failure. Please retry.";
-                status.classList.remove('opacity-0');
-                loginBtn.disabled = false;
-                loginBtn.classList.remove('opacity-50');
+                console.error('Auth Error:', error);
+                const localAuthHost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+                const popupNeedsRedirect = !localAuthHost && ['auth/popup-blocked', 'auth/operation-not-supported-in-this-environment'].includes(error?.code);
+                if (popupNeedsRedirect) {
+                    try {
+                        markGoogleRedirect();
+                        setStatus('Popup unavailable · switching to secure redirect');
+                        await signInWithRedirect(auth, provider);
+                        return;
+                    } catch (redirectError) {
+                        console.error('Redirect Auth Error:', redirectError);
+                    }
+                }
+                const message = error?.code === 'auth/popup-blocked'
+                    ? 'Google popup blocked · allow popups and retry'
+                    : error?.code === 'auth/operation-not-supported-in-this-environment'
+                        ? 'Google sign-in is unavailable in this browser · retry in a standard browser'
+                        : error?.code === 'auth/popup-closed-by-user'
+                            ? 'Sign-in cancelled'
+                            : error?.code === 'auth/unauthorized-domain'
+                                ? 'This site is not authorized for Google sign-in'
+                                : 'Connection failed · please retry';
+                setStatus(message, 'rose');
+                syncConsent();
             }
         });
+
+        if (returningFromGoogleRedirect) {
+            let redirectResultSettled = false;
+            getRedirectResult(auth).then(async (result) => {
+                redirectResultSettled = true;
+                // Firebase may restore the credential through onAuthStateChanged
+                // slightly after getRedirectResult resolves with no result.
+                const user = result?.user || await waitForRedirectUser();
+                if (user) {
+                    await completeAuthenticatedUser(user);
+                } else if (!redirecting) {
+                    clearGoogleRedirectMarker();
+                    setStatus('Google returned without completing sign-in · retry', 'rose');
+                    syncConsent();
+                }
+            }).catch((error) => {
+                redirectResultSettled = true;
+                console.error('Google redirect result error:', error);
+                clearGoogleRedirectMarker();
+                const code = String(error?.code || '').replace(/^auth\//, '');
+                setStatus(code ? `Google sign-in failed (${code}) · retry` : 'Google sign-in could not be completed · please retry', 'rose');
+                syncConsent();
+            });
+            window.setTimeout(() => {
+                if (!redirectResultSettled && !auth.currentUser && !redirecting && readRedirectPending()) {
+                    clearGoogleRedirectMarker();
+                    setStatus('Google sign-in timed out · please retry', 'rose');
+                    syncConsent();
+                }
+            }, 10000);
+        }
     </script>
 </body>
 </html>

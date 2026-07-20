@@ -1561,9 +1561,10 @@ function _refreshOscillators(bars) {
     if (_visibleIndicators.botbulls1 && oscChartBotbulls1) {
         const wtChannel = indicatorParamValue('BOTBULLS1_WT_CHANNEL', 10);
         const wtAvg = indicatorParamValue('BOTBULLS1_WT_AVERAGE', 21);
-        const mfiConfirm = indicatorParamValue('BOTBULLS1_MFI_CONFIRM', 30);
+        const mfiBuy = indicatorParamValue('BOTBULLS1_MFI_BUY_RECLAIM', 35);
+        const mfiSell = indicatorParamValue('BOTBULLS1_MFI_SELL_REJECT', 65);
         if (botbulls1Label) {
-            botbulls1Label.textContent = `BotBulls1 (WT: ${wtChannel}, ${wtAvg} | MFI: ${mfiConfirm})`;
+            botbulls1Label.textContent = `BotBulls1 (WT: ${wtChannel}, ${wtAvg} | MFI: ${mfiBuy}/${mfiSell})`;
         }
         // wt1 line
         _getOrCreate(_oscSeries, 'wt1', oscChartBotbulls1, { color: IND_COLORS.wt1, lineWidth: 1.5 })
@@ -1837,12 +1838,8 @@ async function refreshActiveTickerSignals(options = {}) {
     if (!isAuthReady) return;
 
     if (showLoading) {
-        const grid = document.getElementById('signalGrid');
-        const premiumGrid = document.getElementById('premiumSignalGrid');
-        const loading = document.getElementById('gridLoading');
-        if (grid) grid.innerHTML = '';
-        if (premiumGrid) premiumGrid.innerHTML = '';
-        if (loading) loading.classList.remove('hidden');
+        lockSignalConfluencePanelHeight();
+        setSignalConfluenceLoadingState(true);
     }
 
     const requestId = ++signalRefreshRequestSerial;
@@ -1898,10 +1895,8 @@ async function loadTickerChartFast(ticker, options = {}) {
     if (renderCached && cached) {
         renderFastChartPayload(cached, requestedTicker);
     } else {
-        const grid = document.getElementById('signalGrid');
-        const loading = document.getElementById('gridLoading');
-        if (grid) grid.innerHTML = '';
-        if (loading) loading.classList.remove('hidden');
+        lockSignalConfluencePanelHeight();
+        setSignalConfluenceLoadingState(true);
     }
 
     if (!fetchFresh) return;
@@ -2111,9 +2106,10 @@ function showTickerChangeLoadingState(ticker, options = {}) {
     const premiumGrid = document.getElementById('premiumSignalGrid');
     const loading = document.getElementById('gridLoading');
     if (grid || premiumGrid) {
+        lockSignalConfluencePanelHeight();
         renderSignals({}, 'HOLD', `Loading ${normalized} indicator signals...`, 0, 0, { allowEmpty: true });
     }
-    if (loading) loading.classList.remove('hidden');
+    setSignalConfluenceLoadingState(true);
 
     const summaryEl = document.getElementById('aiSummary');
     const cardSentSummary = document.getElementById('sentimentSummary');
@@ -2311,7 +2307,7 @@ var INDICATOR_CONFIG_MAP = {
     'ATR Volatility': ['ATR_PERIOD', 'ATR_STOP_MULTIPLIER', 'ATR_TRAIL_MULTIPLIER', 'ATR_TAKE_PROFIT_MULTIPLIER'],
     'Strategy Confidence': ['MIN_BULLISH_SIGNALS', 'MIN_BEARISH_SIGNALS'],
     'Botbulls4 News AI': ['SENTIMENT_BULLISH_PERCENTAGE', 'SENTIMENT_BEARISH_PERCENTAGE'],
-    'BotBulls1': ['BOTBULLS1_WT_CHANNEL', 'BOTBULLS1_WT_AVERAGE', 'BOTBULLS1_MFI_CONFIRM'],
+    'BotBulls1': ['BOTBULLS1_WT_CHANNEL', 'BOTBULLS1_WT_AVERAGE', 'BOTBULLS1_WT_OVERSOLD', 'BOTBULLS1_WT_OVERBOUGHT', 'BOTBULLS1_MFI_BUY_RECLAIM', 'BOTBULLS1_MFI_SELL_REJECT', 'BOTBULLS1_CONFIRM_LOOKBACK', 'BOTBULLS1_REQUIRE_MFI_CONFIRM', 'BOTBULLS1_REQUIRE_CANDLE_CONFIRM', 'BOTBULLS1_REQUIRE_PRICE_CONFIRM', 'BOTBULLS1_PRICE_CONFIRM_EMA', 'BOTBULLS1_PRICE_CONFIRM_LOOKBACK'],
     'BotBulls2': ['BOTBULLS2_ATR_MULT', 'BOTBULLS2_TREND_TRACER_PERIOD', 'BOTBULLS2_REVERSAL_ZONE_PERIOD'],
     'BotBulls3': ['BOTBULLS3_ATR_PERIOD', 'BOTBULLS3_ATR_MULT']
 };
@@ -2321,6 +2317,16 @@ var INDICATOR_DEFAULTS = {
     'BOTBULLS1_WT_CHANNEL': 10,
     'BOTBULLS1_WT_AVERAGE': 21,
     'BOTBULLS1_MFI_CONFIRM': 30,
+    'BOTBULLS1_WT_OVERSOLD': -55,
+    'BOTBULLS1_WT_OVERBOUGHT': 55,
+    'BOTBULLS1_MFI_BUY_RECLAIM': 35,
+    'BOTBULLS1_MFI_SELL_REJECT': 65,
+    'BOTBULLS1_CONFIRM_LOOKBACK': 3,
+    'BOTBULLS1_REQUIRE_MFI_CONFIRM': 1,
+    'BOTBULLS1_REQUIRE_CANDLE_CONFIRM': 1,
+    'BOTBULLS1_REQUIRE_PRICE_CONFIRM': 1,
+    'BOTBULLS1_PRICE_CONFIRM_EMA': 9,
+    'BOTBULLS1_PRICE_CONFIRM_LOOKBACK': 4,
     'BOTBULLS2_ATR_MULT': 2.0,
     'BOTBULLS2_TREND_TRACER_PERIOD': 50,
     'BOTBULLS2_REVERSAL_ZONE_PERIOD': 50,
@@ -2604,9 +2610,20 @@ async function loadOllamaModels() {
 
 var AI_INDICATOR_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 let _aiIndicatorFetchId = 0; // prevents stale response rendering
+const AI_MODEL_MIGRATIONS = {
+    'mixtral-8x7b-32768': 'llama-3.3-70b-versatile',
+    'mistral-saba-24b': 'llama-3.3-70b-versatile',
+    'openai/gpt-oss-120b': 'llama-3.3-70b-versatile',
+    'openai/gpt-oss-20b': 'llama-3.1-8b-instant'
+};
+
+function normalizeSelectedAIModel(model) {
+    const value = String(model || '').trim() || 'llama-3.3-70b-versatile';
+    return AI_MODEL_MIGRATIONS[value] || value;
+}
 
 function getAIIndicatorCacheKey(ticker, timeframe, model) {
-    return `${normalizeTicker(ticker)}|${timeframe}|${model}`;
+    return `${normalizeTicker(ticker)}|${timeframe}|${model}|ai-hourly-v1`;
 }
 
 function isAICacheFresh(cached) {
@@ -2649,7 +2666,7 @@ function normalizeCachedAISentimentScore(rawScore) {
 function getCachedAIAnalysisForTicker(ticker, timeframe = currentBackendTf) {
     const normalizedTicker = normalizeTicker(ticker);
     if (!normalizedTicker) return null;
-    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const selectedModel = normalizeSelectedAIModel(localStorage.getItem('selected_ai_model'));
     const exact = getAICache(getAIIndicatorCacheKey(normalizedTicker, timeframe, selectedModel));
     if (exact?.data?.sentiment_score != null) return exact;
 
@@ -2657,8 +2674,7 @@ function getCachedAIAnalysisForTicker(ticker, timeframe = currentBackendTf) {
         const globalAi = JSON.parse(localStorage.getItem('latest_global_ai_analysis') || 'null');
         if (
             globalAi?.data?.sentiment_score != null &&
-            isAICacheFresh(globalAi) &&
-            normalizeTicker(globalAi.ticker || globalAi.data?.ticker) === normalizedTicker
+            isAICacheForContext(globalAi, normalizedTicker, timeframe, selectedModel)
         ) {
             return globalAi;
         }
@@ -2670,7 +2686,10 @@ function getCachedAIAnalysisForTicker(ticker, timeframe = currentBackendTf) {
             const key = localStorage.key(i);
             if (!key || !key.startsWith(prefix)) continue;
             const cached = JSON.parse(localStorage.getItem(key) || 'null');
-            if (cached?.data?.sentiment_score != null && isAICacheFresh(cached)) return cached;
+            if (
+                cached?.data?.sentiment_score != null &&
+                isAICacheForContext(cached, normalizedTicker, timeframe, selectedModel)
+            ) return cached;
         }
     } catch (e) {}
     return null;
@@ -2732,7 +2751,8 @@ function setAICache(key, data, meta = {}) {
 async function fetchAIIndicator(ticker, timeframe, force = false) {
     if (!ticker) return;
     const normalizedTicker = normalizeTicker(ticker);
-    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const selectedModel = normalizeSelectedAIModel(localStorage.getItem('selected_ai_model'));
+    localStorage.setItem('selected_ai_model', selectedModel);
     const key = getAIIndicatorCacheKey(normalizedTicker, timeframe, selectedModel);
 
     // Check client-side cache first (unless forced)
@@ -2810,8 +2830,7 @@ function _getAIModelSelectHtml(selectedModel, isError = false) {
     let optionsHtml = '';
     optionsHtml += '<optgroup label="Groq AI (Cloud)">';
     const groqModels = [
-        { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B' },
-        { value: 'mixtral-8x7b-32768', label: 'Mixtral 8x7B' },
+        { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B (Recommended)' },
         { value: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B (Fast)' }
     ];
     groqModels.forEach(m => {
@@ -2841,6 +2860,7 @@ function _getAIModelSelectHtml(selectedModel, isError = false) {
 }
 
 window.changeAIIndicatorModel = async function (model) {
+    model = normalizeSelectedAIModel(model);
     localStorage.setItem('selected_ai_model', model);
     try {
         const headers = await getAuthHeaders();
@@ -2865,7 +2885,7 @@ window.changeAIIndicatorModel = async function (model) {
 function _showAIIndicatorLoading(ticker) {
     const el = document.getElementById('aiIndicatorCard');
     if (!el) return;
-    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const selectedModel = normalizeSelectedAIModel(localStorage.getItem('selected_ai_model'));
     const isOllamaActive = selectedModel.startsWith('ollama/') || selectedModel.startsWith('ollama:');
     const badgeHtml = isOllamaActive
         ? `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-indigo-500 to-blue-600 text-white border border-indigo-600/50 shadow-sm">OLLAMA</span>`
@@ -2909,7 +2929,7 @@ function _showAIIndicatorLoading(ticker) {
 function _showAIIndicatorError(err, ticker) {
     const el = document.getElementById('aiIndicatorCard');
     if (!el) return;
-    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const selectedModel = normalizeSelectedAIModel(localStorage.getItem('selected_ai_model'));
     const selectHtml = _getAIModelSelectHtml(selectedModel, true);
 
     el.className = 'ai-indicator-card ai-indicator-error relative overflow-hidden p-4 rounded-xl border transition-all duration-300';
@@ -2938,7 +2958,7 @@ function renderAIIndicatorCard(data, fromCache = false) {
     const el = document.getElementById('aiIndicatorCard');
     if (!el) return;
 
-    const signal = data.signal || 'HOLD';
+    const signal = String(data.signal || 'HOLD').toUpperCase();
     const confidence = data.confidence || 0;
     const confPct = Math.round(confidence * 100);
     const summary = data.summary || '';
@@ -2954,18 +2974,38 @@ function renderAIIndicatorCard(data, fromCache = false) {
     const sentConfPct = Math.round(sentConfidence * 100);
 
     const confBarWidth = `${confPct}%`;
-    const confBarColor = confPct >= 70 ? 'bg-emerald-500' : confPct >= 45 ? 'bg-amber-500' : 'bg-rose-500';
-    const confTextColor = confPct >= 70 ? 'text-emerald-600' : confPct >= 45 ? 'text-amber-600' : 'text-rose-600';
+    // Confidence strength is the fill width; decision direction determines
+    // the color so SELL is never shown with a bullish green confidence bar.
+    const confBarColor = signal === 'BUY'
+        ? 'bg-emerald-500'
+        : signal === 'SELL'
+            ? 'bg-rose-500'
+            : 'bg-slate-400';
+    const confTextColor = signal === 'BUY'
+        ? 'text-emerald-600'
+        : signal === 'SELL'
+            ? 'text-rose-600'
+            : 'text-slate-500';
 
     const sentScore = data.sentiment_score != null ? parseFloat(data.sentiment_score) : 0.0;
-    const sentPct = Math.round(((sentScore + 1.0) / 2.0) * 100);
+    const sentPct = data.sentiment_pct != null
+        ? Math.round(parseFloat(data.sentiment_pct))
+        : Math.round(((sentScore + 1.0) / 2.0) * 100);
+    const newsDirection = data.sentiment_direction || (
+        sentPct >= 70 ? 'BULLISH' : sentPct <= 30 ? 'BEARISH' : 'NEUTRAL'
+    );
+    const rawModelSignal = data.model_signal || signal;
+    const alignmentReason = data.news_alignment_reason || '';
     const sentBarWidth = `${sentPct}%`;
     let sentBarColor = 'bg-slate-400';
     let sentTextColor = 'text-slate-500';
 
-    if (sentPct > 75) {
+    if (newsDirection === 'BULLISH') {
         sentBarColor = 'bg-emerald-500';
         sentTextColor = 'text-emerald-600';
+    } else if (newsDirection === 'BEARISH') {
+        sentBarColor = 'bg-rose-500';
+        sentTextColor = 'text-rose-600';
     } else if (sentPct > 55) {
         sentBarColor = 'bg-amber-500';
         sentTextColor = 'text-amber-600';
@@ -2988,11 +3028,15 @@ function renderAIIndicatorCard(data, fromCache = false) {
         ? `<span class="text-[0.5rem] text-amber-600 opacity-60 ml-1">cached</span>`
         : '';
 
-    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+    const selectedModel = normalizeSelectedAIModel(localStorage.getItem('selected_ai_model'));
+    const usedModel = data.model || selectedModel;
+    const candleTimeframe = data.candle_timeframe || '1Hour';
     const isOllamaActive = selectedModel.startsWith('ollama/') || selectedModel.startsWith('ollama:');
     const badgeHtml = isOllamaActive
         ? `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-indigo-500 to-blue-600 text-white border border-indigo-600/50 shadow-sm">OLLAMA</span>`
         : `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-amber-200 to-amber-300 text-amber-800 border border-amber-400/50 shadow-sm">GROQ AI</span>`;
+    const usedModelHtml = `<span title="Actual model used for this response" class="px-1.5 py-0.5 rounded text-[0.5rem] font-bold bg-white/70 text-slate-600 border border-slate-200/70">${usedModel}</span>`;
+    const candleTimeframeHtml = `<span title="Candle timeframe used by AI market analysis" class="px-1.5 py-0.5 rounded text-[0.5rem] font-bold bg-fuchsia-50/80 text-fuchsia-700 border border-fuchsia-200/70">${candleTimeframe}</span>`;
     const selectHtml = _getAIModelSelectHtml(selectedModel, false);
 
     el.className = `ai-indicator-card ${colors.bg} relative overflow-hidden p-4 rounded-xl border border-amber-200/60 bg-gradient-to-br from-amber-50/50 to-orange-50/30 transition-all duration-300`;
@@ -3003,6 +3047,8 @@ function renderAIIndicatorCard(data, fromCache = false) {
                 <span class="text-base drop-shadow-sm">🤖</span>
                 <span class="font-black text-xs text-amber-900 tracking-wide uppercase" id="aiIndicatorHeader">BotBulls AI Analysis - ${data.ticker || selectedTicker || '---'}</span>
                 ${badgeHtml}
+                ${usedModelHtml}
+                ${candleTimeframeHtml}
                 ${cachedBadge}
             </div>
             <div class="flex items-center gap-2 relative z-30">
@@ -3034,7 +3080,7 @@ function renderAIIndicatorCard(data, fromCache = false) {
         </div>
 
         <div class="mb-3.5 relative z-10 text-left">
-            <div class="text-[0.55rem] text-slate-500 font-extrabold uppercase tracking-wider mb-1">Decision Confidence</div>
+            <div class="text-[0.55rem] text-slate-500 font-extrabold uppercase tracking-wider mb-1">Decision Confidence <span class="normal-case font-semibold tracking-normal">(composite)</span></div>
             <div class="flex items-center gap-2">
                 <div class="flex-1 bg-slate-200/50 rounded-full h-1.5 overflow-hidden">
                     <div class="h-1.5 rounded-full ${confBarColor} transition-all duration-500" style="width: ${confBarWidth}"></div>
@@ -3044,13 +3090,18 @@ function renderAIIndicatorCard(data, fromCache = false) {
         </div>
 
         <div class="mb-3.5 relative z-10 text-left">
-            <div class="text-[0.55rem] text-slate-500 font-extrabold uppercase tracking-wider mb-1">News Sentiment Score</div>
+            <div class="text-[0.55rem] text-slate-500 font-extrabold uppercase tracking-wider mb-1">News Sentiment Score <span class="normal-case font-semibold tracking-normal">(0–100%, ${newsDirection})</span></div>
             <div class="flex items-center gap-2">
                 <div class="flex-1 bg-slate-200/50 rounded-full h-1.5 overflow-hidden">
                     <div class="h-1.5 rounded-full ${sentBarColor} transition-all duration-500" style="width: ${sentBarWidth}"></div>
                 </div>
                 <span class="text-[10px] font-black leading-none ${sentTextColor} px-1.5 py-0.5 rounded bg-white/60 border border-slate-200/50 shadow-sm">${sentPct}%</span>
             </div>
+        </div>
+
+        <div class="mb-3 p-2 rounded-lg ${data.news_alignment_applied ? 'bg-amber-50/80 border-amber-300/70' : 'bg-slate-50/70 border-slate-200/70'} border text-left relative z-10">
+            <span class="text-[0.52rem] font-black ${data.news_alignment_applied ? 'text-amber-700' : 'text-slate-500'} uppercase tracking-widest block mb-0.5">News / Decision Alignment</span>
+            <p class="text-[0.62rem] ${data.news_alignment_applied ? 'text-amber-800' : 'text-slate-600'} leading-snug font-semibold">${alignmentReason || (rawModelSignal === signal ? 'The composite decision is consistent with the directional news read.' : `Model ${rawModelSignal} was adjusted to ${signal}.`)}</p>
         </div>
 
         <div class="mb-3 p-2 rounded-lg bg-fuchsia-50/50 border border-fuchsia-200/50 text-left relative z-10">
@@ -3125,12 +3176,31 @@ window.closeAIInfoModal = function () {
 
 // Premium indicator tooltip descriptions
 const PREMIUM_INFO = {
-    'BotBulls1': 'WaveTrend momentum oscillator + Money Flow analysis. Detects reversals when momentum and institutional volume flow align at oversold/overbought extremes.',
+    'BotBulls1': 'Confirmed WaveTrend reversal with MFI reclaim/rejection, then price confirmation within the BB1 window. Confluence stays bullish after the last BB1 BUY marker and bearish after the last BB1 SELL marker.',
     'BotBulls2': 'Adaptive ATR trailing stop with trend-smoothed EMA and reversal zone detection. Fires on trend flips confirmed by multi-condition confluence scoring (1-4 strength rating).',
     'BotBulls3': 'Heikin-Ashi noise filter + ATR-based trailing stop. Generates buy/sell alerts only on confirmed momentum flips — removing false signals from choppy markets.',
     'Botbulls4 News AI': 'Groq-powered real-time AI news sentiment analysis. Parses current headlines and financial catalysts to determine market direction.',
 };
 const PREMIUM_SIGNAL_NAMES = new Set(['BotBulls1', 'BotBulls2', 'BotBulls3', 'Botbulls4 News AI']);
+
+function lockSignalConfluencePanelHeight() {
+    const panel = document.getElementById('signalConfluencePanel');
+    if (!panel) return;
+
+    const height = Math.ceil(panel.getBoundingClientRect().height);
+    const lockedHeight = parseFloat(panel.style.minHeight) || 0;
+    if (height > lockedHeight + 1) {
+        panel.style.minHeight = `${height}px`;
+        panel.dataset.heightLocked = 'true';
+    }
+}
+
+function setSignalConfluenceLoadingState(isLoading) {
+    const panel = document.getElementById('signalConfluencePanel');
+    const loading = document.getElementById('gridLoading');
+    if (panel) panel.classList.toggle('signal-confluence-loading', isLoading);
+    if (loading) loading.classList.toggle('hidden', !isLoading);
+}
 
 function buildMissingSignalPlaceholder(name, prefs) {
     const locallyEnabled = prefs && prefs[name] === true;
@@ -3154,13 +3224,11 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
     signals = signals || {};
 
     if (Object.keys(signals).length === 0 && !options.allowEmpty) {
-        if (loading) loading.classList.remove('hidden');
-        if (grid) grid.innerHTML = '';
-        if (premiumGrid) premiumGrid.innerHTML = '';
+        setSignalConfluenceLoadingState(true);
         return;
     }
 
-    if (loading) loading.classList.add('hidden');
+    setSignalConfluenceLoadingState(false);
 
     const activeIds = new Set();
     const premiumActiveIds = new Set();
@@ -3356,6 +3424,12 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
 
     // Sync chart overlays to match which indicators are enabled here
     _syncIndicatorsFromSignals(signals);
+
+    // Capture only the final real-signal height. Temporary loading placeholders
+    // can contain more cards than the normal desktop layout and must not enlarge it.
+    if (!(options.allowEmpty && Object.keys(signals).length === 0)) {
+        lockSignalConfluencePanelHeight();
+    }
 }
 
 // Map signal name → chart indicator key
@@ -3818,7 +3892,7 @@ async function fetchDashboard(mode = 'heavy', options = {}) {
                 const globalAiStr = localStorage.getItem('latest_global_ai_analysis');
                 if (globalAiStr) {
                     const globalAi = JSON.parse(globalAiStr);
-                    const selectedModel = localStorage.getItem('selected_ai_model') || 'llama-3.3-70b-versatile';
+                    const selectedModel = normalizeSelectedAIModel(localStorage.getItem('selected_ai_model'));
                     if (isAICacheForContext(globalAi, selectedTicker, currentBackendTf, selectedModel)) {
                         renderAIIndicatorCard(globalAi.data, true);
                         mirrored = true;
@@ -4177,10 +4251,8 @@ async function updateStrategyTf(newTf) {
         }
 
         // Show loader immediately
-        const loading = document.getElementById('gridLoading');
-        if (loading) loading.classList.remove('hidden');
-        const grid = document.getElementById('signalGrid');
-        if (grid) grid.innerHTML = '';
+        lockSignalConfluencePanelHeight();
+        setSignalConfluenceLoadingState(true);
 
         const headers = await getAuthHeaders();
         const response = await fetch(`${API_BASE}/api/settings/timeframe`, {
@@ -4713,6 +4785,18 @@ function openIndicatorSettings(indicatorName) {
         SWING_POINTS_LOOKBACK_DAYS: 'Swing Lookback Days',
         SWING_POINTS_ENTRY_MODE: 'Swing Entry Mode',
         SWING_POINTS_LEVEL_COUNT: 'S/R Levels To Draw (1-5)',
+        BOTBULLS1_WT_CHANNEL: 'WaveTrend Channel Period',
+        BOTBULLS1_WT_AVERAGE: 'WaveTrend Average Period',
+        BOTBULLS1_WT_OVERSOLD: 'WT Oversold Level',
+        BOTBULLS1_WT_OVERBOUGHT: 'WT Overbought Level',
+        BOTBULLS1_MFI_BUY_RECLAIM: 'MFI Buy Reclaim Level (0-100)',
+        BOTBULLS1_MFI_SELL_REJECT: 'MFI Sell Reject Level (0-100)',
+        BOTBULLS1_CONFIRM_LOOKBACK: 'WT Extreme Lookback Candles',
+        BOTBULLS1_REQUIRE_MFI_CONFIRM: 'Require MFI Confirmation (1=On, 0=Off)',
+        BOTBULLS1_REQUIRE_CANDLE_CONFIRM: 'Require Candle Confirmation (1=On, 0=Off)',
+        BOTBULLS1_REQUIRE_PRICE_CONFIRM: 'Require Price EMA Confirmation (1=On, 0=Off)',
+        BOTBULLS1_PRICE_CONFIRM_EMA: 'Price Confirmation EMA Period',
+        BOTBULLS1_PRICE_CONFIRM_LOOKBACK: 'Price Confirmation Window Candles',
     };
 
     configKeys.forEach(key => {
@@ -4726,6 +4810,16 @@ function openIndicatorSettings(indicatorName) {
                 ? 'min="1" max="5" step="1"'
                 : key === 'SWING_POINTS_LOOKBACK_DAYS'
                     ? 'min="1" max="365" step="1"'
+                    : key === 'BOTBULLS1_CONFIRM_LOOKBACK'
+                        ? 'min="1" max="10" step="1"'
+                        : key === 'BOTBULLS1_REQUIRE_MFI_CONFIRM' || key === 'BOTBULLS1_REQUIRE_CANDLE_CONFIRM' || key === 'BOTBULLS1_REQUIRE_PRICE_CONFIRM'
+                            ? 'min="0" max="1" step="1"'
+                            : key === 'BOTBULLS1_PRICE_CONFIRM_EMA'
+                                ? 'min="5" max="50" step="1"'
+                            : key === 'BOTBULLS1_PRICE_CONFIRM_LOOKBACK'
+                                ? 'min="0" max="10" step="1"'
+                            : key === 'BOTBULLS1_MFI_BUY_RECLAIM' || key === 'BOTBULLS1_MFI_SELL_REJECT'
+                                ? 'min="0" max="100" step="1"'
             : key === 'VOLUME_PROFILE_ROWS'
                 ? 'min="12" max="120" step="1"'
                 : key === 'VOLUME_PROFILE_CONFIRMATION_CANDLES'
@@ -5226,7 +5320,7 @@ async function fetchMarketData(cachedData = null) {
                 };
                 const row = (label, avg) => `
                     <div class="flex items-center justify-between gap-2 leading-tight">
-                        <span class="text-[11px] font-bold text-slate-600 truncate">${label}</span>
+                        <span class="text-base sm:text-sm font-bold text-slate-600 truncate">${label}</span>
                         ${getPill(avg)}
                     </div>
                 `;
@@ -5786,6 +5880,6 @@ window.toggleWatchlistCollapse = function (forceCollapse = false) {
         area.style.opacity = '1';
         area.style.marginTop = '1rem';
         area.style.pointerEvents = 'auto';
-        chevron.style.transform = 'rotate(180deg)';
+        chevron.style.transform = 'rotate(90deg)';
     }
 };

@@ -386,6 +386,15 @@
     border-color: rgba(139, 92, 246, 0.4);
 }
 
+/* Keep the full confluence grid visible while fresh signals are loading. */
+#signalConfluencePanel.signal-confluence-loading #signalGrid,
+#signalConfluencePanel.signal-confluence-loading #premiumSignalGrid {
+    filter: blur(3px);
+    opacity: 0.62;
+    pointer-events: none;
+    user-select: none;
+}
+
 .watchlist-item.active {
     background: rgba(139, 92, 246, 0.14);
     border-color: rgba(139, 92, 246, 0.8);
@@ -580,7 +589,7 @@
     }
 
     #sectorHeatmapContainer > div > span:first-child {
-        font-size: 0.58rem !important;
+        font-size: 0.72rem !important;
     }
 
     #sectorHeatmapContainer > div > span:last-child {
@@ -626,7 +635,7 @@
     }
 
     #sectorHeatmapContainer > div > span:first-child {
-        font-size: 0.53rem !important;
+        font-size: 0.68rem !important;
     }
 
     #sectorHeatmapContainer > div > span:last-child {
@@ -954,6 +963,39 @@
     .chart-bottom-bar {
         align-items: flex-start;
         flex-direction: column;
+    }
+
+    /* Keep the dashboard range and session controls in one compact mobile row. */
+    .dashboard-chart-bottom-bar {
+        align-items: center;
+        flex-direction: row;
+        gap: 0.15rem;
+        padding: 0.15rem 0.2rem;
+        overflow: hidden;
+        white-space: nowrap;
+    }
+
+    .dashboard-chart-bottom-bar .chart-range-row {
+        display: flex;
+        flex: 1 1 auto;
+        justify-content: space-between;
+        min-width: 0;
+    }
+
+    .dashboard-chart-bottom-bar .chart-session-controls {
+        flex: 0 0 auto;
+        flex-wrap: nowrap;
+        gap: 0;
+        margin-left: 1rem;
+    }
+
+    .dashboard-chart-bottom-bar .chart-range-btn,
+    .dashboard-chart-bottom-bar .chart-session-btn {
+        flex: 0 0 auto;
+        padding: 0.08rem 0.18rem;
+        font-size: 0.58rem;
+        line-height: 1rem;
+        white-space: nowrap;
     }
 }
 

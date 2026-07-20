@@ -36,6 +36,9 @@ from cryptography.fernet import Fernet
 import base64
 import hashlib
 
+LEGAL_TERMS_VERSION = "BB-2026.07"
+TERMS_REQUIRED_STATUS = 428
+
 from trader import evaluate_trade, get_risk_manager, clear_evaluation_cache, get_confluence_decision
 from indicators import get_full_analysis
 from data_manager import get_historical_data
@@ -177,6 +180,16 @@ INDICATOR_PARAMETER_KEYS = [
     "BOTBULLS1_WT_CHANNEL",
     "BOTBULLS1_WT_AVERAGE",
     "BOTBULLS1_MFI_CONFIRM",
+    "BOTBULLS1_WT_OVERSOLD",
+    "BOTBULLS1_WT_OVERBOUGHT",
+    "BOTBULLS1_MFI_BUY_RECLAIM",
+    "BOTBULLS1_MFI_SELL_REJECT",
+    "BOTBULLS1_CONFIRM_LOOKBACK",
+    "BOTBULLS1_REQUIRE_MFI_CONFIRM",
+    "BOTBULLS1_REQUIRE_CANDLE_CONFIRM",
+    "BOTBULLS1_REQUIRE_PRICE_CONFIRM",
+    "BOTBULLS1_PRICE_CONFIRM_EMA",
+    "BOTBULLS1_PRICE_CONFIRM_LOOKBACK",
     "BOTBULLS2_ATR_MULT",
     "BOTBULLS2_TREND_TRACER_PERIOD",
     "BOTBULLS2_REVERSAL_ZONE_PERIOD",
@@ -547,6 +560,12 @@ def _technical_scan_from_analysis(
         "sentiment_confidence": ai_sentiment_confidence,
         "sentiment_summary": ai_sentiment_summary,
         "sentiment_key_factor": ai_sentiment_key_factor,
+        "news_sentiment_pct": decision.get("news_sentiment_pct", round(((float(ai_sentiment_score) + 1.0) / 2.0) * 100.0, 1)),
+        "news_sentiment_direction": decision.get("news_sentiment_direction", "NEUTRAL"),
+        "news_alignment": decision.get("news_alignment", "ALIGNED"),
+        "news_alignment_applied": decision.get("news_alignment_applied", False),
+        "news_alignment_reason": decision.get("news_alignment_reason", ""),
+        "model_action": decision.get("model_action", decision.get("action", "HOLD")),
         "position_sizing": {},
         "price_history": analysis.get("price_history", []),
         "risk_status": {},
@@ -878,6 +897,17 @@ async def get_user_engine(request: Request, user: dict = Depends(verify_token)) 
 
     path = request.url.path
     query = request.query_params
+    legal_endpoint = path.startswith("/api/legal/")
+    acceptance = getattr(eng.config, "legal_acceptance", {}) or {}
+    if not legal_endpoint and acceptance.get("terms_version") != LEGAL_TERMS_VERSION:
+        raise HTTPException(
+            status_code=TERMS_REQUIRED_STATUS,
+            detail={
+                "code": "TERMS_ACCEPTANCE_REQUIRED",
+                "terms_version": LEGAL_TERMS_VERSION,
+                "message": "Accept the current BotBulls agreement before using protected platform features.",
+            },
+        )
     is_backtest_status = (
         path == "/api/alpaca_status"
         or (
@@ -915,6 +945,12 @@ class AlpacaConfig(BaseModel):
     secret_key: str
     paper: bool = True
 
+
+class LegalAcceptance(BaseModel):
+    terms_version: str
+    paper_trading_acknowledged: bool = True
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await user_manager.start_all()
@@ -934,6 +970,47 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+
+@app.get("/api/legal/acceptance")
+async def get_legal_acceptance(user: dict = Depends(verify_token), eng: UserEngine = Depends(get_user_engine)):
+    acceptance = getattr(eng.config, "legal_acceptance", {}) or {}
+    return {
+        "required_version": LEGAL_TERMS_VERSION,
+        "accepted": acceptance.get("terms_version") == LEGAL_TERMS_VERSION,
+        "acceptance": acceptance,
+    }
+
+
+@app.post("/api/legal/acceptance")
+async def record_legal_acceptance(
+    payload: LegalAcceptance,
+    user: dict = Depends(verify_token),
+    eng: UserEngine = Depends(get_user_engine),
+):
+    if payload.terms_version != LEGAL_TERMS_VERSION:
+        raise HTTPException(status_code=409, detail={
+            "code": "TERMS_VERSION_OUTDATED",
+            "required_version": LEGAL_TERMS_VERSION,
+        })
+    if not payload.paper_trading_acknowledged:
+        raise HTTPException(status_code=400, detail="Paper/live trading acknowledgement is required.")
+
+    accepted_at = datetime.now(pytz.UTC).isoformat()
+    eng.config.legal_acceptance = {
+        "terms_version": LEGAL_TERMS_VERSION,
+        "accepted_at": accepted_at,
+        "accepted_by_uid": eng.uid,
+        "accepted_email": user.get("email", ""),
+        "paper_trading_acknowledged": True,
+        "acceptance_source": "web_google_sign_in",
+    }
+    await eng.save_settings()
+    return {
+        "status": "success",
+        "required_version": LEGAL_TERMS_VERSION,
+        "acceptance": eng.config.legal_acceptance,
+    }
+
 allowed_origins = [
     "https://bot-bulls.web.app",
     "https://bot-bulls.firebaseapp.com",
@@ -946,6 +1023,9 @@ if os.getenv("ENV") != "production":
     allowed_origins.extend([
         "http://localhost:5000",
         "http://localhost:3000",
+        "http://localhost:5500",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5000",
         "http://127.0.0.1:5500"
     ])
 
@@ -6017,6 +6097,12 @@ def _format_scan_for_ui(scan: dict, use_global_settings: bool = False) -> dict:
         "sentiment_confidence": scan.get("sentiment_confidence", 0),
         "sentiment_summary": scan.get("sentiment_summary", ""),
         "sentiment_key_factor": scan.get("sentiment_key_factor", "N/A"),
+        "sentiment_pct": scan.get("news_sentiment_pct", scan.get("sentiment_pct")),
+        "sentiment_direction": scan.get("news_sentiment_direction", scan.get("sentiment_direction", "NEUTRAL")),
+        "news_alignment": scan.get("news_alignment", "ALIGNED"),
+        "news_alignment_applied": scan.get("news_alignment_applied", False),
+        "news_alignment_reason": scan.get("news_alignment_reason", ""),
+        "model_action": scan.get("model_action", scan.get("action", "HOLD")),
         "bullish_count": bullish,
         "bearish_count": bearish,
         "total_signals": active_count,

@@ -360,6 +360,7 @@ var btChartTradeIdx = 0;       // Currently highlighted trade (0-based, newest-f
 var btChartTradesRef = [];     // Reference to trades array (newest-first, same as allBtTrades)
 var btChartCandlesRef = [];    // Reference to candles array
 var btChartEquityCurveRef = [];
+var btChartTimeframeRef = null; // Timeframe captured from the completed backtest
 var btChartResizeObserver = null; // ResizeObserver for responsive chart
 // ────────────────────────────────────────────────────────────────────────
 
@@ -1140,7 +1141,8 @@ function displayResults(res) {
 
     const s = res.summary;
     const formatMetric = (value, digits = 2, suffix = '') => {
-        if (value === undefined || value === null) return '—';
+        if (value === undefined) return '—';
+        if (value === null) return suffix === 'x' ? '∞' : '—';
         if (Number.isFinite(value)) return value.toFixed(digits) + suffix;
         return '∞';
     };
@@ -1235,7 +1237,7 @@ function displayResults(res) {
     else sharpeEl.className = 'text-xl font-black tracking-tight text-rose-600';
 
     const pfEl = document.getElementById('resProfitFactor');
-    if (s.profit_factor >= 1.5) pfEl.className = 'text-xl font-black tracking-tight text-emerald-600';
+    if (s.profit_factor === null || s.profit_factor >= 1.5) pfEl.className = 'text-xl font-black tracking-tight text-emerald-600';
     else if (s.profit_factor >= 1.0) pfEl.className = 'text-xl font-black tracking-tight text-amber-600';
     else pfEl.className = 'text-xl font-black tracking-tight text-rose-600';
 
@@ -1258,6 +1260,7 @@ function displayResults(res) {
     btChartTradesRef = [...(res.trades || [])].reverse(); // oldest-first chronological order
     btChartCandlesRef = res.candles || [];
     btChartEquityCurveRef = res.equity_curve || [];
+    btChartTimeframeRef = s.timeframe || window.lastBacktestRun?.timeframe || null;
     btChartTradeIdx = 0;
     applyBtPriorDayBufferToCachedCandles();
 
@@ -1370,12 +1373,14 @@ function resetBacktestUI() {
         btPriceLineLabelMeta = {};
         btChartMarkersRef = [];
         btChartEquityCurveRef = [];
+        btChartTimeframeRef = null;
         btEqSeries = null;
     }
     if (btChartResizeObserver) {
         try { btChartResizeObserver.disconnect(); } catch (e) {}
         btChartResizeObserver = null;
     }
+    btChartTimeframeRef = null;
     document.getElementById('btChartSection').classList.add('hidden');
     
     // Remove keyboard navigator to avoid leaking listeners
@@ -1532,7 +1537,8 @@ function _btParseDate(ds) {
 
 function getBtChartTimeframe() {
     const mode = currentBtMode === 'options' ? 'options' : 'regular';
-    return document.getElementById(`strategyTimeframe_${mode}`)?.value
+    return btChartTimeframeRef
+        || document.getElementById(`strategyTimeframe_${mode}`)?.value
         || document.getElementById('strategyTimeframe_regular')?.value
         || '1Hour';
 }
@@ -2574,7 +2580,7 @@ window.BT_INDICATOR_TOOLTIPS = window.BT_INDICATOR_TOOLTIPS || {
     "ADX Trend": "Average Directional Index (ADX) quantifies trend strength. Purpose: Determines if the market is trending strongly (ADX > 25) or ranging.",
     "VWAP": "Volume Weighted Average Price (VWAP) is the ratio of value traded to total volume. Purpose: Provides the true average price a security traded at throughout the day.",
     "Strategy Confidence": "Strategy Confidence combines multiple indicator signals into a single probability score. Purpose: Measures the overall conviction of a bullish or bearish trend.",
-    "BotBulls1": "WaveTrend momentum oscillator + Money Flow analysis. Detects reversals when momentum and institutional volume flow align at oversold/overbought extremes.",
+    "BotBulls1": "Confirmed WaveTrend reversal with MFI reclaim/rejection, then price confirmation within the BB1 window. Confluence stays bullish after the last BB1 BUY marker and bearish after the last BB1 SELL marker.",
     "BotBulls2": "Adaptive ATR trailing stop with trend-smoothed EMA and reversal zone detection. Fires on trend flips confirmed by multi-condition confluence scoring (1-4 strength rating).",
     "BotBulls3": "Heikin-Ashi noise filter + ATR-based trailing stop. Generates buy/sell alerts only on confirmed momentum flips — removing false signals from choppy markets.",
     "Prior Day High/Low": "Uses the previous completed trading session's high and low as breakout/breakdown levels. Buffer is entered as %, with dotted trigger lines when non-zero.",
@@ -2599,7 +2605,7 @@ window.BT_INDICATOR_CONFIG_MAP = window.BT_INDICATOR_CONFIG_MAP || {
     'ATR Volatility': ['ATR_PERIOD', 'ATR_STOP_MULTIPLIER', 'ATR_TRAIL_MULTIPLIER', 'ATR_TAKE_PROFIT_MULTIPLIER'],
     'Strategy Confidence': ['MIN_BULLISH_SIGNALS', 'MIN_BEARISH_SIGNALS'],
     'Botbulls4 News AI': ['SENTIMENT_BULLISH_PERCENTAGE', 'SENTIMENT_BEARISH_PERCENTAGE'],
-    'BotBulls1': ['BOTBULLS1_WT_CHANNEL', 'BOTBULLS1_WT_AVERAGE', 'BOTBULLS1_MFI_CONFIRM'],
+    'BotBulls1': ['BOTBULLS1_WT_CHANNEL', 'BOTBULLS1_WT_AVERAGE', 'BOTBULLS1_WT_OVERSOLD', 'BOTBULLS1_WT_OVERBOUGHT', 'BOTBULLS1_MFI_BUY_RECLAIM', 'BOTBULLS1_MFI_SELL_REJECT', 'BOTBULLS1_CONFIRM_LOOKBACK', 'BOTBULLS1_REQUIRE_MFI_CONFIRM', 'BOTBULLS1_REQUIRE_CANDLE_CONFIRM', 'BOTBULLS1_REQUIRE_PRICE_CONFIRM', 'BOTBULLS1_PRICE_CONFIRM_EMA', 'BOTBULLS1_PRICE_CONFIRM_LOOKBACK'],
     'BotBulls2': ['BOTBULLS2_ATR_MULT', 'BOTBULLS2_TREND_TRACER_PERIOD', 'BOTBULLS2_REVERSAL_ZONE_PERIOD'],
     'BotBulls3': ['BOTBULLS3_ATR_PERIOD', 'BOTBULLS3_ATR_MULT']
 };
@@ -2609,6 +2615,16 @@ window.BT_INDICATOR_DEFAULTS = window.BT_INDICATOR_DEFAULTS || {
     'BOTBULLS1_WT_CHANNEL': 10,
     'BOTBULLS1_WT_AVERAGE': 21,
     'BOTBULLS1_MFI_CONFIRM': 30,
+    'BOTBULLS1_WT_OVERSOLD': -55,
+    'BOTBULLS1_WT_OVERBOUGHT': 55,
+    'BOTBULLS1_MFI_BUY_RECLAIM': 35,
+    'BOTBULLS1_MFI_SELL_REJECT': 65,
+    'BOTBULLS1_CONFIRM_LOOKBACK': 3,
+    'BOTBULLS1_REQUIRE_MFI_CONFIRM': 1,
+    'BOTBULLS1_REQUIRE_CANDLE_CONFIRM': 1,
+    'BOTBULLS1_REQUIRE_PRICE_CONFIRM': 1,
+    'BOTBULLS1_PRICE_CONFIRM_EMA': 9,
+    'BOTBULLS1_PRICE_CONFIRM_LOOKBACK': 4,
     'BOTBULLS2_ATR_MULT': 2.0,
     'BOTBULLS2_TREND_TRACER_PERIOD': 50,
     'BOTBULLS2_REVERSAL_ZONE_PERIOD': 50,
@@ -2689,6 +2705,18 @@ function openIndicatorSettings(indicatorName) {
         SWING_POINTS_LOOKBACK_DAYS: 'Swing Lookback Days',
         SWING_POINTS_ENTRY_MODE: 'Swing Entry Mode',
         SWING_POINTS_LEVEL_COUNT: 'S/R Levels To Draw (1-5)',
+        BOTBULLS1_WT_CHANNEL: 'WaveTrend Channel Period',
+        BOTBULLS1_WT_AVERAGE: 'WaveTrend Average Period',
+        BOTBULLS1_WT_OVERSOLD: 'WT Oversold Level',
+        BOTBULLS1_WT_OVERBOUGHT: 'WT Overbought Level',
+        BOTBULLS1_MFI_BUY_RECLAIM: 'MFI Buy Reclaim Level (0-100)',
+        BOTBULLS1_MFI_SELL_REJECT: 'MFI Sell Reject Level (0-100)',
+        BOTBULLS1_CONFIRM_LOOKBACK: 'WT Extreme Lookback Candles',
+        BOTBULLS1_REQUIRE_MFI_CONFIRM: 'Require MFI Confirmation (1=On, 0=Off)',
+        BOTBULLS1_REQUIRE_CANDLE_CONFIRM: 'Require Candle Confirmation (1=On, 0=Off)',
+        BOTBULLS1_REQUIRE_PRICE_CONFIRM: 'Require Price EMA Confirmation (1=On, 0=Off)',
+        BOTBULLS1_PRICE_CONFIRM_EMA: 'Price Confirmation EMA Period',
+        BOTBULLS1_PRICE_CONFIRM_LOOKBACK: 'Price Confirmation Window Candles',
     };
 
     configKeys.forEach(key => {
@@ -2702,6 +2730,16 @@ function openIndicatorSettings(indicatorName) {
                 ? 'min="1" max="5" step="1"'
                 : key === 'SWING_POINTS_LOOKBACK_DAYS'
                     ? 'min="1" max="365" step="1"'
+                    : key === 'BOTBULLS1_CONFIRM_LOOKBACK'
+                        ? 'min="1" max="10" step="1"'
+                        : key === 'BOTBULLS1_REQUIRE_MFI_CONFIRM' || key === 'BOTBULLS1_REQUIRE_CANDLE_CONFIRM' || key === 'BOTBULLS1_REQUIRE_PRICE_CONFIRM'
+                            ? 'min="0" max="1" step="1"'
+                            : key === 'BOTBULLS1_PRICE_CONFIRM_EMA'
+                                ? 'min="5" max="50" step="1"'
+                            : key === 'BOTBULLS1_PRICE_CONFIRM_LOOKBACK'
+                                ? 'min="0" max="10" step="1"'
+                            : key === 'BOTBULLS1_MFI_BUY_RECLAIM' || key === 'BOTBULLS1_MFI_SELL_REJECT'
+                                ? 'min="0" max="100" step="1"'
             : key === 'VOLUME_PROFILE_ROWS'
                 ? 'min="12" max="120" step="1"'
                 : key === 'VOLUME_PROFILE_CONFIRMATION_CANDLES'

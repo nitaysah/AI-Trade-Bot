@@ -12,7 +12,7 @@ This is the "brain" that orchestrates:
 from datetime import datetime
 import pytz
 from indicators import get_full_analysis
-from ai_indicator import get_ai_sentiment
+from ai_indicator import get_ai_sentiment, sentiment_percentage, sentiment_direction
 from risk_manager import RiskManager
 from swing_strategy import detect_swing_entry, build_entry_signal
 from options_direction import normalize_options_type, VALID_OPTION_DIRECTIONS
@@ -212,31 +212,33 @@ def get_confluence_decision(
     if ai_sentiment_enabled_for_bot and getattr(uc, 'ENABLE_AI_SENTIMENT', True):
         ai_enabled = True
         
-        # Convert 0-100 percentage thresholds back to -1.0 to 1.0 scale
-        bullish_threshold = (float(getattr(uc, 'SENTIMENT_BULLISH_PERCENTAGE', 70)) / 100.0) * 2.0 - 1.0
-        bearish_threshold = (float(getattr(uc, 'SENTIMENT_BEARISH_PERCENTAGE', 30)) / 100.0) * 2.0 - 1.0
+        news_pct = sentiment_percentage(ai_sentiment_score)
+        news_dir = sentiment_direction(ai_sentiment_score, ai_sentiment_confidence, uc)
 
-        if ai_sentiment_score >= bullish_threshold and ai_sentiment_confidence >= 0.4:
+        if news_dir == 'BULLISH':
             bullish_count += 1
             filtered_signals['Botbulls4 News AI'] = {
                 'value': ai_sentiment_score,
+                'percentage': round(news_pct, 1),
                 'signal': 'BULLISH',
-                'reason': "Positive catalysts detected",
+                'reason': f"Positive catalysts detected ({news_pct:.0f}% news sentiment)",
                 'enabled': True,
                 'premium': True
             }
-        elif ai_sentiment_score <= bearish_threshold and ai_sentiment_confidence >= 0.4:
+        elif news_dir == 'BEARISH':
             bearish_count += 1
             filtered_signals['Botbulls4 News AI'] = {
                 'value': ai_sentiment_score,
+                'percentage': round(news_pct, 1),
                 'signal': 'BEARISH',
-                'reason': "Negative catalysts detected",
+                'reason': f"Negative catalysts detected ({news_pct:.0f}% news sentiment)",
                 'enabled': True,
                 'premium': True
             }
         else:
             filtered_signals['Botbulls4 News AI'] = {
                 'value': ai_sentiment_score,
+                'percentage': round(news_pct, 1),
                 'signal': 'NEUTRAL',
                 'reason': "Mixed or weak news flow",
                 'enabled': True,
@@ -583,6 +585,30 @@ def get_confluence_decision(
             bearish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BEARISH' and v.get('enabled')]
             reason = f"SELL Triggered: {bearish_count} bearish signals ({', '.join(bearish_names)})"
     
+    # Dashboard evaluations represent a flat/entry decision.  Do not present
+    # a directional trade when high-confidence news points directly the other
+    # way.  Bot evaluations retain SELL exits because they may protect an open
+    # position; the engine has separate stop/target protection for those exits.
+    news_pct = sentiment_percentage(ai_sentiment_score)
+    news_dir = sentiment_direction(ai_sentiment_score, ai_sentiment_confidence, uc)
+    news_alignment = "ALIGNED"
+    news_alignment_reason = "News is neutral or agrees with the composite decision."
+    raw_action = action
+    alignment_mode = str(getattr(uc, "AI_NEWS_ALIGNMENT_MODE", "veto_conflicting_entries") or "off").lower()
+    if (
+        not use_bot_settings
+        and alignment_mode in {"veto_conflicting_entries", "veto", "guard"}
+        and ((action == "SELL" and news_dir == "BULLISH")
+             or (action == "BUY" and news_dir == "BEARISH"))
+    ):
+        action = "HOLD"
+        reason = (
+            f"HOLD: composite {raw_action} conflicts with {news_pct:.0f}% "
+            f"{news_dir.lower()} news sentiment; waiting for confirmation."
+        )
+        news_alignment = "CONFLICT_VETO"
+        news_alignment_reason = reason
+
     if ticker in uc.TRADELIST:
         print(f"[trader] {ticker} Decision: {action} ({bullish_count}B/{bearish_count}S, need {min_buy}B/{min_sell}S) - {reason}")
 
@@ -593,6 +619,12 @@ def get_confluence_decision(
         "bullish_count": bullish_count,
         "bearish_count": bearish_count,
         "signals": filtered_signals,
+        "news_sentiment_pct": round(news_pct, 1),
+        "news_sentiment_direction": news_dir,
+        "news_alignment": news_alignment,
+        "news_alignment_applied": news_alignment == "CONFLICT_VETO",
+        "news_alignment_reason": news_alignment_reason,
+        "model_action": raw_action,
         "indicator_direction": indicator_direction,
         "structure_direction": "NONE",
     }
@@ -738,6 +770,8 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         "sentiment_confidence": ai_data['confidence'],
         "sentiment_summary": ai_data.get('summary', ai_data.get('sentiment_summary', '')),
         "sentiment_key_factor": ai_data.get('key_factor', ''),
+        "news_sentiment_pct": decision.get("news_sentiment_pct", round(sentiment_percentage(ai_data['score']), 1)),
+        "news_sentiment_direction": decision.get("news_sentiment_direction", sentiment_direction(ai_data['score'], ai_data['confidence'], uc)),
         "signals": decision['signals'],
         "bullish_count": decision['bullish_count'],
         "bearish_count": decision['bearish_count'],

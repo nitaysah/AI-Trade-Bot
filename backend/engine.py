@@ -308,6 +308,7 @@ class UserEngine:
                     "toggles": self.config.toggles,
                     "parameters": self.config.parameters,
                     "contexts": getattr(self.config, 'contexts', {}),
+                    "legal_acceptance": getattr(self.config, 'legal_acceptance', {}),
                     "saved_at": time.time()
                 }
                 try:
@@ -419,6 +420,7 @@ class UserEngine:
                 self.config.TRADELIST = ui.get("tradelist", self.config.TRADELIST)
                 self.config.DEFAULT_TIMEFRAME = ui.get("strategy_timeframe", self.config.DEFAULT_TIMEFRAME)
                 self.config.TICKER_SETTINGS = ui.get("ticker_settings", {})
+                self.config.legal_acceptance = ui.get("legal_acceptance", {}) if isinstance(ui.get("legal_acceptance", {}), dict) else {}
                 self._hydrate_signal_reset_locks()
                 
                 # Load isolated contexts if present
@@ -1298,8 +1300,10 @@ class UserEngine:
                                 stop_loss = ai_decision.get('stop_loss') or 0.0
                                 take_profit = ai_decision.get('sell_target') or 0.0
                                 pos_pct = ai_decision.get('position_size_pct', 0.10)
-                                if pos_pct <= 0:
+                                if action == 'BUY' and pos_pct <= 0:
                                     pos_pct = 0.10
+                                elif action != 'BUY':
+                                    pos_pct = 0.0
                                     
                                 configured_allocation = self._allocation_amount(t_settings, 'regular')
                                 notional_size = configured_allocation if configured_allocation > 0 else equity * pos_pct
@@ -1320,11 +1324,16 @@ class UserEngine:
                                     "ticker": ticker,
                                     "price": f"${price_raw:.4f}" if price_raw < 10 else f"${price_raw:.2f}",
                                     "price_raw": price_raw,
-                                    "reason": ai_decision.get('summary', 'AI Autopilot Decision'),
-                                    "sentiment_score": 1.0 if action == 'BUY' else -1.0 if action == 'SELL' else 0.0,
-                                    "sentiment_confidence": ai_decision.get('confidence', 0.5),
-                                    "sentiment_summary": ai_decision.get('summary', ''),
-                                    "sentiment_key_factor": ai_decision.get('key_catalyst', ''),
+                                    "reason": ai_decision.get('reason') or ai_decision.get('summary', 'AI Autopilot Decision'),
+                                    "sentiment_score": ai_decision.get('sentiment_score', 0.0),
+                                    "sentiment_confidence": ai_decision.get('sentiment_confidence', 0.0),
+                                    "sentiment_pct": ai_decision.get('sentiment_pct', 50.0),
+                                    "sentiment_direction": ai_decision.get('sentiment_direction', 'NEUTRAL'),
+                                    "news_alignment": ai_decision.get('news_alignment', 'ALIGNED'),
+                                    "news_alignment_applied": ai_decision.get('news_alignment_applied', False),
+                                    "news_alignment_reason": ai_decision.get('news_alignment_reason', ''),
+                                    "sentiment_summary": ai_decision.get('sentiment_summary', ai_decision.get('summary', '')),
+                                    "sentiment_key_factor": ai_decision.get('sentiment_key_factor', ai_decision.get('key_catalyst', '')),
                                     "signals": {
                                         "AI Autopilot": {
                                             "signal": "BULLISH" if action == 'BUY' else "BEARISH" if action == 'SELL' else "NEUTRAL",

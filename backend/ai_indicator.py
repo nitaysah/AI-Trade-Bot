@@ -51,6 +51,115 @@ _SECTOR_MAP = {
     # Default / crypto
 }
 _DEFAULT_SECTOR_ETF = "SPY"
+AI_CANDLE_TIMEFRAME = "1Hour"
+AI_CANDLE_INTERVAL = "1h"
+AI_INTRADAY_CONTEXT_PERIOD = "60d"
+AI_BARS_PER_TRADING_DAY = 7
+AI_CONTEXT_CACHE_VERSION = "ai-hourly-v1"
+AI_MODEL_MIGRATIONS = {
+    # Migrate every previous setting to the two models intentionally kept in
+    # the product UI. This includes settings saved during the GPT-OSS trial.
+    "mixtral-8x7b-32768": "llama-3.3-70b-versatile",
+    "mistral-saba-24b": "llama-3.3-70b-versatile",
+    "openai/gpt-oss-120b": "llama-3.3-70b-versatile",
+    "openai/gpt-oss-20b": "llama-3.1-8b-instant",
+}
+
+
+def normalize_ai_model_name(model: str) -> str:
+    """Map known retired provider IDs to their supported replacements."""
+    model_name = str(model or "").strip()
+    return AI_MODEL_MIGRATIONS.get(model_name, model_name)
+
+
+# ---------------------------------------------------------------------------
+# Shared sentiment scale and directional guard
+# ---------------------------------------------------------------------------
+def sentiment_percentage(score: float) -> float:
+    """Convert the model's -1..+1 score to the UI's 0..100% scale."""
+    try:
+        normalized = float(score)
+    except (TypeError, ValueError):
+        normalized = 0.0
+    return max(0.0, min(100.0, (normalized + 1.0) * 50.0))
+
+
+def sentiment_direction(score: float, confidence: float, cfg=None) -> str:
+    """Return BULLISH/BEARISH/NEUTRAL using the configured percentage bands."""
+    cfg = cfg or get_user_config()
+    try:
+        confidence_floor = float(getattr(cfg, "AI_NEWS_MIN_CONFIDENCE", 0.40))
+    except (TypeError, ValueError):
+        confidence_floor = 0.40
+    try:
+        bullish_pct = float(getattr(cfg, "SENTIMENT_BULLISH_PERCENTAGE", 70))
+    except (TypeError, ValueError):
+        bullish_pct = 70.0
+    try:
+        bearish_pct = float(getattr(cfg, "SENTIMENT_BEARISH_PERCENTAGE", 30))
+    except (TypeError, ValueError):
+        bearish_pct = 30.0
+
+    news_pct = sentiment_percentage(score)
+    if float(confidence or 0.0) < confidence_floor:
+        return "NEUTRAL"
+    if news_pct >= bullish_pct:
+        return "BULLISH"
+    if news_pct <= bearish_pct:
+        return "BEARISH"
+    return "NEUTRAL"
+
+
+def apply_news_alignment(result: dict, sentiment: dict, cfg=None, has_position: bool = False) -> dict:
+    """Attach news metadata and veto contradictory flat entries when configured.
+
+    News should confirm an entry, not blindly override technical/risk logic.
+    Existing positions may still exit on technical or protective conditions.
+    """
+    cfg = cfg or get_user_config()
+    score = float(sentiment.get("score", 0.0) or 0.0)
+    confidence = float(sentiment.get("confidence", 0.0) or 0.0)
+    news_pct = round(sentiment_percentage(score), 1)
+    news_dir = sentiment_direction(score, confidence, cfg)
+    # Preserve the original model decision if this result is being reloaded
+    # from cache after a prior alignment pass.
+    model_signal = str(result.get("model_signal") or result.get("signal", "HOLD")).upper()
+    mode = str(getattr(cfg, "AI_NEWS_ALIGNMENT_MODE", "veto_conflicting_entries") or "off").lower()
+
+    result["model_signal"] = model_signal
+    result["sentiment_score"] = round(max(-1.0, min(1.0, score)), 3)
+    result["sentiment_confidence"] = round(max(0.0, min(1.0, confidence)), 3)
+    result["sentiment_pct"] = news_pct
+    result["sentiment_direction"] = news_dir
+    result["news_alignment"] = "ALIGNED"
+    result["news_alignment_applied"] = False
+    result["news_alignment_reason"] = "News is neutral or agrees with the model direction."
+
+    conflicting_entry = (
+        not has_position
+        and mode in {"veto_conflicting_entries", "veto", "guard"}
+        and ((model_signal == "SELL" and news_dir == "BULLISH")
+             or (model_signal == "BUY" and news_dir == "BEARISH"))
+    )
+    if conflicting_entry:
+        result["signal"] = "HOLD"
+        result["position_size_pct"] = 0.0
+        result["position_size_usd"] = 0.0
+        result["news_alignment"] = "CONFLICT_VETO"
+        result["news_alignment_applied"] = True
+        result["news_alignment_reason"] = (
+            f"Entry blocked: model {model_signal} conflicts with {news_pct:.0f}% "
+            f"{news_dir.lower()} news sentiment. Waiting for confirmation."
+        )
+        result["reason"] = result["news_alignment_reason"]
+    elif has_position and model_signal == "SELL" and news_dir == "BULLISH":
+        result["news_alignment"] = "RISK_EXIT_OVERRIDE"
+        result["news_alignment_reason"] = (
+            f"SELL retained as a position/risk exit despite {news_pct:.0f}% "
+            "bullish news sentiment."
+        )
+
+    return result
 
 
 def _get_sector_etf(ticker: str) -> str:
@@ -96,7 +205,10 @@ def gather_market_context(ticker: str, timeframe: str = "1Hour") -> dict:
     """
     ctx = {
         "ticker": ticker,
-        "timeframe": timeframe,
+        # AI market context is intentionally fixed to 1-hour candles. The
+        # dashboard chart timeframe may differ, but AI entries use this stable
+        # decision timeframe until explicitly changed here.
+        "timeframe": AI_CANDLE_TIMEFRAME,
         "price": None,
         "prev_close": None,
         "change_pct": None,
@@ -162,7 +274,7 @@ def gather_market_context(ticker: str, timeframe: str = "1Hour") -> dict:
                     break
 
         t = yf.Ticker(yf_ticker)
-        hist = t.history(period="1y", interval="1d")
+        hist = t.history(period="1y", interval=AI_CANDLE_INTERVAL)
 
         if hist is not None and not hist.empty:
             close = hist["Close"]
@@ -242,15 +354,18 @@ def gather_market_context(ticker: str, timeframe: str = "1Hour") -> dict:
                 if bw > 0:
                     ctx["boll_position"] = round((ctx["price"] - ctx["boll_lower"]) / bw * 100, 1)
 
-            # Support / Resistance (20-day lookback low/high)
+            # Support / Resistance (20 one-hour bars)
             lookback = min(20, len(hist))
             ctx["support"] = round(float(low.iloc[-lookback:].min()), 8)
             ctx["resistance"] = round(float(high.iloc[-lookback:].max()), 8)
 
-            # Realized Volatility (30-day annualized)
-            if len(close) >= 31:
+            # Realized volatility over roughly 30 trading days of hourly bars.
+            # Annualize with hourly regular-session observations, not daily
+            # scaling, so the value remains statistically meaningful.
+            realized_window = 30 * AI_BARS_PER_TRADING_DAY
+            if len(close) >= realized_window + 1:
                 log_returns = np.log(close / close.shift(1)).dropna()
-                rv = float(log_returns.iloc[-30:].std()) * np.sqrt(252) * 100
+                rv = float(log_returns.iloc[-realized_window:].std()) * np.sqrt(252 * AI_BARS_PER_TRADING_DAY) * 100
                 ctx["realized_vol_30d"] = round(rv, 1)
 
             # Consecutive green/red candles
@@ -268,15 +383,16 @@ def gather_market_context(ticker: str, timeframe: str = "1Hour") -> dict:
             ctx["consec_green"] = greens
             ctx["consec_red"] = reds
 
-            # Volume ratio (last bar vs 20-day avg)
+            # Volume ratio (last one-hour bar vs 20-bar average)
             if "Volume" in hist.columns and hist["Volume"].iloc[-1] > 0:
                 avg_vol = hist["Volume"].rolling(20).mean().iloc[-1]
                 if avg_vol > 0:
                     ctx["volume_ratio"] = round(float(hist["Volume"].iloc[-1] / avg_vol), 2)
 
             # Save ticker returns for SPY correlation later
-            if len(close) >= 31:
-                ticker_returns = np.log(close / close.shift(1)).dropna().values[-30:]
+            correlation_window = 30 * AI_BARS_PER_TRADING_DAY
+            if len(close) >= correlation_window + 1:
+                ticker_returns = np.log(close / close.shift(1)).dropna().values[-correlation_window:]
             else:
                 ticker_returns = None
 
@@ -310,17 +426,19 @@ def gather_market_context(ticker: str, timeframe: str = "1Hour") -> dict:
     # ── 2. SPY 5-day trend + correlation ─────────────────────────────────
     try:
         spy = yf.Ticker("SPY")
-        spy_hist = spy.history(period="2mo", interval="1d")  # need 30 days for correlation
+        spy_hist = spy.history(period=AI_INTRADAY_CONTEXT_PERIOD, interval=AI_CANDLE_INTERVAL)
         if spy_hist is not None and len(spy_hist) >= 5:
-            spy_5d_start = float(spy_hist["Close"].iloc[-5])
+            five_day_bars = min(5 * AI_BARS_PER_TRADING_DAY, len(spy_hist) - 1)
+            spy_5d_start = float(spy_hist["Close"].iloc[-(five_day_bars + 1)])
             spy_latest = float(spy_hist["Close"].iloc[-1])
             ctx["spy_change_5d"] = round((spy_latest - spy_5d_start) / spy_5d_start * 100, 2)
             ctx["spy_trend"] = "BULLISH" if ctx["spy_change_5d"] > 0.3 else "BEARISH" if ctx["spy_change_5d"] < -0.3 else "NEUTRAL"
 
             # 30-day correlation
             try:
-                if ticker_returns is not None and len(spy_hist["Close"]) >= 31:
-                    spy_ret = np.log(spy_hist["Close"] / spy_hist["Close"].shift(1)).dropna().values[-30:]
+                correlation_window = 30 * AI_BARS_PER_TRADING_DAY
+                if ticker_returns is not None and len(spy_hist["Close"]) >= correlation_window + 1:
+                    spy_ret = np.log(spy_hist["Close"] / spy_hist["Close"].shift(1)).dropna().values[-correlation_window:]
                     if len(spy_ret) == len(ticker_returns):
                         ctx["corr_spy_30d"] = round(float(np.corrcoef(ticker_returns, spy_ret)[0, 1]), 2)
             except Exception:
@@ -332,7 +450,7 @@ def gather_market_context(ticker: str, timeframe: str = "1Hour") -> dict:
     try:
         if not ctx["is_crypto"]:
             vix = yf.Ticker("^VIX")
-            vix_hist = vix.history(period="5d", interval="1d")
+            vix_hist = vix.history(period=AI_INTRADAY_CONTEXT_PERIOD, interval=AI_CANDLE_INTERVAL)
             if vix_hist is not None and not vix_hist.empty:
                 ctx["vix_level"] = round(float(vix_hist["Close"].iloc[-1]), 1)
                 v = ctx["vix_level"]
@@ -346,9 +464,10 @@ def gather_market_context(ticker: str, timeframe: str = "1Hour") -> dict:
     try:
         if ctx["sector_etf"] not in ("SPY",) or not ctx["is_crypto"]:
             sec = yf.Ticker(ctx["sector_etf"])
-            sec_hist = sec.history(period="10d", interval="1d")
+            sec_hist = sec.history(period=AI_INTRADAY_CONTEXT_PERIOD, interval=AI_CANDLE_INTERVAL)
             if sec_hist is not None and len(sec_hist) >= 5:
-                sec_start = float(sec_hist["Close"].iloc[-5])
+                five_day_bars = min(5 * AI_BARS_PER_TRADING_DAY, len(sec_hist) - 1)
+                sec_start = float(sec_hist["Close"].iloc[-(five_day_bars + 1)])
                 sec_latest = float(sec_hist["Close"].iloc[-1])
                 ctx["sector_change_5d"] = round((sec_latest - sec_start) / sec_start * 100, 2)
                 ctx["sector_trend"] = (
@@ -548,12 +667,13 @@ def get_ai_indicator(
     Includes in-memory caching with configurable TTL.
     """
     cfg = get_user_config()
-    model_to_use = model or getattr(cfg, "AI_INDICATOR_MODEL", "llama-3.3-70b-versatile")
+    model_to_use = normalize_ai_model_name(model or getattr(cfg, "AI_INDICATOR_MODEL", "llama-3.3-70b-versatile"))
     cache_minutes = getattr(cfg, "AI_INDICATOR_CACHE_MINUTES", 10)
     cache_key = (
         ticker.upper(),
         timeframe,
         model_to_use,
+        AI_CONTEXT_CACHE_VERSION,
     )
 
     # ── Cache check ──────────────────────────────────────────────────────
@@ -561,6 +681,15 @@ def get_ai_indicator(
     cached_entry, age_seconds = _AI_CACHE.get_with_age(cache_key, cache_minutes * 60)
     if cached_entry is not None:
         result = dict(cached_entry["data"])
+        apply_news_alignment(
+            result,
+            {
+                "score": result.get("sentiment_score", 0.0),
+                "confidence": result.get("sentiment_confidence", 0.0),
+            },
+            cfg,
+            has_position=False,
+        )
         result["cached"] = True
         result["cache_age_seconds"] = int(age_seconds)
         # Update dynamic sizing based on current cash
@@ -591,11 +720,15 @@ def get_ai_indicator(
         print(f"[ai_indicator] Groq unavailable for {ticker}, using fallback.")
         result = _fallback_signal(ctx, available_cash, account_equity)
         result.update({
+            "model": "rule-based-fallback",
+            "requested_model": model_to_use,
+            "candle_timeframe": AI_CANDLE_TIMEFRAME,
             "sentiment_score": sent.get("score", 0.0),
             "sentiment_confidence": sent.get("confidence", 0.5),
             "sentiment_summary": sent.get("summary", ""),
             "sentiment_key_factor": sent.get("key_factor", "N/A"),
         })
+        apply_news_alignment(result, sent, cfg, has_position=False)
         _AI_CACHE.set(cache_key, {"data": result})
         return result
 
@@ -654,10 +787,10 @@ MARKET INTELLIGENCE BRIEF — {ticker}
 
 ── PRICE ACTION ──
   Current Price:       {price_str}
-  Daily Change:        {f"{ctx['change_pct']:+.2f}%" if ctx.get('change_pct') is not None else 'N/A'}
+  Latest 1H Change:    {f"{ctx['change_pct']:+.2f}%" if ctx.get('change_pct') is not None else 'N/A'}
   52-Week Range:       {range_str}
   ATR(14):             {atr_str}
-  Volume vs 20d Avg:   {vol_str}
+  Volume vs 20-bar Avg: {vol_str}
   Market Cap:          {cap_str}
   Consec. Candles:     {consec_str}
 
@@ -674,12 +807,12 @@ MARKET INTELLIGENCE BRIEF — {ticker}
 
 ── VOLATILITY & BANDS ──
   Bollinger Bands:     {boll_str}
-  Realized Vol (30d):  {rv_str}
+  Realized Vol (30 trading days, hourly): {rv_str}
   Beta:                {beta_str}
 
 ── KEY LEVELS ──
-  20-Day Support:      {f"${ctx['support']:.2f}" if ctx.get('support') else 'N/A'}
-  20-Day Resistance:   {f"${ctx['resistance']:.2f}" if ctx.get('resistance') else 'N/A'}
+  20-bar Support:      {f"${ctx['support']:.2f}" if ctx.get('support') else 'N/A'}
+  20-bar Resistance:   {f"${ctx['resistance']:.2f}" if ctx.get('resistance') else 'N/A'}
 
 ── MACRO CONTEXT ──
   S&P 500 (SPY):       {spy_str}
@@ -749,7 +882,7 @@ Output ONLY valid JSON:
 
     # ── LLM call ────────────────────────────────────────────────────────
     try:
-        model_to_use = model or getattr(cfg, "AI_INDICATOR_MODEL", "llama-3.3-70b-versatile")
+        model_to_use = normalize_ai_model_name(model or getattr(cfg, "AI_INDICATOR_MODEL", "llama-3.3-70b-versatile"))
         
         try:
             raw, actual_model = _call_llm(
@@ -758,7 +891,7 @@ Output ONLY valid JSON:
                 model=model_to_use,
                 cfg=cfg,
                 temperature=0.2,
-                max_tokens=1500
+                max_tokens=2200
             )
             model_to_use = actual_model
         except Exception as e:
@@ -775,7 +908,7 @@ Output ONLY valid JSON:
                     model=fallback_model,
                     cfg=cfg,
                     temperature=0.2,
-                    max_tokens=1500
+                    max_tokens=2200
                 )
                 model_to_use = actual_model
             else:
@@ -811,6 +944,7 @@ Output ONLY valid JSON:
             "headline_count": int(data.get("headline_count", ctx["headline_count"])),
             "cached": False,
             "model": model_to_use,
+            "candle_timeframe": AI_CANDLE_TIMEFRAME,
             # Merged news sentiment context
             "sentiment_score": sent.get("score", 0.0),
             "sentiment_confidence": sent.get("confidence", 0.5),
@@ -834,6 +968,11 @@ Output ONLY valid JSON:
             "support": ctx.get("support"),
             "resistance": ctx.get("resistance"),
         }
+
+        # Make the final executable signal a guarded signal, while retaining
+        # the raw model signal for auditability in the UI and logs.
+        apply_news_alignment(result, sent, cfg, has_position=False)
+        signal = result.get("signal", signal)
 
         # Ensure we always have trade levels even for HOLD signals
         if not result.get("entry_price") and ctx.get("price"):
@@ -860,11 +999,15 @@ Output ONLY valid JSON:
     # Fallback if AI call fails
     result = _fallback_signal(ctx, available_cash, account_equity)
     result.update({
+        "model": "rule-based-fallback",
+        "requested_model": model_to_use,
+        "candle_timeframe": AI_CANDLE_TIMEFRAME,
         "sentiment_score": sent.get("score", 0.0),
         "sentiment_confidence": sent.get("confidence", 0.5),
         "sentiment_summary": sent.get("summary", ""),
         "sentiment_key_factor": sent.get("key_factor", "N/A"),
     })
+    apply_news_alignment(result, sent, cfg, has_position=False)
     result = _sanitize_for_json(result)
     _AI_CACHE.set(cache_key, {"data": result})
     return result
@@ -923,10 +1066,10 @@ def get_ai_decision_for_bar(
         # Live Bot scan mode - check cache first (unless force_refresh is True)
         cache_minutes = getattr(cfg, "AI_INDICATOR_CACHE_MINUTES", 10)
         # Determine the model string for the cache key to avoid cross-model cache hits
-        cache_model = model or getattr(cfg, "AI_INDICATOR_MODEL", "llama-3.3-70b-versatile")
+        cache_model = normalize_ai_model_name(model or getattr(cfg, "AI_INDICATOR_MODEL", "llama-3.3-70b-versatile"))
         cache_key = (
             ticker.upper(),
-            f"autopilot_{timeframe}",
+            f"autopilot_{timeframe}_{AI_CONTEXT_CACHE_VERSION}",
             cache_model,
         )
         
@@ -934,6 +1077,23 @@ def get_ai_decision_for_bar(
             cached_entry = _AI_CACHE.get(cache_key, cache_minutes * 60)
             if cached_entry is not None:
                 result = dict(cached_entry["data"])
+                cached_sentiment = {
+                    "score": result.get("sentiment_score", 0.0),
+                    "confidence": result.get("sentiment_confidence", 0.0),
+                }
+                try:
+                    # Older Autopilot cache entries did not contain real news
+                    # sentiment, so refresh the inexpensive sentiment cache
+                    # before re-applying the alignment guard.
+                    cached_sentiment = get_ai_sentiment(ticker)
+                except Exception:
+                    pass
+                apply_news_alignment(
+                    result,
+                    cached_sentiment,
+                    cfg,
+                    has_position=bool(position),
+                )
                 result["cached"] = True
                 # Update dynamic sizing based on current cash
                 pos_pct = result.get("position_size_pct", 0.0)
@@ -1036,12 +1196,36 @@ def get_ai_decision_for_bar(
             "is_crypto": is_crypto,
         }
         
+    # News sentiment is unavailable for historical bars; for live Autopilot
+    # scans use the same cached sentiment source as the dashboard.
+    if bar_data is None:
+        try:
+            sent = get_ai_sentiment(ticker)
+        except Exception as exc:
+            print(f"[ai_indicator] Autopilot sentiment error for {ticker}: {exc}")
+            sent = {"score": 0.0, "confidence": 0.0, "summary": "", "key_factor": "N/A"}
+    else:
+        sent = {"score": 0.0, "confidence": 0.0, "summary": "", "key_factor": "Historical bar: live news unavailable."}
+
+    news_pct = sentiment_percentage(sent.get("score", 0.0))
+    news_dir = sentiment_direction(sent.get("score", 0.0), sent.get("confidence", 0.0), cfg)
+
     # 2. Check Groq API Availability
     groq_key = getattr(cfg, "GROQ_API_KEY", "")
     if not _GROQ_AVAILABLE or not groq_key or groq_key in ("", "your_groq_api_key_here"):
         # Fallback to rule-based analysis
         result = _fallback_signal(ctx, available_cash, account_equity)
         result["reason"] = f"Technical Confluence Fallback (Groq Offline) - Signal: {result['signal']}"
+        result.update({
+            "candle_timeframe": AI_CANDLE_TIMEFRAME,
+            "sentiment_score": sent.get("score", 0.0),
+            "sentiment_confidence": sent.get("confidence", 0.0),
+            "sentiment_pct": round(news_pct, 1),
+            "sentiment_direction": news_dir,
+            "sentiment_summary": sent.get("summary", ""),
+            "sentiment_key_factor": sent.get("key_factor", "N/A"),
+        })
+        apply_news_alignment(result, sent, cfg, has_position=bool(position))
         if bar_data is None:
             _AI_CACHE.set(cache_key, {"data": result})
         return result
@@ -1090,6 +1274,10 @@ CORE PRINCIPLES:
 5. Always set stop_loss using ATR-based levels. For a BUY, stop_loss MUST be < entry_price. For a SELL, stop_loss MUST be > entry_price.
 6. Set sell_target at resistance/support or ATR-based targets. For a BUY, sell_target MUST be > entry_price. For a SELL, sell_target MUST be < entry_price.
 7. Adapt to volatility without freezing.
+8. News sentiment is a confirmation factor, not a substitute for price action. If FLAT,
+   do not issue BUY against bearish news or SELL against bullish news when the news
+   confidence meets the configured threshold; use HOLD and wait for confirmation.
+   If a position is already open, a protective/risk SELL may override positive news.
 
 You MUST output valid JSON only. No markdown, no comments, no explanation outside the JSON object."""
 
@@ -1118,9 +1306,11 @@ MARKET INTELLIGENCE BRIEF — {ticker}
   VIX Level:           {ctx.get('vix_level', 15.0)} ({ctx.get('vix_regime', 'MEDIUM')} regime)
 
 ── KEY LEVELS ──
-  20-Day Support:      {sr_str}
+  20-bar Support / Resistance: {sr_str}
 
 ── RECENT NEWS / CATALYSTS ──
+  News Sentiment Score: {news_pct:.1f}% ({news_dir})
+  News Sentiment Confidence: {float(sent.get('confidence', 0.0)) * 100:.1f}%
 {headlines_text}
 
 ── ACCOUNT ──
@@ -1154,7 +1344,7 @@ Output ONLY valid JSON:
 
     # 5. Call LLM
     try:
-        model_to_use = model or getattr(cfg, "AI_INDICATOR_MODEL", "llama-3.3-70b-versatile")
+        model_to_use = normalize_ai_model_name(model or getattr(cfg, "AI_INDICATOR_MODEL", "llama-3.3-70b-versatile"))
         
         try:
             raw, actual_model = _call_llm(
@@ -1180,7 +1370,7 @@ Output ONLY valid JSON:
                     model=fallback_model,
                     cfg=cfg,
                     temperature=0.1,
-                    max_tokens=800
+                    max_tokens=1200
                 )
                 model_to_use = actual_model
             else:
@@ -1214,8 +1404,18 @@ Output ONLY valid JSON:
             "headline_count": int(data.get("headline_count", ctx["headline_count"])),
             "cached": False,
             "model": model_to_use,
+            "candle_timeframe": AI_CANDLE_TIMEFRAME,
+            "sentiment_score": sent.get("score", 0.0),
+            "sentiment_confidence": sent.get("confidence", 0.0),
+            "sentiment_pct": round(news_pct, 1),
+            "sentiment_direction": news_dir,
+            "sentiment_summary": sent.get("summary", ""),
+            "sentiment_key_factor": sent.get("key_factor", "N/A"),
             "reason": str(data.get("summary", "")),  # mirror summary to reason for backtester/engine logging
         }
+
+        apply_news_alignment(result, sent, cfg, has_position=bool(position))
+        signal = result.get("signal", signal)
         
         # Merge key fields from ctx just in case
         for k in ["price", "rsi", "vix_level", "vix_regime", "spy_trend", "ema_trend", "support", "resistance"]:
@@ -1244,6 +1444,16 @@ Output ONLY valid JSON:
         # Fallback
         result = _fallback_signal(ctx, available_cash, account_equity)
         result["reason"] = f"Technical Confluence Fallback (Error) - Signal: {result['signal']}"
+        result.update({
+            "candle_timeframe": AI_CANDLE_TIMEFRAME,
+            "sentiment_score": sent.get("score", 0.0),
+            "sentiment_confidence": sent.get("confidence", 0.0),
+            "sentiment_pct": round(news_pct, 1),
+            "sentiment_direction": news_dir,
+            "sentiment_summary": sent.get("summary", ""),
+            "sentiment_key_factor": sent.get("key_factor", "N/A"),
+        })
+        apply_news_alignment(result, sent, cfg, has_position=bool(position))
         if bar_data is None:
             _AI_CACHE.set(cache_key, {"data": result})
         return result

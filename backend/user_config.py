@@ -17,6 +17,8 @@ class UserConfig:
         self.ALPACA_SECRET_KEY = ""
         self.ALPACA_PAPER = True
         self.TIMEZONE = getattr(global_config, 'TIMEZONE', 'US/Central')
+        # Versioned legal acceptance is persisted per user and enforced by the API.
+        self.legal_acceptance = {}
         self.SCAN_INTERVAL_SECONDS = getattr(global_config, 'SCAN_INTERVAL_SECONDS', 60)
         self.OPTIONS_SCAN_INTERVAL_SECONDS = getattr(global_config, 'OPTIONS_SCAN_INTERVAL_SECONDS', 10)
         

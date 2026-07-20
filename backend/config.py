@@ -101,6 +101,11 @@ ENABLE_BOTBULLS3 = True
 ENABLE_AI_INDICATOR = True
 AI_INDICATOR_MODEL = "llama-3.3-70b-versatile"
 AI_INDICATOR_CACHE_MINUTES = 30
+# News is a directional confirmation factor.  When flat, block a model entry
+# that directly contradicts sufficiently confident news; HOLD is safer than
+# forcing the opposite side.  Open-position risk exits are still permitted.
+AI_NEWS_ALIGNMENT_MODE = "veto_conflicting_entries"
+AI_NEWS_MIN_CONFIDENCE = 0.40
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
 # AI Autopilot (uses AI Indicator for autonomous trade decisions in bots & backtest)
@@ -148,6 +153,16 @@ SWING_POINTS_LEVEL_COUNT = 1
 BOTBULLS1_WT_CHANNEL = 10
 BOTBULLS1_WT_AVERAGE = 21
 BOTBULLS1_MFI_CONFIRM = 30
+BOTBULLS1_WT_OVERSOLD = -55
+BOTBULLS1_WT_OVERBOUGHT = 55
+BOTBULLS1_MFI_BUY_RECLAIM = 35
+BOTBULLS1_MFI_SELL_REJECT = 65
+BOTBULLS1_CONFIRM_LOOKBACK = 3
+BOTBULLS1_REQUIRE_MFI_CONFIRM = 1
+BOTBULLS1_REQUIRE_CANDLE_CONFIRM = 1
+BOTBULLS1_REQUIRE_PRICE_CONFIRM = 1
+BOTBULLS1_PRICE_CONFIRM_EMA = 9
+BOTBULLS1_PRICE_CONFIRM_LOOKBACK = 4
 
 BOTBULLS2_ATR_MULT = 2.0
 BOTBULLS2_TREND_TRACER_PERIOD = 50

@@ -27,8 +27,8 @@ def _safe_chart_bool(row, key):
     except Exception:
         return False
 
-def _chart_indicator_fields(row, digits):
-    return {
+def _chart_indicator_fields(row, digits, enabled_indicators=None, buy_mode="", sell_mode=""):
+    fields = {
         "ema_fast": _safe_chart_level(row, "EMA_Fast", digits),
         "ema_slow": _safe_chart_level(row, "EMA_Slow", digits),
         "sma": _safe_chart_level(row, "SMA", digits),
@@ -92,6 +92,8 @@ def _chart_indicator_fields(row, digits):
         "ut_trail": _safe_chart_level(row, "UT_Trail", digits),
         "ba1_buy": _safe_chart_bool(row, "BA1_Buy"),
         "ba1_sell": _safe_chart_bool(row, "BA1_Sell"),
+        "ba1_bullish": _safe_chart_bool(row, "BA1_Bullish"),
+        "ba1_bearish": _safe_chart_bool(row, "BA1_Bearish"),
         "ba2_buy": _safe_chart_bool(row, "BA2_Buy"),
         "ba2_sell": _safe_chart_bool(row, "BA2_Sell"),
         "ba3_buy": _safe_chart_bool(row, "BA3_Buy"),
@@ -100,6 +102,37 @@ def _chart_indicator_fields(row, digits):
         "cdl_bullish": _safe_chart_bool(row, "cdl_bullish"),
         "cdl_bearish": _safe_chart_bool(row, "cdl_bearish"),
     }
+    if enabled_indicators is None:
+        return fields
+
+    enabled = set(enabled_indicators)
+    keys = set()
+    groups = {
+        "EMA Cross": {"ema_fast", "ema_slow"},
+        "SMA": {"sma"},
+        "VWAP": {"vwap"},
+        "Supertrend": {"supertrend", "supertrend_up"},
+        "Bollinger": {"boll_upper", "boll_middle", "boll_lower"},
+        "RSI": {"rsi"},
+        "MACD": {"macd_line", "macd_signal", "macd_hist"},
+        "ADX Trend": {"adx", "di_plus", "di_minus"},
+        "Volume Profile": {"volume_profile_poc", "volume_profile_vah", "volume_profile_val", "volume_profile_bullish", "volume_profile_bearish"},
+        "BotBulls1": {"wt1", "wt2", "mfi", "ba1_buy", "ba1_sell", "ba1_bullish", "ba1_bearish"},
+        "BotBulls2": {"lx_smart_trail", "lx_trend_tracer", "lx_rz_upper", "lx_rz_lower", "ba2_buy", "ba2_sell"},
+        "BotBulls3": {"ha_close", "ut_trail", "ba3_buy", "ba3_sell"},
+        "Candle Patterns": {"cdl_name", "cdl_bullish", "cdl_bearish"},
+    }
+    for indicator in enabled:
+        keys.update(groups.get(indicator, set()))
+
+    modes = {str(buy_mode or ""), str(sell_mode or "")}
+    if "Prior Day High/Low" in enabled or modes & {"high_low", "hybrid_high_low"}:
+        keys.update(key for key in fields if key.startswith("daily_high_low_"))
+    if "Pivot Points (S/R)" in enabled or modes & {"pivot_points", "hybrid_pivot"}:
+        keys.update(key for key in fields if key.startswith("pivot_"))
+    if "Swing Points" in enabled or modes & {"swing", "hybrid_swing"}:
+        keys.update(key for key in fields if key.startswith("swing_"))
+    return {key: fields[key] for key in keys}
 
 class Backtester:
     def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=0.02, max_pos_pct=0.25, ext_hours=True, buy_mode="indicator", custom_buy_price=0.0, sell_mode="indicator", atr_stop_multiplier=2.0, atr_trail_multiplier=3.0, atr_take_profit_multiplier=4.0, enable_atr_trail=True, ai_autopilot=False, ai_interval=10, ai_model="llama-3.3-70b-versatile", enable_cooldown=True, cooldown_minutes=None, regular_stop_loss_pct=0.05, regular_take_profit_pct=0.10, regular_trailing_pct=0.03, enable_pct_trail=True, cancel_event=None, entry_atr_multiplier=None, entry_pct_move=None, entry_atr_style="pullback_reclaim", entry_pct_style="dip_reclaim", swing_entry_mode="bounce_retest", swing_entry_lookback_days=20, swing_exit_lookback_days=20, market_session="Regular", allocation_mode="fixed", trade_amount=None, custom_stop_loss_price=0.0, custom_take_profit_price=0.0, enable_signal_reset=False, enable_smart_reentry=False, smart_reentry_type="RSI", smart_reentry_rsi_call_max=70.0, smart_reentry_rsi_put_min=30.0, smart_reentry_vwap_call_max_dist_pct=0.5, smart_reentry_vwap_put_max_dist_pct=0.5, enable_risk=True, daily_high_low_buffer_pct=None, trade_direction_mode="long"):
@@ -1164,10 +1197,12 @@ class Backtester:
         losing_pl = df_trades[df_trades['pl'] <= 0]['pl'].abs()
         gross_profit = winning_pl.sum()
         gross_loss = losing_pl.sum()
-        profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else float('inf')
+        # JSON has no representation for Infinity. A zero-loss sample has an
+        # unbounded profit factor; return null and let the UI render it as ∞.
+        profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (None if gross_profit > 0 else 0.0)
         avg_win = round(winning_pl.mean(), 2) if len(winning_pl) > 0 else 0.0
         avg_loss = round(losing_pl.mean(), 2) if len(losing_pl) > 0 else 0.0
-        win_loss_ratio = round(avg_win / avg_loss, 2) if avg_loss > 0 else float('inf')
+        win_loss_ratio = round(avg_win / avg_loss, 2) if avg_loss > 0 else (None if avg_win > 0 else 0.0)
 
         pl_series = df_trades['pl'].values
         entry_costs = df_trades['entry_cost'].values
@@ -1257,10 +1292,10 @@ class Backtester:
             buy_hold_roi = ((end_price - start_price) / start_price) * 100
 
             total_bars = len(self.df)
-            step = max(1, total_bars // 500)
+            equity_step = max(1, total_bars // 500)
             candles = []
             equity_curve_downsampled = []
-            for i in range(0, total_bars, step):
+            for i in range(total_bars):
                 row = self.df.iloc[i]
                 ts = self.df.index[i]
                 try:
@@ -1279,35 +1314,18 @@ class Backtester:
                             "low": round(l, digits),
                             "close": round(c, digits),
                             "volume": v,
-                            **_chart_indicator_fields(row, digits),
-                            "daily_high_low_high": _safe_chart_level(row, "Daily_HighLow_High", 8 if "USD" in self.ticker.upper() else 4),
-                            "daily_high_low_low": _safe_chart_level(row, "Daily_HighLow_Low", 8 if "USD" in self.ticker.upper() else 4),
-                            "daily_high_low_high_trigger": _safe_chart_level(row, "Daily_HighLow_High_Trigger", 8 if "USD" in self.ticker.upper() else 4),
-                            "daily_high_low_low_trigger": _safe_chart_level(row, "Daily_HighLow_Low_Trigger", 8 if "USD" in self.ticker.upper() else 4),
-                            "pivot_p": _safe_chart_level(row, "Pivot_P", 8 if "USD" in self.ticker.upper() else 4),
-                            "pivot_r1": _safe_chart_level(row, "Pivot_R1", 8 if "USD" in self.ticker.upper() else 4),
-                            "pivot_s1": _safe_chart_level(row, "Pivot_S1", 8 if "USD" in self.ticker.upper() else 4),
-                            "pivot_r2": _safe_chart_level(row, "Pivot_R2", 8 if "USD" in self.ticker.upper() else 4),
-                            "pivot_s2": _safe_chart_level(row, "Pivot_S2", 8 if "USD" in self.ticker.upper() else 4),
-                            "pivot_r3": _safe_chart_level(row, "Pivot_R3", 8 if "USD" in self.ticker.upper() else 4),
-                            "pivot_s3": _safe_chart_level(row, "Pivot_S3", 8 if "USD" in self.ticker.upper() else 4),
-                            "pivot_r4": _safe_chart_level(row, "Pivot_R4", 8 if "USD" in self.ticker.upper() else 4),
-                            "pivot_s4": _safe_chart_level(row, "Pivot_S4", 8 if "USD" in self.ticker.upper() else 4),
-                            "pivot_r5": _safe_chart_level(row, "Pivot_R5", 8 if "USD" in self.ticker.upper() else 4),
-                            "pivot_s5": _safe_chart_level(row, "Pivot_S5", 8 if "USD" in self.ticker.upper() else 4),
-                            "cdl_name": str(row.get('cdl_name', 'Neutral')),
-                            "cdl_bullish": bool(row.get('cdl_bullish', False)),
-                            "cdl_bearish": bool(row.get('cdl_bearish', False)),
+                            **_chart_indicator_fields(row, digits, self.enabled_indicators, self.buy_mode, self.sell_mode),
                         })
-                        equity_curve_downsampled.append({
-                            "time": self._to_utc_iso(ts),
-                            "equity": self.initial_capital,
-                        })
+                        if i % equity_step == 0 or i == total_bars - 1:
+                            equity_curve_downsampled.append({
+                                "time": self._to_utc_iso(ts),
+                                "equity": self.initial_capital,
+                            })
                 except Exception:
                     continue
 
             # Mask out candlestick patterns for all candles except the single last candle to eliminate chart noise
-            if len(candles) > 1:
+            if "Candle Patterns" in self.enabled_indicators and len(candles) > 1:
                 for c in candles[:-1]:
                     c["cdl_name"] = "Neutral"
                     c["cdl_bullish"] = False
@@ -1392,12 +1410,13 @@ class Backtester:
         # Profit Factor
         gross_profit = winning_pl.sum()
         gross_loss   = losing_pl.sum()
-        profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else float('inf')
+        # Keep the API JSON-compliant when every completed trade is profitable.
+        profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (None if gross_profit > 0 else 0.0)
 
         # Avg Win / Avg Loss
         avg_win  = round(winning_pl.mean(), 2) if len(winning_pl) > 0 else 0.0
         avg_loss = round(losing_pl.mean(),  2) if len(losing_pl)  > 0 else 0.0
-        win_loss_ratio = round(avg_win / avg_loss, 2) if avg_loss > 0 else float('inf')
+        win_loss_ratio = round(avg_win / avg_loss, 2) if avg_loss > 0 else (None if avg_win > 0 else 0.0)
 
         # Expectancy (expected $ per trade)
         wr = win_rate / 100
@@ -1446,12 +1465,13 @@ class Backtester:
         avg_loss_pct = round(df_trades[df_trades['pl'] <= 0]['pl_pct'].mean(), 2) if len(losing_pl)  > 0 else 0.0
         # ────────────────────────────────────────────────────────────────────────
 
-        # Downsample to max 500 bars to keep JSON payload manageable (~150KB)
+        # Preserve every tested OHLCV bar so the result chart retains the
+        # selected timeframe. Only the equity overlay is downsampled.
         total_bars = len(self.df)
-        step = max(1, total_bars // 500)
+        equity_step = max(1, total_bars // 500)
         candles = []
         equity_curve_downsampled = []
-        for i in range(0, total_bars, step):
+        for i in range(total_bars):
             row = self.df.iloc[i]
             ts = self.df.index[i]
             try:
@@ -1470,25 +1490,7 @@ class Backtester:
                         "low": round(l, digits),
                         "close": round(c, digits),
                         "volume": v,
-                        **_chart_indicator_fields(row, digits),
-                        "daily_high_low_high": _safe_chart_level(row, "Daily_HighLow_High", 8 if "USD" in self.ticker.upper() else 4),
-                        "daily_high_low_low": _safe_chart_level(row, "Daily_HighLow_Low", 8 if "USD" in self.ticker.upper() else 4),
-                        "daily_high_low_high_trigger": _safe_chart_level(row, "Daily_HighLow_High_Trigger", 8 if "USD" in self.ticker.upper() else 4),
-                        "daily_high_low_low_trigger": _safe_chart_level(row, "Daily_HighLow_Low_Trigger", 8 if "USD" in self.ticker.upper() else 4),
-                        "pivot_p": _safe_chart_level(row, "Pivot_P", 8 if "USD" in self.ticker.upper() else 4),
-                        "pivot_r1": _safe_chart_level(row, "Pivot_R1", 8 if "USD" in self.ticker.upper() else 4),
-                        "pivot_s1": _safe_chart_level(row, "Pivot_S1", 8 if "USD" in self.ticker.upper() else 4),
-                        "pivot_r2": _safe_chart_level(row, "Pivot_R2", 8 if "USD" in self.ticker.upper() else 4),
-                        "pivot_s2": _safe_chart_level(row, "Pivot_S2", 8 if "USD" in self.ticker.upper() else 4),
-                        "pivot_r3": _safe_chart_level(row, "Pivot_R3", 8 if "USD" in self.ticker.upper() else 4),
-                        "pivot_s3": _safe_chart_level(row, "Pivot_S3", 8 if "USD" in self.ticker.upper() else 4),
-                        "pivot_r4": _safe_chart_level(row, "Pivot_R4", 8 if "USD" in self.ticker.upper() else 4),
-                        "pivot_s4": _safe_chart_level(row, "Pivot_S4", 8 if "USD" in self.ticker.upper() else 4),
-                        "pivot_r5": _safe_chart_level(row, "Pivot_R5", 8 if "USD" in self.ticker.upper() else 4),
-                        "pivot_s5": _safe_chart_level(row, "Pivot_S5", 8 if "USD" in self.ticker.upper() else 4),
-                        "cdl_name": str(row.get('cdl_name', 'Neutral')),
-                        "cdl_bullish": bool(row.get('cdl_bullish', False)),
-                        "cdl_bearish": bool(row.get('cdl_bearish', False)),
+                        **_chart_indicator_fields(row, digits, self.enabled_indicators, self.buy_mode, self.sell_mode),
                     })
                     
                     # Grab perfectly aligned equity point
@@ -1498,15 +1500,16 @@ class Backtester:
                     else:
                         eq_val = self.initial_capital
                         
-                    equity_curve_downsampled.append({
-                        "time": self._to_utc_iso(ts),
-                        "equity": eq_val
-                    })
+                    if i % equity_step == 0 or i == total_bars - 1:
+                        equity_curve_downsampled.append({
+                            "time": self._to_utc_iso(ts),
+                            "equity": eq_val
+                        })
             except Exception:
                 continue
 
         # Mask out candlestick patterns for all candles except the single last candle to eliminate chart noise
-        if len(candles) > 1:
+        if "Candle Patterns" in self.enabled_indicators and len(candles) > 1:
             for c in candles[:-1]:
                 c["cdl_name"] = "Neutral"
                 c["cdl_bullish"] = False
