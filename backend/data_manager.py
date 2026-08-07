@@ -7,6 +7,7 @@ tz-aware timestamps.
 """
 
 import os
+import json
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
@@ -96,6 +97,7 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
     if not filepath.startswith(DATA_DIR + os.sep):
         print(f"[security] Blocked path traversal attempt: {filepath}")
         return None
+    meta_path = f"{filepath}.meta.json"
 
     # Force naive datetimes internally
     if hasattr(start_date, "tzinfo") and start_date.tzinfo is not None:
@@ -125,7 +127,16 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
 
                 if file_start <= start_date and file_end >= (end_date - timedelta(days=1)):
                     print(f"[data] Cache hit for {ticker}")
-                    return df.loc[start_date:end_date]
+                    cached_source = "yahoo" if force_yahoo or source_suffix else "webull"
+                    try:
+                        if os.path.exists(meta_path):
+                            with open(meta_path, "r", encoding="utf-8") as meta_file:
+                                cached_source = json.load(meta_file).get("data_source") or cached_source
+                    except Exception as meta_exc:
+                        print(f"[data] Cache metadata read error: {meta_exc}")
+                    sliced = df.loc[start_date:end_date]
+                    sliced.attrs["data_source"] = cached_source
+                    return sliced
         except Exception as exc:
             print(f"[data] Cache read error: {exc}")
             df = None
@@ -141,29 +152,35 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
             from webull_broker import WebullBroker
             print(f"[data] Attempting Webull fetch for {ticker} ({timeframe})...")
             wb_map = {
-                "30Sec": "s30",
-                "1Min": "m1",
-                "2Min": "m2",
-                "3Min": "m3",
-                "5Min": "m5",
-                "10Min": "m10",
-                "15Min": "m15",
-                "30Min": "m30",
-                "1Hour": "h1",
-                "2Hour": "h2",
-                "4Hour": "h4",
-                "1Day": "d1",
+                "30Sec": "s30",  # Not officially supported in Webull's list, but kept as fallback
+                "1Min": "M1",
+                "2Min": "m2",    # Webull doesn't support 2Min, this might fail, fallback to Yahoo
+                "3Min": "m3",    # Same here
+                "5Min": "M5",
+                "10Min": "m10",  # Same here
+                "15Min": "M15",
+                "30Min": "M30",
+                "1Hour": "M60",
+                "2Hour": "M120",
+                "4Hour": "M240",
+                "1Day": "D",
             }
-            timespan = wb_map.get(timeframe, "d1")
+            timespan = wb_map.get(timeframe, "D")
             
             # Calculate dynamic count based on requested start/end range
             diff_days = max(1, (end_date - start_date).days)
+            is_crypto_request = any(
+                clean_ticker.endswith(base) for base in ("USD", "USDT", "USDC")
+            )
             multiplier_map = {
                 "30Sec": 2880,
-                "1Min": 1440,
+                # Equity extended history spans 04:00-20:00 ET. Budget the
+                # complete PRE + RTH + AFTER window instead of the old RTH-only
+                # bar count so a Manual Backtest request reaches the 20:00 close.
+                "1Min": 1440 if is_crypto_request else 960,
                 "2Min": 720,
                 "3Min": 480,
-                "5Min": 2880 if ticker.endswith("USD") else 78,
+                "5Min": 2880 if is_crypto_request else 192,
                 "10Min": 144,
                 "15Min": 96,
                 "30Min": 48,
@@ -184,8 +201,19 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
             
             if bars:
                 new_df = pd.DataFrame(bars)
-                # Convert time (epoch seconds) to datetime index
-                new_df["time"] = pd.to_datetime(new_df["time"], unit="s")
+                # Convert time (ISO string or epoch seconds) to datetime index
+                try:
+                    dt_series = pd.to_datetime(new_df["time"], unit="s", errors="coerce")
+                    if dt_series.isna().all():
+                        dt_series = pd.to_datetime(new_df["time"])
+                except Exception:
+                    dt_series = pd.to_datetime(new_df["time"])
+                
+                if dt_series.dt.tz is None:
+                    dt_series = dt_series.dt.tz_localize("UTC")
+                if not any(ticker.upper().endswith(b) for b in ["USD", "USDT", "USDC"]):
+                    dt_series = dt_series.dt.tz_convert("America/New_York")
+                new_df["time"] = dt_series
                 new_df.set_index("time", inplace=True)
                 new_df.index = _strip_tz(new_df.index)
                 
@@ -198,6 +226,7 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
                     "volume": "volume"
                 })
                 new_df["adj_close"] = new_df["close"] # Compatibility
+                new_df.attrs["data_source"] = "webull"
                 
                 webull_success = True
                 print(f"[data] Webull fetch successful. Retrieved {len(new_df)} bars.")
@@ -225,11 +254,20 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
         interval = interval_map.get(timeframe, "1d")
 
         try:
-            # Pick a "period" that covers the request
+            # Pick a "period" that covers the request dynamically to avoid huge redundant downloads
+            diff_days = max(1, (end_date - start_date).days) if end_date and start_date else 60
+            
             if interval == "1m":
                 period = "7d"
             elif interval in ("5m", "15m", "30m"):
-                period = "60d"
+                if diff_days <= 1:
+                    period = "1d"
+                elif diff_days <= 5:
+                    period = "5d"
+                elif diff_days <= 30:
+                    period = "1mo"
+                else:
+                    period = "60d"
             elif interval == "1h":
                 period = "730d"
             else:
@@ -269,6 +307,7 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
                 "Adj Close": "adj_close",
                 "Volume": "volume",
             })
+            new_df.attrs["data_source"] = "yahoo"
         except Exception as exc:
             print(f"[data] Yahoo Download error: {exc}")
             return df
@@ -277,6 +316,7 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
     # 4. Save and return merged results
     # ------------------------------------------------------------------
     if new_df is not None and not new_df.empty:
+        fetched_source = new_df.attrs.get("data_source") or ("yahoo" if force_yahoo or not webull_success else "webull")
         # Merge with any existing cache
         if df is not None and not df.empty:
             combined = pd.concat([df, new_df])
@@ -284,13 +324,22 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
             df = combined
         else:
             df = new_df.sort_index()
+        df.attrs["data_source"] = fetched_source
 
         # Resample the final combined DataFrame before persisting!
         df = _resample_df(df, timeframe)
+        df.attrs["data_source"] = fetched_source
         # Persist to disk
         df.to_csv(filepath)
+        try:
+            with open(meta_path, "w", encoding="utf-8") as meta_file:
+                json.dump({"data_source": fetched_source}, meta_file)
+        except Exception as meta_exc:
+            print(f"[data] Cache metadata write error: {meta_exc}")
 
     # Return the requested slice
     if df is not None:
-        return df.loc[start_date:end_date]
+        sliced = df.loc[start_date:end_date]
+        sliced.attrs["data_source"] = df.attrs.get("data_source") or ("yahoo" if force_yahoo else "webull")
+        return sliced
     return None

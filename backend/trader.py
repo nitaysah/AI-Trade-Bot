@@ -17,6 +17,7 @@ from risk_manager import RiskManager
 from swing_strategy import detect_swing_entry, build_entry_signal
 from options_direction import normalize_options_type, VALID_OPTION_DIRECTIONS
 from prior_day_high_low import resolve_high_low_buffer_pct
+from indicator_catalog import EXTENSION_INDICATOR_TOGGLE_KEYS
 import config as global_config
 from user_config import get_user_config
 
@@ -59,7 +60,9 @@ SIGNAL_TO_TOGGLE = {
     'BotBulls1': 'ENABLE_BOTBULLS1',
     'BotBulls2': 'ENABLE_BOTBULLS2',
     'BotBulls3': 'ENABLE_BOTBULLS3',
+    'BotBulls5': 'ENABLE_BOTBULLS5',
 }
+SIGNAL_TO_TOGGLE.update(EXTENSION_INDICATOR_TOGGLE_KEYS)
 
 
 def _analysis_settings_for_trade(uc, ticker_settings: dict, use_bot_settings: bool) -> dict:
@@ -72,6 +75,11 @@ def _analysis_settings_for_trade(uc, ticker_settings: dict, use_bot_settings: bo
                 str(indicator) for indicator in indicators
                 if str(indicator or "").strip()
             ]
+        if (
+            bool((ticker_settings or {}).get("enable_smart_reentry", False))
+            and str((ticker_settings or {}).get("smart_reentry_type", "RSI")).upper() == "RSI"
+        ):
+            settings["_require_rsi_dependency"] = True
         return settings
 
     settings = dict(uc.active_parameters or {})
@@ -170,7 +178,9 @@ def get_confluence_decision(
         'BotBulls1': 'ENABLE_BOTBULLS1',
         'BotBulls2': 'ENABLE_BOTBULLS2',
         'BotBulls3': 'ENABLE_BOTBULLS3',
+        'BotBulls5': 'ENABLE_BOTBULLS5',
     }
+    SIGNAL_TO_TOGGLE.update(EXTENSION_INDICATOR_TOGGLE_KEYS)
 
     raw_signals = analysis_results.get('signals', {})
     filtered_signals = {}
@@ -220,6 +230,8 @@ def get_confluence_decision(
             filtered_signals['Botbulls4 News AI'] = {
                 'value': ai_sentiment_score,
                 'percentage': round(news_pct, 1),
+                'sentiment_pct': round(news_pct, 1),
+                'sentiment_direction': news_dir,
                 'signal': 'BULLISH',
                 'reason': f"Positive catalysts detected ({news_pct:.0f}% news sentiment)",
                 'enabled': True,
@@ -230,6 +242,8 @@ def get_confluence_decision(
             filtered_signals['Botbulls4 News AI'] = {
                 'value': ai_sentiment_score,
                 'percentage': round(news_pct, 1),
+                'sentiment_pct': round(news_pct, 1),
+                'sentiment_direction': news_dir,
                 'signal': 'BEARISH',
                 'reason': f"Negative catalysts detected ({news_pct:.0f}% news sentiment)",
                 'enabled': True,
@@ -239,6 +253,8 @@ def get_confluence_decision(
             filtered_signals['Botbulls4 News AI'] = {
                 'value': ai_sentiment_score,
                 'percentage': round(news_pct, 1),
+                'sentiment_pct': round(news_pct, 1),
+                'sentiment_direction': news_dir,
                 'signal': 'NEUTRAL',
                 'reason': "Mixed or weak news flow",
                 'enabled': True,
@@ -247,6 +263,9 @@ def get_confluence_decision(
     else:
         filtered_signals['Botbulls4 News AI'] = {
             'value': ai_sentiment_score,
+            'percentage': round(sentiment_percentage(ai_sentiment_score), 1),
+            'sentiment_pct': round(sentiment_percentage(ai_sentiment_score), 1),
+            'sentiment_direction': 'NEUTRAL',
             'signal': 'NEUTRAL',
             'reason': "News Sentiment Disabled",
             'enabled': False,
@@ -719,7 +738,8 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
             "bearish_count": 0,
             "total_signals": 0,
             "atr": 0.0,
-            "rsi": 50.0,
+            "rsi": None,
+            "_internal_rsi": None,
             "position_sizing": {},
             "risk_status": {},
             "is_custom": False
@@ -779,7 +799,8 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         "structure_direction": decision.get("structure_direction", "NONE"),
         "total_signals": len(analysis['signals']),
         "atr": analysis['atr'],
-        "rsi": analysis.get('rsi', 50),
+        "rsi": analysis.get('rsi'),
+        "_internal_rsi": analysis.get('_internal_rsi'),
         "vwap": analysis.get('vwap'),
         "position_sizing": position_sizing,
         "price_history": analysis.get('price_history', []),

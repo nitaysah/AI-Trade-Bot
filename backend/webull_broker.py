@@ -17,6 +17,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module=".*webull.
 
 import uuid
 import time
+import pandas as pd
 import config
 import os
 import logging
@@ -623,12 +624,22 @@ class WebullBroker:
             print(f"[webull] Search error: {e}")
             return []
 
-    def get_bars(self, symbol: str, timespan: str = "m5", count: int = 200) -> list:
+    def get_bars(
+        self,
+        symbol: str,
+        timespan: str = "m5",
+        count: int = 200,
+        trading_sessions: str = None,
+    ) -> list:
         """
         Fetches historical OHLCV bars from Webull.
         Timespan mapping: s30, m1, m2, m3, m5, m10, m15, m30, h1, h2, h4, d1, w1
         """
         if self.market_client is None:
+            return []
+
+        supported_timespans = ["M1", "M5", "M15", "M30", "M60", "M120", "M240", "D", "W", "M", "Y"]
+        if timespan.upper() not in supported_timespans:
             return []
 
         try:
@@ -637,51 +648,139 @@ class WebullBroker:
             is_crypto = any(clean_symbol.endswith(b) for b in ["USD", "USDT", "USDC"])
             category = "US_CRYPTO" if is_crypto else "US_STOCK"
 
-            # Step 2: Request bars
+            requested_count = max(1, int(count or 200))
+            sessions = str(trading_sessions or "RTH,PRE,ATH")
+            history_cache = getattr(self, "_bar_history_cache", None)
+            if not isinstance(history_cache, dict):
+                history_cache = {}
+                self._bar_history_cache = history_cache
+            history_key = (clean_symbol, timespan.upper(), sessions)
+            cached_history = history_cache.get(history_key, [])
+
+            def _time_value(raw_time):
+                try:
+                    numeric = float(raw_time)
+                    if numeric > 10**10:
+                        numeric /= 1000.0
+                    return int(numeric * 1_000_000_000)
+                except (TypeError, ValueError):
+                    parsed = pd.to_datetime(raw_time, utc=True, errors='coerce')
+                    return parsed.value if not pd.isna(parsed) else 0
+
+            # Step 2: Request bars. Webull supports a last_time cursor for
+            # stock bars. Page only when a caller genuinely needs more than a
+            # single response; ordinary chart refreshes remain one API call.
             if is_crypto:
                 res = self._retry_request(
                     self.market_client.crypto_market_data.get_crypto_history_bar,
                     [clean_symbol],
                     category,
                     timespan.upper(),
-                    count=str(count)
+                    count=str(min(requested_count, 1200))
                 )
+                responses = [res]
             else:
-                res = self._retry_request(
-                    self.market_client.market_data.get_history_bar,
-                    clean_symbol,
-                    category,
-                    timespan.upper(),
-                    count=str(count),
-                    trading_sessions="RTH,PRE,ATH"
+                page_limit = 1650 if timespan.upper() == "M1" else 1200
+                # Once a complete deep window has been cached, refresh only
+                # the newest provider page and merge it with the older cache.
+                # This avoids a second API call and its rate-limit delay on
+                # every completed-candle refresh.
+                remaining = (
+                    min(page_limit, requested_count)
+                    if len(cached_history) >= requested_count
+                    else requested_count
                 )
+                last_time = None
+                responses = []
+                seen_cursors = set()
 
-            if res.status_code == 200:
+                while remaining > 0:
+                    page_count = min(page_limit, remaining)
+                    request_kwargs = {
+                        "count": str(page_count),
+                        "trading_sessions": sessions,
+                    }
+                    if last_time is not None:
+                        request_kwargs["last_time"] = last_time
+                    try:
+                        res = self._retry_request(
+                            self.market_client.market_data.get_history_bar,
+                            clean_symbol,
+                            category,
+                            timespan.upper(),
+                            **request_kwargs,
+                        )
+                    except Exception as page_exc:
+                        if responses:
+                            print(f"[webull] Older bar page unavailable; using the newest completed page: {page_exc}")
+                            break
+                        raise
+                    responses.append(res)
+                    if not hasattr(res, "status_code") or res.status_code != 200:
+                        break
+
+                    page_data = res.json()
+                    if not isinstance(page_data, list) or not page_data:
+                        break
+                    oldest = min(
+                        (bar for bar in page_data if isinstance(bar, dict) and bar.get("time") is not None),
+                        key=lambda bar: _time_value(bar.get("time")),
+                        default=None,
+                    )
+                    cursor = oldest.get("time") if oldest else None
+                    remaining -= len(page_data)
+                    if len(page_data) < page_count or cursor is None or cursor in seen_cursors:
+                        break
+                    seen_cursors.add(cursor)
+                    last_time = cursor
+                    # The historical-bar endpoint is limited to one request
+                    # per second per app key. This wait happens only for the
+                    # second page of a cold, deep-history calculation.
+                    time.sleep(1.05)
+
+            raw_bars = []
+            for res in responses:
+                if not hasattr(res, "status_code") or res.status_code != 200:
+                    status = getattr(res, "status_code", "unknown")
+                    detail = getattr(res, "text", "")
+                    print(f"[webull] Error fetching bars: {status} {detail}")
+                    continue
                 data = res.json()
-                
+
                 # Crypto response is usually wrapped: [{"symbol": "BTCUSD", "result": [...]}]
-                if is_crypto and isinstance(data, list) and len(data) > 0 and 'result' in data[0]:
+                if is_crypto and isinstance(data, list) and data and isinstance(data[0], dict) and 'result' in data[0]:
                     data = data[0]['result']
-                    
-                bars = []
-                for b in data:
-                    if not isinstance(b, dict): continue
-                    # Webull returns timestamp in seconds or milliseconds
-                    ts = b.get('time')
-                    if ts and isinstance(ts, (int, float)) and ts > 10**10: ts = ts / 1000 # convert ms to s
-                    
-                    bars.append({
-                        'time': ts,
-                        'open': float(b.get('open', 0)),
-                        'high': float(b.get('high', 0)),
-                        'low': float(b.get('low', 0)),
-                        'close': float(b.get('close', 0)),
-                        'volume': float(b.get('volume', 0))
-                    })
-                return bars
-            else:
-                print(f"[webull] Error fetching bars: {res.status_code} {res.text}")
-                return []
+                if isinstance(data, list):
+                    raw_bars.extend(data)
+
+            bars_by_time = {}
+            for cached_bar in cached_history:
+                cached_time = cached_bar.get('time') if isinstance(cached_bar, dict) else None
+                if cached_time is not None:
+                    bars_by_time[str(cached_time)] = dict(cached_bar)
+            for b in raw_bars:
+                if not isinstance(b, dict):
+                    continue
+                ts = b.get('time')
+                if ts and isinstance(ts, (int, float)) and ts > 10**10:
+                    ts = ts / 1000
+                if ts is None:
+                    continue
+                bars_by_time[str(ts)] = {
+                    'time': ts,
+                    'open': float(b.get('open', 0)),
+                    'high': float(b.get('high', 0)),
+                    'low': float(b.get('low', 0)),
+                    'close': float(b.get('close', 0)),
+                    'volume': float(b.get('volume', 0))
+                }
+
+            result = sorted(bars_by_time.values(), key=lambda bar: _time_value(bar.get('time')))[-requested_count:]
+            history_cache.pop(history_key, None)
+            history_cache[history_key] = result
+            while len(history_cache) > 24:
+                history_cache.pop(next(iter(history_cache)))
+            return result
         except Exception as e:
             print(f"[webull] Error fetching bars: {e}")
             return []

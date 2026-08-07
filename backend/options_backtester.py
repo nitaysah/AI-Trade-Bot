@@ -6,9 +6,18 @@ from data_manager import get_historical_data
 from indicators import calculate_indicators_for_df, _generate_signals
 from swing_strategy import build_entry_signal, build_swing_exit
 from options_direction import validate_options_type
-from options_pricing import black_scholes, calculate_historical_volatility
-from option_selector import add_us_market_trading_days, _strike_profile, _target_strike_from_profile
+from options_pricing import black_scholes, calculate_historical_volatility, calculate_greeks
+from option_selector import add_us_market_trading_days, trading_days_until, _strike_profile, _target_strike_from_profile
+from indicator_catalog import EXTENSION_CHART_FIELDS, EXTENSION_CHART_GROUPS
 from prior_day_high_low import buffered_prior_day_levels, resolve_high_low_buffer_pct
+
+def _unix_timestamp(t):
+    try:
+        if hasattr(t, "tz") and t.tz is None:
+            t = t.tz_localize("America/New_York")
+        return int(t.timestamp())
+    except Exception:
+        return int(t.timestamp()) if hasattr(t, "timestamp") else int(t)
 
 def _safe_chart_level(row, key, digits=4):
     try:
@@ -82,6 +91,8 @@ def _chart_indicator_fields(row, digits=4, enabled_indicators=None, buy_mode="",
         "adx": _safe_chart_level(row, "ADX", 4),
         "di_plus": _safe_chart_level(row, "DI_Plus", 4),
         "di_minus": _safe_chart_level(row, "DI_Minus", 4),
+        "mystic_bull": _safe_chart_level(row, "Bull_Pulse", 4),
+        "mystic_bear": _safe_chart_level(row, "Bear_Pulse", 4),
         "wt1": _safe_chart_level(row, "WT1", 6),
         "wt2": _safe_chart_level(row, "WT2", 6),
         "mfi": _safe_chart_level(row, "MFI_14", 6),
@@ -99,10 +110,33 @@ def _chart_indicator_fields(row, digits=4, enabled_indicators=None, buy_mode="",
         "ba2_sell": _safe_chart_bool(row, "BA2_Sell"),
         "ba3_buy": _safe_chart_bool(row, "BA3_Buy"),
         "ba3_sell": _safe_chart_bool(row, "BA3_Sell"),
+        "bb5_upper": _safe_chart_level(row, "BB5_Upper", digits),
+        "bb5_lower": _safe_chart_level(row, "BB5_Lower", digits),
+        "bb5_target": _safe_chart_level(row, "BB5_Target", digits),
+        "bb5_invalidation": _safe_chart_level(row, "BB5_Invalidation", digits),
+        "bb5_breakout_level": _safe_chart_level(row, "BB5_Breakout_Level", digits),
+        "bb5_upper_start": _safe_chart_level(row, "BB5_Upper_Start", digits),
+        "bb5_lower_start": _safe_chart_level(row, "BB5_Lower_Start", digits),
+        "bb5_formation_start_time": _safe_chart_level(row, "BB5_Formation_Start_Time", 0),
+        "bb5_formation_end_time": _safe_chart_level(row, "BB5_Formation_End_Time", 0),
+        "bb5_pole_start_time": _safe_chart_level(row, "BB5_Pole_Start_Time", 0),
+        "bb5_pole_end_time": _safe_chart_level(row, "BB5_Pole_End_Time", 0),
+        "bb5_formation_bars": int(_safe_chart_level(row, "BB5_Formation_Bars", 0) or 0),
+        "bb5_confidence": _safe_chart_level(row, "BB5_Confidence", 2),
+        "bb5_direction": int(_safe_chart_level(row, "BB5_Direction", 0) or 0),
+        "bb5_reasons": str(row.get("BB5_Reasons", "")),
+        "bb5_breakout_bull": _safe_chart_bool(row, "BB5_Breakout_Bull"),
+        "bb5_breakout_bear": _safe_chart_bool(row, "BB5_Breakout_Bear"),
+        "bb5_pattern": str(row.get("BB5_Pattern", "NONE")),
+        "bb5_state": str(row.get("BB5_State", "NONE")),
         "cdl_name": str(row.get("cdl_name", "Neutral")),
         "cdl_bullish": _safe_chart_bool(row, "cdl_bullish"),
         "cdl_bearish": _safe_chart_bool(row, "cdl_bearish"),
     }
+    fields.update({
+        api_key: _safe_chart_level(row, column, 6)
+        for api_key, column in EXTENSION_CHART_FIELDS.items()
+    })
     if enabled_indicators is None:
         return fields
 
@@ -117,12 +151,18 @@ def _chart_indicator_fields(row, digits=4, enabled_indicators=None, buy_mode="",
         "RSI": {"rsi"},
         "MACD": {"macd_line", "macd_signal", "macd_hist"},
         "ADX Trend": {"adx", "di_plus", "di_minus"},
+        "Mystic Pulse": {"mystic_bull", "mystic_bear"},
         "Volume Profile": {"volume_profile_poc", "volume_profile_vah", "volume_profile_val", "volume_profile_bullish", "volume_profile_bearish"},
         "BotBulls1": {"wt1", "wt2", "mfi", "ba1_buy", "ba1_sell", "ba1_bullish", "ba1_bearish"},
         "BotBulls2": {"lx_smart_trail", "lx_trend_tracer", "lx_rz_upper", "lx_rz_lower", "ba2_buy", "ba2_sell"},
         "BotBulls3": {"ha_close", "ut_trail", "ba3_buy", "ba3_sell"},
+        "BotBulls5": {"bb5_upper", "bb5_lower", "bb5_target", "bb5_invalidation", "bb5_breakout_level", "bb5_upper_start", "bb5_lower_start", "bb5_formation_start_time", "bb5_formation_end_time", "bb5_pole_start_time", "bb5_pole_end_time", "bb5_formation_bars", "bb5_confidence", "bb5_direction", "bb5_reasons", "bb5_breakout_bull", "bb5_breakout_bear", "bb5_pattern", "bb5_state"},
         "Candle Patterns": {"cdl_name", "cdl_bullish", "cdl_bearish"},
     }
+    groups.update({
+        indicator: set(field_names)
+        for indicator, field_names in EXTENSION_CHART_GROUPS.items()
+    })
     for indicator in enabled:
         keys.update(groups.get(indicator, set()))
 
@@ -158,6 +198,8 @@ class OptionsBacktester:
         enabled_indicators: list = None,
         ext_hours: bool = True,
         r: float = 0.05,
+        dividend_yield: float = 0.0,
+        option_contract_fee: float = 0.65,
         cancel_event=None,
         intraday_only: bool = False,
         enable_signal_reset: bool = False,
@@ -194,7 +236,8 @@ class OptionsBacktester:
         swing_exit_lookback_days: int = 20,
         market_session: str = "Regular",
         enable_risk: bool = True,
-        daily_high_low_buffer_pct: float = None
+        daily_high_low_buffer_pct: float = None,
+        indicator_overrides: dict = None
     ):
         self.ticker = ticker
         self.timeframe = timeframe
@@ -225,7 +268,10 @@ class OptionsBacktester:
         self.enable_signal_reset = bool(enable_signal_reset)
         self.enable_smart_reentry = bool(enable_smart_reentry)
         self.daily_high_low_buffer_pct = resolve_high_low_buffer_pct(fallback=daily_high_low_buffer_pct)
-        self.indicator_settings = {"DAILY_HIGH_LOW_BUFFER_PCT": self.daily_high_low_buffer_pct}
+        self.indicator_settings = {
+            **(indicator_overrides if isinstance(indicator_overrides, dict) else {}),
+            "DAILY_HIGH_LOW_BUFFER_PCT": self.daily_high_low_buffer_pct,
+        }
         self.smart_reentry_type = str(smart_reentry_type or "RSI").upper()
         self.smart_reentry_rsi_call_max = float(smart_reentry_rsi_call_max or 70.0)
         self.smart_reentry_rsi_put_min = float(smart_reentry_rsi_put_min or 30.0)
@@ -269,45 +315,239 @@ class OptionsBacktester:
         self.enable_risk = enable_risk
         
         # Real-market pricing proxy parameters
-        self.q = 0.013 # SPY/broad market approx dividend yield
+        # Keep q explicit; a blanket SPY yield is incorrect for single stocks.
+        self.q = max(0.0, float(dividend_yield or 0.0))
+        self.option_contract_fee = max(0.0, float(option_contract_fee or 0.0))
         self.iv_markup = 0.04 # 4% markup for Implied Volatility over Historical
         self.spread_width = 0.03 # Typical $0.03 spread on liquid ETF options
 
         self.equity = initial_capital
         self.position = None  # None or Dict representing option position
+        self.pending_order = None  # Signal generated at a bar close; filled at the next bar open.
         self.trades = []
         self.equity_history = []
         self.skipped_entries = []
+        self.unfilled_signals = []
         self.signal_locked_direction = None
         self.last_exit_time = None
+        self.pending_order = None
         self.raw_df = df
         self.df = None
         self.options_csv_cache = {}
+        self.options_csv_by_timestamp = {}
+        self.option_quote_capabilities = {"historical_rows": 0, "two_sided_rows": 0}
         self._load_options_csv_cache()
         self.data_source = "yahoo"
 
     def _load_options_csv_cache(self):
+        """Load legacy historical option marks.
+
+        The bundled file has one ``option_price`` column, rather than bid/ask
+        quotes.  Treat it as a historical mark, never as an executable OBBO.
+        A richer file can supply ``bid``/``ask`` (or ``bid_price``/``ask_price``)
+        and will then receive true side-aware historical fills.  Newer files
+        may include an ``iv`` column, which is used for the Greeks.
+        """
         import os
-        for candidate in ["data/spy_options_chain_5m.csv", "backend/data/spy_options_chain_5m.csv"]:
-            if os.path.exists(candidate) and self.ticker == "SPY":
+        ticker_file = f"{self.ticker.lower()}_options_chain_5m.csv"
+        for candidate in [f"data/{ticker_file}", f"backend/data/{ticker_file}"]:
+            if os.path.exists(candidate):
                 try:
                     df_opt = pd.read_csv(candidate)
                     for _, row in df_opt.iterrows():
                         key = (str(row["timestamp"])[:16], round(float(row["strike_price"]), 1), str(row["option_type"]).upper(), int(row["expiration_dte"]))
-                        self.options_csv_cache[key] = float(row["option_price"])
-                    print(f"[options-csv] Loaded {len(self.options_csv_cache)} option prices from {candidate}")
+                        price = pd.to_numeric(row.get("option_price"), errors="coerce")
+                        iv = pd.to_numeric(row.get("iv"), errors="coerce")
+                        bid = pd.to_numeric(row.get("bid", row.get("bid_price")), errors="coerce")
+                        ask = pd.to_numeric(row.get("ask", row.get("ask_price")), errors="coerce")
+                        if (pd.isna(price) or float(price) <= 0) and pd.notna(bid) and pd.notna(ask) and float(bid) > 0 and float(ask) >= float(bid):
+                            price = (float(bid) + float(ask)) / 2.0
+                        if pd.notna(price) and float(price) > 0:
+                            expiration = row.get("expiration_date", row.get("expiration"))
+                            if pd.notna(expiration):
+                                try:
+                                    expiration = pd.Timestamp(expiration).date().isoformat()
+                                except (TypeError, ValueError):
+                                    expiration = None
+                            else:
+                                expiration = None
+                            contract_symbol = row.get("contract_symbol", row.get("option_symbol", row.get("symbol")))
+                            record = {
+                                "price": float(price),
+                                "iv": float(iv) if pd.notna(iv) and float(iv) > 0 else None,
+                                "bid": float(bid) if pd.notna(bid) and float(bid) > 0 else None,
+                                "ask": float(ask) if pd.notna(ask) and float(ask) > 0 else None,
+                                "expiration": expiration,
+                                "contract_symbol": str(contract_symbol) if pd.notna(contract_symbol) else None,
+                            }
+                            # Legacy files identify a quote only by DTE.  Keep
+                            # all records at a key so contract-expiry-aware data
+                            # can never overwrite a different listed series.
+                            self.options_csv_cache.setdefault(key, []).append(record)
+                            lookup_key = (key[0], key[2], key[3])
+                            self.options_csv_by_timestamp.setdefault(lookup_key, []).append((key[1], record))
+                            self.option_quote_capabilities["historical_rows"] += 1
+                            if record["bid"] and record["ask"] and record["ask"] >= record["bid"]:
+                                self.option_quote_capabilities["two_sided_rows"] += 1
+                    print(f"[options-csv] Loaded {len(self.options_csv_cache)} historical option marks from {candidate}")
                 except Exception as e:
                     print(f"[options-csv] Warning loading CSV: {e}")
                 break
 
-    def _lookup_option_price(self, timestamp, strike, option_type, expiration_dte, fallback_price: float) -> float:
+    def _lookup_option_snapshot(self, timestamp, strike, option_type, expiration_dte, expiration_close=None, contract_symbol=None):
+        """Return an exact quote for the selected contract, if one is available."""
         if not self.options_csv_cache:
-            return fallback_price
+            return None
         ts_str = timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp)
         key = (ts_str[:16], round(float(strike), 1), str(option_type).upper(), int(expiration_dte))
-        if key in self.options_csv_cache:
-            return self.options_csv_cache[key]
-        return fallback_price
+        candidates = self.options_csv_cache.get(key, [])
+        # Backward compatibility for callers/tests that construct one record.
+        if isinstance(candidates, dict):
+            candidates = [candidates]
+        if not candidates:
+            return None
+        if contract_symbol:
+            candidates = [quote for quote in candidates if quote.get("contract_symbol") == contract_symbol]
+            if not candidates:
+                return None
+        if expiration_close is not None:
+            expected_expiry = self._as_datetime(expiration_close).date().isoformat()
+            exact = [quote for quote in candidates if quote.get("expiration") == expected_expiry]
+            if exact:
+                return exact[0]
+            # Legacy files have no expiry field. They are accepted only because
+            # the exact remaining DTE is already part of the lookup key.
+            legacy = [quote for quote in candidates if not quote.get("expiration")]
+            if legacy:
+                return legacy[0]
+            return None
+        return candidates[0]
+
+    def _nearest_historical_strike(self, timestamp, target_strike, option_type, expiration_dte, expiration_close):
+        """Choose the nearest quoted strike for the selected expiry at entry.
+
+        This keeps a historical run on an actually quoted contract when the
+        theoretical target (for example a $0.50 increment) is not listed.
+        """
+        ts_str = timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp)
+        key = (ts_str[:16], str(option_type).upper(), int(expiration_dte))
+        candidates = self.options_csv_by_timestamp.get(key, [])
+        if not candidates:
+            return None
+        expected_expiry = self._as_datetime(expiration_close).date().isoformat()
+        compatible = [
+            (strike, quote)
+            for strike, quote in candidates
+            if not quote.get("expiration") or quote.get("expiration") == expected_expiry
+        ]
+        if not compatible:
+            return None
+        return min(compatible, key=lambda item: abs(float(item[0]) - float(target_strike)))[0]
+
+    def _trading_dte(self, timestamp, expiration_close) -> int:
+        """DTE for the *same contract* at a valuation timestamp."""
+        ts = self._as_datetime(timestamp)
+        expiry = self._as_datetime(expiration_close)
+        if ts >= expiry:
+            return 0
+        return trading_days_until(ts.date(), expiry.date())
+
+    def _resolve_option_valuation(
+        self,
+        timestamp,
+        underlying_price: float,
+        strike: float,
+        option_type: str,
+        expiration_close,
+        historical_vol: float,
+        side: str,
+        contract_symbol: str = None,
+    ):
+        """Price a contract and return (executable_price, iv, price_source, symbol).
+
+        A historical row is only eligible when its timestamp, strike, type and
+        remaining DTE all match the held contract.  This prevents silently
+        rolling a position into a new 7-DTE contract on the next trading day.
+        """
+        dte = self._trading_dte(timestamp, expiration_close)
+        snapshot = self._lookup_option_snapshot(timestamp, strike, option_type, dte, expiration_close, contract_symbol)
+        model_iv = max(0.01, float(historical_vol) + self.iv_markup)
+        iv = float(snapshot["iv"]) if snapshot and snapshot.get("iv") else model_iv
+        t_remaining = self._time_to_expiry_years(timestamp, expiration_close)
+
+        if snapshot and snapshot.get("price", 0.0) > 0:
+            bid = snapshot.get("bid")
+            ask = snapshot.get("ask")
+            if bid and ask and ask >= bid:
+                executable = ask if str(side).upper() == "BUY" else bid
+                return max(0.01, float(executable)), iv, "historical_obbo", snapshot.get("contract_symbol")
+            # The legacy cache has a single mark, so applying a made-up spread
+            # would produce an unjustified and asymmetric fill.
+            return max(0.01, float(snapshot["price"])), iv, "historical_option_mark", snapshot.get("contract_symbol")
+
+        theoretical = black_scholes(
+            underlying_price, strike, t_remaining, self.r, iv, option_type, q=self.q
+        )
+        half_spread = self.spread_width / 2.0
+        executable = theoretical + half_spread if str(side).upper() == "BUY" else theoretical - half_spread
+        return max(0.01, executable), iv, "black_scholes_proxy", None
+
+    def _calculate_historical_volatility_states(self, price_df: pd.DataFrame) -> pd.DataFrame:
+        """Return realized volatility known at each bar's open and close.
+
+        The opening state contains the prior close -> current open return but
+        cannot use the current bar's close.  The close state then adds the
+        intrabar return.  Separating the two prevents next-open fills from
+        accidentally seeing a future close.
+        """
+        if price_df.empty:
+            return pd.DataFrame(index=price_df.index, columns=["open", "close"], dtype=float)
+
+        opens = pd.to_numeric(price_df["Open"], errors="coerce")
+        closes = pd.to_numeric(price_df["Close"], errors="coerce")
+        if getattr(price_df.index, "tz", None) is not None:
+            sessions = list(price_df.index.tz_convert("America/New_York").date)
+        else:
+            sessions = list(price_df.index.date)
+
+        samples = []
+        open_sample_idx = []
+        close_sample_idx = []
+        previous_close = None
+        previous_session = None
+        for session, open_price, close_price in zip(sessions, opens, closes):
+            valid_open = pd.notna(open_price) and float(open_price) > 0
+            valid_close = pd.notna(close_price) and float(close_price) > 0
+            if valid_open and previous_close is not None and previous_close > 0 and session != previous_session:
+                samples.append(math.log(float(open_price) / previous_close))
+            open_sample_idx.append(len(samples) - 1)
+
+            if valid_open and valid_close:
+                if session != previous_session or previous_close is None or previous_close <= 0:
+                    samples.append(math.log(float(close_price) / float(open_price)))
+                else:
+                    samples.append(math.log(float(close_price) / previous_close))
+                previous_close = float(close_price)
+                previous_session = session
+            close_sample_idx.append(len(samples) - 1)
+
+        trading_sessions = max(1, len(set(sessions)))
+        observations_per_day = max(1.0, len(samples) / trading_sessions)
+        annualization = math.sqrt(252.0 * observations_per_day)
+        sample_vol = pd.Series(samples, dtype=float).rolling(window=50, min_periods=20).std() * annualization
+
+        def state_at(sample_indexes):
+            values = []
+            for sample_index in sample_indexes:
+                value = sample_vol.iloc[sample_index] if sample_index >= 0 else np.nan
+                values.append(float(value) if pd.notna(value) else 0.16)
+            return pd.Series(np.clip(values, 0.05, 3.0), index=price_df.index, dtype=float)
+
+        return pd.DataFrame({"open": state_at(open_sample_idx), "close": state_at(close_sample_idx)})
+
+    def _calculate_historical_volatility(self, price_df: pd.DataFrame) -> pd.Series:
+        """Backward-compatible close-of-bar realized-volatility accessor."""
+        return self._calculate_historical_volatility_states(price_df)["close"]
 
     def _as_datetime(self, ts) -> datetime.datetime:
         if hasattr(ts, "to_pydatetime"):
@@ -428,6 +668,10 @@ class OptionsBacktester:
                 "enabled_indicators": self.enabled_indicators,
                 "buy_mode": self.buy_mode,
                 "sell_mode": self.sell_mode,
+                "_require_rsi_dependency": bool(
+                    self.enable_smart_reentry
+                    and str(self.smart_reentry_type or "RSI").upper() == "RSI"
+                ),
             }
             res = calculate_indicators_for_df(raw_df, self.timeframe, self.ticker, settings=calc_settings)
             self.df = res["df"] if isinstance(res, dict) and "df" in res else res
@@ -439,33 +683,11 @@ class OptionsBacktester:
 
         full_df = self.df
         
-        # 3. Pre-calculate historical volatility rolling vector
-        closes = full_df['Close'].values
-        if closes.ndim > 1:
-            closes = closes[:, 0]
-        returns = np.diff(closes) / closes[:-1]
-        returns = np.insert(returns, 0, 0)
-        
-        # Map timeframe to annualized multiplier
-        tf_secs = 24 * 3600  # Default daily
-        if self.timeframe == "1Min":
-            tf_secs = 60
-        elif self.timeframe == "5Min":
-            tf_secs = 5 * 60
-        elif self.timeframe == "15Min":
-            tf_secs = 15 * 60
-        elif self.timeframe == "30Min":
-            tf_secs = 30 * 60
-        elif self.timeframe == "1Hour":
-            tf_secs = 3600
-        
-        # Approximate bars per trading day
-        bars_per_day = (390 * 60) / tf_secs if tf_secs < 24*3600 else 1.0
-        annual_bars = 252 * bars_per_day
-
-        rolling_vol = pd.Series(returns).rolling(window=50).std() * math.sqrt(annual_bars)
-        rolling_vol = np.clip(rolling_vol.fillna(0.16).values, 0.10, 0.35)
-        full_df['Historical_Vol'] = rolling_vol
+        # 3. Price next-open executions only with information available at the
+        # open. Close-of-bar analytics additionally include that bar's return.
+        vol_states = self._calculate_historical_volatility_states(full_df)
+        full_df['Open_Historical_Vol'] = vol_states['open']
+        full_df['Historical_Vol'] = vol_states['close']
 
         # 4. Map daily high/low/close for previous-day pivot and range exits
         if getattr(full_df.index, "tz", None) is not None:
@@ -498,7 +720,7 @@ class OptionsBacktester:
         for ts, row in self.df.iterrows():
             try:
                 price_history_records.append({
-                    "time": int(ts.timestamp()) if hasattr(ts, "timestamp") else ts,
+                    "time": _unix_timestamp(ts),
                     "open": float(row.get("Open", row.get("open", row.get("Close", 0.0)))),
                     "high": float(row.get("High", row.get("high", row.get("Close", 0.0)))),
                     "low": float(row.get("Low", row.get("low", row.get("Close", 0.0)))),
@@ -524,11 +746,17 @@ class OptionsBacktester:
             timestamp = self.df.index[i]
             current_price = current_bar['Close']
             current_vol = current_bar['Historical_Vol']
+            open_price = current_bar.get('Open', current_price)
+            open_vol = current_bar.get('Open_Historical_Vol', current_vol)
 
             if i < 30:
                 continue
 
             prev_bar = self.df.iloc[i-1]
+
+            # Signals are created from a completed bar. Execute their market
+            # order at the next tradable bar's open using only open-known IV.
+            self._execute_pending_order(open_price, open_vol, timestamp)
 
             # Dynamic tracking of intraday high/low
             current_date = timestamp.tz_convert("America/Chicago").date() if getattr(timestamp, "tzinfo", None) is not None else timestamp.date()
@@ -554,10 +782,10 @@ class OptionsBacktester:
 
                 # Compute current option premium with IV markup and dividend yield
                 expiration_close = self.position.get('expiration_close') or self._expiration_close_for_entry(entry_date)
-                t_remaining = self._time_to_expiry_years(timestamp, expiration_close)
-                opt_price_bs = black_scholes(current_price, strike, t_remaining, self.r, current_vol + self.iv_markup, opt_type, q=self.q)
-                opt_price_bs = self._lookup_option_price(timestamp, strike, opt_type, self.expiry_days, opt_price_bs)
-                opt_price = max(0.01, opt_price_bs - (self.spread_width / 2.0)) # Sell at the bid
+                opt_price, exit_iv, exit_price_source, exit_contract_symbol = self._resolve_option_valuation(
+                    timestamp, current_price, strike, opt_type, expiration_close, current_vol, "SELL",
+                    contract_symbol=self.position.get("contract_symbol"),
+                )
                 
                 # Check exit triggers
                 exit_triggered = False
@@ -676,7 +904,10 @@ class OptionsBacktester:
                     signals = _generate_signals(
                         current_bar,
                         prev_bar,
-                        settings={"enabled_indicators": self.enabled_indicators},
+                        settings={
+                            **(self.indicator_settings or {}),
+                            "enabled_indicators": self.enabled_indicators,
+                        },
                         recent_bars=self.df.iloc[max(0, i - 4) : i + 1],
                     )
                     filtered_signals = {k: v for k, v in signals.items() if k in self.enabled_indicators}
@@ -691,7 +922,7 @@ class OptionsBacktester:
                         exit_reason = f"Indicator Reversal Signal ({bullish_count} Bullish)"
 
                 if exit_triggered:
-                    self._exit_option_trade(opt_price, current_price, timestamp, exit_reason)
+                    self._queue_exit(exit_reason, timestamp)
                     continue
 
                 # ── Resolve effective exit strategy ─────────────────────────
@@ -767,7 +998,7 @@ class OptionsBacktester:
                         exit_reason = f"Trailing Stop Hit (Premium fell {trail_pct*100:.0f}% from high)"
 
                 if exit_triggered:
-                    self._exit_option_trade(opt_price, current_price, timestamp, exit_reason)
+                    self._queue_exit(exit_reason, timestamp)
                     continue
 
             # Evaluate entries if no position is held
@@ -775,7 +1006,10 @@ class OptionsBacktester:
                 signals = _generate_signals(
                     current_bar,
                     prev_bar,
-                    settings={"enabled_indicators": self.enabled_indicators},
+                    settings={
+                        **(self.indicator_settings or {}),
+                        "enabled_indicators": self.enabled_indicators,
+                    },
                     recent_bars=self.df.iloc[max(0, i - 4) : i + 1],
                 )
                 filtered_signals = {k: v for k, v in signals.items() if k in self.enabled_indicators}
@@ -784,15 +1018,19 @@ class OptionsBacktester:
                 bearish_count = sum(s.get('weight', 1) for s in filtered_signals.values() if s['signal'] == 'BEARISH')
                 buy_threshold = max(1, int(self.threshold or 1))
                 sell_threshold = max(1, int(self.sell_threshold or buy_threshold))
+                bullish_ready = bullish_count >= buy_threshold
+                bearish_ready = bearish_count >= sell_threshold
+                bullish_dominates = bullish_ready and (not bearish_ready or bullish_count > bearish_count)
+                bearish_dominates = bearish_ready and (not bullish_ready or bearish_count > bullish_count)
 
                 desired_direction = "BULLISH" if self.options_type == "calls_only" else "BEARISH"
                 option_type = "CALL" if self.options_type == "calls_only" else "PUT"
                 expected_action = "BUY" if desired_direction == "BULLISH" else "SELL"
                 indicator_action = "HOLD"
                 if filtered_signals:
-                    if desired_direction == "BULLISH" and bullish_count >= buy_threshold:
+                    if desired_direction == "BULLISH" and bullish_dominates:
                         indicator_action = "BUY"
-                    elif desired_direction == "BEARISH" and bearish_count >= sell_threshold:
+                    elif desired_direction == "BEARISH" and bearish_dominates:
                         indicator_action = "SELL"
 
                 entry_mode = self.buy_mode
@@ -847,12 +1085,11 @@ class OptionsBacktester:
 
                 allowed, block_reason = self._entry_guard_allows(entry_action, current_bar, current_price, timestamp)
                 if entry_action == expected_action and allowed:
-                    self._enter_option_trade(
+                    self._queue_entry(
                         option_type=option_type,
-                        underlying_price=current_price,
-                        vol=current_vol,
+                        reason=entry_reason or f"{option_type} entry triggered",
                         timestamp=timestamp,
-                        reason=entry_reason or f"{option_type} entry triggered"
+                        underlying_price=current_price,
                     )
 
             # Record equity curve
@@ -865,12 +1102,36 @@ class OptionsBacktester:
         if self.position:
             last_bar = self.df.iloc[-1]
             last_ts = self.df.index[-1]
+            pending_exit = self.pending_order if self.pending_order and self.pending_order.get("kind") == "EXIT" else None
             expiration_close = self.position.get('expiration_close') or self._expiration_close_for_entry(self.position['entry_time'])
-            t_remaining = self._time_to_expiry_years(last_ts, expiration_close)
-            opt_price_bs = black_scholes(last_bar['Close'], self.position['strike_price'], t_remaining, self.r, last_bar['Historical_Vol'] + self.iv_markup, self.position['option_type'], q=self.q)
-            opt_price_bs = self._lookup_option_price(last_ts, self.position['strike_price'], self.position['option_type'], self.expiry_days, opt_price_bs)
-            opt_price = max(0.01, opt_price_bs - (self.spread_width / 2.0))
-            self._exit_option_trade(opt_price, last_bar['Close'], last_ts, "End of Backtest")
+            opt_price, exit_iv, exit_price_source, exit_contract_symbol = self._resolve_option_valuation(
+                last_ts,
+                last_bar['Close'],
+                self.position['strike_price'],
+                self.position['option_type'],
+                expiration_close,
+                last_bar['Historical_Vol'],
+                "SELL",
+                contract_symbol=self.position.get("contract_symbol"),
+            )
+            self._exit_option_trade(
+                opt_price,
+                last_bar['Close'],
+                last_ts,
+                pending_exit.get("reason") if pending_exit else "End of Backtest",
+                vol=last_bar['Historical_Vol'], iv=exit_iv, price_source=exit_price_source,
+                contract_symbol=exit_contract_symbol,
+                signal_time=pending_exit.get("signal_time") if pending_exit else last_ts,
+                fill_timing="end_of_backtest_close",
+            )
+            self.pending_order = None
+        elif self.pending_order and self.pending_order.get("kind") == "ENTRY":
+            self.unfilled_signals.append({
+                "time": self._to_utc_iso(self.pending_order.get("signal_time")),
+                "reason": "Signal not filled: no subsequent tradable bar in the requested backtest window.",
+                "option_type": self.pending_order.get("option_type"),
+            })
+            self.pending_order = None
 
         return self._calculate_metrics()
 
@@ -927,32 +1188,143 @@ class OptionsBacktester:
 
         return self._smart_reentry_allows(action, bar, current_price)
 
-    def _enter_option_trade(self, option_type: str, underlying_price: float, vol: float, timestamp: datetime.datetime, reason: str):
+    def _queue_entry(self, option_type: str, reason: str, timestamp, underlying_price: float):
+        if self.position is None and self.pending_order is None:
+            strike_mode = str(self.strike_type or "ATM").upper()
+            profile = _strike_profile(strike_mode)
+            selected_strike = _target_strike_from_profile(
+                underlying_price,
+                option_type,
+                strike_mode,
+                profile.get("target_depth_pct", 0.0),
+            )
+            selected_strike = round(selected_strike * 2) / 2
+            expiration_close = self._expiration_close_for_entry(timestamp)
+            historical_strike = self._nearest_historical_strike(
+                timestamp,
+                selected_strike,
+                option_type,
+                self._trading_dte(timestamp, expiration_close),
+                expiration_close,
+            )
+            self.pending_order = {
+                "kind": "ENTRY",
+                "option_type": option_type,
+                "reason": reason,
+                "signal_time": timestamp,
+                "strike_price": float(historical_strike) if historical_strike is not None else selected_strike,
+                "expiration_close": expiration_close,
+            }
+
+    def _queue_exit(self, reason: str, timestamp):
+        # Keep the first exit signal; it is the condition that was actionable
+        # earliest and will be sent at the next bar open.
+        if self.position is not None and self.pending_order is None:
+            self.pending_order = {
+                "kind": "EXIT",
+                "reason": reason,
+                "signal_time": timestamp,
+            }
+
+    def _execute_pending_order(self, underlying_open: float, open_vol: float, timestamp):
+        order = self.pending_order
+        if not order:
+            return False
+        self.pending_order = None
+
+        if order["kind"] == "ENTRY":
+            if self.position is None:
+                self._enter_option_trade(
+                    option_type=order["option_type"],
+                    underlying_price=float(underlying_open),
+                    vol=float(open_vol),
+                    timestamp=timestamp,
+                    reason=order["reason"],
+                    signal_time=order["signal_time"],
+                    fill_timing="next_bar_open",
+                    strike_override=order.get("strike_price"),
+                    expiration_close_override=order.get("expiration_close"),
+                )
+                return self.position is not None
+            return False
+
+        if order["kind"] == "EXIT" and self.position is not None:
+            expiration_close = self.position.get("expiration_close") or self._expiration_close_for_entry(self.position["entry_time"])
+            option_premium, exit_iv, price_source, contract_symbol = self._resolve_option_valuation(
+                timestamp,
+                float(underlying_open),
+                self.position["strike_price"],
+                self.position["option_type"],
+                expiration_close,
+                float(open_vol),
+                "SELL",
+                contract_symbol=self.position.get("contract_symbol"),
+            )
+            self._exit_option_trade(
+                option_premium,
+                float(underlying_open),
+                timestamp,
+                order["reason"],
+                vol=float(open_vol),
+                iv=exit_iv,
+                price_source=price_source,
+                contract_symbol=contract_symbol,
+                signal_time=order["signal_time"],
+                fill_timing="next_bar_open",
+            )
+            return True
+        return False
+
+    def _enter_option_trade(
+        self,
+        option_type: str,
+        underlying_price: float,
+        vol: float,
+        timestamp: datetime.datetime,
+        reason: str,
+        signal_time=None,
+        fill_timing: str = "bar_close",
+        strike_override: float = None,
+        expiration_close_override=None,
+    ):
         # Determine Strike Price
-        strike_mode = str(self.strike_type or "ATM").upper()
-        profile = _strike_profile(strike_mode)
-        strike = _target_strike_from_profile(
-            underlying_price,
-            option_type,
-            strike_mode,
-            profile.get("target_depth_pct", 0.0),
-        )
+        if strike_override is None:
+            strike_mode = str(self.strike_type or "ATM").upper()
+            profile = _strike_profile(strike_mode)
+            strike = _target_strike_from_profile(
+                underlying_price,
+                option_type,
+                strike_mode,
+                profile.get("target_depth_pct", 0.0),
+            )
+            strike = round(strike * 2) / 2
+        else:
+            strike = float(strike_override)
         
-        # Round strike price to nearest integer or 0.50
-        strike = round(strike * 2) / 2
-        
-        # Calculate theoretical option price (premium) at entry with IV markup and dividends
-        expiration_close = self._expiration_close_for_entry(timestamp)
+        # Price the exact selected contract at entry.  A cached historical mark
+        # is used only when it matches this timestamp/strike/type/DTE; otherwise
+        # Black-Scholes-Merton plus the configured synthetic spread is used.
+        expiration_close = expiration_close_override or self._expiration_close_for_entry(timestamp)
+        if strike_override is None:
+            historical_strike = self._nearest_historical_strike(
+                timestamp,
+                strike,
+                option_type,
+                self._trading_dte(timestamp, expiration_close),
+                expiration_close,
+            )
+            if historical_strike is not None:
+                strike = float(historical_strike)
         t_years = self._time_to_expiry_years(timestamp, expiration_close)
-        entry_premium_bs = black_scholes(underlying_price, strike, t_years, self.r, vol + self.iv_markup, option_type, q=self.q)
-        entry_premium_bs = self._lookup_option_price(timestamp, strike, option_type, self.expiry_days, entry_premium_bs)
-        entry_premium = max(0.01, entry_premium_bs + (self.spread_width / 2.0)) # Pay the ask
+        entry_premium, entry_iv, entry_price_source, entry_contract_symbol = self._resolve_option_valuation(
+            timestamp, underlying_price, strike, option_type, expiration_close, vol, "BUY"
+        )
 
         if entry_premium <= 0:
             return
 
         contract_multiplier = 100.0
-        single_contract_cost = entry_premium * contract_multiplier
+        single_contract_cost = entry_premium * contract_multiplier + self.option_contract_fee
 
         # Risk-based sizing
         risk_amount = self.equity * self.risk_per_trade
@@ -1020,28 +1392,52 @@ class OptionsBacktester:
             return
 
         total_cost = qty * single_contract_cost
+        entry_greeks = calculate_greeks(underlying_price, strike, t_years, self.r, entry_iv, option_type, q=self.q)
+        # Greeks are BSM values at the valuation IV; price reflects the actual
+        # historical mark or modeled execution price used for the fill.
+        entry_greeks["price"] = round(float(entry_premium), 4)
 
         # Record position
         self.position = {
             "option_type": option_type,
             "strike_price": strike,
             "entry_time": timestamp,
+            "entry_signal_time": signal_time or timestamp,
+            "entry_fill_timing": fill_timing,
             "expiration_date": expiration_close.date(),
             "expiration_close": expiration_close,
             "entry_underlying": underlying_price,
             "entry_premium": entry_premium,
             "entry_price": entry_premium,
+            "entry_iv": entry_iv,
+            "entry_greeks": entry_greeks,
+            "entry_price_source": entry_price_source,
+            "contract_symbol": entry_contract_symbol,
             "qty": qty,
             "contract_cost": single_contract_cost,
             "total_cost": total_cost,
+            "entry_fees": qty * self.option_contract_fee,
             "initial_stop_price": None,
             "exit_stop_price": None,
             "reason": reason
         }
 
-    def _exit_option_trade(self, option_premium: float, underlying_price: float, timestamp: datetime.datetime, reason: str):
+    def _exit_option_trade(
+        self,
+        option_premium: float,
+        underlying_price: float,
+        timestamp: datetime.datetime,
+        reason: str,
+        vol: float = None,
+        iv: float = None,
+        price_source: str = None,
+        contract_symbol: str = None,
+        signal_time=None,
+        fill_timing: str = "bar_close",
+    ):
         contract_multiplier = 100.0
-        exit_value = self.position['qty'] * option_premium * contract_multiplier
+        exit_fees = self.position['qty'] * self.option_contract_fee
+        exit_value = self.position['qty'] * option_premium * contract_multiplier - exit_fees
         pl = exit_value - self.position['total_cost']
         pl_pct = (pl / self.position['total_cost']) * 100.0
 
@@ -1057,10 +1453,23 @@ class OptionsBacktester:
             else:
                 stop_note = f" | Stop Used: ${float(exit_stop_price):.4f}"
 
+        # Revalue exit Greeks using the exit bar's IV, not the entry IV.  This
+        # is essential across close-to-open moves where realized volatility can
+        # change materially before the next session opens.
+        expiration_close = self.position.get('expiration_close') or self._expiration_close_for_entry(self.position['entry_time'])
+        t_remaining = self._time_to_expiry_years(timestamp, expiration_close)
+        exit_iv = float(iv) if iv is not None else max(0.01, float(vol if vol is not None else 0.16) + self.iv_markup)
+        exit_greeks = calculate_greeks(underlying_price, self.position['strike_price'], t_remaining, self.r, exit_iv, self.position['option_type'], q=self.q)
+        exit_greeks['price'] = round(float(option_premium), 4)
+
         self.trades.append({
             'ticker': self.ticker,
             'entry_time': self._to_utc_iso(self.position['entry_time']),
             'exit_time': self._to_utc_iso(timestamp),
+            'entry_signal_time': self._to_utc_iso(self.position.get('entry_signal_time', self.position['entry_time'])),
+            'exit_signal_time': self._to_utc_iso(signal_time or timestamp),
+            'entry_fill_timing': self.position.get('entry_fill_timing', 'bar_close'),
+            'exit_fill_timing': fill_timing,
             'qty': int(self.position['qty']),
             'option_type': self.position['option_type'],
             'expiration_date': self.position.get('expiration_date').isoformat() if self.position.get('expiration_date') else None,
@@ -1071,12 +1480,19 @@ class OptionsBacktester:
             'exit_underlying': round(underlying_price, 2),
             'entry_cost': round(self.position['total_cost'], 2),
             'exit_value': round(exit_value, 2),
-            'fees': 0.0,
+            'fees': round(self.position.get('entry_fees', 0.0) + exit_fees, 2),
             'pl': round(pl, 2),
             'pl_pct': round(pl_pct, 2),
             'reason': reason,
             'initial_stop_price': round(initial_stop_price, 4) if initial_stop_price is not None else None,
             'exit_stop_price': round(exit_stop_price, 4) if exit_stop_price is not None else None,
+            'entry_greeks': self.position.get('entry_greeks', {}),
+            'exit_greeks': exit_greeks,
+            'entry_iv': round(self.position.get('entry_iv', 0.20) * 100.0, 2),
+            'exit_iv': round(exit_iv * 100.0, 2),
+            'entry_price_source': self.position.get('entry_price_source', 'black_scholes_proxy'),
+            'exit_price_source': price_source or 'black_scholes_proxy',
+            'contract_symbol': contract_symbol or self.position.get('contract_symbol'),
         })
         print(f"[{self._to_central_str(timestamp)}] SELL {self.ticker} {self.position['option_type']} @ ${option_premium:.4f} | P/L: ${pl:.2f} ({pl_pct:+.2f}%) | Reason: {reason}{stop_note}")
         if self.enable_signal_reset:
@@ -1089,13 +1505,13 @@ class OptionsBacktester:
         strike = self.position['strike_price']
         entry_date = self.position['entry_time']
         expiration_close = self.position.get('expiration_close') or self._expiration_close_for_entry(entry_date)
-        t_remaining = self._time_to_expiry_years(timestamp, expiration_close)
-        opt_price_bs = black_scholes(current_price, strike, t_remaining, self.r, vol + self.iv_markup, opt_type, q=self.q)
-        opt_price_bs = self._lookup_option_price(timestamp, strike, opt_type, self.expiry_days, opt_price_bs)
-        opt_price = max(0.01, opt_price_bs - (self.spread_width / 2.0))
+        opt_price, _, _, _ = self._resolve_option_valuation(
+            timestamp, current_price, strike, opt_type, expiration_close, vol, "SELL",
+            contract_symbol=self.position.get("contract_symbol"),
+        )
         
         contract_multiplier = 100.0
-        current_value = self.position['qty'] * opt_price * contract_multiplier
+        current_value = self.position['qty'] * opt_price * contract_multiplier - (self.position['qty'] * self.option_contract_fee)
         return current_value - self.position['total_cost']
 
     def _calculate_metrics(self) -> dict:
@@ -1166,6 +1582,14 @@ class OptionsBacktester:
                     "max_loss_streak": 0,
                     "no_trade_reason": no_trade_reason,
                     "skipped_entry_count": len(self.skipped_entries),
+                    "unfilled_signal_count": len(self.unfilled_signals),
+                    "avg_greeks": {},
+                    "option_pricing_model": "Black-Scholes-Merton (continuous dividend yield)",
+                    "option_contract_fee": self.option_contract_fee,
+                    "volatility_method": "50-return realized volatility with separate open/close states",
+                    "execution_model": "Signals at bar close; market fills at next tradable bar open",
+                    "option_price_sources": [],
+                    "historical_quote_capabilities": self.option_quote_capabilities,
                 },
                 "equity_curve": self.equity_history[::max(1, len(self.equity_history)//200)] if self.equity_history else [],
                 "trades": [],
@@ -1276,6 +1700,19 @@ class OptionsBacktester:
                 c["cdl_bullish"] = False
                 c["cdl_bearish"] = False
 
+        # Calculate average Greeks across all option executions
+        avg_greeks = {}
+        if self.trades:
+            for k in ["delta", "gamma", "theta", "vega", "rho", "iv"]:
+                vals = [t["entry_greeks"].get(k, 0.0) for t in self.trades if isinstance(t.get("entry_greeks"), dict) and k in t["entry_greeks"]]
+                avg_greeks[k] = round(float(np.mean(vals)), 4) if vals else 0.0
+        price_sources = sorted({
+            source
+            for trade in self.trades
+            for source in (trade.get("entry_price_source"), trade.get("exit_price_source"))
+            if source
+        })
+
         return {
             "summary": {
                 "ticker": self.ticker,
@@ -1318,6 +1755,14 @@ class OptionsBacktester:
                 "max_win_streak": max_win_streak,
                 "max_loss_streak": max_loss_streak,
                 "skipped_entry_count": len(self.skipped_entries),
+                "unfilled_signal_count": len(self.unfilled_signals),
+                "avg_greeks": avg_greeks,
+                "option_pricing_model": "Black-Scholes-Merton (continuous dividend yield)",
+                "option_contract_fee": self.option_contract_fee,
+                "volatility_method": "50-return realized volatility with separate open/close states",
+                "execution_model": "Signals at bar close; market fills at next tradable bar open",
+                "option_price_sources": price_sources,
+                "historical_quote_capabilities": self.option_quote_capabilities,
             },
             "equity_curve": self.equity_history[::max(1, len(self.equity_history)//200)],
             "trades": self.trades[::-1],

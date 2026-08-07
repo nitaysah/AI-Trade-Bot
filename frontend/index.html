@@ -6,7 +6,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BotBulls — Your Automated Trading Command Center</title>
     <meta name="description" content="BotBulls helps you research, backtest, and automate trading strategies with disciplined risk controls.">
-    <link rel="icon" type="image/png" href="assets/bot_bulls_logo.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="assets/bot_bulls_logo.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="assets/bot_bulls_logo.png">
+    <link rel="shortcut icon" href="assets/bot_bulls_logo.png">
+    <link rel="apple-touch-icon" href="assets/bot_bulls_logo.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="assets/bot_bulls_logo.png">
+    <link rel="apple-touch-icon" sizes="152x152" href="assets/bot_bulls_logo.png">
+    <link rel="apple-touch-icon" sizes="167x167" href="assets/bot_bulls_logo.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="BotBulls">
+    <meta name="application-name" content="BotBulls">
+    <meta name="msapplication-TileImage" content="assets/bot_bulls_logo.png">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -14,12 +26,14 @@
     <style>
         :root { color-scheme: light; }
         * { box-sizing: border-box; }
-        body { font-family: 'Space Grotesk', sans-serif; background: linear-gradient(135deg, #fdf4ff 0%, #f3e8ff 50%, #e0e7ff 100%); color: #312e81; }
+        body { font-family: 'Space Grotesk', sans-serif; background: #f5f3ff; color: #312e81; }
         .mono { font-family: 'DM Mono', monospace; }
-        .grid-bg {
-            background-image: linear-gradient(rgba(139,92,246,.09) 1px, transparent 1px), linear-gradient(90deg, rgba(139,92,246,.09) 1px, transparent 1px);
-            background-size: 46px 46px;
-            mask-image: linear-gradient(to bottom, black 20%, transparent 92%);
+        .botbulls-brand-gradient {
+            background: linear-gradient(135deg, #a855f7 0%, #2dd4bf 55%, #10b981 100%) !important;
+            -webkit-background-clip: text !important;
+            -webkit-text-fill-color: transparent !important;
+            background-clip: text !important;
+            color: transparent !important;
         }
         .glow { box-shadow: 0 20px 70px rgba(139,92,246,.18), 0 4px 20px rgba(236,72,153,.08); }
         .edge-glow { box-shadow: inset 0 0 110px rgba(139,92,246,.16), inset 0 0 28px rgba(217,70,239,.08); }
@@ -78,85 +92,91 @@
         .dashboard-like .text-rose-300 { color: #be123c !important; }
         .dashboard-like .bg-gradient-to-r.from-cyan-300 { background-image: linear-gradient(to right, #e879f9, #8b5cf6, #6366f1) !important; }
         .dashboard-like .modal-backdrop { background: rgba(49,46,129,.28); }
-        .dashboard-like .modal-panel { border-color: rgba(196,181,253,.6); box-shadow: 0 24px 80px rgba(76,29,149,.22); }
-        @media (max-width: 639px) {
+        @media (max-width: 768px) {
             body > header { padding-top: .7rem !important; padding-bottom: .7rem !important; }
             body > header img { height: 2.5rem; width: 2.5rem; }
-            body > main { display: flex; flex-direction: column; gap: 0; padding-top: .15rem !important; padding-bottom: 1.5rem !important; }
+            body > main { display: flex !important; flex-direction: column !important; gap: 0 !important; padding-top: .15rem !important; padding-bottom: 1.5rem !important; }
             body > main > section:first-child { order: 1; text-align: center; }
-            body > main > section:nth-child(2) { order: 2; max-width: 26rem; margin-top: -.7rem !important; }
-            body > main > .mobile-bottom-content { order: 3; }
+            body > main > section:nth-child(2) { order: 2; max-width: 26rem; margin-top: 0.5rem !important; }
+            body > main > .mobile-trade-flow { order: 3; margin-top: 0.8rem !important; }
+            body > main > .mobile-trade-flow > .grid { gap: 0.5rem !important; }
+            body > main > .mobile-bottom-content { order: 4; margin-top: 0.5rem !important; }
             body > main > section:first-child > .mb-7 { margin-bottom: .5rem !important; }
             body > main > section:first-child h1 { font-size: 1.7rem; line-height: 1.08; }
             body > main > section:first-child > p { margin-top: .5rem !important; font-size: .78rem; line-height: 1.3rem; }
-            body > main > section:first-child > .grid { margin-top: .8rem !important; padding-top: .7rem !important; padding-bottom: .7rem !important; }
-            body > main > section:first-child > .grid > div > div:last-child { font-size: .62rem; line-height: .9rem; }
-            body > main > section:first-child > .grid:last-child { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .4rem; }
-            body > main > section:first-child > .grid:last-child > div { padding: .55rem .4rem; border-radius: .9rem; }
-            body > main > section:first-child > .grid:last-child > div > div:nth-child(2) { margin-top: .3rem; font-size: .68rem; }
-            body > main > section:first-child > .grid:last-child > div > div:last-child { font-size: .58rem; line-height: .8rem; }
-            .mobile-bottom-content { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .4rem; }
-            body > main > .mobile-bottom-content { margin-top: .8rem; }
+            .steps-grid { margin-top: 0.5rem !important; gap: 0.5rem !important; }
+            .steps-grid > div { padding: 0.65rem 0.5rem !important; border-radius: 0.85rem !important; }
+            .steps-grid > div > div:nth-child(1) { font-size: 0.85rem !important; line-height: 1 !important; }
+            .steps-grid > div > div:nth-child(2) { margin-top: 0.2rem !important; font-size: 0.72rem !important; line-height: 0.95rem !important; }
+            .steps-grid > div > div:nth-child(3) { margin-top: 0.15rem !important; font-size: 0.6rem !important; line-height: 0.82rem !important; }
+            .mobile-bottom-content { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; gap: 0.5rem !important; }
             .mobile-bottom-content > div { padding: .55rem .4rem; border-radius: .9rem; }
             .mobile-bottom-content > div > div:nth-child(2) { margin-top: .3rem; font-size: .68rem; }
             .mobile-bottom-content > div > div:last-child { font-size: .58rem; line-height: .8rem; }
             .auth-card { padding: .78rem !important; border-radius: 1.2rem; }
             .auth-card h2 { margin-top: .3rem; font-size: 1.12rem; line-height: 1.12; }
-            .auth-card > .relative > p { margin-top: .45rem !important; font-size: .72rem; line-height: 1.1rem; }
+            .auth-card > .relative > p:first-of-type { margin-top: .45rem !important; font-size: .72rem; line-height: 1.1rem; }
+            .agreement-disclaimer { font-size: 0.47rem !important; line-height: 0.68rem !important; }
             .auth-card .mt-7 { margin-top: .55rem !important; }
             .auth-card .mt-6 { margin-top: .6rem !important; }
             .auth-card .mt-5 { margin-top: .5rem !important; }
             .auth-card .rounded-2xl { padding: .55rem !important; }
             .auth-card .space-y-3 > :not([hidden]) ~ :not([hidden]) { margin-top: .45rem; }
             #loginBtn { margin-top: .65rem !important; padding-top: .65rem; padding-bottom: .65rem; }
+            #status { min-height: 0.3rem !important; padding-top: 0.15rem !important; }
+            .auth-card .mt-3 { margin-top: 0.2rem !important; }
             body > footer { padding-top: 1rem !important; padding-bottom: 1rem !important; }
         }
     </style>
 </head>
 
 <body class="dashboard-like min-h-screen overflow-x-hidden">
-    <div class="fixed inset-0 grid-bg pointer-events-none"></div>
     <div class="edge-glow fixed inset-0 z-0 pointer-events-none"></div>
     <div class="fixed -left-24 top-16 h-72 w-72 rounded-full bg-cyan-500/10 blur-3xl hero-orb pointer-events-none"></div>
     <div class="fixed right-0 top-1/3 h-96 w-96 rounded-full bg-amber-400/10 blur-3xl hero-orb two pointer-events-none"></div>
     <div class="fixed left-0 top-0 h-1 w-full bg-gradient-to-r from-cyan-400 via-emerald-400 to-amber-300"></div>
 
-    <header class="relative z-10 mx-auto flex max-w-5xl items-center justify-between px-4 py-6">
-        <div class="flex items-center gap-3">
-            <img src="assets/bot_bulls_logo.png" alt="BotBulls logo" class="h-10 w-10 rounded-xl border border-purple-200/80 bg-white/80 object-cover shadow-lg shadow-purple-500/15">
-            <div>
-                <div class="text-lg font-bold tracking-tight">Bot<span class="text-cyan-300">Bulls</span></div>
-                <div class="mono text-[9px] uppercase tracking-[.25em] text-slate-500">Autonomous trading lab</div>
-            </div>
-        </div>
-        <div class="hidden items-center gap-5 text-xs font-medium text-slate-400 sm:flex">
-            <span class="flex items-center gap-2"><span class="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_10px_#34d399]"></span>Systems online</span>
-            <span class="rounded-full border border-slate-700/80 px-3 py-1.5">Paper-first by design</span>
+    <header class="relative z-10 mx-auto flex max-w-5xl flex-col items-center justify-center px-4 pt-4 pb-2 text-center sm:pt-4 sm:pb-1">
+        <div class="inline-flex items-center gap-2.5 rounded-2xl border border-purple-300/30 bg-slate-900/60 px-3 py-1.5 shadow-xl shadow-purple-500/20 transition-all duration-300 hover:scale-[1.02] hover:border-purple-300/50 hover:shadow-purple-500/30 sm:px-4 sm:py-2">
+            <img src="assets/bot_bulls_logo.png" alt="BotBulls logo" class="h-9 w-9 rounded-xl border border-purple-200/80 bg-white/90 object-cover shadow-md sm:h-11 sm:w-11">
+            <div class="text-3xl font-extrabold leading-none tracking-tight sm:text-4xl botbulls-brand-gradient">BotBulls</div>
         </div>
     </header>
 
-    <main class="relative z-10 mx-auto grid max-w-5xl items-center gap-12 px-4 pb-12 pt-4 lg:grid-cols-[1.08fr_.92fr] lg:gap-12 lg:pb-20 lg:pt-12">
+    <main class="relative z-10 mx-auto grid max-w-5xl items-center gap-6 px-4 pb-6 pt-2 lg:grid-cols-[1.08fr_.92fr] lg:gap-8 lg:pb-8 lg:pt-4">
         <section class="min-w-0">
-            <div class="mb-7 inline-flex items-center gap-2 rounded-full border border-cyan-300/20 bg-cyan-300/5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[.18em] text-cyan-200">
-                <span class="h-1.5 w-1.5 rounded-full bg-cyan-300"></span> A calmer way to trade
+            <div class="mb-4 inline-flex items-center gap-2 rounded-full border border-cyan-300/20 bg-cyan-300/5 px-3 py-1 text-[10px] font-semibold uppercase tracking-[.18em] text-cyan-200">
+                <span class="h-1.5 w-1.5 rounded-full bg-cyan-300"></span> Autonomous AI Trading Lab • A calmer way to trade
             </div>
-            <h1 class="max-w-3xl text-4xl font-bold leading-[1.05] tracking-[-.045em] text-white sm:text-6xl lg:text-7xl">Give your strategy a <span class="bg-gradient-to-r from-cyan-300 via-emerald-300 to-amber-200 bg-clip-text text-transparent">disciplined engine.</span></h1>
-            <p class="mt-6 max-w-xl text-base leading-7 text-slate-400 sm:text-lg">BotBulls connects market data, technical signals, AI analysis, backtesting, and broker execution in one command center—so every trade has a plan before it has a position.</p>
+            <h1 class="max-w-3xl text-3xl font-bold leading-[1.05] tracking-[-.045em] text-white sm:text-5xl lg:text-6xl">Give your strategy a <span class="bg-gradient-to-r from-cyan-300 via-emerald-300 to-amber-200 bg-clip-text text-transparent">disciplined engine.</span></h1>
+            <p class="mt-3.5 max-w-xl text-sm leading-6 text-slate-400 sm:text-base">BotBulls connects market data, technical signals, AI analysis, backtesting, and broker execution in one command center—so every trade has a plan before it has a position.</p>
 
-            <div class="mt-9 grid max-w-xl grid-cols-3 gap-3 border-y border-slate-800/80 py-5">
-                <div><div class="mono text-lg text-cyan-200">01</div><div class="mt-1 text-[11px] leading-4 text-slate-500">Build a strategy</div></div>
-                <div><div class="mono text-lg text-emerald-200">02</div><div class="mt-1 text-[11px] leading-4 text-slate-500">Backtest the idea</div></div>
-                <div><div class="mono text-lg text-amber-200">03</div><div class="mt-1 text-[11px] leading-4 text-slate-500">Automate with guardrails</div></div>
+            <div class="steps-grid mt-4 md:mt-5 grid max-w-xl grid-cols-3 gap-1.5 md:gap-3">
+                <div class="group rounded-xl md:rounded-2xl border border-slate-800 bg-slate-900/45 p-2.5 md:p-4 transition-all duration-300 hover:-translate-y-1 hover:border-cyan-300/30 hover:bg-slate-900/60 hover:shadow-lg">
+                    <div class="mono text-sm md:text-lg font-bold text-cyan-200 leading-none">01</div>
+                    <div class="mt-1.5 md:mt-2 text-[11px] md:text-sm font-bold text-slate-200 leading-tight">Build a strategy</div>
+                    <div class="mt-0.5 md:mt-1 text-[9.5px] md:text-[11px] leading-3 md:leading-4 text-slate-500">Combine indicators & AI rules.</div>
+                </div>
+                <div class="group rounded-xl md:rounded-2xl border border-slate-800 bg-slate-900/45 p-2.5 md:p-4 transition-all duration-300 hover:-translate-y-1 hover:border-emerald-300/30 hover:bg-slate-900/60 hover:shadow-lg">
+                    <div class="mono text-sm md:text-lg font-bold text-emerald-200 leading-none">02</div>
+                    <div class="mt-1.5 md:mt-2 text-[11px] md:text-sm font-bold text-slate-200 leading-tight">Backtest the idea</div>
+                    <div class="mt-0.5 md:mt-1 text-[9.5px] md:text-[11px] leading-3 md:leading-4 text-slate-500">Simulate across tick data.</div>
+                </div>
+                <div class="group rounded-xl md:rounded-2xl border border-slate-800 bg-slate-900/45 p-2.5 md:p-4 transition-all duration-300 hover:-translate-y-1 hover:border-amber-300/30 hover:bg-slate-900/60 hover:shadow-lg">
+                    <div class="mono text-sm md:text-lg font-bold text-amber-200 leading-none">03</div>
+                    <div class="mt-1.5 md:mt-2 text-[11px] md:text-sm font-bold text-slate-200 leading-tight">Automate with guardrails</div>
+                    <div class="mt-0.5 md:mt-1 text-[9.5px] md:text-[11px] leading-3 md:leading-4 text-slate-500">Deploy with risk controls.</div>
+                </div>
             </div>
 
-            <div class="relative mt-10 hidden max-w-xl sm:block" aria-label="How BotBulls automates a trade">
-                <div class="absolute left-[12%] right-[12%] top-10 h-px bg-gradient-to-r from-cyan-300/30 via-emerald-300/70 to-amber-300/30"></div>
-                <div class="pulse-line absolute left-[12%] top-10 h-px w-1/3 bg-cyan-200 blur-[1px]"></div>
+            <div class="relative mt-5 hidden max-w-xl md:block" aria-label="How BotBulls automates a trade">
+                <div class="absolute left-[12%] right-[12%] top-7 h-px bg-gradient-to-r from-cyan-300/30 via-emerald-300/70 to-amber-300/30"></div>
+                <div class="pulse-line absolute left-[12%] top-7 h-px w-1/3 bg-cyan-200 blur-[1px]"></div>
                 <div class="grid grid-cols-4 gap-3">
-                    <div class="float-card relative text-center"><div class="mx-auto flex h-20 w-20 items-center justify-center rounded-2xl border border-cyan-300/25 bg-slate-900/80 text-2xl shadow-lg shadow-cyan-500/10">◌</div><div class="mt-3 text-xs font-semibold text-slate-200">Market data</div><div class="mt-1 text-[10px] text-slate-500">Price + volume</div></div>
-                    <div class="float-card delay relative text-center"><div class="mx-auto flex h-20 w-20 items-center justify-center rounded-2xl border border-emerald-300/25 bg-slate-900/80 text-2xl shadow-lg shadow-emerald-500/10">⌁</div><div class="mt-3 text-xs font-semibold text-slate-200">Signal engine</div><div class="mt-1 text-[10px] text-slate-500">Confluence check</div></div>
-                    <div class="float-card relative text-center"><div class="mx-auto flex h-20 w-20 items-center justify-center rounded-2xl border border-violet-300/25 bg-slate-900/80 text-2xl shadow-lg shadow-violet-500/10">✦</div><div class="mt-3 text-xs font-semibold text-slate-200">AI review</div><div class="mt-1 text-[10px] text-slate-500">Context + sentiment</div></div>
-                    <div class="float-card delay relative text-center"><div class="mx-auto flex h-20 w-20 items-center justify-center rounded-2xl border border-amber-300/25 bg-slate-900/80 text-2xl shadow-lg shadow-amber-500/10">↗</div><div class="mt-3 text-xs font-semibold text-slate-200">Risk-aware order</div><div class="mt-1 text-[10px] text-slate-500">Size + exits</div></div>
+                    <div class="float-card relative text-center"><div class="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-cyan-300/25 bg-slate-900/80 text-xl shadow-lg shadow-cyan-500/10">◌</div><div class="mt-2 text-xs font-semibold text-slate-200">Market data</div><div class="mt-0.5 text-[10px] text-slate-500">Price + volume</div></div>
+                    <div class="float-card delay relative text-center"><div class="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-emerald-300/25 bg-slate-900/80 text-xl shadow-lg shadow-emerald-500/10">⌁</div><div class="mt-2 text-xs font-semibold text-slate-200">Signal engine</div><div class="mt-0.5 text-[10px] text-slate-500">Confluence check</div></div>
+                    <div class="float-card relative text-center"><div class="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-violet-300/25 bg-slate-900/80 text-xl shadow-lg shadow-violet-500/10">✦</div><div class="mt-2 text-xs font-semibold text-slate-200">AI review</div><div class="mt-0.5 text-[10px] text-slate-500">Context + sentiment</div></div>
+                    <div class="float-card delay relative text-center"><div class="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-amber-300/25 bg-slate-900/80 text-xl shadow-lg shadow-amber-500/10">↗</div><div class="mt-2 text-xs font-semibold text-slate-200">Risk-aware order</div><div class="mt-0.5 text-[10px] text-slate-500">Size + exits</div></div>
                 </div>
             </div>
 
@@ -167,7 +187,7 @@
                 <div class="scan-line pointer-events-none absolute left-0 right-0 top-0 h-20 bg-gradient-to-b from-transparent via-cyan-300/5 to-transparent"></div>
                 <div class="relative">
                     <div class="flex items-start justify-between gap-4">
-                        <div><div class="mono text-[10px] uppercase tracking-[.25em] text-cyan-300">Welcome to the desk</div><h2 class="mt-3 text-2xl font-bold tracking-tight">Start with your own command center.</h2></div>
+                        <div><h2 class="text-2xl font-bold tracking-tight">Start with your own command center.</h2></div>
                         <div class="rounded-xl border border-emerald-300/20 bg-emerald-300/10 px-2.5 py-2 text-center"><div class="h-2 w-2 mx-auto rounded-full bg-emerald-300 shadow-[0_0_12px_#6ee7b7]"></div><div class="mt-1 text-[9px] font-bold uppercase tracking-wider text-emerald-200">Ready</div></div>
                     </div>
                     <p class="mt-4 text-sm leading-6 text-slate-400">Sign in to save watchlists, bot settings, backtests, and execution history to your private workspace.</p>
@@ -194,11 +214,38 @@
                         <svg class="h-5 w-5" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.66l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
                         Continue with Google
                     </button>
-                    <div id="status" class="min-h-5 pt-3 text-center text-[10px] font-bold uppercase tracking-[.15em] text-cyan-300"></div>
-                    <div class="mt-5 flex flex-wrap items-center justify-center gap-2 text-[10px] text-slate-600"><span>Firebase-authenticated</span><span>•</span><span>User-isolated workspace</span><span>•</span><span>Paper trading available</span></div>
+                    <div id="status" class="min-h-3 pt-1 text-center text-[9px] font-bold uppercase tracking-[.15em] text-cyan-300"></div>
+                    <div class="mt-1 flex flex-wrap items-center justify-center gap-2 text-[8px] text-slate-600"><span>User-isolated workspace</span><span>•</span><span>Paper trading available</span></div>
+                    <p class="agreement-disclaimer mt-1 text-center text-[7.5px] leading-3 text-slate-500/70">By continuing, you are creating an account and accepting the latest agreement version shown above. Legal protections depend on your applicable law and operating practices.</p>
                 </div>
             </div>
-            <p class="mt-5 text-center text-[10px] leading-5 text-slate-600">By continuing, you are creating an account and accepting the latest agreement version shown above. Legal protections depend on your applicable law and operating practices.</p>
+        </section>
+
+        <section class="mobile-trade-flow relative mx-auto block w-full max-w-md md:hidden" aria-label="How BotBulls automates a trade on mobile">
+            <div class="absolute left-[12%] right-[12%] top-5 h-px bg-gradient-to-r from-cyan-300/30 via-emerald-300/70 to-amber-300/30"></div>
+            <div class="pulse-line absolute left-[12%] top-5 h-px w-1/3 bg-cyan-200 blur-[1px]"></div>
+            <div class="grid grid-cols-4 gap-1.5">
+                <div class="float-card relative text-center">
+                    <div class="mx-auto flex h-10 w-10 items-center justify-center rounded-xl border border-cyan-300/25 bg-slate-900/80 text-base shadow-md shadow-cyan-500/10">◌</div>
+                    <div class="mt-2 text-[9.5px] font-semibold text-slate-200 leading-tight">Market data</div>
+                    <div class="mt-0.5 text-[8px] text-slate-500 leading-tight">Price + volume</div>
+                </div>
+                <div class="float-card delay relative text-center">
+                    <div class="mx-auto flex h-10 w-10 items-center justify-center rounded-xl border border-emerald-300/25 bg-slate-900/80 text-base shadow-md shadow-emerald-500/10">⌁</div>
+                    <div class="mt-2 text-[9.5px] font-semibold text-slate-200 leading-tight">Signal engine</div>
+                    <div class="mt-0.5 text-[8px] text-slate-500 leading-tight">Confluence check</div>
+                </div>
+                <div class="float-card relative text-center">
+                    <div class="mx-auto flex h-10 w-10 items-center justify-center rounded-xl border border-violet-300/25 bg-slate-900/80 text-base shadow-md shadow-violet-500/10">✦</div>
+                    <div class="mt-2 text-[9.5px] font-semibold text-slate-200 leading-tight">AI review</div>
+                    <div class="mt-0.5 text-[8px] text-slate-500 leading-tight">Context + sentiment</div>
+                </div>
+                <div class="float-card delay relative text-center">
+                    <div class="mx-auto flex h-10 w-10 items-center justify-center rounded-xl border border-amber-300/25 bg-slate-900/80 text-base shadow-md shadow-amber-500/10">↗</div>
+                    <div class="mt-2 text-[9.5px] font-semibold text-slate-200 leading-tight">Risk-aware order</div>
+                    <div class="mt-0.5 text-[8px] text-slate-500 leading-tight">Size + exits</div>
+                </div>
+            </div>
         </section>
 
         <section class="mobile-bottom-content mx-auto grid w-full max-w-md gap-3 sm:grid-cols-3 lg:col-span-2 lg:max-w-5xl" aria-label="BotBulls platform benefits">

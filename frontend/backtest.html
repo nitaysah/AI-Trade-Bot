@@ -5,13 +5,25 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Bot Bulls — Backtest Center</title>
-    <link rel="icon" type="image/png" href="assets/bot_bulls_logo.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="assets/bot_bulls_logo.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="assets/bot_bulls_logo.png">
+    <link rel="shortcut icon" href="assets/bot_bulls_logo.png">
+    <link rel="apple-touch-icon" href="assets/bot_bulls_logo.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="assets/bot_bulls_logo.png">
+    <link rel="apple-touch-icon" sizes="152x152" href="assets/bot_bulls_logo.png">
+    <link rel="apple-touch-icon" sizes="167x167" href="assets/bot_bulls_logo.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="BotBulls">
+    <meta name="application-name" content="BotBulls">
+    <meta name="msapplication-TileImage" content="assets/bot_bulls_logo.png">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
         rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=35">
+    <link rel="stylesheet" href="styles.css?v=36">
     <style>
         body.backtest-page {
             font-size: 14px;
@@ -24,15 +36,6 @@
         body.backtest-page header {
             margin-bottom: 1rem;
             padding-bottom: 0.75rem;
-        }
-
-        body.backtest-page header h1 {
-            font-size: clamp(1.5rem, 2.5vw, 2.5rem);
-        }
-
-        body.backtest-page header p {
-            font-size: 0.7rem;
-            letter-spacing: 0.18em;
         }
 
         body.backtest-page #btSettingsContainer {
@@ -254,7 +257,7 @@
         <header class="flex flex-col items-center text-center mb-3 gap-2 border-b border-purple-200/80 pb-2.5">
             <div class="space-y-1">
                 <h1
-                    class="flex items-center justify-center gap-3 text-2xl md:text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 leading-tight">
+                    class="flex items-center justify-center gap-3 text-2xl md:text-4xl font-black text-transparent bg-clip-text botbulls-brand-gradient bg-gradient-to-r from-purple-500 via-teal-400 to-emerald-500 leading-tight">
                     <img src="assets/bot_bulls_logo.png" alt="BotBulls logo" class="h-12 w-12 rounded-2xl border border-purple-200/80 bg-white/80 object-cover shadow-md shadow-purple-500/15">
                     <span>Backtest Center</span>
                 </h1>
@@ -263,37 +266,43 @@
                 </p>
             </div>
 
-            <div class="flex flex-wrap justify-center items-center gap-2 md:gap-3 w-full">
+            <div class="mobile-nav-grid flex flex-wrap justify-center items-center gap-2 md:gap-3 w-full">
                 <a href="dashboard.html"
                     class="flex items-center justify-center h-9 text-xs font-black bg-purple-50 text-indigo-600 border-2 border-purple-100 rounded-full px-5 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
-                    📈 Dashboard
+                    Dashboard
                 </a>
 
                 <a href="bots.html"
                     class="flex items-center justify-center h-9 text-xs font-black bg-purple-50 text-indigo-600 border-2 border-purple-100 rounded-full px-5 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
-                    🤖 Active Bots
+                    Active Bots
                 </a>
 
                 <a href="backtest.html"
                     class="flex items-center justify-center h-9 text-xs font-black bg-indigo-600 text-white border-2 border-indigo-600 rounded-full px-5 hover:bg-indigo-700 hover:border-indigo-700 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
-                    📊 Backtest Center
+                    Backtest Center
                 </a>
 
                 <a href="strategy.html"
                     class="flex items-center justify-center h-9 text-xs font-black bg-purple-50 text-indigo-600 border-2 border-purple-100 rounded-full px-5 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
-                    🧠 Strategies
+                    Strategies
                 </a>
 
-                <div class="flex items-center gap-2 md:gap-3">
-                    <span id="alpacaLinkStatus"
-                        class="flex items-center justify-center h-9 text-xs font-black px-5 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider">
-                        <span class="h-2 w-2 rounded-full mr-2" id="alpacaStatusDot"></span>
-                        <span id="alpacaStatusText">Checking...</span>
-                        <button id="btnUnlinkAlpaca" onclick="unlinkAlpaca()"
-                            class="hidden ml-3 px-2 py-0.5 bg-rose-500 text-white rounded-full text-[9px] hover:bg-rose-600 transition-all uppercase tracking-tighter">
-                            Unlink
+                <div class="nav-group flex items-center gap-2 md:gap-3">
+                    <div id="alpacaConnectionContainer" class="nav-group flex items-center">
+                        <button onclick="window.location.href='bots.html'" id="alpacaLinkRedirectBtn"
+                            class="flex items-center justify-center h-9 text-xs font-black bg-emerald-50 text-emerald-600 border-2 border-emerald-100 rounded-full px-5 hover:bg-emerald-600 hover:text-white transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
+                            Connect Alpaca
                         </button>
-                    </span>
+                        <span id="alpacaLinkStatus"
+                            class="hidden flex items-center justify-center h-9 text-xs font-black px-5 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider">
+                            <span class="h-2 w-2 rounded-full mr-2" id="alpacaStatusDot"></span>
+                            <span id="alpacaStatusText">Checking...</span>
+                            <button id="btnUnlinkAlpaca" onclick="unlinkAlpaca()"
+                                class="hidden ml-3 px-2 py-0.5 bg-rose-500 text-white rounded-full text-[9px] hover:bg-rose-600 transition-all uppercase tracking-tighter">
+                                Unlink
+                            </button>
+                        </span>
+                    </div>
 
                     <button onclick="logoutCommander()"
                         class="flex items-center justify-center h-9 text-xs font-black bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white transition-all px-5 rounded-full border-2 border-rose-100 shadow-sm whitespace-nowrap uppercase tracking-wider">
@@ -306,9 +315,13 @@
         <div id="btSettingsContainer" class="space-y-4 animate-in fade-in duration-500">
             <div
                 class="relative z-30 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6 p-6 bg-white/60 backdrop-blur-xl rounded-3xl border border-white shadow-xl">
-                <div class="sm:col-span-2 lg:col-span-4 flex justify-center">
+                <div class="sm:col-span-2 lg:col-span-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    <button id="runBtChartBtn" onclick="openManualBtChartEmpty()"
+                        class="w-full sm:w-auto px-5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-black rounded-full border border-indigo-200 transition-all text-[0.65rem] uppercase tracking-widest active:scale-95 shadow-sm inline-flex items-center justify-center gap-2">
+                        <span>📊</span> OPEN MANUAL TESTING CHART
+                    </button>
                     <button onclick="document.getElementById('backtestGuideModal').classList.remove('hidden')"
-                        class="px-5 py-2 bg-fuchsia-50 hover:bg-fuchsia-100 text-fuchsia-600 font-black rounded-full border border-fuchsia-200 transition-all text-[0.65rem] uppercase tracking-widest active:scale-95 shadow-sm inline-flex items-center gap-2">
+                        class="w-full sm:w-auto px-5 py-2 bg-fuchsia-50 hover:bg-fuchsia-100 text-fuchsia-600 font-black rounded-full border border-fuchsia-200 transition-all text-[0.65rem] uppercase tracking-widest active:scale-95 shadow-sm inline-flex items-center justify-center gap-2">
                         <span>📖</span> Read Backtesting Guide
                     </button>
                 </div>
@@ -389,7 +402,7 @@
                         <h4 class="text-xs font-black text-indigo-950 uppercase tracking-widest">Regular Trading</h4>
                         <p class="text-[0.6rem] font-bold text-indigo-500 uppercase tracking-widest mt-0.5">Stocks & Crypto</p>
                     </div>
-                    
+
                     <!-- Options Trading Card -->
                     <div id="btModeCard_options" class="bt-mode-card p-4 border-2 border-white/60 rounded-3xl bg-white/40 shadow-sm cursor-pointer transition-all hover:scale-[1.02] hover:bg-white/60" onclick="toggleBtMode('options')">
                         <div class="flex items-center justify-between mb-2">
@@ -701,7 +714,7 @@
                     <div class="indicator-card group p-2.5 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
                         onclick="toggleIndicatorCard(this, event)">
                         <div class="flex flex-col">
-                            <span class="font-black text-indigo-900 uppercase">VWAP<div
+                            <span class="font-black text-indigo-900 uppercase">AVWAP<div
                                     class="group/tooltip relative inline-flex items-center ml-1">
                                         <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('VWAP')"
                                             xmlns="http://www.w3.org/2000/svg"
@@ -1105,14 +1118,14 @@
                         <div class="flex items-center gap-2">
                             <button onclick="adjustStrategyThreshold('regular', 'buy', -1)"
                                 class="w-7 h-7 flex items-center justify-center bg-white/30 text-emerald-700 rounded-lg border border-white/40 hover:bg-emerald-500/20 transition-all active:scale-90 text-sm font-black shadow-sm">−</button>
-                            <input type="number" id="strategyBuyThreshold_regular" min="0" max="10" value="0"
+                            <input type="number" id="strategyBuyThreshold_regular" min="1" max="10" value="1"
                                 class="w-12 h-9 text-center text-lg font-black text-emerald-700 bg-white/40 border border-emerald-500/20 rounded-xl outline-none focus:bg-white/70 focus:border-emerald-500/50 transition-all shadow-sm"
                                 oninput="updateBtRegularSignalLabels()">
                             <button onclick="adjustStrategyThreshold('regular', 'buy', 1)"
                                 class="w-7 h-7 flex items-center justify-center bg-white/30 text-emerald-700 rounded-lg border border-white/40 hover:bg-emerald-500/20 transition-all active:scale-90 text-sm font-black shadow-sm">+</button>
                         </div>
                         <span id="strategyBuyLabel_regular"
-                            class="text-[0.5rem] font-black px-3 py-1 rounded-full bg-emerald-100/80 text-emerald-700 border border-emerald-200/55 uppercase tracking-wider transition-all duration-300">0 Signals</span>
+                            class="text-[0.5rem] font-black px-3 py-1 rounded-full bg-emerald-100/80 text-emerald-700 border border-emerald-200/55 uppercase tracking-wider transition-all duration-300">1 Signal</span>
                     </div>
                 </div>
 
@@ -1163,6 +1176,64 @@
                             <option value="dip_reclaim" selected>Dip Reclaim</option>
                             <option value="breakout_momentum">Breakout / Momentum</option>
                         </select>
+                    </div>
+
+                    <div class="col-span-1 sm:col-span-2 pt-2 border-t border-emerald-500/20">
+                        <label class="flex items-center gap-2 mb-2 cursor-pointer group">
+                            <div class="relative flex items-center">
+                                <input type="checkbox" id="strategyGridContinuous_regular" class="sr-only peer" onchange="document.getElementById('strategyGridFields_regular').classList.toggle('hidden', !this.checked)">
+                                <div class="w-8 h-4 bg-slate-300 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-emerald-500 shadow-inner"></div>
+                            </div>
+                            <span class="text-[0.6rem] font-black text-indigo-900 uppercase tracking-widest group-hover:text-emerald-600 transition-colors">Enable Continuous Grid</span>
+                        </label>
+
+                        <div id="strategyGridFields_regular" class="hidden space-y-2 mt-2">
+                            <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                                <div class="space-y-1">
+                                    <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Buy Alloc ($)</label>
+                                    <input type="number" step="1" min="1" id="strategyGridBuyAllocation_regular" value="1000" class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-emerald-400/80 outline-none transition-all">
+                                </div>
+                                <div class="space-y-1">
+                                    <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Sell Size (%)</label>
+                                    <input type="number" step="1" min="1" max="100" id="strategyGridSellPct_regular" value="50" class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-emerald-400/80 outline-none transition-all">
+                                </div>
+                                <div class="space-y-1">
+                                    <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Grid Levels (1-5)</label>
+                                    <select id="strategyGridMaxLevels_regular" onchange="if(window.updateGridLevelInputs) window.updateGridLevelInputs('regular', 'entry')" class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-emerald-400/80 outline-none transition-all">
+                                        <option value="1">1 Level</option>
+                                        <option value="2">2 Levels</option>
+                                        <option value="3" selected>3 Levels</option>
+                                        <option value="4">4 Levels</option>
+                                        <option value="5">5 Levels</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div id="strategyGridLevelPcts_regular" class="mt-2 p-2.5 rounded-xl bg-emerald-500/5 border border-emerald-500/15 space-y-1.5">
+                                <span class="block text-[0.55rem] font-black text-emerald-900 uppercase tracking-widest">Custom Entry Grid Level Dips (%)</span>
+                                <div class="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
+                                    <div id="gridEntryL1_wrap_regular" class="space-y-0.5">
+                                        <label class="block text-[0.5rem] font-black text-emerald-600 uppercase">L1 %</label>
+                                        <input type="number" step="0.1" min="0.1" id="strategyGridEntryL1_regular" value="10" placeholder="10%" class="w-full bg-white/60 border border-emerald-200 rounded-lg px-2 py-1 text-xs font-black text-indigo-950 outline-none">
+                                    </div>
+                                    <div id="gridEntryL2_wrap_regular" class="space-y-0.5">
+                                        <label class="block text-[0.5rem] font-black text-emerald-600 uppercase">L2 %</label>
+                                        <input type="number" step="0.1" min="0.1" id="strategyGridEntryL2_regular" value="25" placeholder="25%" class="w-full bg-white/60 border border-emerald-200 rounded-lg px-2 py-1 text-xs font-black text-indigo-950 outline-none">
+                                    </div>
+                                    <div id="gridEntryL3_wrap_regular" class="space-y-0.5">
+                                        <label class="block text-[0.5rem] font-black text-emerald-600 uppercase">L3 %</label>
+                                        <input type="number" step="0.1" min="0.1" id="strategyGridEntryL3_regular" value="50" placeholder="50%" class="w-full bg-white/60 border border-emerald-200 rounded-lg px-2 py-1 text-xs font-black text-indigo-950 outline-none">
+                                    </div>
+                                    <div id="gridEntryL4_wrap_regular" class="space-y-0.5 hidden">
+                                        <label class="block text-[0.5rem] font-black text-emerald-600 uppercase">L4 %</label>
+                                        <input type="number" step="0.1" min="0.1" id="strategyGridEntryL4_regular" value="75" placeholder="75%" class="w-full bg-white/60 border border-emerald-200 rounded-lg px-2 py-1 text-xs font-black text-indigo-950 outline-none">
+                                    </div>
+                                    <div id="gridEntryL5_wrap_regular" class="space-y-0.5 hidden">
+                                        <label class="block text-[0.5rem] font-black text-emerald-600 uppercase">L5 %</label>
+                                        <input type="number" step="0.1" min="0.1" id="strategyGridEntryL5_regular" value="100" placeholder="100%" class="w-full bg-white/60 border border-emerald-200 rounded-lg px-2 py-1 text-xs font-black text-indigo-950 outline-none">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -1249,14 +1320,14 @@
                             <div class="flex items-center gap-2">
                                 <button type="button" onclick="adjustStrategyThreshold('regular', 'sell', -1)"
                                     class="w-7 h-7 flex items-center justify-center bg-white/30 text-rose-700 rounded-lg border border-white/40 hover:bg-rose-500/20 transition-all active:scale-90 text-sm font-black shadow-sm">−</button>
-                                <input type="number" id="strategySellThreshold_regular" min="0" max="10" value="0"
+                                <input type="number" id="strategySellThreshold_regular" min="1" max="10" value="1"
                                     class="w-12 h-9 text-center text-lg font-black text-rose-700 bg-white/40 border border-rose-500/20 rounded-xl outline-none focus:bg-white/70 focus:border-rose-500/50 transition-all shadow-sm"
                                     oninput="updateBtRegularSignalLabels()">
                                 <button type="button" onclick="adjustStrategyThreshold('regular', 'sell', 1)"
                                     class="w-7 h-7 flex items-center justify-center bg-white/30 text-rose-700 rounded-lg border border-white/40 hover:bg-rose-500/20 transition-all active:scale-90 text-sm font-black shadow-sm">+</button>
                             </div>
                             <span id="strategySellLabel_regular"
-                                class="text-[0.5rem] font-black px-3 py-1 rounded-full bg-rose-100/80 text-rose-700 border border-rose-200/55 uppercase tracking-wider transition-all duration-300">0
+                                class="text-[0.5rem] font-black px-3 py-1 rounded-full bg-rose-100/80 text-rose-700 border border-rose-200/55 uppercase tracking-wider transition-all duration-300">1
                                 Signals</span>
                         </div>
                     </div>
@@ -1293,33 +1364,57 @@
                         </div>
                     </div>
                     
-                    <div id="exitFieldsPct" class="hidden grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2 pt-1">
-                        <div class="space-y-1">
-                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Stop Loss %</label>
-                            <input type="number" step="1" id="strategyRegularSlPct" oninput="window.updatePctPreview && window.updatePctPreview()"
-                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
-                                value="5">
-                        </div>
-                        <div class="space-y-1">
-                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Take Profit %</label>
-                            <input type="number" step="1" id="strategyRegularTpPct" oninput="window.updatePctPreview && window.updatePctPreview()"
-                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
-                                value="10">
-                        </div>
-                        <div class="space-y-1">
-                            <div class="flex items-center justify-between">
-                                <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Trailing Stop %</label>
-                                <label class="flex items-center gap-1.5 cursor-pointer">
-                                    <input type="checkbox" id="strategyEnablePctTrail" checked class="accent-indigo-500 w-3 h-3"
-                                        onchange="document.getElementById('strategyRegularTrailPct').disabled = !this.checked; document.getElementById('strategyRegularTrailPct').classList.toggle('opacity-50', !this.checked); window.updatePctPreview && window.updatePctPreview();">
-                                    <span class="text-[0.55rem] font-black text-indigo-900 uppercase tracking-widest">Trail</span>
-                                </label>
+                    <div id="exitFieldsPct" class="hidden mt-2 pt-1">
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            <div class="space-y-1">
+                                <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Stop Loss %</label>
+                                <input type="number" step="1" id="strategyRegularSlPct" oninput="window.updatePctPreview && window.updatePctPreview()"
+                                    class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
+                                    value="5">
                             </div>
-                            <input type="number" step="1" id="strategyRegularTrailPct" oninput="window.updatePctPreview && window.updatePctPreview()"
-                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
-                                value="3">
+                            <div class="space-y-1">
+                                <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Take Profit %</label>
+                                <input type="number" step="1" id="strategyRegularTpPct" oninput="window.updatePctPreview && window.updatePctPreview()"
+                                    class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
+                                    value="10">
+                            </div>
+                            <div class="space-y-1">
+                                <div class="flex items-center justify-between">
+                                    <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Trailing Stop %</label>
+                                    <label class="flex items-center gap-1.5 cursor-pointer">
+                                        <input type="checkbox" id="strategyEnablePctTrail" checked class="accent-indigo-500 w-3 h-3"
+                                            onchange="document.getElementById('strategyRegularTrailPct').disabled = !this.checked; document.getElementById('strategyRegularTrailPct').classList.toggle('opacity-50', !this.checked); window.updatePctPreview && window.updatePctPreview();">
+                                        <span class="text-[0.55rem] font-black text-indigo-900 uppercase tracking-widest">Trail</span>
+                                    </label>
+                                </div>
+                                <input type="number" step="1" id="strategyRegularTrailPct" oninput="window.updatePctPreview && window.updatePctPreview()"
+                                    class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
+                                    value="3">
+                            </div>
                         </div>
-                        <div id="pctPreviewBox" class="col-span-1 sm:col-span-3 mt-2 p-3 bg-indigo-500/10 rounded-xl border border-indigo-500/20 text-[0.65rem] text-indigo-900 font-bold text-center hidden">
+
+                        <div class="mt-4 pt-3 border-t border-indigo-500/10">
+                            <label class="flex items-center gap-2 mb-2 cursor-pointer group">
+                                <div class="relative flex items-center">
+                                    <input type="checkbox" id="strategyExitGridContinuous_regular" class="sr-only peer" onchange="document.getElementById('strategyExitGridFields_regular').classList.toggle('hidden', !this.checked)">
+                                    <div class="w-8 h-4 bg-slate-300 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-purple-500 shadow-inner"></div>
+                                </div>
+                                <span class="text-[0.6rem] font-black text-indigo-900 uppercase tracking-widest group-hover:text-purple-600 transition-colors">Enable Continuous Grid</span>
+                            </label>
+
+                            <div id="strategyExitGridFields_regular" class="hidden grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+                                <div class="space-y-1">
+                                    <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Sell Size (%)</label>
+                                    <input type="number" step="1" min="1" max="100" id="strategyExitGridSellPct_regular" value="50" class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 outline-none transition-all">
+                                </div>
+                                <div class="space-y-1">
+                                    <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Max Levels</label>
+                                    <input type="number" step="1" min="1" id="strategyExitGridMaxLevels_regular" value="5" class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 outline-none transition-all">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="pctPreviewBox" class="mt-2 p-3 bg-indigo-500/10 rounded-xl border border-indigo-500/20 text-[0.65rem] text-indigo-900 font-bold text-center hidden">
                         </div>
                     </div>
 
@@ -1397,7 +1492,7 @@
                             <div class="text-left">
                                 <label
                                     class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Smart Re-entry Indicators</label>
-                                <p class="text-[0.55rem] font-semibold text-purple-400 uppercase mt-0.5">Require pullback (RSI or VWAP distance) before re-entering</p>
+                                <p class="text-[0.55rem] font-semibold text-purple-400 uppercase mt-0.5">Require pullback (RSI or AVWAP distance) before re-entering</p>
                             </div>
                             <label class="relative inline-flex items-center cursor-pointer">
                                 <input type="checkbox" id="strategyRegularSmartReentry" class="sr-only peer"
@@ -1418,7 +1513,7 @@
                                     class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-sm sm:text-base font-black text-indigo-950 outline-none cursor-pointer focus:bg-white/70"
                                     onchange="window.updateBtSmartReentryFields('regular')">
                                     <option value="RSI" selected>RSI Pullback</option>
-                                    <option value="VWAP">VWAP Distance</option>
+                                    <option value="VWAP">AVWAP Distance</option>
                                 </select>
                             </div>
                             <div id="strategyRegularRsiCallContainer" class="space-y-1">
@@ -1435,14 +1530,14 @@
                             </div>
                             <div id="strategyRegularVwapCallContainer" class="space-y-1 hidden">
                                 <label
-                                    class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Call Max VWAP Dist (%)</label>
+                                    class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Call Max AVWAP Dist (%)</label>
                                 <input type="number" id="strategyRegularVwapCallMaxPct" value="0.5" min="0.05"
                                     step="0.05"
                                     class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-sm sm:text-base font-black text-indigo-950 outline-none focus:bg-white/70">
                             </div>
                             <div id="strategyRegularVwapPutContainer" class="space-y-1 hidden">
                                 <label
-                                    class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Put Max VWAP Dist (%)</label>
+                                    class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Put Max AVWAP Dist (%)</label>
                                 <input type="number" id="strategyRegularVwapPutMaxPct" value="0.5" min="0.05"
                                     step="0.05"
                                     class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-sm sm:text-base font-black text-indigo-950 outline-none focus:bg-white/70">
@@ -1538,7 +1633,7 @@
                         </div>
                     </div>
                     <!-- Contract Config -->
-                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div class="grid grid-cols-1 sm:grid-cols-4 gap-4">
                         <div class="space-y-2">
                             <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Trade Direction</label>
                             <div class="relative">
@@ -1577,6 +1672,20 @@
                                     </svg>
                                 </div>
                             </div>
+                        </div>
+                        <div class="space-y-2">
+                            <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Dividend Yield (%)</label>
+                            <input type="number" id="strategyOptionsDividendYield" value="0" min="0" max="100" step="0.01"
+                                title="Continuous annual yield q used by Black-Scholes-Merton"
+                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl px-2 sm:px-4 py-2 sm:py-3 text-sm sm:text-base font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all">
+                            <p class="text-[0.55rem] text-indigo-500 font-bold leading-snug pl-1">Annual continuous yield used in BSM pricing.</p>
+                        </div>
+                        <div class="space-y-2">
+                            <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Fee / Contract ($)</label>
+                            <input type="number" id="strategyOptionsContractFee" value="0.65" min="0" max="100" step="0.01"
+                                title="Applied once to each opening and closing contract fill"
+                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl px-2 sm:px-4 py-2 sm:py-3 text-sm sm:text-base font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all">
+                            <p class="text-[0.55rem] text-indigo-500 font-bold leading-snug pl-1">Applied on both opening and closing fills.</p>
                         </div>
                     </div>
                     <!-- Risk Management Controls -->
@@ -1821,7 +1930,7 @@
                     <div class="indicator-card group p-2.5 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
                         onclick="toggleIndicatorCard(this, event)">
                         <div class="flex flex-col">
-                            <span class="font-black text-indigo-900 uppercase">VWAP<div
+                            <span class="font-black text-indigo-900 uppercase">AVWAP<div
                                     class="group/tooltip relative inline-flex items-center ml-1">
                                         <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('VWAP')"
                                             xmlns="http://www.w3.org/2000/svg"
@@ -2224,14 +2333,14 @@
                         <div class="flex items-center gap-2">
                             <button onclick="adjustStrategyThreshold('options', 'buy', -1)"
                                 class="w-7 h-7 flex items-center justify-center bg-white/30 text-emerald-700 rounded-lg border border-white/40 hover:bg-emerald-500/20 transition-all active:scale-90 text-sm font-black shadow-sm">−</button>
-                            <input type="number" id="strategyBuyThreshold_options" min="0" max="10" value="0"
+                            <input type="number" id="strategyBuyThreshold_options" min="1" max="10" value="1"
                                 class="w-12 h-9 text-center text-lg font-black text-emerald-700 bg-white/40 border border-emerald-500/20 rounded-xl outline-none focus:bg-white/70 focus:border-emerald-500/50 transition-all shadow-sm"
                                 oninput="updateBtOptionsSignalLabels()">
                             <button onclick="adjustStrategyThreshold('options', 'buy', 1)"
                                 class="w-7 h-7 flex items-center justify-center bg-white/30 text-emerald-700 rounded-lg border border-white/40 hover:bg-emerald-500/20 transition-all active:scale-90 text-sm font-black shadow-sm">+</button>
                         </div>
                         <span id="strategyBuyLabel_options"
-                            class="text-[0.5rem] font-black px-3 py-1 rounded-full bg-emerald-100/80 text-emerald-700 border border-emerald-200/55 uppercase tracking-wider transition-all duration-300">0 Signals</span>
+                            class="text-[0.5rem] font-black px-3 py-1 rounded-full bg-emerald-100/80 text-emerald-700 border border-emerald-200/55 uppercase tracking-wider transition-all duration-300">1 Signal</span>
                     </div>
                     <div id="strategyPutEntryThresholdPanel_options" class="hidden bg-rose-500/10 backdrop-blur-md p-4 rounded-2xl border border-rose-500/20 flex flex-col items-center gap-2 shadow-sm shadow-rose-500/5">
                         <div class="flex items-center gap-1.5">
@@ -2241,14 +2350,14 @@
                         <div class="flex items-center gap-2">
                             <button type="button" onclick="adjustBtOptionsPutEntryThreshold(-1)"
                                 class="w-7 h-7 flex items-center justify-center bg-white/30 text-rose-700 rounded-lg border border-white/40 hover:bg-rose-500/20 transition-all active:scale-90 text-sm font-black shadow-sm">−</button>
-                            <input type="number" id="strategyPutEntryThreshold_options" min="0" max="10" value="0"
+                            <input type="number" id="strategyPutEntryThreshold_options" min="1" max="10" value="1"
                                 class="w-12 h-9 text-center text-lg font-black text-rose-700 bg-white/40 border border-rose-500/20 rounded-xl outline-none focus:bg-white/70 focus:border-rose-500/50 transition-all shadow-sm"
                                 oninput="syncBtOptionsPutEntryThreshold()">
                             <button type="button" onclick="adjustBtOptionsPutEntryThreshold(1)"
                                 class="w-7 h-7 flex items-center justify-center bg-white/30 text-rose-700 rounded-lg border border-white/40 hover:bg-rose-500/20 transition-all active:scale-90 text-sm font-black shadow-sm">+</button>
                         </div>
                         <span id="strategyPutEntryLabel_options"
-                            class="text-[0.5rem] font-black px-3 py-1 rounded-full bg-rose-100/80 text-rose-700 border border-rose-200/55 uppercase tracking-wider transition-all duration-300">0 Signals</span>
+                            class="text-[0.5rem] font-black px-3 py-1 rounded-full bg-rose-100/80 text-rose-700 border border-rose-200/55 uppercase tracking-wider transition-all duration-300">1 Signal</span>
                         <p class="text-[0.55rem] text-indigo-500 font-bold text-center leading-snug">
                             PUT entries use bearish signals. This value is sent as the options sell threshold for bearish confluence.
                         </p>
@@ -2319,6 +2428,30 @@
                                 <option value="dip_reclaim">Reversal / Reclaim - CALL on dip reclaim, PUT on failed upside extension</option>
                                 <option value="breakout_momentum">Breakout / Momentum - CALL on upside break, PUT on downside break</option>
                             </select>
+                        </div>
+                    </div>
+                    <div class="pt-2 border-t border-fuchsia-500/20 mt-2">
+                        <label class="flex items-center gap-2 mb-2 cursor-pointer group">
+                            <div class="relative flex items-center">
+                                <input type="checkbox" id="strategyGridContinuous_options" class="sr-only peer" onchange="document.getElementById('strategyGridFields_options').classList.toggle('hidden', !this.checked)">
+                                <div class="w-8 h-4 bg-slate-300 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-fuchsia-500 shadow-inner"></div>
+                            </div>
+                            <span class="text-[0.6rem] font-black text-indigo-900 uppercase tracking-widest group-hover:text-fuchsia-600 transition-colors">Enable Continuous Grid</span>
+                        </label>
+
+                        <div id="strategyGridFields_options" class="hidden grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2">
+                            <div class="space-y-1">
+                                <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Buy Alloc ($)</label>
+                                <input type="number" step="1" min="1" id="strategyGridBuyAllocation_options" value="1000" class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-fuchsia-400/80 outline-none transition-all">
+                            </div>
+                            <div class="space-y-1">
+                                <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Sell Size (%)</label>
+                                <input type="number" step="1" min="1" max="100" id="strategyGridSellPct_options" value="50" class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-fuchsia-400/80 outline-none transition-all">
+                            </div>
+                            <div class="space-y-1">
+                                <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Max Levels</label>
+                                <input type="number" step="1" min="1" id="strategyGridMaxLevels_options" value="5" class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-fuchsia-400/80 outline-none transition-all">
+                            </div>
                         </div>
                     </div>
                     <p class="text-[0.55rem] text-fuchsia-700 font-bold leading-snug">
@@ -2426,14 +2559,14 @@
                             <div class="flex items-center gap-2">
                                 <button type="button" onclick="adjustStrategyThreshold('options', 'sell', -1)"
                                     class="w-7 h-7 flex items-center justify-center bg-white/30 text-rose-700 rounded-lg border border-white/40 hover:bg-rose-500/20 transition-all active:scale-90 text-sm font-black shadow-sm">−</button>
-                                <input type="number" id="strategySellThreshold_options" min="0" max="10" value="0"
+                                <input type="number" id="strategySellThreshold_options" min="1" max="10" value="1"
                                     class="w-12 h-9 text-center text-lg font-black text-rose-700 bg-white/40 border border-rose-500/20 rounded-xl outline-none focus:bg-white/70 focus:border-rose-500/50 transition-all shadow-sm"
                                     oninput="updateBtOptionsSignalLabels()">
                                 <button type="button" onclick="adjustStrategyThreshold('options', 'sell', 1)"
                                     class="w-7 h-7 flex items-center justify-center bg-white/30 text-rose-700 rounded-lg border border-white/40 hover:bg-rose-500/20 transition-all active:scale-90 text-sm font-black shadow-sm">+</button>
                             </div>
                             <span id="strategySellLabel_options"
-                                class="text-[0.5rem] font-black px-3 py-1 rounded-full bg-rose-100/80 text-rose-700 border border-rose-200/55 uppercase tracking-wider transition-all duration-300">0
+                                class="text-[0.5rem] font-black px-3 py-1 rounded-full bg-rose-100/80 text-rose-700 border border-rose-200/55 uppercase tracking-wider transition-all duration-300">1
                                 Signals</span>
                             <span id="strategyExitThresholdHint_options"
                                 class="text-[0.5rem] font-bold text-rose-700/80 text-center leading-snug">CALL exit waits for bearish reversal signals.</span>
@@ -2500,33 +2633,57 @@
                         </div>
                     </div>
                     
-                    <div id="exitFieldsPct_options" class="hidden grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2 pt-1">
-                        <div class="space-y-1">
-                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Stop Loss %</label>
-                            <input type="number" step="1" id="strategyOptionsSlPct" oninput="window.updatePctPreview_options && window.updatePctPreview_options()"
-                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
-                                value="5">
-                        </div>
-                        <div class="space-y-1">
-                            <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Take Profit %</label>
-                            <input type="number" step="1" id="strategyOptionsTpPct" oninput="window.updatePctPreview_options && window.updatePctPreview_options()"
-                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
-                                value="10">
-                        </div>
-                        <div class="space-y-1">
-                            <div class="flex items-center justify-between">
-                                <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Trailing Stop %</label>
-                                <label class="flex items-center gap-1.5 cursor-pointer">
-                                    <input type="checkbox" id="strategyEnablePctTrail_options" checked class="accent-indigo-500 w-3 h-3"
-                                        onchange="document.getElementById('strategyOptionsTrailPct').disabled = !this.checked; document.getElementById('strategyOptionsTrailPct').classList.toggle('opacity-50', !this.checked); window.updatePctPreview_options && window.updatePctPreview_options();">
-                                    <span class="text-[0.55rem] font-black text-indigo-900 uppercase tracking-widest">Trail</span>
-                                </label>
+                    <div id="exitFieldsPct_options" class="hidden mt-2 pt-1">
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            <div class="space-y-1">
+                                <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Stop Loss %</label>
+                                <input type="number" step="1" id="strategyOptionsSlPct" oninput="window.updatePctPreview_options && window.updatePctPreview_options()"
+                                    class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
+                                    value="5">
                             </div>
-                            <input type="number" step="1" id="strategyOptionsTrailPct" oninput="window.updatePctPreview_options && window.updatePctPreview_options()"
-                                class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
-                                value="3">
+                            <div class="space-y-1">
+                                <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Take Profit %</label>
+                                <input type="number" step="1" id="strategyOptionsTpPct" oninput="window.updatePctPreview_options && window.updatePctPreview_options()"
+                                    class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
+                                    value="10">
+                            </div>
+                            <div class="space-y-1">
+                                <div class="flex items-center justify-between">
+                                    <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Trailing Stop %</label>
+                                    <label class="flex items-center gap-1.5 cursor-pointer">
+                                        <input type="checkbox" id="strategyEnablePctTrail_options" checked class="accent-indigo-500 w-3 h-3"
+                                            onchange="document.getElementById('strategyOptionsTrailPct').disabled = !this.checked; document.getElementById('strategyOptionsTrailPct').classList.toggle('opacity-50', !this.checked); window.updatePctPreview_options && window.updatePctPreview_options();">
+                                        <span class="text-[0.55rem] font-black text-indigo-900 uppercase tracking-widest">Trail</span>
+                                    </label>
+                                </div>
+                                <input type="number" step="1" id="strategyOptionsTrailPct" oninput="window.updatePctPreview_options && window.updatePctPreview_options()"
+                                    class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all"
+                                    value="3">
+                            </div>
                         </div>
-                        <div id="pctPreviewBox_options" class="col-span-1 sm:col-span-3 mt-2 p-3 bg-indigo-500/10 rounded-xl border border-indigo-500/20 text-[0.65rem] text-indigo-900 font-bold text-center hidden">
+
+                        <div class="mt-4 pt-3 border-t border-indigo-500/10">
+                            <label class="flex items-center gap-2 mb-2 cursor-pointer group">
+                                <div class="relative flex items-center">
+                                    <input type="checkbox" id="strategyExitGridContinuous_options" class="sr-only peer" onchange="document.getElementById('strategyExitGridFields_options').classList.toggle('hidden', !this.checked)">
+                                    <div class="w-8 h-4 bg-slate-300 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-purple-500 shadow-inner"></div>
+                                </div>
+                                <span class="text-[0.6rem] font-black text-indigo-900 uppercase tracking-widest group-hover:text-purple-600 transition-colors">Enable Continuous Grid</span>
+                            </label>
+
+                            <div id="strategyExitGridFields_options" class="hidden grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+                                <div class="space-y-1">
+                                    <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Sell Size (%)</label>
+                                    <input type="number" step="1" min="1" max="100" id="strategyExitGridSellPct_options" value="50" class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 outline-none transition-all">
+                                </div>
+                                <div class="space-y-1">
+                                    <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Max Levels</label>
+                                    <input type="number" step="1" min="1" id="strategyExitGridMaxLevels_options" value="5" class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-purple-400/80 outline-none transition-all">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="pctPreviewBox_options" class="mt-2 p-3 bg-indigo-500/10 rounded-xl border border-indigo-500/20 text-[0.65rem] text-indigo-900 font-bold text-center hidden">
                         </div>
                     </div>
                     
@@ -2603,7 +2760,7 @@
                             <div class="text-left">
                                 <label
                                     class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Smart Re-entry Indicators</label>
-                                <p class="text-[0.55rem] font-semibold text-purple-400 uppercase mt-0.5">Require pullback (RSI or VWAP distance) before re-entering</p>
+                                <p class="text-[0.55rem] font-semibold text-purple-400 uppercase mt-0.5">Require pullback (RSI or AVWAP distance) before re-entering</p>
                             </div>
                             <label class="relative inline-flex items-center cursor-pointer">
                                 <input type="checkbox" id="strategyOptionsSmartReentry" class="sr-only peer"
@@ -2624,7 +2781,7 @@
                                     class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-sm sm:text-base font-black text-indigo-950 outline-none cursor-pointer focus:bg-white/70"
                                     onchange="window.updateBtSmartReentryFields('options')">
                                     <option value="RSI" selected>RSI Pullback</option>
-                                    <option value="VWAP">VWAP Distance</option>
+                                    <option value="VWAP">AVWAP Distance</option>
                                 </select>
                             </div>
                             <div id="strategyOptionsRsiCallContainer" class="space-y-1">
@@ -2641,14 +2798,14 @@
                             </div>
                             <div id="strategyOptionsVwapCallContainer" class="space-y-1 hidden">
                                 <label
-                                    class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Call Max VWAP Dist (%)</label>
+                                    class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Call Max AVWAP Dist (%)</label>
                                 <input type="number" id="strategyOptionsVwapCallMaxPct" value="0.5" min="0.05"
                                     step="0.05"
                                     class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-sm sm:text-base font-black text-indigo-950 outline-none focus:bg-white/70">
                             </div>
                             <div id="strategyOptionsVwapPutContainer" class="space-y-1 hidden">
                                 <label
-                                    class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Put Max VWAP Dist (%)</label>
+                                    class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Put Max AVWAP Dist (%)</label>
                                 <input type="number" id="strategyOptionsVwapPutMaxPct" value="0.5" min="0.05"
                                     step="0.05"
                                     class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-sm sm:text-base font-black text-indigo-950 outline-none focus:bg-white/70">
@@ -2752,7 +2909,7 @@
         <div class="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-xl border border-white/50 flex flex-col overflow-hidden animate-fade-in">
             <div class="px-6 py-5 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white/95 backdrop-blur-xl z-10 rounded-t-2xl">
                 <h3 class="text-lg font-black text-slate-800 tracking-tight flex items-center gap-2">
-                    🤖 BotBulls AI Analysis
+                    🤖 BotBulls Quant AI
                     <span class="text-[9px] font-bold bg-violet-100 text-violet-600 px-2 py-0.5 rounded-md uppercase tracking-wider ml-2">Premium Feature</span>
                 </h3>
                 <button onclick="closeAIInfoModal()" class="text-slate-400 hover:text-slate-700 transition-colors p-2 hover:bg-slate-100 rounded-full">
@@ -2763,21 +2920,21 @@
             </div>
             <div class="p-6 space-y-4 text-xs text-slate-600 leading-relaxed overflow-y-auto max-h-[70vh]">
                 <p>
-                    The <strong>BotBulls AI Analysis</strong> is an institutional-grade quantitative trading advisor powered by advanced LLMs on <strong>Groq</strong> (utilizing <code>llama-3.3-70b-versatile</code> for standard market briefings and <code>llama-3.1-8b-instant</code> for dynamic news feeds).
+                    <strong>BotBulls Quant AI</strong> calculates the final signal, setup score, reward/risk and levels with deterministic rules. The LLM explains the result and cannot override those gates.
                 </p>
                 <div class="p-3 bg-violet-50/50 rounded-xl border border-violet-100/50 space-y-2">
                     <h4 class="font-black text-violet-800 uppercase tracking-wider text-[10px]">What does it analyze?</h4>
                     <ul class="list-disc pl-4 space-y-1 text-slate-700">
-                        <li><strong>Technical Confluence:</strong> Evaluates RSI levels, MACD crossovers, Supertrends, and SMA-200.</li>
+                        <li><strong>Technical Confluence:</strong> Separately scores trend, momentum, prior-bar structure and volume on the decision timeframe selected under ⚙ settings.</li>
                         <li><strong>Volatility Regimes:</strong> Measures ATR, Bollinger width, and current VIX indices to calibrate risk.</li>
-                        <li><strong>News & News Catalysts:</strong> Ingests live financial news feeds and scores real-time sentiment.</li>
-                        <li><strong>Portfolio Protection:</strong> Dynamically adjusts position sizing and leverage guidance.</li>
+                        <li><strong>News & Catalysts:</strong> Live news has no candle timeframe and is not used for historical bars, preventing look-ahead.</li>
+                        <li><strong>Execution Gates:</strong> A signal requires the configured score, reward/risk, data quality and confirmation rules.</li>
                     </ul>
                 </div>
                 <div class="p-3 bg-fuchsia-50/50 rounded-xl border border-fuchsia-100/50 space-y-2">
                     <h4 class="font-black text-fuchsia-800 uppercase tracking-wider text-[10px]">Manual Refresh & Caching</h4>
                     <p class="text-slate-700">
-                        To preserve API limits and reduce latencies, results are cached for <strong>10 minutes</strong>. 
+                        Cache duration is configurable under ⚙ and defaults to <strong>30 minutes</strong>.
                         Click the refresh button (<span class="inline-block text-violet-600">↻</span>) at the top right of the card to bypass the cache and fetch a real-time fresh analysis.
                     </p>
                 </div>
@@ -2790,10 +2947,12 @@
 
     
 
-    <button id="runBtBtn" onclick="runBacktest()"
-        class="w-full mt-6 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-black py-4 rounded-[1.5rem] hover:shadow-indigo-500/40 hover:shadow-2xl transition-all active:scale-[0.98] uppercase tracking-[0.32em] text-xs md:text-sm shadow-xl">
+    <div class="mt-6">
+        <button id="runBtBtn" onclick="runBacktest()"
+        class="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-black py-4 rounded-[1.5rem] hover:shadow-indigo-500/40 hover:shadow-2xl transition-all active:scale-[0.98] uppercase tracking-[0.32em] text-xs md:text-sm shadow-xl">
         RUN STRATEGY ALPHA SIMULATION
-    </button>
+        </button>
+    </div>
 
     <div id="btLoading" class="hidden py-16 text-center space-y-4">
         <div class="mx-auto w-12 h-12 rounded-full border-4 border-purple-200 border-t-purple-600 animate-spin"></div>
@@ -2803,7 +2962,312 @@
         </div>
     </div>
 
-    <script src="bots.js"></script>
+    <!-- Manual Backtest Chart Preview Modal -->
+    <div id="manualBtChartPreviewModal"
+        class="fixed inset-0 bg-[radial-gradient(circle_at_top,_rgba(167,139,250,0.28),_rgba(15,23,42,0.48)_58%,_rgba(15,23,42,0.72)_100%)] backdrop-blur-md z-[190] hidden flex items-center justify-center p-3 sm:p-5">
+        <div
+            class="w-full max-w-4xl max-h-[92vh] overflow-hidden rounded-[2rem] border border-white/30 bg-[linear-gradient(135deg,rgba(255,255,255,0.88),rgba(245,243,255,0.84)_46%,rgba(237,233,254,0.8)_100%)] shadow-[0_30px_90px_rgba(76,29,149,0.28)] flex flex-col">
+            <div class="px-5 sm:px-7 py-4 sm:py-5 border-b border-purple-100/70 flex items-start justify-between gap-4">
+                <div class="min-w-0">
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <p id="manualBtChartPreviewTitle" class="text-indigo-950 text-lg sm:text-xl font-black tracking-tight">Manual Backtest Chart</p>
+                        <span id="manualBtChartPreviewModeBadge"
+                            class="px-2.5 py-1 rounded-full bg-indigo-100/80 text-indigo-700 border border-indigo-200 text-[0.6rem] font-black uppercase tracking-[0.2em]">Manual</span>
+                        <span id="manualBtChartPreviewPlayBadge"
+                            class="hidden px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200 text-[0.6rem] font-black uppercase tracking-[0.16em]">Replay</span>
+                    </div>
+                    <p id="manualBtChartPreviewSubtitle" class="text-slate-600 text-sm mt-1">Manual TP/SL testing with independent chart indicators and confluence.</p>
+                </div>
+                <button type="button" onclick="closeManualBtChartPreview()"
+                    class="shrink-0 text-slate-400 hover:text-indigo-700 transition-colors rounded-xl p-2 hover:bg-white/60">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd"
+                            d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                            clip-rule="evenodd" />
+                    </svg>
+                </button>
+            </div>
+
+            <div class="flex-1 overflow-y-auto px-4 sm:px-6 py-4 sm:py-5">
+                <div id="manualBtChartPreviewBanner"
+                    class="hidden mb-4 rounded-2xl border border-indigo-200/80 bg-white/70 px-4 py-3 text-sm text-indigo-700 shadow-sm"></div>
+
+                <div class="grid grid-cols-1 gap-4 sm:gap-5">
+                    <div class="min-w-0 space-y-4">
+                        <div class="panel-glass relative overflow-hidden">
+                            <div id="manualBtChartPreviewBoxLoading"
+                                class="hidden absolute inset-0 z-30 flex flex-col items-center justify-center bg-white/85 backdrop-blur-[2px] rounded-[1.5rem] transition-all duration-300">
+                                <div class="w-12 h-12 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mb-3"></div>
+                                <span class="text-xs font-black text-indigo-600 uppercase tracking-widest">Loading Chart...</span>
+                            </div>
+                            <div class="panel-top-bar bg-gradient-to-r from-indigo-400 to-purple-500"></div>
+                            <div class="mb-3 grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto] gap-2 items-start">
+                                <div class="relative">
+                                    <input type="text" id="manualBtTickerSearch" autocomplete="off" spellcheck="false" inputmode="text"
+                                        placeholder="Search ticker for manual replay, e.g. TSLA, SPY, NVDA"
+                                        onkeydown="if(event.key==='Enter'){ event.preventDefault(); loadManualBtChartTicker(this.value); }"
+                                        class="w-full rounded-2xl border border-indigo-100 bg-white/85 px-4 py-3 text-sm font-black uppercase tracking-widest text-indigo-900 placeholder:text-indigo-300 focus:border-indigo-400 focus:outline-none focus:ring-4 focus:ring-indigo-100 shadow-sm">
+                                    <div id="manualBtTickerSearchResults"
+                                        class="absolute top-full left-0 right-0 mt-1 bg-white rounded-xl shadow-2xl border border-indigo-100 overflow-hidden hidden max-h-64 overflow-y-auto z-[999] w-full text-left">
+                                    </div>
+                                </div>
+                                <button type="button" onclick="loadManualBtChartTicker(document.getElementById('manualBtTickerSearch')?.value)"
+                                    class="rounded-2xl bg-indigo-600 px-5 py-3 text-[0.65rem] font-black uppercase tracking-widest text-white shadow-sm hover:bg-indigo-700 transition-colors">
+                                    Load Chart
+                                </button>
+                            </div>
+                            <div class="flex items-start justify-between gap-3 flex-wrap mb-1">
+                                <div>
+                                    <div class="flex items-baseline gap-2">
+                                        <span id="manualBtChartPreviewTickerLabel" class="text-xl font-black text-indigo-900">---</span>
+                                        <span id="manualBtChartPreviewPrice" class="text-xl font-black text-emerald-600">---</span>
+                                    </div>
+                                    <div class="mt-0.5">
+                                        <span id="manualBtChartPreviewPriceChange" class="text-xs font-bold text-emerald-500">Manual chart preview</span>
+                                    </div>
+	                                </div>
+	                                <div class="flex items-center gap-2 flex-wrap">
+	                                    <select id="manualBtDataSourceSelect" onchange="setManualBtDataSource(this.value)"
+	                                        class="rounded-xl border border-indigo-200 bg-white/80 px-2 py-2 text-[0.6rem] font-black uppercase tracking-widest text-indigo-700"
+	                                        title="Manual replay candle source">
+	                                        <option value="webull">Webull preferred</option>
+	                                        <option value="yahoo">Yahoo</option>
+	                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="chart-control-row chart-interval-row" id="manualBtChartPreviewTfBar">
+                                <button class="chart-tf-btn" onclick="setManualBtChartPreviewTimeframe('1Min')" data-tf="1Min">1m</button>
+                                <button class="chart-tf-btn" onclick="setManualBtChartPreviewTimeframe('5Min')" data-tf="5Min">5m</button>
+                                <button class="chart-tf-btn" onclick="setManualBtChartPreviewTimeframe('10Min')" data-tf="10Min">10m</button>
+                                <button class="chart-tf-btn" onclick="setManualBtChartPreviewTimeframe('15Min')" data-tf="15Min">15m</button>
+                                <button class="chart-tf-btn" onclick="setManualBtChartPreviewTimeframe('30Min')" data-tf="30Min">30m</button>
+                                <button class="chart-tf-btn" onclick="setManualBtChartPreviewTimeframe('1Hour')" data-tf="1Hour">1h</button>
+                                <button class="chart-tf-btn" onclick="setManualBtChartPreviewTimeframe('4Hour')" data-tf="4Hour">4h</button>
+                                <button class="chart-tf-btn" onclick="setManualBtChartPreviewTimeframe('1Day')" data-tf="1Day">1D</button>
+                            </div>
+
+                            <div class="hidden rounded-2xl border border-indigo-100 bg-white/65 px-3 py-2.5 shadow-sm mb-2">
+                                <div class="flex items-center justify-between gap-3 mb-2">
+                                    <div class="flex items-center gap-2">
+                                        <span class="text-[0.55rem] font-black uppercase tracking-widest text-indigo-500">Replay Start</span>
+                                    </div>
+                                    <span id="manualBtReplayStartLabel" class="text-[0.6rem] font-black text-indigo-800">Start: first candle</span>
+                                </div>
+                                <input id="manualBtReplayStartSlider" type="range" min="0" max="0" value="0" step="1"
+                                    oninput="manualBtSetReplayStart(this.value)"
+                                    class="w-full accent-indigo-600 cursor-pointer">
+                            </div>
+
+                            <div id="manualBtReplayToolbar" class="mb-3 rounded-2xl border border-indigo-100 bg-indigo-50/60 px-3 py-2.5">
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <button id="manualBtReplayToggle" type="button" onclick="manualBtToggleReplay()"
+                                        class="rounded-lg bg-indigo-600 px-3 py-1.5 text-[0.6rem] font-black uppercase tracking-widest text-white shadow-sm hover:bg-indigo-700 transition-colors">
+                                        Start Replay
+                                    </button>
+                                    <button type="button" onclick="manualBtSelectPoint('replay_start')" 
+                                        class="rounded-lg border border-indigo-300 bg-indigo-50 px-3 py-1.5 text-[0.6rem] font-black uppercase tracking-widest text-indigo-700 shadow-sm hover:bg-indigo-100 transition-colors">
+                                        Pick Start on Chart
+                                    </button>
+                                    <button id="manualBtReplayPlayBtn" type="button" onclick="manualBtToggleReplayPlayback()" disabled
+                                        class="rounded-lg border border-indigo-200 bg-white px-3 py-1.5 text-[0.6rem] font-black uppercase tracking-widest text-indigo-700 disabled:cursor-not-allowed disabled:opacity-40 hover:bg-indigo-50 transition-colors">
+                                        Play
+                                    </button>
+                                    <button type="button" onclick="manualBtStepReplay(-1)" disabled id="manualBtReplayBack"
+                                        class="rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 text-[0.7rem] font-black text-indigo-700 disabled:cursor-not-allowed disabled:opacity-40">‹</button>
+                                    <button type="button" onclick="manualBtStepReplay(1)" disabled id="manualBtReplayForward"
+                                        class="rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 text-[0.7rem] font-black text-indigo-700 disabled:cursor-not-allowed disabled:opacity-40">›</button>
+                                    <button type="button" onclick="manualBtResetReplay()" disabled id="manualBtReplayReset"
+                                        class="rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 text-[0.6rem] font-black uppercase tracking-widest text-indigo-700 disabled:cursor-not-allowed disabled:opacity-40">Reset</button>
+                                    <label class="ml-1 flex items-center gap-1 text-[0.55rem] font-black uppercase tracking-widest text-indigo-500">
+                                        Speed
+                                        <select id="manualBtReplaySpeed" onchange="manualBtSetReplaySpeed(this.value)" class="rounded-md border border-indigo-200 bg-white px-1.5 py-1 text-[0.6rem] font-bold text-indigo-700">
+                                            <option value="1">1x</option><option value="2">2x</option><option value="3">3x</option><option value="5">5x</option><option value="10">10x</option>
+                                        </select>
+                                    </label>
+                                    <label class="ml-1 flex items-center gap-1 text-[0.55rem] font-black uppercase tracking-widest text-indigo-500">
+                                        Replay
+                                        <select id="manualBtReplayResolution" disabled class="rounded-md border border-indigo-200 bg-white px-1.5 py-1 text-[0.6rem] font-bold text-indigo-700" title="Manual replay currently uses completed candles">
+                                            <option value="bar">Completed candles</option>
+                                        </select>
+                                    </label>
+                                    <span id="manualBtReplayStatus" class="ml-auto text-[0.6rem] font-bold text-indigo-500">Replay idle</span>
+                                </div>
+                                <div class="mt-2 flex items-center gap-2">
+                                    <input id="manualBtReplayFrameSlider" type="range" min="0" max="0" value="0" step="1" disabled
+                                        oninput="manualBtSeekReplay(this.value)" class="h-1.5 min-w-[180px] flex-1 accent-indigo-600" aria-label="Manual replay timeline">
+                                    <span id="manualBtReplayClock" class="min-w-[132px] text-right text-[0.6rem] font-mono font-bold text-slate-500">—</span>
+                                </div>
+                                <div class="mt-2 flex flex-wrap items-center gap-2 border-t border-indigo-100 pt-2">
+                                    <span id="manualBtReplayModeLabel" class="text-[0.55rem] font-black uppercase tracking-widest text-indigo-500">Manual chart replay</span>
+                                    <span id="manualBtReplayModeHint" class="text-[0.55rem] font-bold uppercase tracking-widest text-slate-400">Place Entry, TP, and SL manually; playback stops when TP or SL is reached</span>
+                                    <span id="manualBtReplayAccount" class="ml-auto text-[0.6rem] font-bold text-slate-500">Realized +$0.00 · No active manual trade</span>
+                                </div>
+                                <div class="mt-2 flex flex-wrap items-center gap-2 border-t border-emerald-100 pt-2">
+                                    <span class="text-[0.55rem] font-black uppercase tracking-widest text-emerald-700">Manual TP/SL</span>
+                                    
+                                    <div class="flex items-center gap-1 border-x border-emerald-100 px-2 mx-1">
+                                        <label class="text-[0.55rem] font-bold text-slate-500 uppercase tracking-wider" for="manualBtDefaultTpPct">Def TP %</label>
+                                        <input type="number" id="manualBtDefaultTpPct" value="2.0" step="0.1" class="w-14 h-6 text-center text-[0.6rem] font-mono rounded border-slate-200 bg-white">
+                                        <label class="text-[0.55rem] font-bold text-slate-500 uppercase tracking-wider ml-1" for="manualBtDefaultSlPct">SL %</label>
+                                        <input type="number" id="manualBtDefaultSlPct" value="-1.0" step="0.1" class="w-14 h-6 text-center text-[0.6rem] font-mono rounded border-slate-200 bg-white text-rose-600">
+                                    </div>
+                                    
+                                    <button type="button" onclick="manualBtSelectPoint('entry')"
+                                        class="rounded-lg bg-slate-900 px-3 py-1.5 text-[0.6rem] font-black uppercase tracking-widest text-white hover:bg-slate-800 transition-colors">
+                                        Set Entry
+                                    </button>
+                                    <button type="button" onclick="manualBtSelectPoint('tp')"
+                                        class="rounded-lg border border-emerald-200 bg-white px-3 py-1.5 text-[0.6rem] font-black uppercase tracking-widest text-emerald-700 hover:bg-emerald-50 transition-colors">
+                                        Set TP Area
+                                    </button>
+                                    <button type="button" onclick="manualBtSelectPoint('sl')"
+                                        class="rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-[0.6rem] font-black uppercase tracking-widest text-rose-700 hover:bg-rose-50 transition-colors">
+                                        Set SL Area
+                                    </button>
+                                    <button type="button" onclick="manualBtClearTrade()"
+                                        class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[0.6rem] font-black uppercase tracking-widest text-slate-500 hover:bg-slate-50 transition-colors">
+                                        Clear
+                                    </button>
+                                    <span id="manualBtTradeStatus" class="ml-auto text-[0.6rem] font-bold text-emerald-700">Pick Entry, TP Area, or SL Area, then click the chart.</span>
+                                </div>
+                            </div>
+
+                            <div class="chart-stage rounded-xl">
+                                <div id="manualBtChartPreviewOhlcvBar"
+                                    class="chart-ohlcv-bar mb-0.5 text-[0.65rem] font-mono text-slate-500 flex gap-3 flex-wrap">
+                                    <span>O: <span id="manualBtChartPreviewOhlcvO" class="text-slate-700 font-bold">—</span></span>
+                                    <span>H: <span id="manualBtChartPreviewOhlcvH" class="text-emerald-600 font-bold">—</span></span>
+                                    <span>L: <span id="manualBtChartPreviewOhlcvL" class="text-red-500 font-bold">—</span></span>
+                                    <span>C: <span id="manualBtChartPreviewOhlcvC" class="text-slate-700 font-bold">—</span></span>
+                                    <span>V: <span id="manualBtChartPreviewOhlcvV" class="text-purple-600 font-bold">—</span></span>
+                                </div>
+                                <div class="chart-meta-strip">
+                                    <span id="manualBtReplayStageStatus">Replay idle</span>
+                                </div>
+                                <div id="manualBtChartPreviewChart" class="h-[260px] sm:h-[320px] w-full webull-main-chart relative overflow-hidden"></div>
+                            </div>
+
+                            <div class="relative">
+                                <div class="chart-osc-pane" id="manualBtChartPreviewOsc_rsi" style="display: none;"></div>
+                                <div class="chart-osc-label" id="manualBtChartPreviewRsiLabel" style="display: none;">RSI (14)</div>
+                            </div>
+                            <div class="relative group">
+                                <div class="chart-osc-pane" id="manualBtChartPreviewOsc_macd" style="display: none;"></div>
+                                <div class="chart-osc-label" id="manualBtChartPreviewMacdLabel" style="display: none;">MACD (12, 26, 9)</div>
+                            </div>
+                            <div class="relative group">
+                                <div class="chart-osc-pane" id="manualBtChartPreviewOsc_mystic" style="display: none;"></div>
+                                <div class="chart-osc-label" id="manualBtChartPreviewMysticLabel" style="display: none;">Mystic Pulse</div>
+                            </div>
+                            <div class="relative group">
+                                <div class="chart-osc-pane" id="manualBtChartPreviewOsc_adx" style="display: none;"></div>
+                                <div class="chart-osc-label" id="manualBtChartPreviewAdxLabel" style="display: none;">ADX (14) / DI+ / DI-</div>
+                            </div>
+                            <div class="relative group">
+                                <div class="chart-osc-pane" id="manualBtChartPreviewOsc_botbulls1" style="display: none;"></div>
+                                <div class="chart-osc-label" id="manualBtChartPreviewBotbulls1Label" style="display: none;">BotBulls1 (WaveTrend + MFI)</div>
+                            </div>
+                            <div id="manualBtChartPreviewDynamicOscillators" class="dynamic-indicator-subcharts"></div>
+
+                            <div class="chart-bottom-bar">
+                                <div class="chart-control-row chart-range-row" id="manualBtChartPreviewRangeBar">
+                                    <button class="chart-range-btn" onclick="setManualBtChartPreviewRange('1D')" data-range="1D">1D</button>
+                                    <button class="chart-range-btn" onclick="setManualBtChartPreviewRange('5D')" data-range="5D">5D</button>
+                                    <button class="chart-range-btn chart-range-active" onclick="setManualBtChartPreviewRange('1M')" data-range="1M">1M</button>
+                                    <button class="chart-range-btn" onclick="setManualBtChartPreviewRange('3M')" data-range="3M">3M</button>
+                                    <button class="chart-range-btn" onclick="setManualBtChartPreviewRange('6M')" data-range="6M">6M</button>
+                                    <button class="chart-range-btn" onclick="setManualBtChartPreviewRange('YTD')" data-range="YTD">YTD</button>
+                                    <button class="chart-range-btn" onclick="setManualBtChartPreviewRange('1Y')" data-range="1Y">1Y</button>
+                                    <button class="chart-range-btn" onclick="setManualBtChartPreviewRange('5Y')" data-range="5Y">5Y</button>
+                                    <button class="chart-range-btn" onclick="setManualBtChartPreviewRange('MAX')" data-range="MAX">Max</button>
+                                </div>
+                                <div class="chart-session-controls">
+                                    <button id="manualBtChartPreviewRegularHoursBtn"
+                                        class="chart-session-btn chart-session-active"
+                                        onclick="setManualBtChartPreviewSession('regular')">Regular</button>
+                                    <button id="manualBtChartPreviewExtendedHoursBtn" class="chart-session-btn"
+                                        onclick="setManualBtChartPreviewSession('extended')">Ext.</button>
+                                    <button id="manualBtChartPreviewCryptoLiveBtn" class="chart-session-btn hidden"
+                                        onclick="setManualBtChartPreviewSession('crypto24')">24h Live</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="panel-glass relative">
+                            <div class="panel-top-bar bg-gradient-to-r from-fuchsia-400 to-pink-400"></div>
+                            <div class="flex justify-between items-center mb-4 gap-3 flex-wrap">
+                                <div class="flex items-center gap-3 min-w-0">
+                                    <h2 class="text-lg font-bold text-indigo-900">Indicator Signal Confluence</h2>
+                                    <p id="manualBtChartPreviewReason" class="hidden"></p>
+                                </div>
+                                <div class="flex items-center gap-2 flex-wrap">
+                                    <button type="button"
+                                        onclick="resetManualBtChartPreviewIndicatorsToDefaults()"
+                                        title="Reset manual preview indicators"
+                                        aria-label="Reset manual preview indicators"
+                                        class="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full border border-slate-200 bg-white text-slate-500 hover:text-indigo-700 hover:border-indigo-200 hover:bg-indigo-50 transition-colors shadow-sm">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none"
+                                            viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.25"
+                                                d="M3 7.5l8.5-4.5 9 9-4.5 8.5H10l-7-7V7.5z" />
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.25"
+                                                d="M10 20l6.5-6.5" />
+                                        </svg>
+                                        <span class="text-[0.6rem] font-black uppercase tracking-widest">Reset</span>
+                                    </button>
+                                    <span
+                                        class="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700"
+                                        id="manualBtChartPreviewBullCount">0 Bullish</span>
+                                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700"
+                                        id="manualBtChartPreviewBearCount">0 Bearish</span>
+                                </div>
+                            </div>
+                            <div class="relative min-h-[120px]">
+                                <div id="manualBtChartPreviewGridLoading"
+                                    class="hidden absolute inset-0 z-10 flex flex-col items-center justify-center bg-white/40 backdrop-blur-[2px] rounded-xl transition-all duration-300">
+                                    <div
+                                        class="w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mb-2">
+                                    </div>
+                                    <span
+                                        class="text-[0.65rem] font-bold text-indigo-600 uppercase tracking-widest">Fetching
+                                        Signals</span>
+                                </div>
+                                <div id="manualBtChartPreviewSignalGrid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                                    <!-- Signals injected by JS -->
+                                </div>
+
+                                <div class="mt-4 pt-3 border-t border-amber-200/60">
+                                    <div class="flex items-center gap-2 mb-3">
+                                        <h3 class="text-xs font-black text-amber-700 uppercase tracking-widest">
+                                            Premium Indicators
+                                        </h3>
+                                        <span
+                                            class="px-1.5 py-0.5 text-[9px] font-black bg-gradient-to-r from-amber-400 to-orange-500 text-white rounded-md uppercase tracking-wider shadow-sm">PRO</span>
+                                    </div>
+                                    <div id="manualBtChartPreviewPremiumSignalGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                                        <!-- Premium signals injected by JS -->
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="px-4 sm:px-6 py-4 border-t border-purple-100/70 bg-white/60 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3">
+                <button type="button" onclick="closeManualBtChartPreview()"
+                    class="px-4 py-3 rounded-2xl border border-purple-200 text-indigo-700 text-sm font-black uppercase tracking-[0.18em] hover:bg-white/80 transition-all">
+                    Close
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="ai-indicator-card.js?v=11"></script>
+    <script src="indicator-catalog.js?v=11"></script>
+    <script src="indicator-subcharts.js?v=11"></script>
+    <script src="bots.js?v=22"></script>
 
     <!-- Results Modal Overlay -->
     <div id="btResultsModal" class="fixed inset-0 z-[60] hidden flex items-center justify-center p-4 md:p-6">
@@ -2978,6 +3442,7 @@
                     <!-- ─── End Monte Carlo Panel ─── -->
 
                     <!-- ─── Backtest Trade Chart (Horizontal Split) ─── -->
+                    <div id="btChartSectionSlot">
                     <div id="btChartSection" class="hidden">
                         <!-- Header Row -->
                         <div class="flex justify-between items-center px-1 mb-3">
@@ -3000,9 +3465,57 @@
                                     <span class="w-2 h-0.5 bg-violet-400 inline-block rounded opacity-70"></span>Equity
                                 </label>
                                 <label class="flex items-center gap-1.5 cursor-pointer hover:text-indigo-600 transition-colors">
+                                    <input type="checkbox" id="btToggleIndicators" checked class="rounded text-indigo-500 focus:ring-indigo-500 border-indigo-200" onchange="btToggleChartLayers()">
+                                    <span class="w-2 h-0.5 bg-sky-400 inline-block rounded opacity-80"></span>Indicators
+                                </label>
+                                <label class="flex items-center gap-1.5 cursor-pointer hover:text-indigo-600 transition-colors">
                                     <input type="checkbox" id="btToggleMarkers" checked class="rounded text-indigo-500 focus:ring-indigo-500 border-indigo-200" onchange="btToggleChartLayers()">
                                     <span class="w-1.5 h-1.5 rounded-sm bg-emerald-500 inline-block"></span>Trades
                                 </label>
+                            </div>
+                        </div>
+
+                        <!-- Historical replay controls (backtest page only) -->
+                        <div id="btReplayToolbar" class="mb-3 rounded-2xl border border-indigo-100 bg-indigo-50/60 px-3 py-2.5">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <button id="btReplayToggle" type="button" onclick="btToggleReplay()"
+                                    class="rounded-lg bg-indigo-600 px-3 py-1.5 text-[0.6rem] font-black uppercase tracking-widest text-white shadow-sm hover:bg-indigo-700 transition-colors">
+                                    Start Replay
+                                </button>
+                                <button id="btReplayPlay" type="button" onclick="btToggleReplayPlayback()" disabled
+                                    class="rounded-lg border border-indigo-200 bg-white px-3 py-1.5 text-[0.6rem] font-black uppercase tracking-widest text-indigo-700 disabled:cursor-not-allowed disabled:opacity-40 hover:bg-indigo-50 transition-colors">
+                                    Play
+                                </button>
+                                <button type="button" onclick="btStepReplay(-1)" disabled id="btReplayBack"
+                                    class="rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 text-[0.7rem] font-black text-indigo-700 disabled:cursor-not-allowed disabled:opacity-40">‹</button>
+                                <button type="button" onclick="btStepReplay(1)" disabled id="btReplayForward"
+                                    class="rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 text-[0.7rem] font-black text-indigo-700 disabled:cursor-not-allowed disabled:opacity-40">›</button>
+                                <button type="button" onclick="btResetReplay()" disabled id="btReplayReset"
+                                    class="rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 text-[0.6rem] font-black uppercase tracking-widest text-indigo-700 disabled:cursor-not-allowed disabled:opacity-40">Reset</button>
+                                <label class="ml-1 flex items-center gap-1 text-[0.55rem] font-black uppercase tracking-widest text-indigo-500">
+                                    Speed
+                                    <select id="btReplaySpeed" onchange="btSetReplaySpeed(this.value)" class="rounded-md border border-indigo-200 bg-white px-1.5 py-1 text-[0.6rem] font-bold text-indigo-700">
+                                        <option value="1">1x</option><option value="2">2x</option><option value="3">3x</option><option value="5">5x</option><option value="10">10x</option>
+                                    </select>
+                                </label>
+                                <label class="ml-1 flex items-center gap-1 text-[0.55rem] font-black uppercase tracking-widest text-indigo-500">
+                                    Replay
+                                    <select id="btReplayResolution" onchange="btSetReplayResolution(this.value)" class="rounded-md border border-indigo-200 bg-white px-1.5 py-1 text-[0.6rem] font-bold text-indigo-700" title="Intrabar replay requires lower-resolution historical data">
+                                        <option value="bar">Completed candles</option>
+                                        <option value="intrabar" disabled>Intrabar (requires 1-minute data)</option>
+                                    </select>
+                                </label>
+                                <span id="btReplayStatus" class="ml-auto text-[0.6rem] font-bold text-indigo-500">Replay idle</span>
+                            </div>
+                            <div class="mt-2 flex items-center gap-2">
+                                <input id="btReplaySlider" type="range" min="0" max="0" value="0" step="1" disabled
+                                    oninput="btSeekReplay(this.value)" class="h-1.5 min-w-[180px] flex-1 accent-indigo-600" aria-label="Replay timeline">
+                                <span id="btReplayClock" class="min-w-[132px] text-right text-[0.6rem] font-mono font-bold text-slate-500">—</span>
+                            </div>
+                            <div class="mt-2 flex flex-wrap items-center gap-2 border-t border-indigo-100 pt-2">
+                                <span id="btReplayModeLabel" class="text-[0.55rem] font-black uppercase tracking-widest text-indigo-500">Strategy result replay</span>
+                                <span id="btReplayModeHint" class="text-[0.55rem] font-bold uppercase tracking-widest text-slate-400">Entries and exits appear from the completed backtest only</span>
+                                <span id="btReplayAccount" class="ml-auto text-[0.6rem] font-bold text-slate-500">No active strategy trade</span>
                             </div>
                         </div>
 
@@ -3018,6 +3531,7 @@
                                 </div>
                             </div>
                         </div>
+                    </div>
                     </div>
                     <!-- ─── End Backtest Trade Chart ─── -->
 
@@ -3113,7 +3627,8 @@
     
 
     <script src="alpaca-status-cache.js?v=1"></script>
-    <script src="backtest.js?v=21"></script>
+    <script src="backtest.js?v=38"></script>
+    <script src="indicator-workspace.js?v=6"></script>
 
     <!-- Info Modal -->
     <div id="infoModal" class="fixed inset-0 z-[9999] hidden items-center justify-center bg-slate-900/60 backdrop-blur-md transition-opacity opacity-0">
@@ -3144,13 +3659,13 @@
             'Candle Patterns': `<b>Candlestick Patterns (Institutional Price Action & Reversals)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Our institutional candlestick recognition engine automatically scans real-time price action to identify powerful single and multi-bar reversal and continuation formations (e.g., Bullish/Bearish Engulfing, Hammer, Shooting Star, Morning/Evening Star, Doji). It acts as an instant visual footprint of order flow, revealing exactly when institutional buyers or sellers are stepping in at key decision zones.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>To maintain lightning-fast calculation and clean, actionable charting without historical clutter, the engine evaluates the rolling 5-bar window but isolates and displays the detected pattern strictly on the latest forming candle (new candle).<br>• <b>Bullish Patterns (Green Arrow Up):</b> Formations such as Bullish Engulfing, Hammer, or Morning Star indicate strong demand absorption and potential upside bounces.<br>• <b>Bearish Patterns (Red Arrow Down):</b> Formations such as Bearish Engulfing, Shooting Star, or Evening Star indicate distribution and potential downward pressure.<br>• <b>Neutral / Indecision (Orange Circle):</b> Formations such as Doji or Spinning Top indicate equilibrium between buyers and sellers prior to a breakout.<br><br><b class="text-slate-800">Settings & Confluence Guide:</b><br>• <b>Single-Bar Isolation:</b> Chart markers and indicator sub-text strictly report the exact formation on the newest forming bar (<code>[-1]</code>) across Dashboard, Bots, and Backtest modes.<br>• <b>Confluence Integration:</b> When enabled in the confluence grid, confirmed bullish or bearish candlestick formations contribute directly to overall strategy confirmation score.`,
             'Candle patterns': `<b>Candlestick Patterns (Institutional Price Action & Reversals)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Our institutional candlestick recognition engine automatically scans real-time price action to identify powerful single and multi-bar reversal and continuation formations (e.g., Bullish/Bearish Engulfing, Hammer, Shooting Star, Morning/Evening Star, Doji). It acts as an instant visual footprint of order flow, revealing exactly when institutional buyers or sellers are stepping in at key decision zones.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>To maintain lightning-fast calculation and clean, actionable charting without historical clutter, the engine evaluates the rolling 5-bar window but isolates and displays the detected pattern strictly on the latest forming candle (new candle).<br>• <b>Bullish Patterns (Green Arrow Up):</b> Formations such as Bullish Engulfing, Hammer, or Morning Star indicate strong demand absorption and potential upside bounces.<br>• <b>Bearish Patterns (Red Arrow Down):</b> Formations such as Bearish Engulfing, Shooting Star, or Evening Star indicate distribution and potential downward pressure.<br>• <b>Neutral / Indecision (Orange Circle):</b> Formations such as Doji or Spinning Top indicate equilibrium between buyers and sellers prior to a breakout.<br><br><b class="text-slate-800">Settings & Confluence Guide:</b><br>• <b>Single-Bar Isolation:</b> Chart markers and indicator sub-text strictly report the exact formation on the newest forming bar (<code>[-1]</code>) across Dashboard, Bots, and Backtest modes.<br>• <b>Confluence Integration:</b> When enabled in the confluence grid, confirmed bullish or bearish candlestick formations contribute directly to overall strategy confirmation score.`,
             'ADX Trend': `<b>ADX (Average Directional Index)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>ADX quantifies the strength of a trend regardless of its direction, paired with Directional Indicators (+DI / -DI) to identify direction.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>ADX above 25 confirms a strong trending market. When +DI is above -DI, the trend is bullish; when -DI is above +DI, the trend is bearish.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Period (Default 14):</b> Lookback window for trend strength.<br>• <b>Trending Threshold (Default 25):</b> Minimum ADX value required to classify the market as trending.`,
-            'VWAP': `<b>VWAP (Volume Weighted Average Price)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>VWAP calculates the true average price a security traded at throughout the session weighted by volume — a primary benchmark for institutional algorithms.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Trading above VWAP reflects bullish intraday momentum; trading below indicates bearish selling pressure.`,
+            'VWAP': `<b>AVWAP (Anchored Volume Weighted Average Price)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>AVWAP tracks the volume-weighted average price from the most recent major volume spike, giving an institutional-style anchor for where meaningful participation entered the market.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Trading above AVWAP reflects acceptance above the anchored cost basis; trading below AVWAP indicates rejection or distribution below that anchor.`,
             'Prior Day High/Low': `<b>Prior Day High/Low (PDH/PDL Breakout)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Uses the previous completed trading session's high and low as breakout/breakdown levels. These levels often act as institutional reference points for liquidity sweeps, continuation breaks, and failed-break reversals.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>A bullish signal fires when price breaks above the prior day high. A bearish signal fires when price breaks below the prior day low. The chart draws both prior-day levels so you can visually confirm whether price is inside yesterday's range or escaping it. When buffer is above 0, lighter dotted trigger lines show the actual buffered breakout levels.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Breakout Buffer (%) (Default 0.0):</b> Enter as percent points. Example: 0.5 means price must break 0.5% beyond PDH/PDL before a signal triggers. Higher values reduce false breaks but may enter later.`,
             'Pivot Points (S/R)': `<b>Pivot Points (Support / Resistance)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Uses the previous completed trading session's high, low, and close to calculate classic floor-trader pivot levels: Pivot (P), supports (S1-S5), and resistances (R1-R5). These levels often act as intraday decision zones for liquidity, rejection, continuation, and profit-taking.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>A bullish signal fires when price reclaims S1 support or crosses back above the main Pivot. A bearish signal fires when price rejects R1 resistance or loses the main Pivot. The chart draws P plus your selected number of S/R ladders so you can see whether price is reclaiming support, stuck around fair value, or rejecting resistance.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>S/R Levels To Draw (1-5) (Default 1):</b> Controls how many support and resistance ladders are drawn. Example: 3 draws P, S1-S3, and R1-R3. The value is clamped to max 5.<br>• <b>Reclaim/Rejection Tolerance (%) (Default 0):</b> Percent buffer used when detecting support reclaims and resistance rejections. At 0, price must touch/cross the pivot level directly. Higher values allow a wider test zone; lower values require cleaner touches.<br><br><b class="text-slate-800">Formula:</b><br>P = (High + Low + Close) / 3. R1/S1 use the classic 2P formulas. R2/S2 use the prior session range. R3-S5 extend the ladder by range-based projection.`,
             'Volume Profile': `<b>Volume Profile (POC / Value Area)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Builds a prior-session volume-at-price profile from completed candles and draws the Point of Control (POC), Value Area High (VAH), and Value Area Low (VAL). Institutions watch these zones because they show where the most accepted volume traded, not just where price briefly touched.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>A bullish signal fires when price reclaims POC, accepts above VAH, or bounces from VAL. A bearish signal fires when price loses POC, accepts below VAL, or rejects VAH. Inside the value area, the indicator stays neutral because price is still rotating around prior accepted value.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Profile Rows / Price Bins (Default 48):</b> Number of price buckets used to approximate volume-at-price. Higher values are more granular but noisier.<br>• <b>Value Area (%) (Default 70):</b> Percent of prior-session volume used to calculate VAH and VAL. 70% is the common market-profile standard.<br>• <b>Signal Tolerance (%) (Default 0.15):</b> Percent buffer around POC/VAH/VAL before reclaim/rejection signals trigger.<br>• <b>Acceptance Confirmation Candles (Default 1):</b> Number of consecutive completed candles required beyond VAH/VAL for acceptance.`,
             'Swing Points': `<b>Swing Points (Structural Support / Resistance)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Finds rolling swing support and resistance clusters from local highs/lows, then scores them by wick rejection, volume, range expansion, recency, and repeated touches. This mirrors the Swing Points entry/exit strategy so confluence, bots, and backtests read the same structure.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>In Bounce / Retest mode, bullish signals fire on confirmed support bounces and bearish signals fire on resistance rejections. In Breakout / Retest mode, bullish signals fire when resistance is reclaimed and bearish signals fire when support is lost. The chart draws selected swing S/R levels as dotted structural zones.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Swing Lookback Days (Default 20):</b> How far back to search for structural swing levels.<br>• <b>Swing Entry Mode (Default Bounce / Retest):</b> Bounce / Retest favors reversals at support/resistance. Breakout / Retest favors continuation after reclaim or breakdown.<br>• <b>S/R Levels To Draw (1-5) (Default 1):</b> Number of nearest swing supports and resistances drawn on the chart.`,
             'Strategy Confidence': `<b>Strategy Confidence Score</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Strategy Confidence aggregates all active indicators into a unified conviction rating.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Fires a confirmed overall signal only when the minimum required number of independent bullish or bearish indicators agree.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Min Bullish Signals (Default 4):</b> Minimum number of bullish indicators required.<br>• <b>Min Bearish Signals (Default 4):</b> Minimum number of bearish indicators required.`,
-            'BotBulls1': `<b>BotBulls 1 (Premium Confirmed WaveTrend + MFI Reclaim)</b><br><br><b class="text-slate-800">What it is:</b><br>BotBulls 1 is a reversal indicator. It looks for price to become stretched too far down or too far up, then waits for momentum and money flow to start turning back before it gives a signal. The goal is to avoid buying just because price is oversold. It waits for confirmation first.<br><br><b class="text-slate-800">Simple meaning:</b><br><b class="text-emerald-500">BUY</b> means price was recently washed out, WaveTrend started turning up, MFI started recovering, and the candle showed bullish follow-through.<br><b class="text-rose-500">SELL</b> means price was recently overheated, WaveTrend started turning down, MFI started weakening, and the candle showed bearish follow-through.<br><br><b class="text-slate-800">How the signal is built:</b><br>1. <b>WaveTrend</b> finds the stretched zone. Think of this like RSI, but smoother and more cycle-based.<br>2. <b>WT1 crossing WT2</b> shows momentum is trying to turn.<br>3. <b>MFI</b> checks whether money flow is confirming the turn.<br>4. <b>Candle confirmation</b> checks whether the current candle agrees with the signal direction.<br><br><b class="text-slate-800">Default Balanced Preset:</b><br>WT Channel 10, WT Average 21, WT Oversold -55, WT Overbought 55, MFI Buy Reclaim 35, MFI Sell Reject 65, Extreme Lookback 3 candles, Require MFI Confirmation 1, Require Candle Confirmation 1.<br><br><b class="text-slate-800">Settings Guide:</b><br>• <b>WaveTrend Channel Period (Default 10):</b> Controls how fast BB1 reacts to price swings. Lower values create faster/more signals but more noise. Higher values create slower/cleaner signals. Suggested range: 8-14.<br>• <b>WaveTrend Average Period (Default 21):</b> Smooths the WaveTrend line. Lower values react faster. Higher values reduce false flips. Suggested range: 14-28.<br>• <b>WT Oversold Level (Default -55):</b> BUY signals only qualify if WaveTrend recently reached this low area. More negative, like -60, means fewer but cleaner BUYs. Less negative, like -50, means earlier but noisier BUYs.<br>• <b>WT Overbought Level (Default 55):</b> SELL signals only qualify if WaveTrend recently reached this high area. Higher, like 60, means fewer but cleaner SELLs. Lower, like 50, means earlier but noisier SELLs.<br>• <b>MFI Buy Reclaim Level (Default 35):</b> BUY requires MFI to rise back above this level and be higher than the prior candle. Lower values trigger earlier. Higher values wait for stronger money-flow recovery.<br>• <b>MFI Sell Reject Level (Default 65):</b> SELL requires MFI to fall back below this level and be lower than the prior candle. Higher values trigger earlier. Lower values wait for stronger bearish money-flow weakness.<br>• <b>WT Extreme Lookback Candles (Default 3):</b> How recently the oversold/overbought zone must have happened. 1 is strict and immediate. 3 is balanced. 5 allows later confirmation after the extreme.<br>• <b>Require MFI Confirmation (Default 1):</b> 1 means ON and BB1 waits for money flow confirmation. 0 means OFF and signals become more aggressive. For bots, keep this ON.<br>• <b>Require Candle Confirmation (Default 1):</b> 1 means ON and BB1 requires the candle to close in the signal direction. 0 means OFF and signals trigger faster. For bots, keep this ON.<br><br><b class="text-slate-800">Recommended presets:</b><br>• <b>Conservative:</b> Channel 12, Average 28, Oversold -60, Overbought 60, MFI 40/60, Lookback 3-5, confirmations ON. Best for fewer false signals.<br>• <b>Balanced:</b> Channel 10, Average 21, Oversold -55, Overbought 55, MFI 35/65, Lookback 3, confirmations ON. Best default for bots.<br>• <b>Aggressive:</b> Channel 8, Average 14, Oversold -50, Overbought 50, MFI 30/70, Lookback 2-3, MFI ON, candle confirmation optional. Best for scalping but more false signals.<br><br><b class="text-slate-800">Important:</b><br>BB1 is a reversal signal, not a full strategy by itself. For live bots, use it with trend or structure confirmation such as VWAP, Supertrend, Pivot Points, Swing Points, or Volume Profile.`,
+            'BotBulls1': `<b>BotBulls 1 (Premium Confirmed WaveTrend + MFI Reclaim)</b><br><br><b class="text-slate-800">What it is:</b><br>BotBulls 1 is a reversal indicator. It looks for price to become stretched too far down or too far up, then waits for momentum and money flow to start turning back before it gives a signal. The goal is to avoid buying just because price is oversold. It waits for confirmation first.<br><br><b class="text-slate-800">Simple meaning:</b><br><b class="text-emerald-500">BUY</b> means price was recently washed out, WaveTrend started turning up, MFI started recovering, and the candle showed bullish follow-through.<br><b class="text-rose-500">SELL</b> means price was recently overheated, WaveTrend started turning down, MFI started weakening, and the candle showed bearish follow-through.<br><br><b class="text-slate-800">How the signal is built:</b><br>1. <b>WaveTrend</b> finds the stretched zone. Think of this like RSI, but smoother and more cycle-based.<br>2. <b>WT1 crossing WT2</b> shows momentum is trying to turn.<br>3. <b>MFI</b> checks whether money flow is confirming the turn.<br>4. <b>Candle confirmation</b> checks whether the current candle agrees with the signal direction.<br><br><b class="text-slate-800">Default Balanced Preset:</b><br>WT Channel 10, WT Average 21, WT Oversold -55, WT Overbought 55, MFI Buy Reclaim 35, MFI Sell Reject 65, Extreme Lookback 3 candles, Require MFI Confirmation 1, Require Candle Confirmation 1.<br><br><b class="text-slate-800">Settings Guide:</b><br>• <b>WaveTrend Channel Period (Default 10):</b> Controls how fast BB1 reacts to price swings. Lower values create faster/more signals but more noise. Higher values create slower/cleaner signals. Suggested range: 8-14.<br>• <b>WaveTrend Average Period (Default 21):</b> Smooths the WaveTrend line. Lower values react faster. Higher values reduce false flips. Suggested range: 14-28.<br>• <b>WT Oversold Level (Default -55):</b> BUY signals only qualify if WaveTrend recently reached this low area. More negative, like -60, means fewer but cleaner BUYs. Less negative, like -50, means earlier but noisier BUYs.<br>• <b>WT Overbought Level (Default 55):</b> SELL signals only qualify if WaveTrend recently reached this high area. Higher, like 60, means fewer but cleaner SELLs. Lower, like 50, means earlier but noisier SELLs.<br>• <b>MFI Buy Reclaim Level (Default 35):</b> BUY requires MFI to rise back above this level and be higher than the prior candle. Lower values trigger earlier. Higher values wait for stronger money-flow recovery.<br>• <b>MFI Sell Reject Level (Default 65):</b> SELL requires MFI to fall back below this level and be lower than the prior candle. Higher values trigger earlier. Lower values wait for stronger bearish money-flow weakness.<br>• <b>WT Extreme Lookback Candles (Default 3):</b> How recently the oversold/overbought zone must have happened. 1 is strict and immediate. 3 is balanced. 5 allows later confirmation after the extreme.<br>• <b>Require MFI Confirmation (Default 1):</b> 1 means ON and BB1 waits for money flow confirmation. 0 means OFF and signals become more aggressive. For bots, keep this ON.<br>• <b>Require Candle Confirmation (Default 1):</b> 1 means ON and BB1 requires the candle to close in the signal direction. 0 means OFF and signals trigger faster. For bots, keep this ON.<br><br><b class="text-slate-800">Recommended presets:</b><br>• <b>Conservative:</b> Channel 12, Average 28, Oversold -60, Overbought 60, MFI 40/60, Lookback 3-5, confirmations ON. Best for fewer false signals.<br>• <b>Balanced:</b> Channel 10, Average 21, Oversold -55, Overbought 55, MFI 35/65, Lookback 3, confirmations ON. Best default for bots.<br>• <b>Aggressive:</b> Channel 8, Average 14, Oversold -50, Overbought 50, MFI 30/70, Lookback 2-3, MFI ON, candle confirmation optional. Best for scalping but more false signals.<br><br><b class="text-slate-800">Important:</b><br>BB1 is a reversal signal, not a full strategy by itself. For live bots, use it with trend or structure confirmation such as AVWAP, Supertrend, Pivot Points, Swing Points, or Volume Profile.`,
             'BotBulls2': `<b>BotBulls 2 (UT Bot — Universal Trailing Stop + Trend Tracer)</b><br><br><b class="text-amber-700">UT</b> stands for <b>Universal Trailing Stop</b> — a dynamic ATR-based trailing stop band that adapts to market volatility in real time, generating high-probability buy/sell signals when price crosses it.<br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 2 is a comprehensive multi-confluence trend and dynamic risk management suite. It protects capital by adapting trailing stop levels to real-time market volatility while filtering out choppy false breakouts through institutional momentum confirmation.<br><br><b class="text-slate-800">How it works:</b><br>It combines an adaptive Universal Trailing (UT) stop band, an institutional double-smoothed Trend Tracer EMA, and extreme statistical Reversal Zones.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>ATR Multiplier (Sensitivity):</b> Controls how tightly the trailing stop hugs price action. Lower values (e.g., 1.5–2.0) react faster for scalping; higher values (e.g., 2.5–3.0) give trades breathing room to ride extended trend swings without early shakeouts.<br>• <b>Trend Tracer Period:</b> Lookback window (default 50) for double-smoothed exponential trend alignment.<br>• <b>Reversal Zone Period:</b> Lookback window (default 50) for statistical deviation bands identifying overstretched extremes.`,
             'BotBulls3': `<b>BotBulls 3 (HA + UT — Heikin-Ashi Filtered Trail)</b><br><br><b class="text-amber-700">HA</b> stands for <b>Heikin-Ashi</b> (Japanese for “Average Bar”) — a technique that mathematically smooths candlestick data to eliminate market noise, making true trend direction far clearer.<br><br><b class="text-amber-700">UT</b> stands for <b>Universal Trailing Stop</b> — an adaptive ATR-based trailing stop band that tracks volatility and signals momentum flips.<br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 3 is a pure volatility breakout momentum engine designed for fast scalping and intraday momentum. By running an adaptive Universal Trailing stop directly on noise-filtered Heikin-Ashi candles, it eliminates false whipsaws seen on standard price action charts.<br><br><b class="text-slate-800">How it works:</b><br>It converts standard price action into Heikin-Ashi smoothed candles, then applies a hyper-sensitive Universal Trailing stop band. When volatility expands and price breaks above the trailing channel on the HA chart, a high-probability breakout signal is generated.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>ATR Period (Default 10):</b> Lookback window for measuring true range volatility on Heikin-Ashi candles.<br>• <b>ATR Multiplier / Sensitivity (Default 1.0):</b> Trailing stop sensitivity threshold. Lower values (e.g., 1.0) react immediately to breakout momentum for scalping; higher values (e.g., 1.5–2.0) provide a wider buffer against intraday noise.`,
             'Botbulls4 News AI': `<b>BotBulls 4 News AI (Premium AI News Sentiment)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 4 is an AI-powered fundamental sentiment intelligence engine. While technical indicators analyze price action, BotBulls 4 reads market news, macro catalysts, and earnings reports in real time, acting as a crucial fundamental guardrail against trading into negative news.<br><br><b class="text-slate-800">How it works:</b><br>It continuously fetches live financial headlines and macro-economic data, processing them through large language models (LLMs) to calculate an objective sentiment score (0–100%). When news is overwhelmingly positive, it fires a bullish sentiment confirmation.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Sentiment Bullish Percentage (Default 70%):</b> Minimum AI confidence threshold required to confirm a bullish news catalyst. Higher values (e.g., 75–80%) require overwhelmingly positive news before signaling.<br>• <b>Sentiment Bearish Percentage (Default 30%):</b> Score threshold below which news is classified as bearish. Values below this trigger defensive alerts or short confirmation.`,
@@ -3265,8 +3780,9 @@
             const modal = document.getElementById('infoModal');
             const title = document.getElementById('infoModalTitle');
             const content = document.getElementById('infoModalContent');
+            const infoContent = window.INDICATOR_GUIDES?.[indicator] || indicatorInfoMap[indicator];
             
-            if (indicatorInfoMap[indicator]) {
+            if (infoContent) {
                 const modalContainer = modal.children[0];
                 if (indicator === 'Pro Bot Deployment Guide') {
                     modalContainer.classList.remove('max-w-xl');
@@ -3275,9 +3791,10 @@
                 } else {
                     modalContainer.classList.remove('max-w-3xl', 'sm:max-w-4xl');
                     modalContainer.classList.add('max-w-xl');
-                    title.innerText = indicator + " Explained";
+                    const displayIndicator = indicator === 'VWAP' ? 'AVWAP' : indicator;
+                    title.innerText = displayIndicator + " Explained";
                 }
-                content.innerHTML = indicatorInfoMap[indicator];
+                content.innerHTML = infoContent;
                 
                 modal.classList.remove('hidden');
                 modal.classList.add('flex');
@@ -3336,7 +3853,7 @@
                     <p>The backtesting engine is designed to accurately simulate historical market conditions using your custom algorithmic parameters.</p>
                     <ul class="list-disc pl-5 space-y-2 text-[0.8rem]">
                         <li><strong class="text-indigo-950 font-black">Data Ingestion:</strong> Fetches historical OHLCV data using Yahoo Finance (yfinance) and optionally Alpaca's historical API. Data is cleaned and filtered for Regular Trading Hours (RTH) if extended hours are disabled.</li>
-                        <li><strong class="text-indigo-950 font-black">Indicator Engine:</strong> Calculates complex technical indicators (RSI, MACD, EMA Cross, Supertrend, Bollinger Bands, VWAP, etc.) across the entire historical timeframe to prevent iterative lag.</li>
+                        <li><strong class="text-indigo-950 font-black">Indicator Engine:</strong> Calculates complex technical indicators (RSI, MACD, EMA Cross, Supertrend, Bollinger Bands, AVWAP, etc.) across the entire historical timeframe to prevent iterative lag.</li>
                         <li><strong class="text-indigo-950 font-black">ATR-Based Stops:</strong> Volatility-adjusted Stop Loss & Take Profit using the Average True Range (ATR). Instead of a fixed percentage, the stop loss widens in volatile markets and tightens in quiet markets.</li>
                     </ul>
                 </div>

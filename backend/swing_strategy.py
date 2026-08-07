@@ -61,7 +61,9 @@ def _normalize_candle(candle: dict) -> Optional[dict]:
     close = _safe_float(candle.get("close"), None)
     open_ = _safe_float(candle.get("open"), close)
     ts = candle.get("time")
-    dt_et = _to_et_dt(ts)
+    dt_et = candle.get("dt_et")
+    if dt_et is None:
+        dt_et = _to_et_dt(ts)
     if high is None or low is None or close is None:
         return None
     if high < low:
@@ -208,14 +210,31 @@ def _extract_context(
     is_crypto: bool = False,
 ) -> dict:
     candles = []
-    for candle in price_history or []:
-        normalized = _normalize_candle(candle)
-        if normalized:
+    if price_history:
+        # O(K) optimization: Iterate backwards until we cross the cutoff date
+        last_candle = _normalize_candle(price_history[-1])
+        latest_dt = last_candle.get("dt_et") if last_candle else None
+        
+        if latest_dt and lookback_days > 0:
+            from datetime import timedelta
+            cutoff = latest_dt - timedelta(days=int(lookback_days))
+        else:
+            cutoff = None
+            
+        for raw_candle in reversed(price_history):
+            normalized = _normalize_candle(raw_candle)
+            if not normalized:
+                continue
+                
+            if cutoff and normalized.get("dt_et") and normalized["dt_et"] < cutoff:
+                break
+                
             candles.append(normalized)
+            
+        candles.reverse()
 
     candles = _session_filter(candles, market_session=market_session, is_crypto=is_crypto)
-    candles = _lookback_filter(candles, lookback_days=lookback_days)
-    candles = [c for c in candles if c["high"] is not None and c["low"] is not None and c["close"] is not None]
+    candles = [c for c in candles if c.get("high") is not None and c.get("low") is not None and c.get("close") is not None]
 
     if not candles:
         return {
@@ -522,13 +541,46 @@ def build_entry_signal(
     desired_direction: Optional[str] = None,
     high_low_buffer_pct: float = 0.0,
 ) -> dict:
-    ctx = _extract_context(
-        price_history=price_history,
-        current_price=current_price,
-        lookback_days=lookback_days,
-        market_session=market_session,
-        is_crypto=is_crypto,
-    )
+    entry_mode = entry_mode or "indicator"
+    lightweight_modes = {
+        "custom_price", "atr", "hybrid_atr", "percentage", "hybrid_pct",
+        "pivot_points", "hybrid_pivot", "high_low", "hybrid_high_low",
+    }
+    if entry_mode in lightweight_modes:
+        candles = []
+        for candle in price_history or []:
+            normalized = _normalize_candle(candle)
+            if normalized:
+                candles.append(normalized)
+        candles = _session_filter(candles, market_session=market_session, is_crypto=is_crypto)
+        candles = _lookback_filter(candles, lookback_days=lookback_days)
+        ranges = [max(0.0, c["high"] - c["low"]) for c in candles]
+        average_range = sum(ranges) / max(1, len(ranges))
+        if current_price is None and candles:
+            current_price = candles[-1]["close"]
+        current_price = _safe_float(current_price, candles[-1]["close"] if candles else 0.0)
+        ctx = {
+            "candles": candles,
+            "support_levels": [],
+            "resistance_levels": [],
+            "nearest_support": None,
+            "nearest_resistance": None,
+            "current_price": current_price,
+            "price_tolerance": max(current_price * 0.0025, average_range * 0.5, 0.01),
+            "average_volume": 0.0,
+            "average_range": average_range,
+            "lookback_days": lookback_days,
+            "market_session": market_session,
+            "is_crypto": is_crypto,
+        }
+    else:
+        ctx = _extract_context(
+            price_history=price_history,
+            current_price=current_price,
+            lookback_days=lookback_days,
+            market_session=market_session,
+            is_crypto=is_crypto,
+        )
     candles = ctx["candles"]
     if len(candles) < 2:
         return {
@@ -543,7 +595,7 @@ def build_entry_signal(
     action = "HOLD"
     reason = "Entry strategy: waiting for confirmation"
     trigger_price = None
-    label = entry_mode or "indicator"
+    label = entry_mode
     desired_direction = str(desired_direction or "").upper()
     structure_direction = "NONE"
 

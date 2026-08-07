@@ -5,6 +5,7 @@ All strategy parameters, risk rules, and API keys in one place.
 import os
 # pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
+from indicator_catalog import EXTENSION_INDICATOR_DEFAULTS, EXTENSION_INDICATOR_TOGGLE_KEYS
 
 _BASE_DIR = os.path.dirname(__file__)
 _PROJECT_ROOT = os.path.dirname(_BASE_DIR)
@@ -96,11 +97,26 @@ ENABLE_SWING_POINTS = True
 ENABLE_BOTBULLS1 = True
 ENABLE_BOTBULLS2 = True
 ENABLE_BOTBULLS3 = True
+ENABLE_BOTBULLS5 = True
+
+# The added classical catalog is available everywhere but stays disabled in
+# global confluence until the user explicitly enables an indicator. Bot and
+# backtest selections still activate their chosen indicators directly.
+for _toggle_key in EXTENSION_INDICATOR_TOGGLE_KEYS.values():
+    globals()[_toggle_key] = False
 
 # AI Indicator (Groq Agentic)
 ENABLE_AI_INDICATOR = True
 AI_INDICATOR_MODEL = "llama-3.3-70b-versatile"
 AI_INDICATOR_CACHE_MINUTES = 30
+AI_DECISION_TIMEFRAME = "1Hour"
+# Deterministic Quant AI gates.  The LLM explains the decision but does not
+# override these execution-quality requirements.
+AI_MIN_SETUP_SCORE = 70
+AI_MIN_REWARD_RISK = 1.5
+AI_MAX_ENTRY_RSI = 72.0
+AI_MIN_VOLUME_RATIO = 0.80
+AI_REQUIRE_VOLUME_CONFIRMATION = False
 # News is a directional confirmation factor.  When flat, block a model entry
 # that directly contradicts sufficiently confident news; HOLD is safer than
 # forcing the opposite side.  Open-position risk exits are still permitted.
@@ -149,6 +165,9 @@ SWING_POINTS_LOOKBACK_DAYS = 20
 SWING_POINTS_ENTRY_MODE = "bounce_retest"
 SWING_POINTS_LEVEL_COUNT = 1
 
+# Shared industry defaults for the extended standard-indicator catalog.
+globals().update(EXTENSION_INDICATOR_DEFAULTS)
+
 # Premium BotBulls Parameters
 BOTBULLS1_WT_CHANNEL = 10
 BOTBULLS1_WT_AVERAGE = 21
@@ -170,6 +189,34 @@ BOTBULLS2_REVERSAL_ZONE_PERIOD = 50
 
 BOTBULLS3_ATR_PERIOD = 10
 BOTBULLS3_ATR_MULT = 1.0
+
+# BotBulls5 — causal multi-pattern recognition and breakout confirmation.
+# Defaults are deliberately balanced: forming patterns are shown on the chart,
+# but confluence remains neutral until a completed candle confirms the break.
+BOTBULLS5_POLE_LOOKBACK = 12
+BOTBULLS5_CONSOLIDATION_MIN_BARS = 5
+BOTBULLS5_CONSOLIDATION_MAX_BARS = 18
+BOTBULLS5_POLE_ATR_MULT = 3.0
+BOTBULLS5_MAX_RETRACE_PCT = 50.0
+BOTBULLS5_MAX_WIDTH_PCT = 45.0
+BOTBULLS5_PARALLEL_TOLERANCE = 0.35
+BOTBULLS5_MIN_CONVERGENCE_PCT = 25.0
+BOTBULLS5_BREAKOUT_BUFFER_ATR = 0.10
+BOTBULLS5_VOLUME_CONTRACTION_MAX = 0.85
+BOTBULLS5_BREAKOUT_VOLUME_MULT = 1.20
+BOTBULLS5_MIN_CONFIDENCE = 70.0
+BOTBULLS5_SIGNAL_HOLD_BARS = 3
+BOTBULLS5_REQUIRE_VOLUME = 0
+BOTBULLS5_ALLOW_PENNANTS = 1
+BOTBULLS5_ALLOW_WEDGES = 1
+BOTBULLS5_STRUCTURE_LOOKBACK = 48
+BOTBULLS5_PIVOT_SPAN = 2
+BOTBULLS5_LEVEL_TOLERANCE_PCT = 0.08
+BOTBULLS5_ALLOW_REVERSALS = 1
+BOTBULLS5_ALLOW_TRIANGLES = 1
+BOTBULLS5_ALLOW_RANGES = 1
+BOTBULLS5_ALLOW_ROUNDED = 1
+BOTBULLS5_ALLOW_MEASURED_MOVES = 1
 
 # ──────────────────────────────────────────────
 # Strategy — Signal Confluence Thresholds

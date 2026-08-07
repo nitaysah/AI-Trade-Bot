@@ -21,12 +21,15 @@ const CLOUD_URL = 'https://207-211-184-22.sslip.io';
 const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
     ? 'http://localhost:8000'
     : CLOUD_URL;
-const REFRESH_INTERVAL = 10000; // 10 seconds (faster real-time tracking)
+const OPTIONS_REFRESH_INTERVAL = 10000;
+const REGULAR_REFRESH_INTERVAL = 60000;
+const SCAN_ACTIVITY_REFRESH_INTERVAL = 10000;
+const ORDER_ACTIVITY_REFRESH_INTERVAL = 30000;
 const DASHBOARD_FETCH_TIMEOUT_MS = 15000;
 const PORTFOLIO_FETCH_TIMEOUT_MS = 15000;
-const AI_FETCH_TIMEOUT_MS = 20000;
-const PORTFOLIO_REFRESH_INTERVAL = 30000;
-const BOT_CHART_CACHE_VERSION = 'v6';
+const PORTFOLIO_SHORT_REFRESH_INTERVAL = 30000;
+const PORTFOLIO_LONG_REFRESH_INTERVAL = 5 * 60 * 1000;
+const BOT_CHART_CACHE_VERSION = 'v7';
 const BOT_CHART_CACHE_TTL_MS = 10 * 60 * 1000;
 const BOT_CHART_IDB_NAME = 'aiTradeBotChartCache';
 const BOT_CHART_IDB_VERSION = 1;
@@ -39,24 +42,36 @@ let currentLogTab = "all";
 let currentChartPeriod = "ALL";
 let portfolioChartInstance = null;
 let botArrangeMode = false;
-let botsDashboardAbortController = null;
-let botsDashboardFetchPromise = null;
-let botsDashboardFetchId = 0;
 let portfolioHistoryFetchInFlight = false;
 let portfolioHistoryAbortController = null;
 let portfolioHistoryFetchId = 0;
-let lastPortfolioRefreshAt = 0;
-let botsRefreshTimerId = null;
+const portfolioRefreshAtByRange = new Map();
+let botsRegularRefreshTimerId = null;
+let botsOptionsRefreshTimerId = null;
+let botsActivityRefreshTimerId = null;
+let botsPortfolioRefreshTimerId = null;
 let botsCountdownTimerId = null;
 let botsSoftRefreshTimerId = null;
-let aiIndicatorAbortController = null;
-let aiIndicatorInFlightKey = null;
-let aiIndicatorInFlightPromise = null;
 let botChartPreviewIndexedDbPromise = null;
 const botChartPreviewPayloadCache = new Map();
+const botFullSettingsCache = new Map();
+const botsPartitionSnapshots = { options: null, regular: null };
+const botsFetchState = {
+    all: { controller: null, promise: null, fetchId: 0 },
+    options: { controller: null, promise: null, fetchId: 0 },
+    regular: { controller: null, promise: null, fetchId: 0 }
+};
+const botsActivityState = {
+    scans: { controller: null, promise: null, fetchedAt: 0, fetchId: 0 },
+    orders: { controller: null, promise: null, fetchedAt: 0, fetchId: 0 }
+};
+let botsSharedSnapshot = null;
+let botsMasterTradelist = [];
+let lastObservedTradeEventSeq = null;
+let crossPartitionRefreshTimerId = null;
 
 function shouldRunBotsCardRefresh() {
-    return !!document.getElementById('tradelistContainer');
+    return !document.hidden && !!document.getElementById('tradelistContainer');
 }
 
 function shouldRunBotsVisualRefresh() {
@@ -64,13 +79,33 @@ function shouldRunBotsVisualRefresh() {
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
-    const controller = options.controller || new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-    const { controller: _controller, ...fetchOptions } = options;
+    const { controller: suppliedController, signal: externalSignal, ...fetchOptions } = options;
+    const controller = suppliedController || new AbortController();
+    let timedOut = false;
+    const forwardExternalAbort = () => {
+        if (!controller.signal.aborted) controller.abort(externalSignal?.reason);
+    };
+    if (externalSignal?.aborted) {
+        forwardExternalAbort();
+    } else if (externalSignal) {
+        externalSignal.addEventListener('abort', forwardExternalAbort, { once: true });
+    }
+    const timeoutId = setTimeout(() => {
+        timedOut = true;
+        if (!controller.signal.aborted) controller.abort();
+    }, timeoutMs);
     try {
         return await fetch(url, { ...fetchOptions, signal: controller.signal });
+    } catch (error) {
+        if (timedOut && error?.name === 'AbortError') {
+            const timeoutError = new Error(`Request timed out after ${timeoutMs}ms`);
+            timeoutError.name = 'TimeoutError';
+            throw timeoutError;
+        }
+        throw error;
     } finally {
         clearTimeout(timeoutId);
+        externalSignal?.removeEventListener('abort', forwardExternalAbort);
     }
 }
 
@@ -612,17 +647,26 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
 
         // ── Resolve modes from tickerSettings ──
         // buy_mode: always stored as 'buy_mode' in TICKER_SETTINGS
-        const buyMode = tickerSettings.buy_mode || 'indicator';
+        // Prefer the live scan-log strategy mode as well as saved settings so
+        // existing AI Autopilot bots render correctly even if older settings
+        // omitted the ai_autopilot flag from the ticker-settings payload.
+        const isAiAutopilot = Boolean(
+            tickerSettings.ai_autopilot ||
+            scan?.scan_log?.strategy_mode === 'ai_autopilot' ||
+            scan?.strategy_mode === 'ai_autopilot' ||
+            String(scan?.forecast_entry_static || '').startsWith('AI Autopilot')
+        );
+        const buyMode = isAiAutopilot ? 'ai_autopilot' : (tickerSettings.buy_mode || 'indicator');
         // sell_mode: stored as 'sell_mode'. options_exit_strategy is a legacy fallback only.
-        const sellMode = tickerSettings.sell_mode || tickerSettings.options_exit_strategy || 'indicator';
+        const sellMode = isAiAutopilot ? 'ai_autopilot' : (tickerSettings.sell_mode || tickerSettings.options_exit_strategy || 'indicator');
 
         // ── Determine whether each side actively uses indicator pool ──
-        const isEntryIndActive = !PURE_STRUCTURAL_ENTRY_MODES.has(buyMode);
-        const isExitIndActive  = !PURE_STRUCTURAL_EXIT_MODES.has(sellMode);
+        const isEntryIndActive = !isAiAutopilot && !PURE_STRUCTURAL_ENTRY_MODES.has(buyMode);
+        const isExitIndActive  = !isAiAutopilot && !PURE_STRUCTURAL_EXIT_MODES.has(sellMode);
 
         // ── Label prefixes ──
-        const entryLabel = HYBRID_ENTRY_MODES.has(buyMode) ? 'Entry Hybrid Ind' : 'Entry Ind';
-        const exitLabel  = HYBRID_EXIT_MODES.has(sellMode)  ? 'Exit Hybrid Ind' : 'Exit Ind';
+        const entryLabel = isAiAutopilot ? 'Entry AI' : (HYBRID_ENTRY_MODES.has(buyMode) ? 'Entry Hybrid Ind' : 'Entry Ind');
+        const exitLabel  = isAiAutopilot ? 'Exit AI' : (HYBRID_EXIT_MODES.has(sellMode) ? 'Exit Hybrid Ind' : 'Exit Ind');
 
         // ── Badge color for the Decision badge (action uses BUY/SELL/HOLD) ──
         const badgeColor = (signal) => signal === 'BUY'
@@ -727,7 +771,10 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         //      Options Puts Only : BEARISH/HOLD + S count only
         //      Legacy Both      : disabled; user must choose CALL or PUT
         let entryIndHtml;
-        if (!isEntryIndActive) {
+        if (isAiAutopilot) {
+            const aiEntrySignal = action === 'BUY' ? 'BUY' : 'HOLD';
+            entryIndHtml = `<span class="px-1.5 py-0.5 rounded border ${badgeColor(aiEntrySignal)} font-black text-[0.58rem] sm:text-[0.62rem] tracking-widest uppercase" title="AI Autopilot controls entry decisions from the AI market analysis.">${entryLabel} <span class="opacity-75">${aiEntrySignal}</span></span>`;
+        } else if (!isEntryIndActive) {
             entryIndHtml = naBadge(entryLabel);
         } else {
             let entrySignal;
@@ -771,7 +818,10 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         //      Options flat (calls): BEARISH/HOLD + S count (default exit readiness)
         //      Options flat (puts only) : BULLISH/HOLD + B count (default exit readiness)
         let exitIndHtml;
-        if (!isExitIndActive) {
+        if (isAiAutopilot) {
+            const aiExitSignal = activePosition && action === 'SELL' ? 'SELL' : 'HOLD';
+            exitIndHtml = `<span class="px-1.5 py-0.5 rounded border ${badgeColor(aiExitSignal)} font-black text-[0.58rem] sm:text-[0.62rem] tracking-widest uppercase" title="AI Autopilot controls exits from position risk, trend invalidation, stops, and targets.">${exitLabel} <span class="opacity-75">${aiExitSignal}</span></span>`;
+        } else if (!isExitIndActive) {
             exitIndHtml = naBadge(exitLabel);
         } else {
             let exitSignal;
@@ -1009,8 +1059,10 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         const startedAt = tickerSettings.started_at;
         const lastTradeAt = tickerSettings.last_trade_at;
         const totalTrades = tickerSettings.total_trades || 0;
+        const entryTrades = Number(tickerSettings.entry_trades || 0);
+        const maxTrades = Number(tickerSettings.max_trades || 0);
         let todayTrades = tickerSettings.today_trades || 0;
-        
+
         // Validate daily count based on local date
         const lastTradeDate = tickerSettings.last_trade_date;
         const currentDate = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
@@ -1033,6 +1085,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         let tradeBadgeHtml = `<div class="flex items-center divide-x divide-indigo-200/50 rounded-md bg-indigo-50/50 border border-indigo-100/50 overflow-hidden shadow-sm">
             <span class="px-1.5 py-0.5 text-indigo-600 font-black text-[0.55rem] uppercase tracking-tight">${todayTrades} TODAY</span>
             <span class="px-1.5 py-0.5 text-indigo-600 font-black text-[0.55rem] uppercase tracking-tight">${totalTrades} TOTAL</span>
+            ${maxTrades > 0 ? `<span class="px-1.5 py-0.5 text-amber-600 font-black text-[0.55rem] uppercase tracking-tight">${entryTrades}/${maxTrades} LIMIT</span>` : ''}
         </div>`;
 
         const allocationMode = tickerSettings.options_trading
@@ -1365,7 +1418,11 @@ function selectTicker(ticker) {
     });
 
     // Load AI summary for the newly selected ticker (uses client cache if available)
-    fetchAIIndicator(ticker, currentBackendTf);
+    void fetchAIIndicator(ticker, currentBackendTf).catch(error => {
+        if (!['AbortError', 'TimeoutError'].includes(error?.name)) {
+            console.error('[ai-indicator] Unexpected ticker refresh failure:', error);
+        }
+    });
 }
 
 async function removeFromTradelist(ticker) {
@@ -1423,6 +1480,56 @@ function setLogTab(tab) {
     }
 
     renderTradeLog(latestScanHistory, latestOrderHistory, latestPendingOrders, latestPositions);
+    if (tab === 'all') fetchBotsActivity('scans', { force: true });
+    if (tab === 'trades') fetchBotsActivity('orders', { force: true });
+}
+
+async function fetchBotsActivity(kind, options = {}) {
+    const kindNorm = kind === 'orders' ? 'orders' : 'scans';
+    const state = botsActivityState[kindNorm];
+    const { force = false, bypassThrottle = false } = options;
+    const refreshInterval = kindNorm === 'scans'
+        ? SCAN_ACTIVITY_REFRESH_INTERVAL
+        : ORDER_ACTIVITY_REFRESH_INTERVAL;
+    if (!shouldRunBotsCardRefresh()) return false;
+    if (state.promise) {
+        if (!force) return state.promise;
+        state.controller?.abort();
+    }
+    if (!force && !bypassThrottle && Date.now() - state.fetchedAt < refreshInterval) return false;
+
+    const fetchId = ++state.fetchId;
+    state.controller = new AbortController();
+    state.promise = (async () => {
+        const headers = await getAuthHeaders();
+        const response = await fetchWithTimeout(
+            `${API_BASE}/api/bots/activity?kind=${kindNorm}&limit=50`,
+            { headers, cache: 'no-store', controller: state.controller },
+            DASHBOARD_FETCH_TIMEOUT_MS
+        );
+        if (!response.ok) throw new Error(`Activity HTTP ${response.status}`);
+        const payload = await response.json();
+        if (payload.schema_version !== '1.0' || !Array.isArray(payload.activity)) {
+            throw new Error('Unsupported Bots activity schema');
+        }
+        state.fetchedAt = Date.now();
+        if (kindNorm === 'orders') latestOrderHistory = payload.activity;
+        else latestScanHistory = payload.activity;
+        renderTradeLog(latestScanHistory, latestOrderHistory, latestPendingOrders, latestPositions);
+        return payload.activity;
+    })();
+
+    try {
+        return await state.promise;
+    } catch (error) {
+        if (error.name !== 'AbortError') console.warn(`[bots] ${kindNorm} activity refresh failed:`, error);
+        return false;
+    } finally {
+        if (fetchId === state.fetchId) {
+            state.controller = null;
+            state.promise = null;
+        }
+    }
 }
 
 async function cancelOrder(orderId) {
@@ -1929,7 +2036,29 @@ async function saveBotChartPreviewCache(key, payload, ticker, settings) {
 
 function getSavedBotSettings(symbol) {
     const ticker = (symbol || '').toUpperCase();
-    return clonePlainObject((window.lastBotsData?.ticker_settings || {})[ticker] || {});
+    const slim = (window.lastBotsData?.ticker_settings || {})[ticker] || {};
+    const full = botFullSettingsCache.get(ticker) || {};
+    return clonePlainObject({ ...slim, ...full });
+}
+
+async function fetchBotSettingsLazy(symbol) {
+    const ticker = (symbol || '').toUpperCase();
+    if (!ticker) return {};
+    const existing = getSavedBotSettings(ticker);
+    if (botFullSettingsCache.has(ticker)) return existing;
+    try {
+        const headers = await getAuthHeaders();
+        const res = await fetch(`${API_BASE}/api/bots/${encodeURIComponent(ticker)}/settings`, { headers, cache: 'no-store' });
+        if (res.ok) {
+            const data = await res.json();
+            const fetchedSettings = data.settings || {};
+            botFullSettingsCache.set(ticker, clonePlainObject(fetchedSettings));
+            return getSavedBotSettings(ticker);
+        }
+    } catch (err) {
+        console.warn(`[bots] Could not lazy-fetch settings for ${ticker}:`, err);
+    }
+    return existing;
 }
 
 function setStrategyDraftIndicatorOverrides(overrides = {}) {
@@ -1964,9 +2093,16 @@ function updateDefaultCooldownLabel() {
 }
 
 function getCooldownMinutesValue(mode = 'regular') {
-    const val = document.getElementById(`strategyCooldownMinutes_${mode}`).value;
+    // AI Autopilot has no separate cooldown controls in the form. Return the
+    // backend default instead of dereferencing a missing DOM element.
+    const selectEl = document.getElementById(`strategyCooldownMinutes_${mode}`);
+    if (!selectEl) return "default";
+
+    const val = selectEl.value;
     if (val === 'default') return "default";
-    if (val === 'custom') return parseInt(document.getElementById(`strategyCooldownCustomMinutes_${mode}`).value) || 60;
+    if (val === 'custom') {
+        return parseInt(document.getElementById(`strategyCooldownCustomMinutes_${mode}`)?.value) || 60;
+    }
     return parseInt(val) || 60;
 }
 
@@ -1988,6 +2124,121 @@ function normalizeSignalThreshold(value, checkedCount, type = 'buy', minVal = 1)
 
     return Math.max(minVal, Math.min(normalized, checkedCount));
 }
+
+function getBotWorkspaceShownSet(mode = window.activeTradingMode || 'regular', ticker = currentStrategySymbol) {
+    const contextLabel = `bots-${mode === 'options' ? 'options' : 'regular'}`;
+    const fallback = (window.STANDARD_INDICATOR_NAMES || []).slice(0, 10);
+    const shown = window.IndicatorWorkspace?.getShownForScope?.(contextLabel, ticker)
+        || window.IndicatorWorkspace?.getShown?.(contextLabel)
+        || fallback;
+    return new Set(shown);
+}
+
+function isBotIndicatorAllowed(indicatorName, mode = window.activeTradingMode || 'regular', ticker = currentStrategySymbol) {
+    const standardNames = window.STANDARD_INDICATOR_NAMES || [];
+    return !standardNames.includes(indicatorName) || getBotWorkspaceShownSet(mode, ticker).has(indicatorName);
+}
+
+function getSelectedStrategyIndicators(mode = window.activeTradingMode || 'regular') {
+    const container = document.getElementById(`indicatorChecksContainer_${mode}`);
+    if (!container) return [];
+    const selected = [];
+    const seen = new Set();
+    container.querySelectorAll('.strategy-indicator-check:checked:not(:disabled)').forEach(checkbox => {
+        const name = String(checkbox.value || '').trim();
+        if (!name || seen.has(name) || !isBotIndicatorAllowed(name, mode, currentStrategySymbol)) return;
+        seen.add(name);
+        selected.push(name);
+    });
+    return selected;
+}
+window.getSelectedStrategyIndicators = getSelectedStrategyIndicators;
+
+const botWorkspaceIndicatorSaveTimers = new Map();
+
+function queueBotWorkspaceIndicatorRemoval(ticker, mode, shown) {
+    const normalizedTicker = String(ticker || '').trim().toUpperCase();
+    const saved = window.lastBotsData?.ticker_settings?.[normalizedTicker];
+    if (!normalizedTicker || !saved || !Array.isArray(saved.indicators)) return;
+    const savedMode = saved.options_trading ? 'options' : 'regular';
+    if (savedMode !== mode) return;
+
+    const standardNames = new Set(window.STANDARD_INDICATOR_NAMES || []);
+    const nextIndicators = saved.indicators.filter(name => !standardNames.has(name) || shown.has(name));
+    if (nextIndicators.length === saved.indicators.length) return;
+
+    saved.indicators = nextIndicators;
+    saved.min_buy_signals = normalizeSignalThreshold(saved.min_buy_signals, nextIndicators.length, 'buy');
+    saved.min_sell_signals = normalizeSignalThreshold(saved.min_sell_signals, nextIndicators.length, 'sell');
+
+    clearTimeout(botWorkspaceIndicatorSaveTimers.get(normalizedTicker));
+    const saveTimer = setTimeout(async () => {
+        botWorkspaceIndicatorSaveTimers.delete(normalizedTicker);
+        try {
+            const headers = await getAuthHeaders();
+            const response = await fetch(`${API_BASE}/api/settings/ticker`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                    ticker: normalizedTicker,
+                    settings: {
+                        indicators: [...nextIndicators],
+                        min_buy_signals: saved.min_buy_signals,
+                        min_sell_signals: saved.min_sell_signals,
+                    },
+                }),
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        } catch (error) {
+            console.warn(`[indicator-workspace] Could not persist hidden indicators for ${normalizedTicker}.`, error);
+        }
+    }, 150);
+    botWorkspaceIndicatorSaveTimers.set(normalizedTicker, saveTimer);
+}
+
+function reconcileBotIndicatorsWithWorkspace(event) {
+    const detail = event?.detail || {};
+    if (!String(detail.contextLabel || '').startsWith('bots-')) return;
+    const mode = detail.contextLabel.endsWith('options') ? 'options' : 'regular';
+    const shown = new Set(detail.shown || getBotWorkspaceShownSet(mode, detail.ticker));
+    const container = document.getElementById(`indicatorChecksContainer_${mode}`);
+    container?.querySelectorAll('.strategy-indicator-check:checked').forEach(checkbox => {
+        const name = String(checkbox.value || '').trim();
+        if ((window.STANDARD_INDICATOR_NAMES || []).includes(name) && !shown.has(name)) {
+            checkbox.checked = false;
+        }
+    });
+    updateStrategySignalLabels(mode);
+    queueBotWorkspaceIndicatorRemoval(detail.ticker || currentStrategySymbol, mode, shown);
+
+    if (botChartPreviewState?.open && botChartPreviewState.settings) {
+        const previewMode = botChartPreviewState.settings.options_trading || botChartPreviewState.tradingMode === 'options'
+            ? 'options'
+            : 'regular';
+        if (previewMode === mode) {
+            const indicators = getEffectivePreviewIndicators(
+                botChartPreviewState.signals,
+                botChartPreviewState.settings
+            );
+            botChartPreviewState.settings.indicators = indicators;
+            botChartPreviewState.settings.enabled_indicators = [...indicators];
+            botChartPreviewState.settings.min_buy_signals = normalizeSignalThreshold(
+                botChartPreviewState.settings.min_buy_signals,
+                indicators.length,
+                'buy'
+            );
+            botChartPreviewState.settings.min_sell_signals = normalizeSignalThreshold(
+                botChartPreviewState.settings.min_sell_signals,
+                indicators.length,
+                'sell'
+            );
+            renderBotChartPreviewSignals(botChartPreviewState.signals, botChartPreviewState.settings);
+            updateBotChartPreviewChart(botChartPreviewState.priceHistory, botChartPreviewState.settings);
+        }
+    }
+}
+
+window.addEventListener('indicator-workspace:selection-change', reconcileBotIndicatorsWithWorkspace);
 
 function getSwingLookbackDaysValue(mode = 'regular', kind = 'entry') {
     const selectEl = document.getElementById(`strategySwing${kind === 'entry' ? 'Entry' : 'Exit'}Lookback_${mode}`);
@@ -2063,6 +2314,57 @@ window.updateAllocationModeUI = function (mode = 'regular', settings = null) {
     }
 };
 
+window.updateGridLevelInputs = function(mode, type) {
+    const isEntry = type === 'entry';
+    const selId = isEntry ? `strategyGridMaxLevels_${mode}` : `strategyExitGridMaxLevels_${mode}`;
+    const maxLvls = parseInt(document.getElementById(selId)?.value || '5', 10);
+    const prefix = isEntry ? `gridEntry` : `gridExit`;
+    for (let i = 1; i <= 5; i++) {
+        const wrap = document.getElementById(`${prefix}L${i}_wrap_${mode}`);
+        if (wrap) {
+            wrap.classList.toggle('hidden', i > maxLvls);
+        }
+    }
+    if (window.updateContinuousGridUi) window.updateContinuousGridUi(mode, type);
+};
+
+window.updateContinuousGridUi = function(mode, type) {
+    const isEntry = type === 'entry';
+    const checkbox = document.getElementById(
+        isEntry ? `strategyGridContinuous_${mode}` : `strategyExitGridContinuous_${mode}`
+    );
+    const fields = document.getElementById(
+        isEntry ? `strategyGridFields_${mode}` : `strategyExitGridFields_${mode}`
+    );
+    const enabled = mode === 'regular' && !!checkbox?.checked;
+    if (mode !== 'regular' && checkbox) checkbox.checked = false;
+    if (fields) fields.classList.toggle('hidden', !enabled);
+
+    if (mode === 'regular' && isEntry) {
+        const allocation = Math.max(0, parseFloat(document.getElementById('strategyGridBuyAllocation_regular')?.value || 0));
+        const levels = Math.max(1, parseInt(document.getElementById('strategyGridMaxLevels_regular')?.value || 5, 10));
+        const help = document.getElementById('strategyGridEntryHelp_regular');
+        if (help) {
+            help.textContent = `After the initial Percentage Entry fills, each level is a cumulative dip from that first fill. Dip / Reclaim arms below the level and buys after a 0.15% reclaim. Maximum additional allocation: $${(allocation * levels).toLocaleString(undefined, { maximumFractionDigits: 2 })}. The stop-loss remains active and can end the cycle before deeper levels fill.`;
+        }
+    }
+    if (mode === 'regular' && !isEntry) {
+        const sellPct = Math.max(1, parseFloat(document.getElementById('strategyExitGridSellPct_regular')?.value || 25));
+        const help = document.getElementById('strategyGridExitHelp_regular');
+        if (help) {
+            help.textContent = `Levels are cumulative gains from live average cost and replace the single fixed take-profit. Each non-final level sells ${sellPct}% of the then-current position; the last level closes the remainder. Stop-loss and trailing-stop events always close the remainder immediately.`;
+        }
+        const takeProfit = document.getElementById('strategyRegularTpPct');
+        if (takeProfit) {
+            takeProfit.disabled = enabled;
+            takeProfit.classList.toggle('opacity-50', enabled);
+            takeProfit.title = enabled
+                ? 'Continuous Scale-Out replaces the single fixed take-profit with the level ladder.'
+                : '';
+        }
+    }
+};
+
 function getStrategyModeSettings(mode = 'regular') {
     const isRegular = mode === 'regular';
     const isAutopilot = mode === 'ai_autopilot';
@@ -2080,6 +2382,22 @@ function getStrategyModeSettings(mode = 'regular') {
         entry_pct_move: parseFloat(document.getElementById(`strategyEntryPctMove_${mode}`)?.value || 5),
         entry_atr_style: document.getElementById(`strategyEntryAtrStyle_${mode}`)?.value || 'pullback_reclaim',
         entry_pct_style: document.getElementById(`strategyEntryPctStyle_${mode}`)?.value || 'dip_reclaim',
+        grid_continuous_mode: document.getElementById(`strategyGridContinuous_${mode}`)?.checked || false,
+        grid_buy_allocation: parseFloat(document.getElementById(`strategyGridBuyAllocation_${mode}`)?.value || 1000),
+        grid_max_levels: parseInt(document.getElementById(`strategyGridMaxLevels_${mode}`)?.value || 5),
+        grid_entry_l1_pct: parseFloat(document.getElementById(`strategyGridEntryL1_${mode}`)?.value || 1),
+        grid_entry_l2_pct: parseFloat(document.getElementById(`strategyGridEntryL2_${mode}`)?.value || 2),
+        grid_entry_l3_pct: parseFloat(document.getElementById(`strategyGridEntryL3_${mode}`)?.value || 3),
+        grid_entry_l4_pct: parseFloat(document.getElementById(`strategyGridEntryL4_${mode}`)?.value || 4),
+        grid_entry_l5_pct: parseFloat(document.getElementById(`strategyGridEntryL5_${mode}`)?.value || 5),
+        exit_grid_continuous_mode: document.getElementById(`strategyExitGridContinuous_${mode}`)?.checked || false,
+        exit_grid_sell_pct: parseFloat(document.getElementById(`strategyExitGridSellPct_${mode}`)?.value || 25),
+        exit_grid_max_levels: parseInt(document.getElementById(`strategyExitGridMaxLevels_${mode}`)?.value || 5),
+        grid_exit_l1_pct: parseFloat(document.getElementById(`strategyGridExitL1_${mode}`)?.value || 2),
+        grid_exit_l2_pct: parseFloat(document.getElementById(`strategyGridExitL2_${mode}`)?.value || 4),
+        grid_exit_l3_pct: parseFloat(document.getElementById(`strategyGridExitL3_${mode}`)?.value || 6),
+        grid_exit_l4_pct: parseFloat(document.getElementById(`strategyGridExitL4_${mode}`)?.value || 8),
+        grid_exit_l5_pct: parseFloat(document.getElementById(`strategyGridExitL5_${mode}`)?.value || 10),
         swing_entry_mode: document.getElementById(`strategySwingEntryMode_${mode}`)?.value || 'bounce_retest',
         swing_entry_lookback_mode: document.getElementById(`strategySwingEntryLookback_${mode}`)?.value || '20D',
         swing_entry_lookback_days: getSwingLookbackDaysValue(mode, 'entry'),
@@ -2095,10 +2413,14 @@ function getStrategyModeSettings(mode = 'regular') {
     };
 }
 
-window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
+window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
     currentStrategySymbol = symbol.toUpperCase();
     window.currentStrategySymbol = currentStrategySymbol;
+    window.IndicatorWorkspace?.setTicker(currentStrategySymbol);
     strategyModalMode = mode;
+    const editSettings = mode === 'edit'
+        ? await fetchBotSettingsLazy(currentStrategySymbol)
+        : null;
 
     if (mode === 'deploy') {
         const activeBots = window.lastBotsData?.tradelist || [];
@@ -2138,6 +2460,7 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
 
         // Defaults for deployment
         document.getElementById('strategyCapital').value = 100;
+        if (document.getElementById('strategyMaxTrades')) document.getElementById('strategyMaxTrades').value = '';
         if (document.getElementById('strategyCapital_ai_autopilot')) document.getElementById('strategyCapital_ai_autopilot').value = 100;
         if (document.getElementById('strategyOptionsTradeAmount')) document.getElementById('strategyOptionsTradeAmount').value = 100;
         if (document.getElementById('strategyAllocationMode_regular')) document.getElementById('strategyAllocationMode_regular').value = 'fixed';
@@ -2146,10 +2469,10 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         window.updateAllocationModeUI?.('regular');
         window.updateAllocationModeUI?.('options');
         window.updateAllocationModeUI?.('ai_autopilot');
-        document.getElementById('strategyBuyThreshold_regular').value = 0;
-        document.getElementById('strategyBuyThreshold_options').value = 0;
-        document.getElementById('strategySellThreshold_regular').value = 0;
-        document.getElementById('strategySellThreshold_options').value = 0;
+        document.getElementById('strategyBuyThreshold_regular').value = getDefaultSignalThreshold('buy');
+        document.getElementById('strategyBuyThreshold_options').value = getDefaultSignalThreshold('buy');
+        document.getElementById('strategySellThreshold_regular').value = getDefaultSignalThreshold('sell');
+        document.getElementById('strategySellThreshold_options').value = getDefaultSignalThreshold('sell');
         document.getElementById('strategyTimeframe_regular').value = "1Hour";
         document.getElementById('strategyTimeframe_options').value = "5Min";
         if (document.getElementById('strategyTimeframe_ai_autopilot')) document.getElementById('strategyTimeframe_ai_autopilot').value = "1Hour";
@@ -2243,9 +2566,12 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
 
 
 
-        // Start new bots with indicators disabled by default.
-        // Parameter dialogs still show system defaults when the user opts in.
-        document.querySelectorAll('.strategy-indicator-check').forEach(chk => chk.checked = false);
+        // Keep the initial trading pool aligned with the 10 indicators shown
+        // by default so threshold counts and chart preview data agree.
+        const defaultIndicators = new Set(BOT_DEFAULT_STRATEGY_INDICATORS);
+        document.querySelectorAll('.strategy-indicator-check').forEach(chk => {
+            chk.checked = defaultIndicators.has(chk.value);
+        });
 
         const addWatchlistEl = document.getElementById('strategyAddWatchlist');
         if (addWatchlistEl) addWatchlistEl.checked = true;
@@ -2260,9 +2586,13 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         if (riskContainer) riskContainer.classList.add('hidden');
 
         // Load existing settings
-        const settings = (window.lastBotsData?.ticker_settings || {})[currentStrategySymbol] || {};
+        const settings = editSettings || getSavedBotSettings(currentStrategySymbol);
         setStrategyDraftIndicatorOverrides(settings.indicator_overrides || {});
         document.getElementById('strategyCapital').value = settings.amount || '';
+        if (document.getElementById('strategyMaxTrades')) {
+            const savedMaxTrades = Number(settings.max_trades || 0);
+            document.getElementById('strategyMaxTrades').value = savedMaxTrades > 0 ? Math.min(100, savedMaxTrades) : '';
+        }
         if (document.getElementById('strategyCapital_ai_autopilot')) document.getElementById('strategyCapital_ai_autopilot').value = settings.amount || '';
         if (document.getElementById('strategyOptionsTradeAmount')) document.getElementById('strategyOptionsTradeAmount').value = settings.options_trade_amount !== undefined ? settings.options_trade_amount : 100;
         if (document.getElementById('strategyAllocationMode_regular')) document.getElementById('strategyAllocationMode_regular').value = settings.allocation_mode || 'fixed';
@@ -2298,6 +2628,40 @@ window.openStrategyModal = function (symbol, mode = 'deploy', name = '') {
         if (document.getElementById('strategyEntryAtrStyle_options')) document.getElementById('strategyEntryAtrStyle_options').value = settings.entry_atr_style || 'pullback_reclaim';
         if (document.getElementById('strategyEntryPctStyle_regular')) document.getElementById('strategyEntryPctStyle_regular').value = settings.entry_pct_style || 'dip_reclaim';
         if (document.getElementById('strategyEntryPctStyle_options')) document.getElementById('strategyEntryPctStyle_options').value = settings.entry_pct_style || 'dip_reclaim';
+
+        ['regular', 'options'].forEach(m => {
+            const gridCont = document.getElementById(`strategyGridContinuous_${m}`);
+            if (gridCont) {
+                gridCont.checked = m === 'regular' && !!settings.grid_continuous_mode;
+                // Manually trigger the onchange to show/hide the fields
+                const ev = new Event('change');
+                gridCont.dispatchEvent(ev);
+            }
+            if (document.getElementById(`strategyGridBuyAllocation_${m}`)) document.getElementById(`strategyGridBuyAllocation_${m}`).value = settings.grid_buy_allocation ?? 1000;
+            if (document.getElementById(`strategyGridMaxLevels_${m}`)) document.getElementById(`strategyGridMaxLevels_${m}`).value = settings.grid_max_levels ?? 5;
+            const entryDefaults = [1, 2, 3, 4, 5];
+            for (let i = 1; i <= 5; i++) {
+                const el = document.getElementById(`strategyGridEntryL${i}_${m}`);
+                if (el) el.value = settings[`grid_entry_l${i}_pct`] !== undefined ? settings[`grid_entry_l${i}_pct`] : entryDefaults[i - 1];
+            }
+            if (window.updateGridLevelInputs) window.updateGridLevelInputs(m, 'entry');
+
+            const exitGridCont = document.getElementById(`strategyExitGridContinuous_${m}`);
+            if (exitGridCont) {
+                exitGridCont.checked = m === 'regular' && !!settings.exit_grid_continuous_mode;
+                const ev = new Event('change');
+                exitGridCont.dispatchEvent(ev);
+            }
+            if (document.getElementById(`strategyExitGridSellPct_${m}`)) document.getElementById(`strategyExitGridSellPct_${m}`).value = settings.exit_grid_sell_pct ?? 25;
+            if (document.getElementById(`strategyExitGridMaxLevels_${m}`)) document.getElementById(`strategyExitGridMaxLevels_${m}`).value = settings.exit_grid_max_levels ?? 5;
+            const exitDefaults = [2, 4, 6, 8, 10];
+            for (let i = 1; i <= 5; i++) {
+                const el = document.getElementById(`strategyGridExitL${i}_${m}`);
+                if (el) el.value = settings[`grid_exit_l${i}_pct`] !== undefined ? settings[`grid_exit_l${i}_pct`] : exitDefaults[i - 1];
+            }
+            if (window.updateGridLevelInputs) window.updateGridLevelInputs(m, 'exit');
+        });
+
         applyMarketSessionForSymbol(currentStrategySymbol, settings);
         if (document.getElementById('strategySellMode_regular')) if (document.getElementById('strategySellMode_regular')) document.getElementById('strategySellMode_regular').value = settings.sell_mode || 'indicator';
         if (document.getElementById('strategySwingEntryMode_regular')) document.getElementById('strategySwingEntryMode_regular').value = settings.swing_entry_mode || 'bounce_retest';
@@ -2529,7 +2893,15 @@ window.updateStrategySignalLabels = function (mode = window.activeTradingMode ||
     if (!mode) return;
     const container = document.getElementById(`indicatorChecksContainer_${mode}`);
     if (!container) return;
-    const checkedCount = container.querySelectorAll('.strategy-indicator-check:checked').length;
+    const selectedIndicators = getSelectedStrategyIndicators(mode);
+    const checkedCount = selectedIndicators.length;
+    const selectedCountBadge = document.getElementById(`strategyIndicatorSelectedCount_${mode}`);
+    if (selectedCountBadge) {
+        selectedCountBadge.textContent = `${checkedCount} selected for this bot`;
+        selectedCountBadge.title = selectedIndicators.length
+            ? selectedIndicators.join(', ')
+            : 'No indicators selected';
+    }
     const buyInput = document.getElementById(`strategyBuyThreshold_${mode}`);
     const sellInput = document.getElementById(`strategySellThreshold_${mode}`);
     const buyLabel = document.getElementById(`strategyBuyLabel_${mode}`);
@@ -2553,8 +2925,10 @@ window.updateStrategySignalLabels = function (mode = window.activeTradingMode ||
         sellInput.max = 0;
         buyInput.value = 0;
         sellInput.value = 0;
-        buyLabel.textContent = buyNeedsInd ? "0 of 0 Signals" : "0 of 0 Signals (Not Required)";
-        sellLabel.textContent = sellNeedsInd ? "0 of 0 Signals" : "0 of 0 Signals (Not Required)";
+        buyLabel.textContent = buyNeedsInd ? "0 of 0 Selected Signals" : "0 of 0 Selected Signals (Not Required)";
+        sellLabel.textContent = sellNeedsInd ? "0 of 0 Selected Signals" : "0 of 0 Selected Signals (Not Required)";
+        buyLabel.title = '';
+        sellLabel.title = '';
         if (mode === 'options') syncOptionsPutEntryThresholdLabel(checkedCount);
         return;
     }
@@ -2567,8 +2941,11 @@ window.updateStrategySignalLabels = function (mode = window.activeTradingMode ||
     buyInput.value = normalizeSignalThreshold(buyInput.value, checkedCount, 'buy', buyMin);
     sellInput.value = normalizeSignalThreshold(sellInput.value, checkedCount, 'sell', sellMin);
 
-    buyLabel.textContent = (!buyNeedsInd && parseInt(buyInput.value) === 0) ? `0 of ${checkedCount} Signals (Not Required)` : `${buyInput.value} of ${checkedCount} Signals`;
-    sellLabel.textContent = (!sellNeedsInd && parseInt(sellInput.value) === 0) ? `0 of ${checkedCount} Signals (Not Required)` : `${sellInput.value} of ${checkedCount} Signals`;
+    buyLabel.textContent = (!buyNeedsInd && parseInt(buyInput.value) === 0) ? `0 of ${checkedCount} Selected Signals (Not Required)` : `${buyInput.value} of ${checkedCount} Selected Signals`;
+    sellLabel.textContent = (!sellNeedsInd && parseInt(sellInput.value) === 0) ? `0 of ${checkedCount} Selected Signals (Not Required)` : `${sellInput.value} of ${checkedCount} Selected Signals`;
+    const selectedNames = selectedIndicators.join(', ');
+    buyLabel.title = selectedNames;
+    sellLabel.title = selectedNames;
     if (mode === 'options') syncOptionsPutEntryThresholdLabel(checkedCount);
 };
 
@@ -2579,8 +2956,7 @@ function syncOptionsPutEntryThresholdLabel(checkedCount = null) {
     if (!putInput || !putLabel || !sellInput) return;
 
     if (checkedCount === null) {
-        const container = document.getElementById('indicatorChecksContainer_options');
-        checkedCount = container ? container.querySelectorAll('.strategy-indicator-check:checked').length : 0;
+        checkedCount = getSelectedStrategyIndicators('options').length;
     }
 
     putInput.min = sellInput.min;
@@ -2589,7 +2965,8 @@ function syncOptionsPutEntryThresholdLabel(checkedCount = null) {
     const indicatorModes = ['indicator', 'hybrid', 'hybrid_atr', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'];
     const sellMode = document.getElementById('strategySellMode_options')?.value || 'hybrid';
     const needsInd = indicatorModes.includes(sellMode);
-    putLabel.textContent = (!needsInd && parseInt(putInput.value) === 0) ? `0 of ${checkedCount} Signals (Not Required)` : `${sellInput.value} of ${checkedCount} Signals`;
+    putLabel.textContent = (!needsInd && parseInt(putInput.value) === 0) ? `0 of ${checkedCount} Selected Signals (Not Required)` : `${putInput.value} of ${checkedCount} Selected Signals`;
+    putLabel.title = getSelectedStrategyIndicators('options').join(', ');
 }
 
 window.syncOptionsPutEntryThreshold = function () {
@@ -2598,7 +2975,7 @@ window.syncOptionsPutEntryThreshold = function () {
     const container = document.getElementById('indicatorChecksContainer_options');
     if (!putInput || !sellInput || !container) return;
 
-    const checkedCount = container.querySelectorAll('.strategy-indicator-check:checked').length;
+    const checkedCount = getSelectedStrategyIndicators('options').length;
     sellInput.value = normalizeSignalThreshold(putInput.value, checkedCount, 'sell');
     window.updateStrategySignalLabels('options');
 };
@@ -2612,7 +2989,7 @@ window.adjustOptionsPutEntryThreshold = function (delta) {
 window.adjustStrategyThreshold = function (mode, type, delta) {
     const container = document.getElementById(`indicatorChecksContainer_${mode}`);
     if (!container) return;
-    const checkedCount = container.querySelectorAll('.strategy-indicator-check:checked').length;
+    const checkedCount = getSelectedStrategyIndicators(mode).length;
     if (checkedCount === 0) return;
 
     const input = type === 'buy' ? document.getElementById(`strategyBuyThreshold_${mode}`) : document.getElementById(`strategySellThreshold_${mode}`);
@@ -2659,16 +3036,7 @@ function updateStrategyPauseButton() {
     }
 }
 
-function normalizeBotAIModel(model) {
-    const value = String(model || '').trim();
-    const migrations = {
-        'mixtral-8x7b-32768': 'llama-3.3-70b-versatile',
-        'mistral-saba-24b': 'llama-3.3-70b-versatile',
-        'openai/gpt-oss-120b': 'llama-3.3-70b-versatile',
-        'openai/gpt-oss-20b': 'llama-3.1-8b-instant'
-    };
-    return migrations[value] || value || 'llama-3.3-70b-versatile';
-}
+
 
 function populateStrategyAiModelSelect() {
     const select = document.getElementById('strategyAiModel');
@@ -2768,6 +3136,93 @@ window.checkStrategyCryptoOptionStatus = function (symbol) {
     }
 };
 
+function validateContinuousGridSettings(symbol, mode, buyMode, sellMode) {
+    const entryEnabled = !!document.getElementById(`strategyGridContinuous_${mode}`)?.checked;
+    const exitEnabled = !!document.getElementById(`strategyExitGridContinuous_${mode}`)?.checked;
+    if (!entryEnabled && !exitEnabled) return null;
+    if (mode !== 'regular') {
+        return {
+            valid: false,
+            title: '❌ Continuous Grid Not Available for Options',
+            message: 'Continuous scale-in/scale-out currently manages stock and crypto positions only. Disable it for this options bot.'
+        };
+    }
+
+    const validateLevels = (side, maximum) => {
+        const isEntry = side === 'entry';
+        const maxElement = document.getElementById(
+            isEntry ? `strategyGridMaxLevels_${mode}` : `strategyExitGridMaxLevels_${mode}`
+        );
+        const count = parseInt(maxElement?.value || '0', 10);
+        if (!Number.isInteger(count) || count < 1 || count > 5) {
+            return `${side === 'entry' ? 'Scale-In' : 'Scale-Out'} levels must be between 1 and 5.`;
+        }
+        const values = [];
+        for (let level = 1; level <= count; level++) {
+            const id = isEntry
+                ? `strategyGridEntryL${level}_${mode}`
+                : `strategyGridExitL${level}_${mode}`;
+            values.push(parseFloat(document.getElementById(id)?.value));
+        }
+        if (values.some(value => !Number.isFinite(value) || value < 0.1 || value > maximum)) {
+            return `${side === 'entry' ? 'Scale-In' : 'Scale-Out'} percentages must be between 0.1% and ${maximum}%.`;
+        }
+        if (values.some((value, index) => index > 0 && value <= values[index - 1])) {
+            return `${side === 'entry' ? 'Scale-In' : 'Scale-Out'} percentages must increase at every level (for example 2, 4, 6, 8, 10).`;
+        }
+        return null;
+    };
+
+    if (entryEnabled) {
+        if (!['percentage', 'hybrid_pct'].includes(buyMode)) {
+            return {
+                valid: false,
+                title: '❌ Scale-In Requires Percentage Entry',
+                message: `Select Percentage or Hybrid Percentage as the Entry Strategy for ${symbol}, or disable Continuous Scale-In.`
+            };
+        }
+        const style = document.getElementById(`strategyEntryPctStyle_${mode}`)?.value;
+        if (style !== 'dip_reclaim') {
+            return {
+                valid: false,
+                title: '❌ Scale-In Requires Dip / Reclaim',
+                message: 'Continuous Scale-In waits for each falling level and then a small reclaim confirmation. Select Dip / Reclaim as the Percentage Entry Style.'
+            };
+        }
+        const allocation = parseFloat(document.getElementById(`strategyGridBuyAllocation_${mode}`)?.value);
+        if (!Number.isFinite(allocation) || allocation <= 0) {
+            return {
+                valid: false,
+                title: '❌ Invalid Scale-In Allocation',
+                message: 'Buy Alloc must be greater than $0 for every additional scale-in level.'
+            };
+        }
+        const levelError = validateLevels('entry', 50);
+        if (levelError) return { valid: false, title: '❌ Invalid Scale-In Ladder', message: levelError };
+    }
+
+    if (exitEnabled) {
+        if (!['percentage', 'hybrid_pct'].includes(sellMode)) {
+            return {
+                valid: false,
+                title: '❌ Scale-Out Requires Percentage Exit',
+                message: `Select Percentage or Hybrid Percentage as the Exit Strategy for ${symbol}, or disable Continuous Scale-Out.`
+            };
+        }
+        const sellPct = parseFloat(document.getElementById(`strategyExitGridSellPct_${mode}`)?.value);
+        if (!Number.isFinite(sellPct) || sellPct < 1 || sellPct > 100) {
+            return {
+                valid: false,
+                title: '❌ Invalid Scale-Out Size',
+                message: 'Sell Size must be between 1% and 100% of the position remaining at each non-final level.'
+            };
+        }
+        const levelError = validateLevels('exit', 100);
+        if (levelError) return { valid: false, title: '❌ Invalid Scale-Out Ladder', message: levelError };
+    }
+    return null;
+}
+
 window.validateStrategyPreflight = function (symbol, mode = 'regular') {
     const indicatorModes = ['indicator', 'hybrid', 'hybrid_atr', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'];
     const buyMode = document.getElementById(mode === 'options' ? 'strategyBuyMode_options' : 'strategyBuyMode_regular')?.value || 'indicator';
@@ -2824,9 +3279,12 @@ window.validateStrategyPreflight = function (symbol, mode = 'regular') {
         return { valid: true };
     }
 
+    const gridValidation = validateContinuousGridSettings(symbol, mode, buyMode, sellMode);
+    if (gridValidation) return gridValidation;
+
     // Gather Indicator checks for Entry & Exit evaluation
-    const container = document.getElementById(`indicatorChecksContainer_${mode}`);
-    const checkedIndicators = container ? container.querySelectorAll('.strategy-indicator-check:checked').length : 0;
+    const selectedIndicators = getSelectedStrategyIndicators(mode);
+    const checkedIndicators = selectedIndicators.length;
 
     // 3. MIDDLE OF FORM: Entry Strategy Validation
     if (buyMode === 'custom_price') {
@@ -2991,13 +3449,7 @@ async function saveTickerSettings() {
     let buyThresholdVal = parseInt(document.getElementById(`strategyBuyThreshold_${mode}`).value, 10);
     let sellThresholdVal = parseInt(document.getElementById(`strategySellThreshold_${mode}`).value, 10);
 
-    const indicators = [];
-    const container = document.getElementById(`indicatorChecksContainer_${mode}`);
-    if (container) {
-        container.querySelectorAll('.strategy-indicator-check:checked').forEach(chk => {
-            indicators.push(chk.value);
-        });
-    }
+    const indicators = getSelectedStrategyIndicators(mode);
 
     buyThresholdVal = normalizeSignalThreshold(buyThresholdVal, indicators.length, 'buy');
     sellThresholdVal = normalizeSignalThreshold(sellThresholdVal, indicators.length, 'sell');
@@ -3011,6 +3463,7 @@ async function saveTickerSettings() {
             timeframe: document.getElementById(`strategyTimeframe_${mode}`)?.value || null,
             min_buy_signals: mode === 'ai_autopilot' ? 4 : buyThresholdVal,
             min_sell_signals: mode === 'ai_autopilot' ? 4 : sellThresholdVal,
+            max_trades: Math.min(100, Math.max(0, parseInt(document.getElementById('strategyMaxTrades')?.value || 0, 10) || 0)),
             sell_mode: document.getElementById(`strategySellMode_${mode}`)?.value || 'hybrid',
             indicators: mode === 'ai_autopilot' ? [] : indicators,
             indicator_overrides: mode === 'ai_autopilot' ? {} : getStrategyDraftIndicatorOverrides(),
@@ -3063,6 +3516,7 @@ async function saveTickerSettings() {
             body: JSON.stringify(data)
         });
         if (response.ok) {
+            botFullSettingsCache.delete(targetTicker);
             setBotCardRefreshing(targetTicker, "Refreshing scan results...");
             setTimeout(() => {
                 fetchBotsData({ force: true });
@@ -3091,6 +3545,7 @@ window.resetTickerSettings = async function () {
             method: 'DELETE',
             headers: headers
         });
+        botFullSettingsCache.delete(targetTicker);
         setBotCardRefreshing(targetTicker, "Refreshing scan results...");
         setTimeout(() => {
             fetchBotsData({ force: true });
@@ -3130,53 +3585,229 @@ window.toggleWatchlist = async function (ticker) {
 // ──────────────────────────────────────────────
 // Main Fetch Loop
 // ──────────────────────────────────────────────
-async function fetchBotsData(options = {}) {
-    const { force = false } = options;
-    if (!force && !shouldRunBotsCardRefresh()) return false;
-    if (window._isFetchingBotsData) {
-        if (force && botsDashboardAbortController) {
-            botsDashboardAbortController.abort();
-        } else {
-            return botsDashboardFetchPromise || false;
+let botsSnapshotFailCount = 0;
+
+function isOptionSnapshotItem(item = {}) {
+    const assetClass = String(item.asset_class || '').toLowerCase();
+    const symbol = String(item.symbol || '').toUpperCase().replace(/\s+/g, '');
+    return assetClass === 'option' || assetClass === 'us_option' || /^[A-Z]{1,6}\d{6}[CP]\d{8}$/.test(symbol);
+}
+
+function normalizeBotsSnapshot(data) {
+    if (!data || data.schema_version !== '1.0') throw new Error('Unsupported Bots snapshot schema');
+    data.botScans = data.bot_scans || data.botScans || {};
+    data.tradelist = Array.isArray(data.tradelist) ? data.tradelist : Object.keys(data.botScans);
+    data.ticker_settings = data.ticker_settings || {};
+    data.has_keys = data.has_keys ?? true;
+    data.simulation = data.simulation ?? false;
+    data.pendingOrders = data.pendingOrders || data.open_orders || [];
+    data.positions = data.positions || [];
+
+    const acc = data.account || {};
+    const eqVal = parseFloat(acc.equity ?? 0);
+    const cashVal = parseFloat(acc.cash ?? 0);
+    const dPlVal = parseFloat(acc.dailyPL ?? 0);
+    const dPctVal = parseFloat(acc.dailyPLPct ?? 0);
+    if (!data.capital || data.capital === '---') data.capital = eqVal > 0 ? `$${eqVal.toFixed(2)}` : '---';
+    if (!data.cash || data.cash === '---') data.cash = cashVal > 0 ? `$${cashVal.toFixed(2)}` : '---';
+    if (data.openPositions === undefined) data.openPositions = String(data.positions.length);
+    if (!data.positionsList) data.positionsList = data.positions.length ? data.positions.map(p => p.symbol).join(', ') : 'No positions';
+    if (!data.dailyPL) {
+        data.dailyPL = dPlVal > 0
+            ? `+$${Math.abs(dPlVal).toFixed(2)} (+${Math.abs(dPctVal).toFixed(1)}%)`
+            : dPlVal < 0
+                ? `-$${Math.abs(dPlVal).toFixed(2)} (-${Math.abs(dPctVal).toFixed(1)}%)`
+                : '$0.00 (0.0%)';
+    }
+    if (!data.totalProfit) data.totalProfit = '$0.00 (0.0%)';
+    return data;
+}
+
+function projectBotsPartition(snapshot, partition) {
+    const wantsOptions = partition === 'options';
+    const symbols = snapshot.tradelist.filter(ticker => {
+        const settings = snapshot.ticker_settings[ticker] || {};
+        return Boolean(settings.options_trading || settings.is_option) === wantsOptions;
+    });
+    const symbolSet = new Set(symbols);
+    return {
+        ...snapshot,
+        partition,
+        tradelist: symbols,
+        botScans: Object.fromEntries(Object.entries(snapshot.botScans).filter(([ticker]) => symbolSet.has(ticker))),
+        ticker_settings: Object.fromEntries(Object.entries(snapshot.ticker_settings).filter(([ticker]) => symbolSet.has(ticker))),
+        positions: snapshot.positions.filter(item => isOptionSnapshotItem(item) === wantsOptions),
+        pendingOrders: snapshot.pendingOrders.filter(item => isOptionSnapshotItem(item) === wantsOptions),
+        open_orders: (snapshot.open_orders || snapshot.pendingOrders).filter(item => isOptionSnapshotItem(item) === wantsOptions)
+    };
+}
+
+function mergeUniqueSnapshotItems(items, keyFn) {
+    const seen = new Set();
+    return items.filter(item => {
+        const key = keyFn(item);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+function composeBotsSnapshot() {
+    const optionsData = botsPartitionSnapshots.options;
+    const regularData = botsPartitionSnapshots.regular;
+    const available = [regularData, optionsData].filter(Boolean);
+    if (!available.length) return null;
+    const shared = botsSharedSnapshot || available[available.length - 1];
+    const allSymbols = new Set(available.flatMap(item => item.tradelist || []));
+    botsMasterTradelist = botsMasterTradelist.filter(ticker => allSymbols.has(ticker));
+    available.forEach(item => (item.tradelist || []).forEach(ticker => {
+        if (!botsMasterTradelist.includes(ticker)) botsMasterTradelist.push(ticker);
+    }));
+
+    const positions = mergeUniqueSnapshotItems(
+        available.flatMap(item => item.positions || []),
+        item => `${item.id || ''}:${item.symbol || ''}`
+    );
+    const pendingOrders = mergeUniqueSnapshotItems(
+        available.flatMap(item => item.pendingOrders || item.open_orders || []),
+        item => `${item.id || ''}:${item.symbol || ''}:${item.side || ''}`
+    );
+    return {
+        ...shared,
+        partition: 'all',
+        tradelist: botsMasterTradelist.slice(),
+        botScans: Object.assign({}, regularData?.botScans || {}, optionsData?.botScans || {}),
+        ticker_settings: Object.assign({}, regularData?.ticker_settings || {}, optionsData?.ticker_settings || {}),
+        positions,
+        pendingOrders,
+        open_orders: pendingOrders
+    };
+}
+
+function scheduleCrossPartitionRefresh(sourcePartition) {
+    if (!['options', 'regular'].includes(sourcePartition)) return;
+    clearTimeout(crossPartitionRefreshTimerId);
+    const otherPartition = sourcePartition === 'options' ? 'regular' : 'options';
+    crossPartitionRefreshTimerId = setTimeout(() => {
+        fetchBotsData({ force: true, partition: otherPartition });
+    }, 250);
+}
+
+function ingestBotsSnapshot(rawData) {
+    const data = normalizeBotsSnapshot(rawData);
+    const partition = data.partition || 'all';
+    const previousTradeSeq = lastObservedTradeEventSeq;
+    botsSharedSnapshot = data;
+
+    if (partition === 'all') {
+        botsMasterTradelist = data.tradelist.slice();
+        botsPartitionSnapshots.options = projectBotsPartition(data, 'options');
+        botsPartitionSnapshots.regular = projectBotsPartition(data, 'regular');
+    } else {
+        botsPartitionSnapshots[partition] = data;
+    }
+
+    if (data.trade_event_seq !== undefined && data.trade_event_seq !== null) {
+        lastObservedTradeEventSeq = data.trade_event_seq;
+        if (previousTradeSeq !== null && previousTradeSeq !== data.trade_event_seq) {
+            scheduleCrossPartitionRefresh(partition);
         }
     }
-    window._isFetchingBotsData = true;
 
-    const fetchId = ++botsDashboardFetchId;
-    botsDashboardAbortController = new AbortController();
-    botsDashboardFetchPromise = (async () => {
+    const composed = composeBotsSnapshot();
+    if (!composed) return null;
+    window.lastBotsData = composed;
+    window.lastDashboardData = composed;
+    applyBotsData(composed);
+    return composed;
+}
+
+function hasOptionsSnapshotInterest() {
+    const data = botsPartitionSnapshots.options;
+    return Boolean(data && (
+        (data.tradelist || []).length ||
+        (data.positions || []).length ||
+        (data.pendingOrders || data.open_orders || []).length
+    ));
+}
+
+async function fetchBotsData(options = {}) {
+    const { force = false, partition = 'all' } = options;
+    const partitionNorm = ['all', 'options', 'regular'].includes(partition) ? partition : 'all';
+    if (!force && !shouldRunBotsCardRefresh()) return false;
+    const state = botsFetchState[partitionNorm];
+    if (state.promise) {
+        if (!force) return state.promise;
+        state.controller?.abort();
+    }
+
+    const fetchId = ++state.fetchId;
+    state.controller = new AbortController();
+    state.promise = (async () => {
+        const fetchStartTime = performance.now();
         const headers = await getAuthHeaders();
-        const url = `${API_BASE}/api/dashboard?mode=fast&source=bots&_t=${Date.now()}`;
+        const url = `${API_BASE}/api/bots/snapshot?partition=${partitionNorm}`;
         const response = await fetchWithTimeout(
             url,
-            { headers, cache: 'no-store', controller: botsDashboardAbortController },
+            { headers, cache: 'no-store', controller: state.controller },
             DASHBOARD_FETCH_TIMEOUT_MS
         );
-        if (!response.ok) throw new Error(`Dashboard HTTP ${response.status}`);
+        if (!response.ok) throw new Error(`Snapshot HTTP ${response.status}`);
         const data = await response.json();
 
-        // Cache for modal access
-        window.lastBotsData = data;
-        window.lastDashboardData = data;
+        // ── Phase 4 Telemetry Metrics ──
+        const fetchMs = Math.round(performance.now() - fetchStartTime);
+        const serverExecMs = response.headers.get('X-Snapshot-Time-MS');
+        const payloadKb = (JSON.stringify(data).length / 1024).toFixed(1);
+        if (fetchMs > 4000 || payloadKb > 400) {
+            console.warn(`[telemetry] Heavy snapshot: ${payloadKb} KB in ${fetchMs}ms (backend: ${serverExecMs || '?'}ms)`);
+        }
 
-        applyBotsData(data);
-        return data;
+        botsSnapshotFailCount = 0;
+        const composed = ingestBotsSnapshot(data);
+        // Activity is independent from the partitioned bot snapshots.  A
+        // regular/options poll must not trigger another scans request because
+        // those polls run on different cadences (60s/10s).  Refresh scans only
+        // after a full snapshot, and use the activity fetcher's normal
+        // throttle/coalescing rules instead of bypassing them.
+        if (partitionNorm === 'all' && currentLogTab === 'all') {
+            void fetchBotsActivity('scans');
+        }
+        if (partitionNorm === 'all') {
+            try {
+                sessionStorage.setItem('botsDataCache', JSON.stringify({
+                    schemaVersion: '1.0',
+                    data,
+                    fetchedAt: Date.now()
+                }));
+            } catch (error) {
+                console.warn('[bots] Could not update snapshot cache:', error);
+            }
+        }
+        return composed;
     })();
 
     try {
-        return await botsDashboardFetchPromise;
+        return await state.promise;
     } catch (error) {
         if (error.name === 'AbortError') {
-            console.warn(`[bots] Dashboard fetch aborted after ${DASHBOARD_FETCH_TIMEOUT_MS}ms.`);
+            // A forced refresh intentionally superseded this request.
+        } else if (error.name === 'TimeoutError') {
+            console.warn(`[bots] Snapshot timed out after ${DASHBOARD_FETCH_TIMEOUT_MS}ms.`);
         } else {
-            console.error('[bots] Fetch error:', error);
+            botsSnapshotFailCount++;
+            console.error(`[bots] Fetch error (attempt ${botsSnapshotFailCount}):`, error);
+            // Self-Healing Fallback: If network stutters, maintain UI state using latest cached snapshot
+            if (botsSnapshotFailCount >= 2 && window.lastBotsData) {
+                console.warn('[bots] Self-healing activated: Rendering cached snapshot data.');
+                applyBotsData(window.lastBotsData);
+            }
         }
         return false;
     } finally {
-        if (fetchId === botsDashboardFetchId) {
-            window._isFetchingBotsData = false;
-            botsDashboardAbortController = null;
-            botsDashboardFetchPromise = null;
+        if (fetchId === state.fetchId) {
+            state.controller = null;
+            state.promise = null;
         }
     }
 }
@@ -3274,28 +3905,37 @@ function applyBotsData(data) {
         selectedTicker = data.tradelist[0];
     }
 
-    // Try to mirror global AI analysis if it exists, to prevent duplicate queries
+    // Reuse fresh AI analysis across Dashboard/Bots navigation before starting a request.
     let mirrored = false;
     try {
-        const globalAiStr = localStorage.getItem('latest_global_ai_analysis');
-        if (globalAiStr) {
-            const globalAi = JSON.parse(globalAiStr);
-            const selectedModel = normalizeBotAIModel(localStorage.getItem('selected_ai_model'));
-            if (isAICacheForContext(globalAi, selectedTicker, currentBackendTf, selectedModel)) {
-                renderAIIndicatorCard(globalAi.data, true);
-                mirrored = true;
+        const aiContext = typeof getAIIndicatorPageContext === 'function' ? getAIIndicatorPageContext() : 'bots';
+        const aiTimeframe = typeof getAIDecisionTimeframe === 'function'
+            ? getAIDecisionTimeframe()
+            : currentBackendTf;
+        const selectedModel = typeof getSelectedAIModelForContext === 'function'
+            ? getSelectedAIModelForContext(aiContext)
+            : normalizeBotAIModel(null);
+        const cacheKey = getAIIndicatorCacheKey(selectedTicker, aiTimeframe, selectedModel);
+        const cachedAi = getAICache(cacheKey);
+        if (cachedAi && isAICacheForContext(cachedAi, selectedTicker, aiTimeframe, selectedModel)) {
+            renderAIIndicatorCard(cachedAi.data, true);
+            if (typeof window.onAIIndicatorUpdated === 'function') {
+                window.onAIIndicatorUpdated(cachedAi.data, true);
             }
+            mirrored = true;
         }
     } catch (e) { }
 
     // Only fetch if we didn't mirror the global AI indicator
     if (selectedTicker && !mirrored) {
-        fetchAIIndicator(selectedTicker, currentBackendTf);
+        void fetchAIIndicator(selectedTicker, currentBackendTf).catch(error => {
+            if (!['AbortError', 'TimeoutError'].includes(error?.name)) {
+                console.error('[ai-indicator] Unexpected fetch failure:', error);
+            }
+        });
     }
 
     // Execution log
-    latestScanHistory = data.recentTrades || [];
-    latestOrderHistory = data.orderHistory || [];
     latestPendingOrders = data.pendingOrders || [];
     latestPositions = data.positions || [];
     renderTradeLog(latestScanHistory, latestOrderHistory, latestPendingOrders, latestPositions);
@@ -3308,6 +3948,7 @@ function updateAlpacaStatus(isLinked, data = null) {
     const btnUnlink = document.getElementById('btnUnlinkAlpaca');
 
     if (!statusEl || !dotEl || !textEl) return;
+    statusEl.title = data?.brokerStatusReason || data?.alpacaLoadStatus || '';
 
     if (isLinked) {
         statusEl.className = 'flex items-center justify-center h-9 text-xs font-black px-5 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider bg-emerald-50 text-emerald-600 border-emerald-100';
@@ -3438,7 +4079,7 @@ const INDICATOR_META = {
     'EMA Cross': { key: 'ENABLE_EMA', desc: '9/21 EMA Crossover', icon: '✂️' },
     'Supertrend': { key: 'ENABLE_SUPERTREND', desc: 'ATR Trend Follower', icon: '🚀' },
     'Bollinger': { key: 'ENABLE_BOLLINGER', desc: 'Volatility Bands', icon: '🎯' },
-    'VWAP': { key: 'ENABLE_VWAP', desc: 'Volume Weighted Avg', icon: '⚖️' },
+    'VWAP': { key: 'ENABLE_VWAP', label: 'AVWAP', desc: 'Anchored Volume Weighted Avg', icon: '⚖️' },
     'Mystic Pulse': { key: 'ENABLE_MYSTIC_PULSE', desc: 'Trend Persistence', icon: '🔮' },
     'Candle Patterns': { key: 'ENABLE_CANDLE_PATTERNS', desc: 'Reversal Detection', icon: '🕯️' },
     'Botbulls4 News AI': { key: 'ENABLE_AI_SENTIMENT', desc: 'Premium AI News Sentiment', icon: '🧠' },
@@ -3451,28 +4092,30 @@ const INDICATOR_META = {
     'BotBulls1': { key: 'ENABLE_BOTBULLS1', desc: 'Premium Oscillator WaveTrend', icon: '🌊' },
     'BotBulls2': { key: 'ENABLE_BOTBULLS2', desc: 'Premium Smart Trail', icon: '🛰️' },
     'BotBulls3': { key: 'ENABLE_BOTBULLS3', desc: 'Premium Filtered Trail', icon: '🎯' },
+    'BotBulls5': { key: 'ENABLE_BOTBULLS5', desc: 'Premium Pattern Predictor', icon: '🏁' },
 };
+for (const item of (window.STANDARD_INDICATOR_CATALOG || [])) {
+    INDICATOR_META[item.name] ||= {
+        key: window.STANDARD_INDICATOR_TOGGLE_KEYS?.[item.name],
+        label: item.label,
+        desc: item.category,
+        icon: '◈',
+    };
+}
 
 const BOT_CHART_PREVIEW_INDICATORS = [
-    'RSI',
-    'MACD',
-    'EMA Cross',
-    'ADX Trend',
-    'Supertrend',
-    'Bollinger',
-    'VWAP',
-    'Volume Profile',
-    'SMA',
-    'Prior Day High/Low',
-    'Pivot Points (S/R)',
-    'Swing Points',
-    'Mystic Pulse',
-    'Candle Patterns',
+    ...(window.STANDARD_INDICATOR_NAMES || [
+        'RSI', 'MACD', 'EMA Cross', 'ADX Trend', 'Supertrend',
+        'Bollinger', 'VWAP', 'Volume Profile', 'SMA', 'Prior Day High/Low',
+        'Pivot Points (S/R)', 'Swing Points', 'Mystic Pulse', 'Candle Patterns',
+    ]),
     'Botbulls4 News AI',
     'BotBulls1',
     'BotBulls2',
     'BotBulls3',
+    'BotBulls5',
 ];
+const BOT_DEFAULT_STRATEGY_INDICATORS = BOT_CHART_PREVIEW_INDICATORS.slice(0, 10);
 
 const BOT_CHART_PREVIEW_OVERLAY_INDICATORS = new Set([
     'EMA Cross',
@@ -3486,12 +4129,14 @@ const BOT_CHART_PREVIEW_OVERLAY_INDICATORS = new Set([
     'Swing Points',
     'BotBulls2',
     'BotBulls3',
+    'BotBulls5',
 ]);
 
 const BOT_CHART_PREVIEW_PREMIUM_INFO = {
     'BotBulls1': 'Confirmed WaveTrend reversal with MFI reclaim/rejection, then price confirmation within the BB1 window. Confluence stays bullish after the last BB1 BUY marker and bearish after the last BB1 SELL marker.',
     'BotBulls2': 'Adaptive ATR trailing stop with trend-smoothed EMA and reversal zone detection. Fires on trend flips confirmed by confluence scoring.',
     'BotBulls3': 'Heikin-Ashi noise filter + ATR-based trailing stop. Generates buy/sell alerts on confirmed momentum flips.',
+    'BotBulls5': 'Causal multi-pattern recognition with completed-candle confirmation, measured targets, structural invalidation, and quality scoring.',
     'Volume Profile': 'Prior-session volume-at-price profile. Draws POC, VAH, and VAL to identify institutional acceptance/rejection zones.',
     'Prior Day High/Low': "Uses the previous completed trading session's high and low as breakout/breakdown levels. Buffer is entered as %, with dotted trigger lines when non-zero.",
     'Pivot Points (S/R)': 'Classic prior-session floor pivot levels. Draws up to 5 support/resistance ladders; bullish on support/pivot reclaim, bearish on resistance rejection or pivot breakdown.',
@@ -3505,12 +4150,13 @@ function ensureDailyHighLowBotIndicatorCards() {
         { name: 'Prior Day High/Low', subtitle: 'Prior Session', settings: true },
         { name: 'Pivot Points (S/R)', subtitle: 'Pivot S/R', settings: true },
         { name: 'Swing Points', subtitle: 'Swing S/R', settings: true },
+        { name: 'BotBulls5', subtitle: 'Premium Pattern Predictor', settings: true, premium: true },
     ];
     ['regular', 'options'].forEach(mode => {
         const container = document.getElementById(`indicatorChecksContainer_${mode}`);
         if (!container) return;
 
-        cards.forEach(({ name, subtitle, settings }) => {
+        cards.forEach(({ name, subtitle, settings, premium = false }) => {
             const existingInput = container.querySelector(`input[value="${name}"]`);
             if (existingInput) {
                 return;
@@ -3524,18 +4170,20 @@ function ensureDailyHighLowBotIndicatorCards() {
                     </svg>
                 </button>` : '';
             const card = document.createElement('div');
-            card.className = 'indicator-card group p-2.5 sm:p-3 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all';
+            card.className = premium
+                ? 'indicator-card group p-2.5 sm:p-3 border border-amber-300/30 bg-amber-50/5 hover:bg-amber-50/15 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all'
+                : 'indicator-card group p-2.5 sm:p-3 border border-white/20 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all';
             card.setAttribute('onclick', 'toggleIndicatorCard(this, event)');
             card.innerHTML = `
             <div class="flex flex-col">
-                <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">${name}
+                <span class="font-black ${premium ? 'text-amber-800' : 'text-indigo-900'} uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">${premium ? '✦ ' : ''}${name}
                     <div class="group/tooltip relative inline-flex items-center ml-1">
                         <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('${escapedName}')" xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                         </svg>
                     </div>
                 </span>
-                <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">${subtitle}</span>
+                <span class="text-[0.6rem] ${premium ? 'text-amber-600' : 'text-indigo-400'} font-bold uppercase tracking-widest">${subtitle}</span>
             </div>
             <div class="flex items-center gap-2">
                 ${settingsButton}
@@ -3550,6 +4198,10 @@ function ensureDailyHighLowBotIndicatorCards() {
 
 function placeDailyHighLowBotIndicatorCards(container) {
     if (!container) return;
+    if (window.IndicatorWorkspace) {
+        window.IndicatorWorkspace.refresh();
+        return;
+    }
     const vpCard = container.querySelector('input[value="Volume Profile"]')?.closest('.indicator-card');
     const vwapAnchor = container.querySelector('input[value="VWAP"]')?.closest('.indicator-card');
     if (vpCard) {
@@ -3586,6 +4238,7 @@ const BOT_CHART_PREVIEW_RANGES = {
 
 let botChartPreviewChart = null;
 let botChartPreviewCandleSeries = null;
+let botChartPreviewVolumeSeries = null;
 let botChartPreviewExtHoursSeries = null;
 let botChartPreviewOverlaySeries = {};
 let botChartPreviewOscCharts = {};
@@ -3821,14 +4474,51 @@ function updateBotChartPreviewHeader(priceHistory = [], settings = {}) {
 }
 
 function getEffectivePreviewIndicators(signals = {}, settings = {}) {
-    if (Array.isArray(settings.indicators)) return [...settings.indicators];
-    return Object.keys(signals || {}).filter(name => (signals[name] || {}).enabled !== false);
+    const names = Array.isArray(settings.indicators)
+        ? settings.indicators
+        : Object.keys(signals || {}).filter(name => (signals[name] || {}).enabled !== false);
+    const mode = settings.options_trading || botChartPreviewState?.tradingMode === 'options'
+        ? 'options'
+        : 'regular';
+    const ticker = botChartPreviewState?.ticker || currentStrategySymbol;
+    return [...new Set(names
+        .map(name => String(name || '').trim())
+        .filter(name => name && isBotIndicatorAllowed(name, mode, ticker)))];
+}
+
+function resolveBotChartPreviewPayloadSignals(payload = {}) {
+    const directSignals = payload?.signals;
+    if (directSignals && typeof directSignals === 'object' && Object.keys(directSignals).length > 0) {
+        return directSignals;
+    }
+    const nestedSignals = payload?.primaryScan?.signals;
+    if (nestedSignals && typeof nestedSignals === 'object') {
+        return nestedSignals;
+    }
+    return {};
+}
+
+function getBotChartPreviewSignalCounts(signals = {}, settings = {}) {
+    const selected = new Set(getEffectivePreviewIndicators(signals, settings));
+    let bullish = 0;
+    let bearish = 0;
+    Object.entries(signals || {}).forEach(([name, signal]) => {
+        if (selected.size > 0 && !selected.has(name)) return;
+        if (Array.isArray(settings.indicators) && !selected.has(name)) return;
+        const weight = Number(signal?.weight ?? 1);
+        if (signal?.signal === 'BULLISH') bullish += Number.isFinite(weight) ? weight : 1;
+        if (signal?.signal === 'BEARISH') bearish += Number.isFinite(weight) ? weight : 1;
+    });
+    return { bullish, bearish, selectedCount: selected.size };
 }
 
 function getBotChartPreviewSettingsForCard(ticker) {
     const settings = getSavedBotSettings(ticker);
     if (Array.isArray(settings.indicators)) {
-        settings.indicators = [...settings.indicators];
+        settings.indicators = getEffectivePreviewIndicators({}, settings);
+        settings.enabled_indicators = [...settings.indicators];
+        settings.min_buy_signals = normalizeSignalThreshold(settings.min_buy_signals, settings.indicators.length, 'buy');
+        settings.min_sell_signals = normalizeSignalThreshold(settings.min_sell_signals, settings.indicators.length, 'sell');
     }
     settings.indicator_overrides = clonePlainObject(settings.indicator_overrides || {});
     return settings;
@@ -3841,13 +4531,7 @@ function collectStrategyPreviewSettings(mode = window.activeTradingMode || 'regu
         ...getStrategyModeSettings(mode),
     };
 
-    const container = document.getElementById(`indicatorChecksContainer_${mode}`);
-    const indicators = [];
-    if (container) {
-        container.querySelectorAll('.strategy-indicator-check:checked').forEach(chk => {
-            indicators.push(chk.value);
-        });
-    }
+    const indicators = getSelectedStrategyIndicators(mode);
 
     settings.timeframe = document.getElementById(`strategyTimeframe_${mode}`)?.value || settings.timeframe || '1Hour';
     settings.min_buy_signals = normalizeSignalThreshold(
@@ -3862,6 +4546,7 @@ function collectStrategyPreviewSettings(mode = window.activeTradingMode || 'regu
     );
     settings.sell_mode = document.getElementById(`strategySellMode_${mode}`)?.value || settings.sell_mode || 'indicator';
     settings.indicators = indicators;
+    settings.enabled_indicators = [...indicators];
     settings.indicator_overrides = getStrategyDraftIndicatorOverrides();
     settings.options_trading = mode === 'options';
     settings.options_type = document.getElementById('strategyOptionsType')?.value || settings.options_type || 'calls_only';
@@ -4013,6 +4698,7 @@ function syncBotChartPreviewOscillatorRanges(range) {
             if (chart) chart.timeScale().setVisibleLogicalRange(range);
         } catch (e) {}
     });
+    window.StandardIndicatorSubcharts?.sync('bots', range);
 }
 
 function scheduleBotChartPreviewOscillatorRangeSync(range) {
@@ -4088,10 +4774,17 @@ function ensureBotChartPreviewChart() {
     });
 
     botChartPreviewExtHoursSeries = botChartPreviewChart.addHistogramSeries({
-        color: 'rgba(100, 116, 139, 0.1)',
-        priceFormat: { type: 'volume' },
-        priceScaleId: '',
+        color: 'rgba(100, 116, 139, 0.12)',
+        priceFormat: { type: 'custom', formatter: () => '' },
+        priceScaleId: 'ext-hours-bg',
         scaleMargins: { top: 0, bottom: 0 },
+        autoscaleInfoProvider: () => ({
+            priceRange: { minValue: 0, maxValue: 100 },
+        }),
+    });
+    botChartPreviewChart.priceScale('ext-hours-bg').applyOptions({
+        visible: false,
+        scaleMargins: { top: 0, bottom: 0 }
     });
 
     botChartPreviewCandleSeries = botChartPreviewChart.addCandlestickSeries({
@@ -4100,6 +4793,16 @@ function ensureBotChartPreviewChart() {
         borderVisible: false,
         wickUpColor: '#10b981',
         wickDownColor: '#ef4444',
+    });
+
+    botChartPreviewVolumeSeries = botChartPreviewChart.addHistogramSeries({
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'volume',
+        scaleMargins: { top: 0.8, bottom: 0 },
+    });
+    botChartPreviewChart.priceScale('volume').applyOptions({
+        scaleMargins: { top: 0.8, bottom: 0 },
+        visible: false,
     });
 
     const resizeChart = () => {
@@ -4284,7 +4987,7 @@ function updateBotChartPreviewChart(priceHistory, settings) {
                 const isExt = !isBotChartPreviewRegularMarketBar(b);
                 return {
                     time: Number(b.time),
-                    value: isExt ? 9999999 : 0,
+                    value: isExt ? 100 : 0,
                     color: isExt ? 'rgba(100, 116, 139, 0.12)' : 'rgba(0,0,0,0)'
                 };
             }));
@@ -4297,6 +5000,13 @@ function updateBotChartPreviewChart(priceHistory, settings) {
     const candles = sanitizeBotChartPreviewCandles(history);
 
     botChartPreviewCandleSeries.setData(candles);
+    if (botChartPreviewVolumeSeries) {
+        botChartPreviewVolumeSeries.setData(rawHistory.map(b => ({
+            time: b.time,
+            value: Number(b.volume || 0),
+            color: (b.close >= b.open) ? 'rgba(16, 185, 129, 0.45)' : 'rgba(239, 68, 68, 0.45)',
+        })));
+    }
     updateBotChartPreviewHeader(rawHistory, settings);
     clearBotChartPreviewSeries();
 
@@ -4323,7 +5033,7 @@ function updateBotChartPreviewChart(priceHistory, settings) {
         setBotChartPreviewLineSeries('ema_slow', toLineData('ema_slow'), { color: '#ef4444', lineWidth: 1.5 });
     }
     if (enabled.has('VWAP')) {
-        setBotChartPreviewLineSeries('vwap', toLineData('vwap'), { color: '#f59e0b', lineWidth: 2.5 });
+        setBotChartPreviewLineSeries('vwap', toLineData('vwap'), { color: '#000000', lineWidth: 2 });
     }
     if (enabled.has('Volume Profile')) {
         setBotChartPreviewLineSeries('volume_profile_poc', toLineData('volume_profile_poc'), { color: '#7c2d12', lineWidth: 3, lineStyle: 0, priceLineTitle: 'POC' });
@@ -4413,6 +5123,48 @@ function updateBotChartPreviewChart(priceHistory, settings) {
         setBotChartPreviewLineSeries('ut_trail', utTrailData, { lineWidth: 2.5 });
     }
 
+    (window.STANDARD_EXTENSION_OVERLAYS || []).forEach(definition => {
+        if (!enabled.has(definition.name)) return;
+        definition.series.forEach(spec => {
+            const overlayParameters = spec.shiftPeriodsKey ? {
+                [spec.shiftPeriodsKey]: getBotIndicatorParam(settings, spec.shiftPeriodsKey, spec.shiftPeriodsFallback || 0),
+            } : {};
+            if (definition.name === 'BotBulls5') {
+                overlayParameters.rolling24Hours = isCrypto(tickerFromPreviewState());
+            }
+            const overlayData = window.StandardIndicatorSubcharts?.buildOverlayData
+                ? window.StandardIndicatorSubcharts.buildOverlayData(history, spec, overlayParameters)
+                : toLineData(spec.field);
+            setBotChartPreviewLineSeries(`standard_${spec.field}`, overlayData, {
+                color: spec.color,
+                lineWidth: spec.lineWidth || 1,
+                lineStyle: spec.lineStyle || 0,
+                lineVisible: spec.lineVisible !== false,
+                pointMarkersVisible: spec.pointMarkersVisible === true,
+                pointMarkersRadius: spec.pointMarkersRadius || 2,
+            });
+        });
+    });
+    if (enabled.has('BotBulls5')) {
+        const drawingLayers = window.StandardIndicatorSubcharts?.buildBotBulls5PatternDrawing?.(history, {
+            rolling24Hours: isCrypto(tickerFromPreviewState()),
+        }) || [];
+        drawingLayers.forEach(layer => {
+            setBotChartPreviewLineSeries(`bb5_drawing_${layer.key}`, layer.data, {
+                color: layer.color,
+                lineWidth: layer.lineWidth || 2,
+                lineStyle: layer.lineStyle || 0,
+            });
+        });
+    }
+    const botBulls5VisibleTimes = enabled.has('BotBulls5')
+        ? (window.StandardIndicatorSubcharts?.botBulls5RecentEventTimes
+            ? window.StandardIndicatorSubcharts.botBulls5RecentEventTimes(history, {
+                rolling24Hours: isCrypto(tickerFromPreviewState()),
+            })
+            : new Set(history.map(bar => Number(bar?.time)).filter(Number.isFinite)))
+        : new Set();
+
     for (let i = 1; i < history.length; i++) {
         const curr = history[i];
         const prev = history[i - 1];
@@ -4438,6 +5190,32 @@ function updateBotChartPreviewChart(priceHistory, settings) {
             } else if (!curr.ut_above && prev.ut_above) {
                 activeMarkers.push({ time: Number(curr.time), position: 'aboveBar', color: '#f43f5e', shape: 'arrowDown', text: 'BB3 SELL', size: 1.2 });
             }
+        }
+        if (enabled.has('BotBulls5') && botBulls5VisibleTimes.has(Number(curr.time))) {
+            if (curr.bb5_breakout_bull) {
+                activeMarkers.push({
+                    time: Number(curr.time), position: 'belowBar', color: '#10b981', shape: 'arrowUp',
+                    text: `BB5 ${String(curr.bb5_pattern || 'Bull').replaceAll('_', ' ')}`, size: 1.2
+                });
+            } else if (curr.bb5_breakout_bear) {
+                activeMarkers.push({
+                    time: Number(curr.time), position: 'aboveBar', color: '#f43f5e', shape: 'arrowDown',
+                    text: `BB5 ${String(curr.bb5_pattern || 'Bear').replaceAll('_', ' ')}`, size: 1.2
+                });
+            }
+        }
+    }
+    if (enabled.has('BotBulls5')) {
+        const latestPattern = history.at(-1);
+        if (latestPattern?.bb5_state === 'FORMING' && isValidBotChartPreviewTime(latestPattern.time)) {
+            activeMarkers.push({
+                time: Number(latestPattern.time),
+                position: Number(latestPattern.bb5_direction) < 0 ? 'aboveBar' : 'belowBar',
+                color: '#f59e0b',
+                shape: 'circle',
+                text: `BB5 ${String(latestPattern.bb5_pattern).replaceAll('_', ' ')} FORMING`,
+                size: 1,
+            });
         }
     }
 
@@ -4671,6 +5449,24 @@ function refreshBotChartPreviewOscillators(bars = [], enabledSet = new Set(), se
         try { oscBb1.timeScale().fitContent(); } catch (e) {}
     }
 
+    const botSubchartParameters = Object.fromEntries(
+        Object.entries(window.STANDARD_INDICATOR_DEFAULTS || {}).map(([key, fallback]) => [
+            key,
+            getBotIndicatorParam(settings, key, fallback),
+        ])
+    );
+    let botVisibleRange = null;
+    try { botVisibleRange = botChartPreviewChart?.timeScale().getVisibleLogicalRange() || null; } catch (e) {}
+    window.StandardIndicatorSubcharts?.render({
+        context: 'bots',
+        hostId: 'botChartPreviewDynamicOscillators',
+        history: bars,
+        enabledIndicators: enabledSet,
+        parameters: botSubchartParameters,
+        height: 85,
+        visibleRange: botVisibleRange,
+    });
+
     updateBotChartPreviewVisibleHighLow();
     const boxLoading = document.getElementById('botChartPreviewBoxLoading');
     if (boxLoading) boxLoading.classList.add('hidden');
@@ -4684,23 +5480,40 @@ function renderBotChartPreviewSignals(signals = {}, settings = {}) {
     if (loading) loading.classList.add('hidden');
     if (premiumGrid) premiumGrid.innerHTML = '';
 
+    const activeIndicators = getEffectivePreviewIndicators(signals, settings);
+    const activeSet = new Set(activeIndicators);
+    const premiumNames = new Set(['Botbulls4 News AI', 'BotBulls1', 'BotBulls2', 'BotBulls3', 'BotBulls5']);
+    const rawEntries = Array.isArray(settings.indicators)
+        ? activeIndicators.map(name => [
+            name,
+            signals?.[name] || {
+                signal: 'NEUTRAL',
+                reason: 'Awaiting sufficient market data',
+                weight: 1,
+                enabled: true,
+                premium: premiumNames.has(name),
+            },
+        ])
+        : Object.entries(signals || {});
     const previewOrder = new Map(BOT_CHART_PREVIEW_INDICATORS.map((name, index) => [name, index]));
-    const signalEntries = Object.entries(signals || {}).sort(([nameA], [nameB]) => {
+    const signalEntries = rawEntries.sort(([nameA], [nameB]) => {
         const rankA = previewOrder.has(nameA) ? previewOrder.get(nameA) : Number.MAX_SAFE_INTEGER;
         const rankB = previewOrder.has(nameB) ? previewOrder.get(nameB) : Number.MAX_SAFE_INTEGER;
         if (rankA !== rankB) return rankA - rankB;
         return nameA.localeCompare(nameB);
     });
     if (signalEntries.length === 0) {
+        const emptyMessage = Array.isArray(settings.indicators)
+            ? 'Select at least one indicator in the Bot Indicator Pool to generate preview signals.'
+            : 'Signal data is still loading for this preview.';
         grid.innerHTML = `
             <div class="col-span-full signal-card neutral px-4 py-6 text-center text-sm text-slate-500">
-                No signal data available for this preview.
+                ${emptyMessage}
             </div>
         `;
         return;
     }
 
-    const activeSet = new Set(getEffectivePreviewIndicators(signals, settings));
     const standardCards = [];
     const premiumCards = [];
     signalEntries.forEach(([name, signal]) => {
@@ -4715,7 +5528,7 @@ function renderBotChartPreviewSignals(signals = {}, settings = {}) {
         const enabled = Array.isArray(settings.indicators)
             ? activeSet.has(name)
             : activeSet.has(name) || signal?.enabled === true;
-        const isPremium = signal?.premium === true;
+        const isPremium = signal?.premium === true || premiumNames.has(name);
         const cardClass = !enabled
             ? 'disabled-signal'
             : isPremium
@@ -4724,6 +5537,8 @@ function renderBotChartPreviewSignals(signals = {}, settings = {}) {
         const icon = signalType === 'BULLISH' ? '▲' : signalType === 'BEARISH' ? '▼' : '●';
         const iconColor = signalType === 'BULLISH' ? 'text-emerald-600' : signalType === 'BEARISH' ? 'text-red-500' : 'text-purple-400';
         const escapedName = name.replace(/'/g, "\\'");
+        const displayName = name === 'VWAP' ? 'AVWAP' : name;
+        const displayLabelClass = name === 'VWAP' ? 'vwap-indicator-label' : (isPremium ? 'text-amber-800' : 'text-indigo-900');
         const settingAction = `openBotChartPreviewIndicatorSettings('${escapedName}')`;
         const cardClick = `onclick="toggleBotChartPreviewIndicator('${escapedName}')"`;
         let reasonHtml = signal?.reason || 'No reason available.';
@@ -4731,7 +5546,11 @@ function renderBotChartPreviewSignals(signals = {}, settings = {}) {
         if (name === 'Botbulls4 News AI' && signal?.value != null && enabled) {
             const scoreVal = parseFloat(signal.value);
             if (!Number.isNaN(scoreVal)) {
-                const sentPct = Math.round(((scoreVal + 1.0) / 2.0) * 100);
+                const sentPct = Math.round(
+                    typeof normalizeAISentimentPct === 'function'
+                        ? normalizeAISentimentPct(signal.percentage ?? signal.sentiment_pct, scoreVal)
+                        : (((scoreVal + 1.0) / 2.0) * 100)
+                );
                 const overrides = settings.indicator_overrides || {};
                 const bullishThresh = overrides.SENTIMENT_BULLISH_PERCENTAGE ?? INDICATOR_DEFAULTS.SENTIMENT_BULLISH_PERCENTAGE ?? 70;
                 const bearishThresh = overrides.SENTIMENT_BEARISH_PERCENTAGE ?? INDICATOR_DEFAULTS.SENTIMENT_BEARISH_PERCENTAGE ?? 30;
@@ -4750,7 +5569,7 @@ function renderBotChartPreviewSignals(signals = {}, settings = {}) {
                 <div class="signal-card group ${cardClass} fade-in cursor-pointer transition-all duration-300" ${cardClick}>
                     <div class="flex items-center justify-between mb-1">
                         <div class="flex items-center gap-1.5 min-w-0">
-                            <span class="font-bold text-xs text-amber-800 ${!enabled ? 'opacity-50' : ''} transition-opacity duration-300 truncate">${name}</span>
+                            <span class="font-bold text-xs ${displayLabelClass} ${!enabled ? 'opacity-50' : ''} transition-opacity duration-300 truncate">${displayName}</span>
                             <div class="group/tooltip relative inline-flex items-center shrink-0">
                                 <svg onclick="event.stopPropagation(); event.preventDefault(); typeof openInfoModal === 'function' ? openInfoModal('${name}') : null" xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -4778,7 +5597,7 @@ function renderBotChartPreviewSignals(signals = {}, settings = {}) {
                 <div class="signal-card group ${cardClass} fade-in cursor-pointer transition-all duration-300" ${cardClick}>
                     <div class="flex items-center justify-between mb-1">
                         <div class="flex items-center gap-1.5 min-w-0">
-                            <span class="font-bold text-xs text-indigo-900 ${!enabled ? 'opacity-50' : ''} transition-opacity duration-300 truncate">${name}</span>
+                            <span class="font-bold text-xs ${displayLabelClass} ${!enabled ? 'opacity-50' : ''} transition-opacity duration-300 truncate">${displayName}</span>
                             <div class="group/tooltip relative inline-flex items-center shrink-0">
                                 <svg onclick="event.stopPropagation(); event.preventDefault(); typeof openInfoModal === 'function' ? openInfoModal('${name}') : null" xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -4819,11 +5638,14 @@ function renderBotChartPreviewSignals(signals = {}, settings = {}) {
             grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
         }
         grid.innerHTML = standardCards.join('');
+    } else if (premiumCards.length > 0) {
+        grid.style.gridTemplateColumns = '';
+        grid.innerHTML = '';
     } else {
         grid.style.gridTemplateColumns = '';
         grid.innerHTML = `
             <div class="col-span-full signal-card neutral px-4 py-6 text-center text-sm text-slate-500">
-                No standard signal data available for this preview.
+                Signal data is still loading for the selected indicators.
             </div>
         `;
     }
@@ -4847,9 +5669,10 @@ function renderBotChartPreviewSignals(signals = {}, settings = {}) {
 function renderBotChartPreview(payload) {
     const settings = botChartPreviewState.settings || {};
     const previewMeta = payload?.preview_meta || {};
-    const signals = payload?.signals || payload?.primaryScan?.signals || {};
-    const bullCount = payload?.bullish_count ?? payload?.primaryScan?.bullish_count ?? 0;
-    const bearCount = payload?.bearish_count ?? payload?.primaryScan?.bearish_count ?? 0;
+    const signals = resolveBotChartPreviewPayloadSignals(payload);
+    const previewCounts = getBotChartPreviewSignalCounts(signals, settings);
+    const bullCount = previewCounts.bullish;
+    const bearCount = previewCounts.bearish;
     const reason = payload?.reason || payload?.primaryScan?.reason || 'Preview ready.';
     const aiBadge = document.getElementById('botChartPreviewAiBadge');
     const banner = document.getElementById('botChartPreviewBanner');
@@ -4873,6 +5696,19 @@ function renderBotChartPreview(payload) {
     }
     if (document.getElementById('botChartPreviewBearCount')) {
         document.getElementById('botChartPreviewBearCount').textContent = `${bearCount} Bearish`;
+    }
+    const selectedCount = previewCounts.selectedCount;
+    const entryThreshold = normalizeSignalThreshold(settings.min_buy_signals, selectedCount, 'buy');
+    const exitThreshold = normalizeSignalThreshold(settings.min_sell_signals, selectedCount, 'sell');
+    const entryThresholdEl = document.getElementById('botChartPreviewEntryThreshold');
+    const exitThresholdEl = document.getElementById('botChartPreviewExitThreshold');
+    if (entryThresholdEl) {
+        entryThresholdEl.textContent = `Entry ${entryThreshold}/${selectedCount}`;
+        entryThresholdEl.title = `${selectedCount} selected indicators`;
+    }
+    if (exitThresholdEl) {
+        exitThresholdEl.textContent = `Exit ${exitThreshold}/${selectedCount}`;
+        exitThresholdEl.title = `${selectedCount} selected indicators`;
     }
 
     if (aiBadge) {
@@ -4922,12 +5758,16 @@ async function requestBotChartPreviewPayload(ticker, settings, force = true) {
         throw new Error(err.detail || err.message || `Chart preview failed (${response.status})`);
     }
 
-    return response.json();
+    const payload = await response.json();
+    if (payload?.error) {
+        throw new Error(payload.error);
+    }
+    return payload;
 }
 
 function applyBotChartPreviewPayload(payload) {
     const settings = botChartPreviewState.settings || {};
-    botChartPreviewState.signals = payload?.signals || {};
+    botChartPreviewState.signals = resolveBotChartPreviewPayloadSignals(payload);
     botChartPreviewState.priceHistory = payload?.priceHistory || payload?.price_history || [];
     botChartPreviewState.previewMeta = payload?.preview_meta || {};
     const effectiveIndicators = getEffectivePreviewIndicators(botChartPreviewState.signals, settings);
@@ -5030,9 +5870,10 @@ function openBotChartPreview(statePatch) {
         open: true,
     };
     botChartPreviewRange = '1M';
+    const configuredSession = String(botChartPreviewState.settings?.market_session || '').trim().toLowerCase();
     botChartPreviewSession = isCrypto(tickerFromPreviewState())
         ? 'crypto24'
-        : (botChartPreviewState.settings?.market_session === 'extended' ? 'extended' : 'regular');
+        : (['extended', '24h', 'all'].includes(configuredSession) ? 'extended' : 'regular');
     if (botChartPreviewSession === 'crypto24') {
         botChartPreviewState.settings = {
             ...(botChartPreviewState.settings || {}),
@@ -5097,9 +5938,18 @@ window.resetBotChartPreviewIndicatorsToDefaults = function () {
     settings.indicator_toggle_overrides = {};
     settings.indicator_parameters = typeof INDICATOR_DEFAULTS !== 'undefined' ? { ...INDICATOR_DEFAULTS } : {};
 
-    settings.indicators = [];
-    settings.min_buy_signals = 0;
-    settings.min_sell_signals = 0;
+    settings.indicators = [...BOT_DEFAULT_STRATEGY_INDICATORS];
+    settings.enabled_indicators = [...BOT_DEFAULT_STRATEGY_INDICATORS];
+    settings.min_buy_signals = normalizeSignalThreshold(
+        getDefaultSignalThreshold('buy'),
+        settings.indicators.length,
+        'buy'
+    );
+    settings.min_sell_signals = normalizeSignalThreshold(
+        getDefaultSignalThreshold('sell'),
+        settings.indicators.length,
+        'sell'
+    );
     botChartPreviewState.settings = settings;
 
     if (typeof setStrategyDraftIndicatorOverrides === 'function') {
@@ -5132,6 +5982,7 @@ window.toggleBotChartPreviewIndicator = function (indicatorName) {
     if (idx >= 0) indicators.splice(idx, 1);
     else indicators.push(indicatorName);
     settings.indicators = indicators;
+    settings.enabled_indicators = [...indicators];
     settings.min_buy_signals = normalizeSignalThreshold(settings.min_buy_signals, indicators.length, 'buy');
     settings.min_sell_signals = normalizeSignalThreshold(settings.min_sell_signals, indicators.length, 'sell');
     botChartPreviewState.settings = settings;
@@ -5159,7 +6010,16 @@ window.setBotChartPreviewSession = function (session) {
     botChartPreviewSession = (session === 'crypto24' || isCrypto(tickerFromPreviewState()))
         ? 'crypto24'
         : (session === 'extended' ? 'extended' : 'regular');
-    updateBotChartPreviewChart(botChartPreviewState.priceHistory || [], botChartPreviewState.settings || {});
+    botChartPreviewState.settings = {
+        ...(botChartPreviewState.settings || {}),
+        market_session: botChartPreviewSession === 'crypto24'
+            ? '24h'
+            : botChartPreviewSession === 'extended'
+                ? 'Extended'
+                : 'Regular',
+    };
+    updateBotChartPreviewRangeSessionState(botChartPreviewState.settings);
+    queueBotChartPreviewRefresh(true);
 };
 
 window.adjustBotChartPreviewThreshold = function (kind, delta) {
@@ -5287,13 +6147,7 @@ window.confirmAndDeployBot = async function () {
     const timeframe = document.getElementById(`strategyTimeframe_${mode}`)?.value || '1Hour';
 
     // Gather Indicators
-    const indicators = [];
-    const container = document.getElementById(`indicatorChecksContainer_${mode}`);
-    if (container) {
-        container.querySelectorAll('.strategy-indicator-check').forEach(chk => {
-            if (chk.checked) indicators.push(chk.value);
-        });
-    }
+    const indicators = getSelectedStrategyIndicators(mode);
     const normalizedBuyThreshold = normalizeSignalThreshold(threshold, indicators.length, 'buy');
     const normalizedSellThreshold = normalizeSignalThreshold(sellThreshold, indicators.length, 'sell');
 
@@ -5340,6 +6194,7 @@ window.confirmAndDeployBot = async function () {
             capital: parseFloat(capital) || 100,
             threshold: mode === 'ai_autopilot' ? 4 : normalizedBuyThreshold,
             sell_threshold: mode === 'ai_autopilot' ? 4 : normalizedSellThreshold,
+            max_trades: Math.min(100, Math.max(0, parseInt(document.getElementById('strategyMaxTrades')?.value || 0, 10) || 0)),
             sell_mode: sellMode,
             indicators: mode === 'ai_autopilot' ? [] : indicators,
             indicator_overrides: mode === 'ai_autopilot' ? {} : getStrategyDraftIndicatorOverrides(),
@@ -5449,14 +6304,11 @@ async function unlinkAlpaca() {
             try {
                 const cachedRaw = sessionStorage.getItem('botsDataCache');
                 if (cachedRaw) {
-                    const { data, fetchedAt } = JSON.parse(cachedRaw);
+                    const { schemaVersion, data, fetchedAt } = JSON.parse(cachedRaw);
                     const ageMs = Date.now() - fetchedAt;
-                    if (ageMs < 60000) { // Cache valid for 60 seconds
+                    if (schemaVersion === '1.0' && data?.schema_version === '1.0' && ageMs < 60000) {
                         console.log(`[bots] Using prefetched cache (${Math.round(ageMs / 1000)}s old) for instant render.`);
-                        window.lastBotsData = data;
-                        window.lastDashboardData = data;
-                        applyBotsData(data); // Render immediately from cache
-                        usedCache = true;
+                        usedCache = Boolean(ingestBotsSnapshot(data));
                     }
                 }
             } catch (e) {
@@ -5471,12 +6323,24 @@ async function unlinkAlpaca() {
                 // Soft refresh after a short delay when cache was used
                 botsSoftRefreshTimerId = setTimeout(() => fetchBotsData({ force: true }), 2000);
             }
+            fetchBotsActivity('scans', { force: true });
             loadOllamaModels();
 
-            botsRefreshTimerId = setInterval(() => {
-                fetchBotsData();
+            botsRegularRefreshTimerId = setInterval(() => {
+                fetchBotsData({ partition: 'regular' });
+            }, REGULAR_REFRESH_INTERVAL);
+            botsOptionsRefreshTimerId = setInterval(() => {
+                if (hasOptionsSnapshotInterest() && !botsFetchState.regular.promise && !botsFetchState.all.promise) {
+                    fetchBotsData({ partition: 'options' });
+                }
+            }, OPTIONS_REFRESH_INTERVAL);
+            botsActivityRefreshTimerId = setInterval(() => {
+                if (currentLogTab === 'all') fetchBotsActivity('scans');
+                if (currentLogTab === 'trades') fetchBotsActivity('orders');
+            }, SCAN_ACTIVITY_REFRESH_INTERVAL);
+            botsPortfolioRefreshTimerId = setInterval(() => {
                 fetchPortfolioHistory();
-            }, REFRESH_INTERVAL);
+            }, PORTFOLIO_SHORT_REFRESH_INTERVAL);
 
             // 1-second live countdown ticker for Bot Card Scan Logs (zero-drift architecture)
             botsCountdownTimerId = setInterval(() => {
@@ -5516,6 +6380,8 @@ async function unlinkAlpaca() {
                 if (!document.hidden) {
                     fetchBotsData({ force: true });
                     fetchPortfolioHistory({ force: true });
+                    if (currentLogTab === 'all') fetchBotsActivity('scans', { force: true });
+                    if (currentLogTab === 'trades') fetchBotsActivity('orders', { force: true });
                     if (botChartPreviewState.open) {
                         refreshOpenBotChartPreview(false, { showLoading: false, allowCachedRender: false, forceNetwork: true });
                     }
@@ -5539,13 +6405,14 @@ const INDICATOR_TOOLTIPS = {
     "Mystic Pulse": "Mystic Pulse is a custom proprietary oscillator. Purpose: Combines multi-timeframe momentum, volatility, and volume flow to detect early trend reversals.",
     "Candle patterns": "Candlestick Patterns identify specific OHLC price formations. Purpose: Provides visual clues about market psychology and potential reversals.",
     "ADX Trend": "Average Directional Index (ADX) quantifies trend strength. Purpose: Determines if the market is trending strongly (ADX > 25) or ranging.",
-    "VWAP": "Volume Weighted Average Price (VWAP) is the ratio of value traded to total volume. Purpose: Provides the true average price a security traded at throughout the day.",
+    "VWAP": "Anchored Volume Weighted Average Price (AVWAP) tracks the volume-weighted average from the most recent major volume spike. Purpose: Shows institutional-style anchored cost basis and acceptance/rejection.",
     "Volume Profile": "Prior-session volume-at-price profile using POC, VAH, and VAL. Purpose: Finds institutional acceptance/rejection zones where the most volume traded.",
     "Swing Points": "Rolling swing support/resistance clusters from recent local highs/lows. Purpose: Finds structural bounce, rejection, reclaim, and breakdown zones.",
     "Strategy Confidence": "Strategy Confidence combines multiple indicator signals into a single probability score. Purpose: Measures the overall conviction of a bullish or bearish trend.",
     "BotBulls1": "Confirmed WaveTrend reversal with MFI reclaim/rejection, then price confirmation within the BB1 window. Confluence stays bullish after the last BB1 BUY marker and bearish after the last BB1 SELL marker.",
     "BotBulls2": "Adaptive ATR trailing stop with trend-smoothed EMA and reversal zone detection. Fires on trend flips confirmed by multi-condition confluence scoring (1-4 strength rating).",
     "BotBulls3": "Heikin-Ashi noise filter + ATR-based trailing stop. Generates buy/sell alerts only on confirmed momentum flips — removing false signals from choppy markets.",
+    "BotBulls5": "Premium causal chart-pattern engine for continuation, reversal, compression, channel, and rounded structures. It draws qualified geometry and stays neutral until a completed candle confirms the breakout.",
     "Prior Day High/Low": "Uses the previous completed trading session's high and low as breakout/breakdown levels. Buffer is entered as %, with dotted trigger lines when non-zero.",
     "Pivot Points (S/R)": "Classic prior-session floor pivot levels. Draws up to 5 support/resistance ladders; bullish on support/pivot reclaim, bearish on resistance rejection or pivot breakdown.",
     "Botbulls4 News AI": "Analyzes current news headlines and assigns a bullish/bearish score based on natural language processing of market sentiment."
@@ -5569,8 +6436,10 @@ const INDICATOR_CONFIG_MAP = {
     'Botbulls4 News AI': ['SENTIMENT_BULLISH_PERCENTAGE', 'SENTIMENT_BEARISH_PERCENTAGE'],
     'BotBulls1': ['BOTBULLS1_WT_CHANNEL', 'BOTBULLS1_WT_AVERAGE', 'BOTBULLS1_WT_OVERSOLD', 'BOTBULLS1_WT_OVERBOUGHT', 'BOTBULLS1_MFI_BUY_RECLAIM', 'BOTBULLS1_MFI_SELL_REJECT', 'BOTBULLS1_CONFIRM_LOOKBACK', 'BOTBULLS1_REQUIRE_MFI_CONFIRM', 'BOTBULLS1_REQUIRE_CANDLE_CONFIRM', 'BOTBULLS1_REQUIRE_PRICE_CONFIRM', 'BOTBULLS1_PRICE_CONFIRM_EMA', 'BOTBULLS1_PRICE_CONFIRM_LOOKBACK'],
     'BotBulls2': ['BOTBULLS2_ATR_MULT', 'BOTBULLS2_TREND_TRACER_PERIOD', 'BOTBULLS2_REVERSAL_ZONE_PERIOD'],
-    'BotBulls3': ['BOTBULLS3_ATR_PERIOD', 'BOTBULLS3_ATR_MULT']
+    'BotBulls3': ['BOTBULLS3_ATR_PERIOD', 'BOTBULLS3_ATR_MULT'],
+    'BotBulls5': ['BOTBULLS5_MIN_CONFIDENCE', 'BOTBULLS5_BREAKOUT_BUFFER_ATR', 'BOTBULLS5_STRUCTURE_LOOKBACK', 'BOTBULLS5_SIGNAL_HOLD_BARS', 'BOTBULLS5_REQUIRE_VOLUME']
 };
+Object.assign(INDICATOR_CONFIG_MAP, window.STANDARD_INDICATOR_CONFIG_MAP || {});
 
 const INDICATOR_DEFAULTS = {
     'BOTBULLS1_WT_CHANNEL': 10,
@@ -5591,6 +6460,11 @@ const INDICATOR_DEFAULTS = {
     'BOTBULLS2_REVERSAL_ZONE_PERIOD': 50,
     'BOTBULLS3_ATR_PERIOD': 10,
     'BOTBULLS3_ATR_MULT': 1.0,
+    'BOTBULLS5_BREAKOUT_BUFFER_ATR': 0.10,
+    'BOTBULLS5_MIN_CONFIDENCE': 70.0,
+    'BOTBULLS5_SIGNAL_HOLD_BARS': 3,
+    'BOTBULLS5_REQUIRE_VOLUME': 0,
+    'BOTBULLS5_STRUCTURE_LOOKBACK': 48,
     'RSI_PERIOD': 14,
     'RSI_OVERBOUGHT': 70,
     'RSI_OVERSOLD': 30,
@@ -5626,6 +6500,7 @@ const INDICATOR_DEFAULTS = {
     'SENTIMENT_BULLISH_PERCENTAGE': 70,
     'SENTIMENT_BEARISH_PERCENTAGE': 30
 };
+Object.assign(INDICATOR_DEFAULTS, window.STANDARD_INDICATOR_DEFAULTS || {});
 
 let currentEditingIndicator = null;
 
@@ -5652,6 +6527,13 @@ function openIndicatorSettings(indicatorName) {
     if (configKeys.length === 0) {
         container.innerHTML = '<p class="text-xs text-slate-500 italic">No adjustable parameters for this indicator.</p>';
     }
+    if (indicatorName === 'BotBulls5' && typeof window.renderBotBulls5PatternSummary === 'function') {
+        window.renderBotBulls5PatternSummary(
+            container,
+            botChartPreviewState?.priceHistory || [],
+            { rolling24Hours: isCrypto(tickerFromPreviewState()) },
+        );
+    }
 
     let currentParams = {};
     let overrides = {};
@@ -5666,6 +6548,7 @@ function openIndicatorSettings(indicatorName) {
         overrides = window.lastBotsData?.indicator_overrides || {};
     }
     const paramLabels = {
+        ...(window.STANDARD_INDICATOR_PARAM_LABELS || {}),
         DAILY_HIGH_LOW_BUFFER_PCT: 'Breakout Buffer (%)',
         PIVOT_LEVEL_COUNT: 'S/R Levels To Draw (1-5)',
         PIVOT_TOLERANCE_PCT: 'Reclaim/Rejection Tolerance (%)',
@@ -5688,6 +6571,18 @@ function openIndicatorSettings(indicatorName) {
         BOTBULLS1_REQUIRE_PRICE_CONFIRM: 'Require Price EMA Confirmation (1=On, 0=Off)',
         BOTBULLS1_PRICE_CONFIRM_EMA: 'Price Confirmation EMA Period',
         BOTBULLS1_PRICE_CONFIRM_LOOKBACK: 'Price Confirmation Window Candles',
+        BOTBULLS5_BREAKOUT_BUFFER_ATR: 'Breakout Close Buffer (ATR)',
+        BOTBULLS5_MIN_CONFIDENCE: 'Minimum Setup Quality (%)',
+        BOTBULLS5_SIGNAL_HOLD_BARS: 'Confluence Vote Duration (Bars)',
+        BOTBULLS5_REQUIRE_VOLUME: 'Require Breakout Volume (1=On, 0=Off)',
+        BOTBULLS5_STRUCTURE_LOOKBACK: 'Structural Pattern Lookback Bars',
+    };
+    const botbulls5InputAttrs = {
+        BOTBULLS5_BREAKOUT_BUFFER_ATR: 'min="0" max="1" step="0.05"',
+        BOTBULLS5_MIN_CONFIDENCE: 'min="40" max="95" step="1"',
+        BOTBULLS5_SIGNAL_HOLD_BARS: 'min="1" max="20" step="1"',
+        BOTBULLS5_REQUIRE_VOLUME: 'min="0" max="1" step="1"',
+        BOTBULLS5_STRUCTURE_LOOKBACK: 'min="20" max="120" step="1"',
     };
 
     configKeys.forEach(key => {
@@ -5695,7 +6590,7 @@ function openIndicatorSettings(indicatorName) {
         const val = currentParams[key] !== undefined ? currentParams[key] : (INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : '');
         const label = paramLabels[key] || key.replace(/_/g, ' ').toLowerCase();
         const isPercent = key.endsWith('_PCT') || key.endsWith('_PERCENTAGE');
-        const inputAttrs = key === 'PIVOT_LEVEL_COUNT'
+        const inputAttrs = botbulls5InputAttrs[key] || (key === 'PIVOT_LEVEL_COUNT'
             ? 'min="1" max="5" step="1"'
             : key === 'SWING_POINTS_LEVEL_COUNT'
                 ? 'min="1" max="5" step="1"'
@@ -5715,7 +6610,7 @@ function openIndicatorSettings(indicatorName) {
                 ? 'min="12" max="120" step="1"'
                 : key === 'VOLUME_PROFILE_CONFIRMATION_CANDLES'
                     ? 'min="1" max="5" step="1"'
-                    : 'step="any"';
+                    : (window.STANDARD_INDICATOR_INPUT_ATTRS?.[key] || 'step="any"'));
 
         const div = document.createElement('div');
         div.className = 'flex flex-col gap-1.5';
@@ -5953,7 +6848,13 @@ async function fetchPortfolioHistory(options = {}) {
     if (!canvas) return;
     if (!force && !shouldRunBotsVisualRefresh()) return;
     const now = Date.now();
-    if (!force && now - lastPortfolioRefreshAt < PORTFOLIO_REFRESH_INTERVAL) return;
+    const tf = getChartTimeframe(currentChartPeriod);
+    const rangeKey = `${currentChartPeriod}:${tf}`;
+    const refreshInterval = ['1D', '1W'].includes(currentChartPeriod.toUpperCase())
+        ? PORTFOLIO_SHORT_REFRESH_INTERVAL
+        : PORTFOLIO_LONG_REFRESH_INTERVAL;
+    const lastRefreshAt = portfolioRefreshAtByRange.get(rangeKey) || 0;
+    if (!force && now - lastRefreshAt < refreshInterval) return;
     if (portfolioHistoryFetchInFlight) {
         if (force && portfolioHistoryAbortController) {
             portfolioHistoryAbortController.abort();
@@ -5965,10 +6866,8 @@ async function fetchPortfolioHistory(options = {}) {
     const fetchId = ++portfolioHistoryFetchId;
     portfolioHistoryFetchInFlight = true;
     portfolioHistoryAbortController = new AbortController();
-    lastPortfolioRefreshAt = now;
     try {
         const headers = await getAuthHeaders();
-        const tf = getChartTimeframe(currentChartPeriod);
         const url = `${API_BASE}/api/portfolio/history?period=${currentChartPeriod}&timeframe=${tf}`;
 
         const response = await fetchWithTimeout(
@@ -5983,6 +6882,7 @@ async function fetchPortfolioHistory(options = {}) {
             console.warn("[chart] No portfolio history data returned.");
             return;
         }
+        portfolioRefreshAtByRange.set(rangeKey, Date.now());
 
         // Format timestamps for the labels based on period
         const labels = data.timestamp.map(ts => {
@@ -6219,7 +7119,9 @@ async function fetchPortfolioHistory(options = {}) {
 
     } catch (e) {
         if (e.name === 'AbortError') {
-            console.warn(`[chart] Portfolio history fetch aborted after ${PORTFOLIO_FETCH_TIMEOUT_MS}ms.`);
+            // A period change or visibility refresh superseded this request.
+        } else if (e.name === 'TimeoutError') {
+            console.warn(`[chart] Portfolio history timed out after ${PORTFOLIO_FETCH_TIMEOUT_MS}ms.`);
         } else {
             console.error("[chart] Error rendering portfolio history:", e);
         }
@@ -6253,529 +7155,10 @@ async function loadOllamaModels() {
     }
 }
 
-const AI_INDICATOR_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
-let _aiIndicatorFetchId = 0; // prevents stale response rendering
-
-function normalizeAIIndicatorTicker(ticker) {
-    return (ticker || '').toString().trim().toUpperCase();
-}
-
-function getAIIndicatorCacheKey(ticker, timeframe, model) {
-    return `${normalizeAIIndicatorTicker(ticker)}|${timeframe}|${model}`;
-}
-
-function isAICacheFresh(cached) {
-    return cached && cached.timestamp && (Date.now() - cached.timestamp) < AI_INDICATOR_CACHE_TTL;
-}
-
-function isAICacheForContext(cached, ticker, timeframe, model) {
-    if (!isAICacheFresh(cached)) return false;
-    const expectedKey = getAIIndicatorCacheKey(ticker, timeframe, model);
-    if (cached.key) return cached.key === expectedKey;
-    return (
-        normalizeAIIndicatorTicker(cached.ticker) === normalizeAIIndicatorTicker(ticker) &&
-        cached.timeframe === timeframe &&
-        cached.model === model
-    );
-}
-
-function getAICache(key) {
-    try {
-        const cachedStr = localStorage.getItem(`ai_cache_${key}`);
-        if (cachedStr) {
-            const cached = JSON.parse(cachedStr);
-            if (isAICacheFresh(cached)) {
-                return cached;
-            }
-            localStorage.removeItem(`ai_cache_${key}`);
-        }
-    } catch (e) { console.error('Cache read error', e); }
-    return null;
-}
-
-function normalizeCachedAISentimentScore(rawScore) {
-    const value = Number(rawScore);
-    if (!Number.isFinite(value)) return null;
-    if (value >= -1 && value <= 1) return value;
-    if (value >= 0 && value <= 100) return (value / 100) * 2 - 1;
-    return Math.max(-1, Math.min(1, value));
-}
-
-function getCachedAIAnalysisForTicker(ticker, timeframe = currentBackendTf) {
-    const normalizedTicker = normalizeAIIndicatorTicker(ticker);
-    if (!normalizedTicker) return null;
-    const selectedModel = normalizeBotAIModel(localStorage.getItem('selected_ai_model'));
-    localStorage.setItem('selected_ai_model', selectedModel);
-    const exact = getAICache(getAIIndicatorCacheKey(normalizedTicker, timeframe, selectedModel));
-    if (exact?.data?.sentiment_score != null) return exact;
-
-    try {
-        const globalAi = JSON.parse(localStorage.getItem('latest_global_ai_analysis') || 'null');
-        if (
-            globalAi?.data?.sentiment_score != null &&
-            isAICacheFresh(globalAi) &&
-            normalizeAIIndicatorTicker(globalAi.ticker || globalAi.data?.ticker) === normalizedTicker
-        ) {
-            return globalAi;
-        }
-    } catch (e) {}
-
-    try {
-        const prefix = `ai_cache_${normalizedTicker}|`;
-        for (let i = localStorage.length - 1; i >= 0; i -= 1) {
-            const key = localStorage.key(i);
-            if (!key || !key.startsWith(prefix)) continue;
-            const cached = JSON.parse(localStorage.getItem(key) || 'null');
-            if (cached?.data?.sentiment_score != null && isAICacheFresh(cached)) return cached;
-        }
-    } catch (e) {}
-    return null;
-}
-
-function getCachedNewsAISentiment(ticker, timeframe = currentBackendTf) {
-    const cached = getCachedAIAnalysisForTicker(ticker, timeframe);
-    const data = cached?.data;
-    if (!data) return null;
-    const score = normalizeCachedAISentimentScore(data.sentiment_score);
-    if (score === null) return null;
-    return {
-        score,
-        pct: Math.round(((score + 1.0) / 2.0) * 100),
-        reason: data.sentiment_key_factor || data.key_catalyst || 'Mixed Catalysts',
-        summary: data.sentiment_summary || data.summary || '',
-        confidence: Number(data.sentiment_confidence ?? data.confidence ?? 0),
-    };
-}
-
-function applyCachedNewsAISignal(signal, options = {}) {
-    if (!signal) return signal;
-    const sentiment = getCachedNewsAISentiment(options.ticker || selectedTicker, options.timeframe || currentBackendTf);
-    if (!sentiment) return signal;
-    signal.value = sentiment.score;
-    signal.reason = sentiment.reason;
-    signal.cached = true;
-    signal.sentiment_summary = sentiment.summary;
-    signal.sentiment_confidence = sentiment.confidence;
-    const params = options.params || {};
-    const bullishThresh = params.SENTIMENT_BULLISH_PERCENTAGE ?? INDICATOR_DEFAULTS?.SENTIMENT_BULLISH_PERCENTAGE ?? 70;
-    const bearishThresh = params.SENTIMENT_BEARISH_PERCENTAGE ?? INDICATOR_DEFAULTS?.SENTIMENT_BEARISH_PERCENTAGE ?? 30;
-    signal.signal = sentiment.pct >= bullishThresh ? 'BULLISH' : sentiment.pct <= bearishThresh ? 'BEARISH' : 'NEUTRAL';
-    return signal;
-}
-
-function setAICache(key, data, meta = {}) {
-    try {
-        const payload = {
-            data: data,
-            timestamp: Date.now(),
-            key,
-            ticker: normalizeAIIndicatorTicker(meta.ticker || data?.ticker),
-            timeframe: meta.timeframe,
-            model: meta.model
-        };
-        localStorage.setItem(`ai_cache_${key}`, JSON.stringify(payload));
-        localStorage.setItem(`latest_global_ai_analysis`, JSON.stringify(payload));
-    } catch (e) { console.error('Cache write error', e); }
-}
-
-async function fetchAIIndicator(ticker, timeframe, force = false) {
-    if (!ticker) return;
-    const normalizedTicker = normalizeAIIndicatorTicker(ticker);
-    const selectedModel = normalizeBotAIModel(localStorage.getItem('selected_ai_model'));
-    const key = getAIIndicatorCacheKey(normalizedTicker, timeframe, selectedModel);
-    if (!force && aiIndicatorInFlightKey === key && aiIndicatorInFlightPromise) {
-        return aiIndicatorInFlightPromise;
+window.onAIIndicatorUpdated = function (data, fromCache) {
+    if (typeof botChartPreviewState !== 'undefined' && botChartPreviewState?.open && botChartPreviewState.signals) {
+        renderBotChartPreviewSignals(botChartPreviewState.signals, botChartPreviewState.settings || {});
     }
-    if (force && aiIndicatorAbortController) {
-        aiIndicatorAbortController.abort();
-    }
-
-    // Check client-side session cache first (unless forced)
-    if (!force) {
-        const cached = getAICache(key);
-        if (cached) {
-            renderAIIndicatorCard(cached.data, true);
-            if (botChartPreviewState?.open && botChartPreviewState.signals) {
-                renderBotChartPreviewSignals(botChartPreviewState.signals, botChartPreviewState.settings || {});
-            }
-            return;
-        }
-    }
-
-    // Show loading skeleton
-    _showAIIndicatorLoading(normalizedTicker);
-
-    const fetchId = ++_aiIndicatorFetchId;
-    aiIndicatorInFlightKey = key;
-    aiIndicatorAbortController = new AbortController();
-    aiIndicatorInFlightPromise = (async () => {
-        const headers = await getAuthHeaders();
-        const url = `${API_BASE}/api/ai-indicator?ticker=${encodeURIComponent(normalizedTicker)}&timeframe=${encodeURIComponent(timeframe)}&model=${encodeURIComponent(selectedModel)}${force ? '&force=true' : ''}`;
-        const res = await fetchWithTimeout(url, { headers, controller: aiIndicatorAbortController }, AI_FETCH_TIMEOUT_MS);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-
-        // Guard against stale responses
-        if (fetchId !== _aiIndicatorFetchId) return;
-        if (data.error) {
-            if (selectedModel !== 'llama-3.3-70b-versatile') {
-                console.warn(`[ai-indicator] Model ${selectedModel} failed. Falling back to default Groq model.`);
-                localStorage.setItem('selected_ai_model', 'llama-3.3-70b-versatile');
-                fetchAIIndicator(ticker, timeframe, force);
-                return;
-            }
-            _showAIIndicatorError(data.error, ticker);
-            return;
-        }
-
-        setAICache(key, data, { ticker: normalizedTicker, timeframe, model: selectedModel });
-        renderAIIndicatorCard(data, false);
-        if (botChartPreviewState?.open && botChartPreviewState.signals) {
-            renderBotChartPreviewSignals(botChartPreviewState.signals, botChartPreviewState.settings || {});
-        }
-        return data;
-    })();
-
-    try {
-        return await aiIndicatorInFlightPromise;
-    } catch (e) {
-        if (fetchId === _aiIndicatorFetchId) {
-            if (e.name === 'AbortError') {
-                console.warn(`[ai-indicator] Fetch aborted after ${AI_FETCH_TIMEOUT_MS}ms.`);
-            } else {
-                console.error('[ai-indicator] Fetch error:', e);
-            }
-            if (selectedModel !== 'llama-3.3-70b-versatile') {
-                console.warn(`[ai-indicator] Fetch failed for ${selectedModel}. Falling back to default Groq model.`);
-                localStorage.setItem('selected_ai_model', 'llama-3.3-70b-versatile');
-                fetchAIIndicator(ticker, timeframe, force);
-                return;
-            }
-            _showAIIndicatorError('Could not load AI analysis', ticker);
-        }
-    } finally {
-        if (fetchId === _aiIndicatorFetchId) {
-            aiIndicatorInFlightKey = null;
-            aiIndicatorInFlightPromise = null;
-            aiIndicatorAbortController = null;
-        }
-    }
-}
-
-function _getAIModelSelectHtml(selectedModel, isError = false) {
-    let optionsHtml = '';
-    optionsHtml += '<optgroup label="Groq AI (Cloud)">';
-    const groqModels = [
-        { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B (Recommended)' },
-        { value: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B (Fast)' }
-    ];
-    groqModels.forEach(m => {
-        const sel = selectedModel === m.value ? 'selected' : '';
-        optionsHtml += `<option value="${m.value}" ${sel}>${m.label}</option>`;
-    });
-    optionsHtml += '</optgroup>';
-
-    optionsHtml += '<optgroup label="Ollama (Local)">';
-    if (window.ollamaModels && window.ollamaModels.length > 0) {
-        window.ollamaModels.forEach(m => {
-            const val = `ollama/${m}`;
-            const sel = selectedModel === val ? 'selected' : '';
-            optionsHtml += `<option value="${val}" ${sel}>${m}</option>`;
-        });
-    } else {
-        optionsHtml += `<option disabled>No local models found</option>`;
-    }
-    optionsHtml += '</optgroup>';
-
-    const borderCls = isError ? 'border-red-200 text-red-900 focus:ring-red-400' : 'border-amber-200/50 text-amber-900 focus:ring-amber-400';
-    return `
-        <select onchange="changeAIIndicatorModel(this.value)" class="bg-white/80 backdrop-blur border ${borderCls} text-[10px] font-black px-2 py-0.5 rounded-lg shadow-sm focus:ring-1 outline-none cursor-pointer">
-            ${optionsHtml}
-        </select>
-    `;
-}
-
-window.changeAIIndicatorModel = async function (model) {
-    model = normalizeBotAIModel(model);
-    localStorage.setItem('selected_ai_model', model);
-    try {
-        const headers = await getAuthHeaders();
-        await fetch(`${API_BASE}/api/settings/indicators?context=dashboard`, {
-            method: 'POST',
-            headers: headers,
-            body: JSON.stringify({ AI_INDICATOR_MODEL: model })
-        });
-    } catch (e) {
-        console.error('[ai-indicator] Failed to save model settings to backend:', e);
-    }
-    const ticker = selectedTicker || 'TSLA';
-    const timeframe = currentBackendTf || '1Hour';
-    _showAIIndicatorLoading(ticker);
-    try {
-        await fetchAIIndicator(ticker, timeframe, true);
-    } catch (err) {
-        console.error(err);
-    }
-};
-
-function _showAIIndicatorLoading(ticker) {
-    const el = document.getElementById('aiIndicatorCard');
-    if (!el) return;
-
-    const selectedModel = normalizeBotAIModel(localStorage.getItem('selected_ai_model'));
-    const isOllamaActive = selectedModel.startsWith('ollama/') || selectedModel.startsWith('ollama:');
-    const badgeHtml = isOllamaActive
-        ? `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-indigo-500 to-blue-600 text-white border border-indigo-600/50 shadow-sm">OLLAMA</span>`
-        : `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-amber-200 to-amber-300 text-amber-800 border border-amber-400/50 shadow-sm">GROQ AI</span>`;
-    const selectHtml = _getAIModelSelectHtml(selectedModel, false);
-
-    el.className = 'ai-indicator-card ai-indicator-loading border-amber-200/60 bg-gradient-to-br from-amber-50/50 to-orange-50/30';
-    el.innerHTML = `
-        <div class="ai-orb bg-gradient-to-r from-amber-400 to-orange-500 opacity-20"></div>
-        <div class="flex flex-wrap items-center justify-between gap-y-2 mb-3 relative z-10">
-            <div class="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                <span class="text-base drop-shadow-sm">🤖</span>
-                <span class="font-black text-xs text-amber-900 tracking-wide uppercase">BotBulls AI Analysis - ${ticker || '---'}</span>
-                ${badgeHtml}
-            </div>
-            <div class="flex items-center gap-2 relative z-30">
-                ${selectHtml}
-                <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm">
-                    ℹ
-                </button>
-                <button disabled class="w-5 h-5 rounded-full flex items-center justify-center text-xs text-amber-300 bg-amber-50 border border-amber-200 animate-spin">
-                    ↻
-                </button>
-            </div>
-        </div>
-        <div class="space-y-2 animate-pulse relative z-10">
-            <div class="h-8 bg-amber-200/60 rounded-lg w-2/3"></div>
-            <div class="h-4 bg-amber-200/40 rounded w-full"></div>
-            <div class="h-4 bg-amber-200/40 rounded w-4/5"></div>
-            <div class="h-4 bg-amber-200/40 rounded w-3/5"></div>
-        </div>
-        <p class="text-[0.6rem] text-amber-700 mt-3 flex items-center gap-1 font-bold relative z-10">
-            <svg class="h-3 w-3 animate-spin text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 4v4m0 8v4m4-12h-4m4 8h-4" />
-            </svg>
-            Analyzing market catalysts and news sentiment...
-        </p>
-    `;
-}
-
-function _showAIIndicatorError(err, ticker) {
-    const el = document.getElementById('aiIndicatorCard');
-    if (!el) return;
-
-    const selectedModel = normalizeBotAIModel(localStorage.getItem('selected_ai_model'));
-    const selectHtml = _getAIModelSelectHtml(selectedModel, true);
-
-    el.className = 'ai-indicator-card ai-indicator-error relative overflow-hidden p-4 rounded-xl border transition-all duration-300';
-    el.innerHTML = `
-        <div class="flex flex-wrap items-center justify-between gap-y-2 mb-3 relative z-10">
-            <div class="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                <span class="text-base">🤖</span>
-                <span class="font-black text-xs text-red-800 tracking-wide uppercase">BotBulls AI Analysis - ${ticker || '---'}</span>
-                <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-bold bg-red-100 text-red-600 border border-red-300/50">Error</span>
-            </div>
-            <div class="flex items-center gap-2 relative z-30">
-                ${selectHtml}
-                <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-red-500 hover:text-red-700 bg-red-100/50 hover:bg-red-100 transition-colors border border-red-300/30">
-                    ℹ
-                </button>
-                <button id="aiRefreshBtn" onclick="refreshAIIndicator()" title="Force refresh AI analysis" class="w-5 h-5 rounded-full flex items-center justify-center text-xs text-red-500 hover:text-red-700 bg-red-100/50 hover:bg-red-100 transition-colors border border-red-300/30">
-                    ↻
-                </button>
-            </div>
-        </div>
-        <p class="text-[0.6rem] text-red-500 relative z-10">${err || 'Could not load AI analysis'}</p>
-    `;
-}
-
-function renderAIIndicatorCard(data, fromCache = false) {
-    const el = document.getElementById('aiIndicatorCard');
-    if (!el) return;
-
-    const signal = data.signal || 'HOLD';
-    const confidence = data.confidence || 0;
-    const confPct = Math.round(confidence * 100);
-    const summary = data.summary || '';
-    const catalyst = data.key_catalyst || '';
-    const risks = data.risk_factors || '';
-    const regime = data.volatility_regime || 'NORMAL';
-    const headlineCount = data.headline_count || 0;
-    const cached = fromCache || data.cached || false;
-
-    const sentSummary = data.sentiment_summary || '';
-    const sentKeyFactor = data.sentiment_key_factor || 'Mixed Catalysts';
-    const sentConfidence = data.sentiment_confidence != null ? data.sentiment_confidence : confidence;
-    const sentConfPct = Math.round(sentConfidence * 100);
-
-    const confBarWidth = `${confPct}%`;
-    const confBarColor = confPct >= 70 ? 'bg-emerald-500' : confPct >= 45 ? 'bg-amber-500' : 'bg-rose-500';
-    const confTextColor = confPct >= 70 ? 'text-emerald-600' : confPct >= 45 ? 'text-amber-600' : 'text-rose-600';
-
-    const sentScore = data.sentiment_score != null ? parseFloat(data.sentiment_score) : 0.0;
-    const sentPct = Math.round(((sentScore + 1.0) / 2.0) * 100);
-    const sentBarWidth = `${sentPct}%`;
-    let sentBarColor = 'bg-slate-400';
-    let sentTextColor = 'text-slate-500';
-
-    if (sentPct > 75) {
-        sentBarColor = 'bg-emerald-500';
-        sentTextColor = 'text-emerald-600';
-    } else if (sentPct > 55) {
-        sentBarColor = 'bg-amber-500';
-        sentTextColor = 'text-amber-600';
-    } else if (sentPct < 25) {
-        sentBarColor = 'bg-rose-500';
-        sentTextColor = 'text-rose-600';
-    } else if (sentPct < 45) {
-        sentBarColor = 'bg-amber-500';
-        sentTextColor = 'text-amber-600';
-    }
-
-    const sigColors = {
-        BUY: { bg: 'ai-indicator-buy', badge: 'bg-emerald-100 text-emerald-700 border-emerald-300/50', icon: '▲', iconCls: 'text-emerald-600', regimeCls: 'text-emerald-600' },
-        SELL: { bg: 'ai-indicator-sell', badge: 'bg-rose-100 text-rose-700 border-rose-300/50', icon: '▼', iconCls: 'text-rose-600', regimeCls: 'text-rose-600' },
-        HOLD: { bg: 'ai-indicator-hold', badge: 'bg-slate-100 text-slate-700 border-slate-300/50', icon: '●', iconCls: 'text-slate-500', regimeCls: 'text-slate-500' }
-    };
-    const colors = sigColors[signal] || sigColors['HOLD'];
-
-    const cachedBadge = cached
-        ? `<span class="text-[0.5rem] text-amber-600 opacity-60 ml-1">cached</span>`
-        : '';
-
-    const selectedModel = normalizeBotAIModel(localStorage.getItem('selected_ai_model'));
-    const isOllamaActive = selectedModel.startsWith('ollama/') || selectedModel.startsWith('ollama:');
-    const badgeHtml = isOllamaActive
-        ? `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-indigo-500 to-blue-600 text-white border border-indigo-600/50 shadow-sm">OLLAMA</span>`
-        : `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-amber-200 to-amber-300 text-amber-800 border border-amber-400/50 shadow-sm">GROQ AI</span>`;
-    const selectHtml = _getAIModelSelectHtml(selectedModel, false);
-
-    el.className = `ai-indicator-card ${colors.bg} relative overflow-hidden p-4 rounded-xl border border-amber-200/60 bg-gradient-to-br from-amber-50/50 to-orange-50/30 transition-all duration-300`;
-    el.innerHTML = `
-        <div class="ai-orb bg-gradient-to-r from-amber-400 to-orange-500 opacity-20"></div>
-        <div class="flex flex-wrap items-center justify-between gap-y-2 mb-3 relative z-10">
-            <div class="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                <span class="text-base drop-shadow-sm">🤖</span>
-                <span class="font-black text-xs text-amber-900 tracking-wide uppercase" id="aiIndicatorHeader">BotBulls AI Analysis - ${data.ticker || selectedTicker || '---'}</span>
-                ${badgeHtml}
-                ${cachedBadge}
-            </div>
-            <div class="flex items-center gap-2 relative z-30">
-                ${selectHtml}
-                <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm">
-                    ℹ
-                </button>
-                <button id="aiRefreshBtn" onclick="refreshAIIndicator()" title="Force refresh AI analysis" class="w-5 h-5 rounded-full flex items-center justify-center text-xs text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm">
-                    ↻
-                </button>
-            </div>
-        </div>
-
-        <div class="flex items-center justify-between mb-3 relative z-10">
-            <div class="flex items-center gap-2 text-left">
-                <div>
-                    <div class="text-[0.55rem] text-slate-400 uppercase font-black tracking-wider">Trade Signal</div>
-                    <div class="flex items-center gap-1.5 mt-0.5">
-                        <span class="px-2 py-0.5 text-xs font-black rounded-full border ${colors.badge} flex items-center gap-1">
-                            ${signal} <span class="text-[9px] ${colors.iconCls}">${colors.icon}</span>
-                        </span>
-                    </div>
-                </div>
-            </div>
-            <div class="text-right">
-                <div class="text-[0.55rem] text-slate-400 uppercase font-black tracking-wider">Volatility Regime</div>
-                <div class="text-xs font-black ${colors.regimeCls}">${regime}</div>
-            </div>
-        </div>
-
-        <div class="mb-3.5 relative z-10 text-left">
-            <div class="text-[0.55rem] text-slate-500 font-extrabold uppercase tracking-wider mb-1">Decision Confidence</div>
-            <div class="flex items-center gap-2">
-                <div class="flex-1 bg-slate-200/50 rounded-full h-1.5 overflow-hidden">
-                    <div class="h-1.5 rounded-full ${confBarColor} transition-all duration-500" style="width: ${confBarWidth}"></div>
-                </div>
-                <span class="text-[10px] font-black leading-none ${confTextColor} px-1.5 py-0.5 rounded bg-white/60 border border-slate-200/50 shadow-sm">${confPct}%</span>
-            </div>
-        </div>
-
-        <div class="mb-3.5 relative z-10 text-left">
-            <div class="text-[0.55rem] text-slate-500 font-extrabold uppercase tracking-wider mb-1">News Sentiment Score</div>
-            <div class="flex items-center gap-2">
-                <div class="flex-1 bg-slate-200/50 rounded-full h-1.5 overflow-hidden">
-                    <div class="h-1.5 rounded-full ${sentBarColor} transition-all duration-500" style="width: ${sentBarWidth}"></div>
-                </div>
-                <span class="text-[10px] font-black leading-none ${sentTextColor} px-1.5 py-0.5 rounded bg-white/60 border border-slate-200/50 shadow-sm">${sentPct}%</span>
-            </div>
-        </div>
-
-        <div class="mb-3 p-2 rounded-lg bg-fuchsia-50/50 border border-fuchsia-200/50 text-left relative z-10">
-            <span class="text-[0.52rem] font-black text-fuchsia-600 uppercase tracking-widest block mb-0.5">🔥 Key Market Factor</span>
-            <p class="text-[0.65rem] font-bold text-fuchsia-800 leading-snug">${sentKeyFactor}</p>
-        </div>
-
-        ${sentSummary ? `
-        <div class="mb-3 p-2.5 rounded-lg bg-white/50 border border-purple-200/50 text-left relative z-10">
-            <span class="text-[0.52rem] font-black text-purple-600 uppercase tracking-widest block mb-0.5">📰 AI News Briefing & Catalyst Summary</span>
-            <p class="text-[0.6rem] text-violet-700 leading-relaxed font-medium">${sentSummary}</p>
-        </div>
-        ` : ''}
-
-        ${summary ? `
-        <div class="mb-3 p-3 rounded-lg bg-white/30 border border-violet-200/50 text-left relative z-10 shadow-sm">
-            <span class="text-[0.52rem] font-black text-violet-600 uppercase tracking-widest block mb-1">📝 Comprehensive Trade Thesis Summary</span>
-            <p class="text-[0.62rem] text-violet-700 leading-relaxed font-semibold">${summary}</p>
-        </div>
-        ` : ''}
-
-        <div class="grid grid-cols-2 gap-2 mb-3 relative z-10">
-            <div class="p-2.5 rounded-lg bg-emerald-50/40 border border-emerald-200/40 text-left shadow-sm">
-                <span class="text-[0.52rem] font-black text-emerald-600 uppercase tracking-widest block mb-1">⚡ Primary Catalyst</span>
-                <p class="text-[0.6rem] text-emerald-800 leading-snug font-bold">${catalyst || 'Confluence alignment'}</p>
-            </div>
-            <div class="p-2.5 rounded-lg bg-rose-50/40 border border-rose-200/40 text-left shadow-sm">
-                <span class="text-[0.52rem] font-black text-rose-600 uppercase tracking-widest block mb-1">⚠ Main Risk Factors</span>
-                <p class="text-[0.6rem] text-rose-800 leading-snug font-bold">${risks || 'Trend invalidation'}</p>
-            </div>
-        </div>
-
-        <div class="flex items-center justify-between pt-2 border-t border-violet-200/30 text-[8px] text-violet-400 relative z-10">
-            <span>${headlineCount} headlines analyzed</span>
-            <span>Advisory only — not investment advice</span>
-        </div>
-    `;
-}
-
-window.refreshAIIndicator = async function () {
-    const refreshBtn = document.getElementById('aiRefreshBtn');
-    if (refreshBtn) {
-        refreshBtn.disabled = true;
-        refreshBtn.classList.add('animate-spin');
-    }
-    const ticker = selectedTicker;
-    const timeframe = currentBackendTf;
-    try {
-        await fetchAIIndicator(ticker, timeframe, true);
-    } catch (err) {
-        console.error(err);
-    } finally {
-        if (refreshBtn) {
-            refreshBtn.disabled = false;
-            refreshBtn.classList.remove('animate-spin');
-        }
-    }
-};
-
-window.openAIInfoModal = function () {
-    const modal = document.getElementById('aiInfoModal');
-    if (modal) modal.classList.remove('hidden');
-};
-
-window.closeAIInfoModal = function () {
-    const modal = document.getElementById('aiInfoModal');
-    if (modal) modal.classList.add('hidden');
 };
 
 
@@ -7904,9 +8287,9 @@ window.updateLivePreview_bots = function (mode, scope = 'both') {
 const oldOpenStrategyModalUnified = window.openStrategyModal;
 if(oldOpenStrategyModalUnified && !window._livePreviewPatchedUnified) {
     window._livePreviewPatchedUnified = true;
-    window.openStrategyModal = function(symbol, ...args) {
+    window.openStrategyModal = async function(symbol, ...args) {
         window.currentAtrPreviewData = { price: 100, atr: 2.0, symbol: symbol, isLive: false };
-        oldOpenStrategyModalUnified(symbol, ...args);
+        await oldOpenStrategyModalUnified(symbol, ...args);
         if (symbol) window.fetchLiveAtrForPreview(symbol);
         
         if (window.updateLivePreview_bots) {
@@ -7956,7 +8339,7 @@ async function saveGlobalRiskSettings() {
     
     try {
         const headers = await getAuthHeaders();
-        const response = await fetch(`${API_BASE}/api/settings/risk?context=dashboard`, {
+        const response = await fetch(`${API_BASE}/api/settings/risk?context=bots`, {
             method: 'POST',
             headers: headers,
             body: JSON.stringify(payload)

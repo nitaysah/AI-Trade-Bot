@@ -1,13 +1,25 @@
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
+import uuid
+from typing import Dict, List, Optional
+import asyncio
 from data_manager import get_historical_data
 from indicators import calculate_indicators_for_df, _generate_signals
 from swing_strategy import build_entry_signal, build_swing_exit
 from trader import get_confluence_decision
 import config as global_config
+from indicator_catalog import EXTENSION_CHART_FIELDS, EXTENSION_CHART_GROUPS
 from user_config import get_user_config
 from prior_day_high_low import dynamic_high_low_exit_levels, prior_day_levels_from_history, resolve_high_low_buffer_pct
+
+def _unix_timestamp(t):
+    try:
+        if hasattr(t, "tz") and t.tz is None:
+            t = t.tz_localize("America/New_York")
+        return int(t.timestamp())
+    except Exception:
+        return int(t.timestamp()) if hasattr(t, "timestamp") else int(t)
 
 def _safe_chart_level(row, key, digits):
     try:
@@ -81,6 +93,8 @@ def _chart_indicator_fields(row, digits, enabled_indicators=None, buy_mode="", s
         "adx": _safe_chart_level(row, "ADX", 4),
         "di_plus": _safe_chart_level(row, "DI_Plus", 4),
         "di_minus": _safe_chart_level(row, "DI_Minus", 4),
+        "mystic_bull": _safe_chart_level(row, "Bull_Pulse", 4),
+        "mystic_bear": _safe_chart_level(row, "Bear_Pulse", 4),
         "wt1": _safe_chart_level(row, "WT1", 6),
         "wt2": _safe_chart_level(row, "WT2", 6),
         "mfi": _safe_chart_level(row, "MFI_14", 6),
@@ -98,10 +112,33 @@ def _chart_indicator_fields(row, digits, enabled_indicators=None, buy_mode="", s
         "ba2_sell": _safe_chart_bool(row, "BA2_Sell"),
         "ba3_buy": _safe_chart_bool(row, "BA3_Buy"),
         "ba3_sell": _safe_chart_bool(row, "BA3_Sell"),
+        "bb5_upper": _safe_chart_level(row, "BB5_Upper", digits),
+        "bb5_lower": _safe_chart_level(row, "BB5_Lower", digits),
+        "bb5_target": _safe_chart_level(row, "BB5_Target", digits),
+        "bb5_invalidation": _safe_chart_level(row, "BB5_Invalidation", digits),
+        "bb5_breakout_level": _safe_chart_level(row, "BB5_Breakout_Level", digits),
+        "bb5_upper_start": _safe_chart_level(row, "BB5_Upper_Start", digits),
+        "bb5_lower_start": _safe_chart_level(row, "BB5_Lower_Start", digits),
+        "bb5_formation_start_time": _safe_chart_level(row, "BB5_Formation_Start_Time", 0),
+        "bb5_formation_end_time": _safe_chart_level(row, "BB5_Formation_End_Time", 0),
+        "bb5_pole_start_time": _safe_chart_level(row, "BB5_Pole_Start_Time", 0),
+        "bb5_pole_end_time": _safe_chart_level(row, "BB5_Pole_End_Time", 0),
+        "bb5_formation_bars": int(_safe_chart_level(row, "BB5_Formation_Bars", 0) or 0),
+        "bb5_confidence": _safe_chart_level(row, "BB5_Confidence", 2),
+        "bb5_direction": int(_safe_chart_level(row, "BB5_Direction", 0) or 0),
+        "bb5_reasons": str(row.get("BB5_Reasons", "")),
+        "bb5_breakout_bull": _safe_chart_bool(row, "BB5_Breakout_Bull"),
+        "bb5_breakout_bear": _safe_chart_bool(row, "BB5_Breakout_Bear"),
+        "bb5_pattern": str(row.get("BB5_Pattern", "NONE")),
+        "bb5_state": str(row.get("BB5_State", "NONE")),
         "cdl_name": str(row.get("cdl_name", "Neutral")),
         "cdl_bullish": _safe_chart_bool(row, "cdl_bullish"),
         "cdl_bearish": _safe_chart_bool(row, "cdl_bearish"),
     }
+    fields.update({
+        api_key: _safe_chart_level(row, column, 6)
+        for api_key, column in EXTENSION_CHART_FIELDS.items()
+    })
     if enabled_indicators is None:
         return fields
 
@@ -116,12 +153,18 @@ def _chart_indicator_fields(row, digits, enabled_indicators=None, buy_mode="", s
         "RSI": {"rsi"},
         "MACD": {"macd_line", "macd_signal", "macd_hist"},
         "ADX Trend": {"adx", "di_plus", "di_minus"},
+        "Mystic Pulse": {"mystic_bull", "mystic_bear"},
         "Volume Profile": {"volume_profile_poc", "volume_profile_vah", "volume_profile_val", "volume_profile_bullish", "volume_profile_bearish"},
         "BotBulls1": {"wt1", "wt2", "mfi", "ba1_buy", "ba1_sell", "ba1_bullish", "ba1_bearish"},
         "BotBulls2": {"lx_smart_trail", "lx_trend_tracer", "lx_rz_upper", "lx_rz_lower", "ba2_buy", "ba2_sell"},
         "BotBulls3": {"ha_close", "ut_trail", "ba3_buy", "ba3_sell"},
+        "BotBulls5": {"bb5_upper", "bb5_lower", "bb5_target", "bb5_invalidation", "bb5_breakout_level", "bb5_upper_start", "bb5_lower_start", "bb5_formation_start_time", "bb5_formation_end_time", "bb5_pole_start_time", "bb5_pole_end_time", "bb5_formation_bars", "bb5_confidence", "bb5_direction", "bb5_reasons", "bb5_breakout_bull", "bb5_breakout_bear", "bb5_pattern", "bb5_state"},
         "Candle Patterns": {"cdl_name", "cdl_bullish", "cdl_bearish"},
     }
+    groups.update({
+        indicator: set(field_names)
+        for indicator, field_names in EXTENSION_CHART_GROUPS.items()
+    })
     for indicator in enabled:
         keys.update(groups.get(indicator, set()))
 
@@ -135,7 +178,7 @@ def _chart_indicator_fields(row, digits, enabled_indicators=None, buy_mode="", s
     return {key: fields[key] for key in keys}
 
 class Backtester:
-    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=0.02, max_pos_pct=0.25, ext_hours=True, buy_mode="indicator", custom_buy_price=0.0, sell_mode="indicator", atr_stop_multiplier=2.0, atr_trail_multiplier=3.0, atr_take_profit_multiplier=4.0, enable_atr_trail=True, ai_autopilot=False, ai_interval=10, ai_model="llama-3.3-70b-versatile", enable_cooldown=True, cooldown_minutes=None, regular_stop_loss_pct=0.05, regular_take_profit_pct=0.10, regular_trailing_pct=0.03, enable_pct_trail=True, cancel_event=None, entry_atr_multiplier=None, entry_pct_move=None, entry_atr_style="pullback_reclaim", entry_pct_style="dip_reclaim", swing_entry_mode="bounce_retest", swing_entry_lookback_days=20, swing_exit_lookback_days=20, market_session="Regular", allocation_mode="fixed", trade_amount=None, custom_stop_loss_price=0.0, custom_take_profit_price=0.0, enable_signal_reset=False, enable_smart_reentry=False, smart_reentry_type="RSI", smart_reentry_rsi_call_max=70.0, smart_reentry_rsi_put_min=30.0, smart_reentry_vwap_call_max_dist_pct=0.5, smart_reentry_vwap_put_max_dist_pct=0.5, enable_risk=True, daily_high_low_buffer_pct=None, trade_direction_mode="long"):
+    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=0.02, max_pos_pct=0.25, ext_hours=True, buy_mode="indicator", custom_buy_price=0.0, sell_mode="indicator", atr_stop_multiplier=2.0, atr_trail_multiplier=3.0, atr_take_profit_multiplier=4.0, enable_atr_trail=True, ai_autopilot=False, ai_interval=10, ai_model="llama-3.3-70b-versatile", enable_cooldown=True, cooldown_minutes=None, regular_stop_loss_pct=0.05, regular_take_profit_pct=0.10, regular_trailing_pct=0.03, enable_pct_trail=True, cancel_event=None, entry_atr_multiplier=None, entry_pct_move=None, entry_atr_style="pullback_reclaim", entry_pct_style="dip_reclaim", swing_entry_mode="bounce_retest", swing_entry_lookback_days=20, swing_exit_lookback_days=20, market_session="Regular", allocation_mode="fixed", trade_amount=None, custom_stop_loss_price=0.0, custom_take_profit_price=0.0, enable_signal_reset=False, enable_smart_reentry=False, smart_reentry_type="RSI", smart_reentry_rsi_call_max=70.0, smart_reentry_rsi_put_min=30.0, smart_reentry_vwap_call_max_dist_pct=0.5, smart_reentry_vwap_put_max_dist_pct=0.5, enable_risk=True, daily_high_low_buffer_pct=None, trade_direction_mode="long", max_completed_trades=None, indicator_overrides=None):
         self.ticker = ticker
         self.timeframe = timeframe
         self.start_date = start_date
@@ -178,6 +221,7 @@ class Backtester:
             self.trade_direction_mode = "long"
         self.daily_high_low_buffer_pct = resolve_high_low_buffer_pct(fallback=daily_high_low_buffer_pct)
         self.indicator_settings = {
+            **(indicator_overrides if isinstance(indicator_overrides, dict) else {}),
             "DAILY_HIGH_LOW_BUFFER_PCT": self.daily_high_low_buffer_pct,
             "SWING_POINTS_LOOKBACK_DAYS": self.swing_entry_lookback_days,
             "SWING_POINTS_ENTRY_MODE": self.swing_entry_mode,
@@ -208,6 +252,8 @@ class Backtester:
         self.equity_history = []
         self.df = None
         self.data_source = "yahoo"
+        self.max_completed_trades = int(max_completed_trades) if max_completed_trades else None
+        self.overtrade_limit_hit = False
 
         # Pre-cache timezones to prevent massive slowdowns in tight loops
         import pytz
@@ -273,14 +319,14 @@ class Backtester:
         return self.trade_direction_mode == side
 
     def _build_simple_signal_cache(self):
-        """Vectorize the common RSI/Bollinger/VWAP signal set for fast backtests."""
+        """Vectorize the common RSI/Bollinger/AVWAP signal set for fast backtests."""
         enabled = set(self.enabled_indicators or [])
         if not enabled or not enabled.issubset({"RSI", "Bollinger", "VWAP"}):
             return None
 
         cfg = get_user_config()
-        rsi_os = float(cfg.get("RSI_OVERSOLD", 30))
-        rsi_ob = float(cfg.get("RSI_OVERBOUGHT", 70))
+        rsi_os = float(self.indicator_settings.get("RSI_OVERSOLD", cfg.get("RSI_OVERSOLD", 30)))
+        rsi_ob = float(self.indicator_settings.get("RSI_OVERBOUGHT", cfg.get("RSI_OVERBOUGHT", 70)))
         close = self.df["Close"].astype(float)
         prev_close = close.shift(1)
         rsi = self.df["RSI"].astype(float)
@@ -297,10 +343,15 @@ class Backtester:
             price = float(close.iloc[idx])
             if "RSI" in enabled:
                 rsi_val = float(rsi.iloc[idx])
-                rsi_signal = "BULLISH" if rsi_val < rsi_os else "BEARISH" if rsi_val > rsi_ob else "NEUTRAL"
+                previous_rsi = float(rsi.iloc[idx - 1]) if idx > 0 and pd.notna(rsi.iloc[idx - 1]) else rsi_val
+                rsi_signal = (
+                    "BULLISH" if rsi_val < rsi_os and rsi_val > previous_rsi
+                    else "BEARISH" if rsi_val > rsi_ob and rsi_val < previous_rsi
+                    else "NEUTRAL"
+                )
                 rsi_reason = (
-                    f"Oversold {rsi_val:.1f}" if rsi_val < rsi_os
-                    else f"Overbought {rsi_val:.1f}" if rsi_val > rsi_ob
+                    f"Oversold and rising {rsi_val:.1f}" if rsi_signal == "BULLISH"
+                    else f"Overbought and falling {rsi_val:.1f}" if rsi_signal == "BEARISH"
                     else f"Neutral {rsi_val:.1f}"
                 )
                 signals["RSI"] = {"signal": rsi_signal, "reason": rsi_reason, "weight": 1}
@@ -385,6 +436,13 @@ class Backtester:
                 "enabled_indicators": self.enabled_indicators,
                 "buy_mode": self.buy_mode,
                 "sell_mode": self.sell_mode,
+                "_require_rsi_dependency": bool(
+                    self.ai_autopilot
+                    or (
+                        self.enable_smart_reentry
+                        and str(self.smart_reentry_type or "RSI").upper() == "RSI"
+                    )
+                ),
             }
             result = calculate_indicators_for_df(raw_df, self.timeframe, self.ticker, settings=calc_settings)
             if not result:
@@ -413,8 +471,14 @@ class Backtester:
         if needs_price_history:
             for ts, row in self.df.iterrows():
                 try:
+                    ts_et = None
+                    try:
+                        ts_et = ts.tz_localize(self.utc_tz).astimezone(self.local_tz) if getattr(ts, "tzinfo", None) is None else ts.astimezone(self.local_tz)
+                    except Exception:
+                        ts_et = None
                     price_history_records.append({
-                        "time": int(ts.timestamp()) if hasattr(ts, "timestamp") else ts,
+                        "time": _unix_timestamp(ts),
+                        "dt_et": ts_et,
                         "open": float(row.get("Open", row.get("open", row.get("Close", 0.0)))),
                         "high": float(row.get("High", row.get("high", row.get("Close", 0.0)))),
                         "low": float(row.get("Low", row.get("low", row.get("Close", 0.0)))),
@@ -429,6 +493,8 @@ class Backtester:
 
         # 4. Simulate bar-by-bar
         for i in range(len(self.df)):
+            if self.overtrade_limit_hit:
+                break
             if self.cancel_event and self.cancel_event.is_set():
                 print(f"[backtest] Cancelled by user halfway through execution ({i}/{len(self.df)} bars)")
                 return {"error": "Backtest cancelled by user"}
@@ -543,16 +609,16 @@ class Backtester:
                 # ── Swing support/resistance exits ─────────────────────────────
                 elif self.sell_mode in ['swing_points', 'hybrid_swing']:
                     is_long_side = position_side != "short"
-                    swing_exit = build_swing_exit(
-                        self._history_window(price_history_records, i, self.swing_exit_lookback_days),
-                        current_price=current_price,
-                        is_long=is_long_side,
-                        lookback_days=self.swing_exit_lookback_days,
-                        market_session=self.market_session,
-                        is_crypto=self.is_crypto,
-                    )
-                    swing_stop = swing_exit.get('stop_loss')
-                    swing_target = swing_exit.get('take_profit')
+                    if is_long_side:
+                        swing_stop = current_bar.get("Swing_Support_1")
+                        swing_target = current_bar.get("Swing_Resistance_1")
+                    else:
+                        swing_stop = current_bar.get("Swing_Resistance_1")
+                        swing_target = current_bar.get("Swing_Support_1")
+                    if swing_stop is not None and pd.isna(swing_stop):
+                        swing_stop = None
+                    if swing_target is not None and pd.isna(swing_target):
+                        swing_target = None
                     stop_hit = swing_stop is not None and (
                         current_bar['Low'] <= swing_stop if is_long_side else current_bar['High'] >= swing_stop
                     )
@@ -738,7 +804,10 @@ class Backtester:
                     signals = _generate_signals(
                         current_bar,
                         prev_bar,
-                        settings={"enabled_indicators": self.enabled_indicators},
+                        settings={
+                            **(self.indicator_settings or {}),
+                            "enabled_indicators": self.enabled_indicators,
+                        },
                         recent_bars=self.df.iloc[max(0, i - 4) : i + 1],
                     )
                 
@@ -750,6 +819,10 @@ class Backtester:
                     'bearish_count': sum(s.get('weight', 1) for s in filtered_signals.values() if s['signal'] == 'BEARISH'),
                     'signals': filtered_signals
                 }
+                bullish_ready = analysis['bullish_count'] >= self.threshold
+                bearish_ready = analysis['bearish_count'] >= self.sell_threshold
+                bullish_dominates = bullish_ready and (not bearish_ready or analysis['bullish_count'] > analysis['bearish_count'])
+                bearish_dominates = bearish_ready and (not bullish_ready or analysis['bearish_count'] > analysis['bullish_count'])
                 
                 if self.sell_mode == "trend_rider":
                     ema_f = current_bar.get("EMA_Fast", 0)
@@ -764,7 +837,7 @@ class Backtester:
                     if golden_cross and st_bull:
                         action = "BUY"
                         reason = "Trend Rider Entry (Golden Cross + Supertrend)"
-                    elif analysis['bullish_count'] >= self.threshold:
+                    elif bullish_dominates:
                         action = "BUY"
                         names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
                         reason = f"Trend Rider Entry: {analysis['bullish_count']} signals ({', '.join(names)})"
@@ -778,40 +851,38 @@ class Backtester:
                 else:
                     entry_mode = self.buy_mode
                     price_action_modes = ['custom_price', 'atr', 'hybrid_atr', 'percentage', 'hybrid_pct', 'pivot_points', 'hybrid_pivot', 'high_low', 'hybrid_high_low', 'swing_points', 'hybrid_swing']
+                    simple_price_action_modes = {'custom_price', 'atr', 'hybrid_atr', 'percentage', 'hybrid_pct'}
                     hybrid_modes = {'hybrid_atr', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'}
                     entry_candidates = []
                     if entry_mode in price_action_modes:
                         action = "HOLD"
-                        recent_history = self._history_window(price_history_records, i, self.swing_entry_lookback_days)
-                        entry_signal = build_entry_signal(
-                            recent_history,
-                            current_price=current_price,
-                            entry_mode=entry_mode,
-                            lookback_days=self.swing_entry_lookback_days,
-                            market_session=self.market_session,
-                            is_crypto=self.is_crypto,
-                            atr=current_bar.get('ATR', current_price * 0.01),
-                            custom_buy_price=self.custom_buy_price,
-                            entry_atr_mult=self.entry_atr_multiplier,
-                            entry_pct_move=self.entry_pct_move,
-                            entry_atr_style=self.entry_atr_style,
-                            entry_pct_style=self.entry_pct_style,
-                            swing_entry_mode=self.swing_entry_mode,
-                            desired_direction=None if entry_mode not in hybrid_modes else "BULLISH",
-                            high_low_buffer_pct=self.daily_high_low_buffer_pct,
-                        )
-                        signal_action = entry_signal.get("action", "HOLD")
-                        if self._direction_allowed("long"):
-                            if entry_mode in hybrid_modes:
-                                structure_ok = signal_action == "BUY" and entry_signal.get("structure_direction") == "BULLISH"
-                                indicator_ok = analysis['bullish_count'] >= self.threshold
-                                if indicator_ok and structure_ok:
-                                    names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
-                                    entry_candidates.append((analysis['bullish_count'], "long", f"Hybrid BUY: {analysis['bullish_count']} signals ({', '.join(names)}) + {entry_signal.get('reason', 'bullish structure')}"))
-                            elif signal_action == "BUY":
-                                entry_candidates.append((max(analysis['bullish_count'], 1), "long", entry_signal.get("reason", reason)))
-                        if self._direction_allowed("short"):
-                            short_signal = build_entry_signal(
+                        cached_structure_modes = {'pivot_points', 'hybrid_pivot', 'high_low', 'hybrid_high_low', 'swing_points', 'hybrid_swing'}
+                        if entry_mode in cached_structure_modes:
+                            entry_signal = {"action": "HOLD", "structure_direction": "NONE", "reason": "Cached structure: waiting for confirmation"}
+                            if entry_mode in {'pivot_points', 'hybrid_pivot'}:
+                                if bool(current_bar.get("Pivot_Bullish", False)):
+                                    level = current_bar.get("Pivot_S1", current_price)
+                                    entry_signal = {"action": "BUY", "structure_direction": "BULLISH", "reason": f"Pivot reclaim confirmed from cached levels near ${float(level):.2f}"}
+                                elif bool(current_bar.get("Pivot_Bearish", False)):
+                                    level = current_bar.get("Pivot_R1", current_price)
+                                    entry_signal = {"action": "SELL", "structure_direction": "BEARISH", "reason": f"Pivot rejection confirmed from cached levels near ${float(level):.2f}"}
+                            elif entry_mode in {'high_low', 'hybrid_high_low'}:
+                                if bool(current_bar.get("Daily_HighLow_Bullish", False)):
+                                    level = current_bar.get("Daily_HighLow_High_Trigger", current_bar.get("Daily_HighLow_High", current_price))
+                                    entry_signal = {"action": "BUY", "structure_direction": "BULLISH", "reason": f"Prior high breakout confirmed from cached level near ${float(level):.2f}"}
+                                elif bool(current_bar.get("Daily_HighLow_Bearish", False)):
+                                    level = current_bar.get("Daily_HighLow_Low_Trigger", current_bar.get("Daily_HighLow_Low", current_price))
+                                    entry_signal = {"action": "SELL", "structure_direction": "BEARISH", "reason": f"Prior low breakdown confirmed from cached level near ${float(level):.2f}"}
+                            elif entry_mode in {'swing_points', 'hybrid_swing'}:
+                                if bool(current_bar.get("Swing_Bullish", False)):
+                                    level = current_bar.get("Swing_Support_1", current_price)
+                                    entry_signal = {"action": "BUY", "structure_direction": "BULLISH", "reason": f"Swing support bounce confirmed from cached level near ${float(level):.2f}"}
+                                elif bool(current_bar.get("Swing_Bearish", False)):
+                                    level = current_bar.get("Swing_Resistance_1", current_price)
+                                    entry_signal = {"action": "SELL", "structure_direction": "BEARISH", "reason": f"Swing resistance rejection confirmed from cached level near ${float(level):.2f}"}
+                        elif entry_mode in simple_price_action_modes:
+                            recent_history = price_history_records[max(0, i - 1):i + 1]
+                            entry_signal = build_entry_signal(
                                 recent_history,
                                 current_price=current_price,
                                 entry_mode=entry_mode,
@@ -825,13 +896,63 @@ class Backtester:
                                 entry_atr_style=self.entry_atr_style,
                                 entry_pct_style=self.entry_pct_style,
                                 swing_entry_mode=self.swing_entry_mode,
-                                desired_direction="BEARISH" if entry_mode in hybrid_modes else None,
+                                desired_direction=None if entry_mode not in hybrid_modes else "BULLISH",
                                 high_low_buffer_pct=self.daily_high_low_buffer_pct,
                             )
+                        else:
+                            recent_history = self._history_window(price_history_records, i, self.swing_entry_lookback_days)
+                            entry_signal = build_entry_signal(
+                                recent_history,
+                                current_price=current_price,
+                                entry_mode=entry_mode,
+                                lookback_days=self.swing_entry_lookback_days,
+                                market_session=self.market_session,
+                                is_crypto=self.is_crypto,
+                                atr=current_bar.get('ATR', current_price * 0.01),
+                                custom_buy_price=self.custom_buy_price,
+                                entry_atr_mult=self.entry_atr_multiplier,
+                                entry_pct_move=self.entry_pct_move,
+                                entry_atr_style=self.entry_atr_style,
+                                entry_pct_style=self.entry_pct_style,
+                                swing_entry_mode=self.swing_entry_mode,
+                                desired_direction=None if entry_mode not in hybrid_modes else "BULLISH",
+                                high_low_buffer_pct=self.daily_high_low_buffer_pct,
+                            )
+                        signal_action = entry_signal.get("action", "HOLD")
+                        if self._direction_allowed("long"):
+                            if entry_mode in hybrid_modes:
+                                structure_ok = signal_action == "BUY" and entry_signal.get("structure_direction") == "BULLISH"
+                                indicator_ok = bullish_dominates
+                                if indicator_ok and structure_ok:
+                                    names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
+                                    entry_candidates.append((analysis['bullish_count'], "long", f"Hybrid BUY: {analysis['bullish_count']} signals ({', '.join(names)}) + {entry_signal.get('reason', 'bullish structure')}"))
+                            elif signal_action == "BUY":
+                                entry_candidates.append((max(analysis['bullish_count'], 1), "long", entry_signal.get("reason", reason)))
+                        if self._direction_allowed("short"):
+                            if entry_mode in cached_structure_modes:
+                                short_signal = entry_signal
+                            else:
+                                short_signal = build_entry_signal(
+                                    recent_history,
+                                    current_price=current_price,
+                                    entry_mode=entry_mode,
+                                    lookback_days=self.swing_entry_lookback_days,
+                                    market_session=self.market_session,
+                                    is_crypto=self.is_crypto,
+                                    atr=current_bar.get('ATR', current_price * 0.01),
+                                    custom_buy_price=self.custom_buy_price,
+                                    entry_atr_mult=self.entry_atr_multiplier,
+                                    entry_pct_move=self.entry_pct_move,
+                                    entry_atr_style=self.entry_atr_style,
+                                    entry_pct_style=self.entry_pct_style,
+                                    swing_entry_mode=self.swing_entry_mode,
+                                    desired_direction="BEARISH" if entry_mode in hybrid_modes else None,
+                                    high_low_buffer_pct=self.daily_high_low_buffer_pct,
+                                )
                             short_action = short_signal.get("action", "HOLD")
                             if entry_mode in hybrid_modes:
                                 structure_ok = short_action == "SELL" and short_signal.get("structure_direction") == "BEARISH"
-                                indicator_ok = analysis['bearish_count'] >= self.sell_threshold
+                                indicator_ok = bearish_dominates
                                 if indicator_ok and structure_ok:
                                     names = [k for k, v in filtered_signals.items() if v['signal'] == 'BEARISH']
                                     entry_candidates.append((analysis['bearish_count'], "short", f"Hybrid SELL: {analysis['bearish_count']} signals ({', '.join(names)}) + {short_signal.get('reason', 'bearish structure')}"))
@@ -839,20 +960,12 @@ class Backtester:
                                 entry_candidates.append((max(analysis['bearish_count'], 1), "short", short_signal.get("reason", reason)))
 
                     if action == 'HOLD' and entry_mode not in price_action_modes and self.enabled_indicators:
-                        if self._direction_allowed("long") and analysis['bullish_count'] >= self.threshold:
+                        if self._direction_allowed("long") and bullish_dominates:
                             names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
                             entry_candidates.append((analysis['bullish_count'], "long", f"{analysis['bullish_count']} signals ({', '.join(names)})"))
-                        if self._direction_allowed("short") and analysis['bearish_count'] >= self.sell_threshold:
+                        if self._direction_allowed("short") and bearish_dominates:
                             names = [k for k, v in filtered_signals.items() if v['signal'] == 'BEARISH']
                             entry_candidates.append((analysis['bearish_count'], "short", f"Dynamic Sell: {analysis['bearish_count']} signals ({', '.join(names)})"))
-
-                    if action == 'HOLD' and entry_mode not in price_action_modes and self.enabled_indicators:
-                        if self._direction_allowed("long") and analysis['bullish_count'] >= self.threshold:
-                            names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
-                            entry_candidates.append((analysis['bullish_count'], "long", f"{analysis['bullish_count']} signals ({', '.join(names)})"))
-                        if self._direction_allowed("short") and analysis['bearish_count'] >= self.sell_threshold:
-                            names = [k for k, v in filtered_signals.items() if v['signal'] == 'BEARISH']
-                            entry_candidates.append((analysis['bearish_count'], "short", f"{analysis['bearish_count']} signals ({', '.join(names)})"))
 
                     if entry_candidates:
                         entry_candidates.sort(key=lambda item: (item[0], 1 if item[1] == "long" else 0), reverse=True)
@@ -861,6 +974,17 @@ class Backtester:
                         reason = chosen_reason
                     else:
                         action = "HOLD"
+
+                    if self.position and self.sell_mode in ["indicator", "hybrid", "hybrid_pct", "hybrid_pivot", "hybrid_high_low", "hybrid_swing"]:
+                        current_side = str(self.position.get("side", "long")).lower()
+                        if current_side == "long" and bearish_ready and analysis['bearish_count'] >= analysis['bullish_count']:
+                            names = [k for k, v in filtered_signals.items() if v['signal'] == 'BEARISH']
+                            action = "SELL"
+                            reason = f"Indicator Exit: {analysis['bearish_count']} bearish signals ({', '.join(names)})"
+                        elif current_side == "short" and bullish_ready and analysis['bullish_count'] >= analysis['bearish_count']:
+                            names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
+                            action = "BUY"
+                            reason = f"Indicator Exit: {analysis['bullish_count']} bullish signals ({', '.join(names)})"
 
                 if self.enable_signal_reset and not self.position and self.signal_locked_direction == "BUY" and action != "BUY" and analysis['bullish_count'] < self.threshold:
                     self.signal_locked_direction = None
@@ -1048,6 +1172,8 @@ class Backtester:
             'initial_take_profit': round(self.position.get('initial_take_profit', 0), 8 if is_crypto else 2),
             'exit_stop_price': round(exit_stop_price, 8 if is_crypto else 2) if exit_stop_price is not None else None,
         })
+        if self.max_completed_trades and len(self.trades) >= self.max_completed_trades:
+            self.overtrade_limit_hit = True
         self.position = None
         self.last_exit_time = timestamp
         if self.allocation_mode == "compound":
@@ -1099,7 +1225,7 @@ class Backtester:
             distance_pct = abs((current_price - vwap) / vwap) * 100.0
             max_dist = self.smart_reentry_vwap_call_max_dist_pct if str(side).lower() == "long" else self.smart_reentry_vwap_put_max_dist_pct
             if distance_pct > max_dist:
-                return False, f"Smart Re-entry VWAP Filter: distance {distance_pct:.2f}% > max {max_dist:.2f}%"
+                return False, f"Smart Re-entry AVWAP Filter: distance {distance_pct:.2f}% > max {max_dist:.2f}%"
             return True, None
 
         rsi = bar.get("RSI", None)

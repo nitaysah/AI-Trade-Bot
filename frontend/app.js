@@ -13,6 +13,7 @@ var LAST_VIEWED_TICKER_KEY = 'lastViewedTicker';
 var DASHBOARD_CHART_CONTEXT_KEY = 'dashboardChartContext';
 var GENERIC_DASHBOARD_CARDS_CACHE_KEY = 'dashboardGenericCardsCacheV1';
 var GENERIC_DASHBOARD_CARDS_CLIENT_TTL_MS = 5 * 60 * 1000;
+var GENERIC_DASHBOARD_CARDS_REFRESH_MS = GENERIC_DASHBOARD_CARDS_CLIENT_TTL_MS;
 
 function isDashboardPageActive() {
     const path = (window.location.pathname || '').toLowerCase();
@@ -185,7 +186,8 @@ function toCloseTimeDisplayBar(bar, timeframe = currentBackendTf) {
 }
 
 function isRegularMarketBar(bar) {
-    const d = new Date(bar.time * 1000);
+    const sourceTime = Number(bar?.source_time);
+    const d = new Date((Number.isFinite(sourceTime) ? sourceTime : Number(bar?.time)) * 1000);
     const parts = new Intl.DateTimeFormat('en-US', {
         timeZone: 'America/Chicago',
         weekday: 'short',
@@ -196,7 +198,37 @@ function isRegularMarketBar(bar) {
     const values = Object.fromEntries(parts.map(p => [p.type, p.value]));
     if (values.weekday === 'Sat' || values.weekday === 'Sun') return false;
     const mins = Number(values.hour) * 60 + Number(values.minute);
-    return mins >= (8 * 60 + 30) && mins <= (15 * 60);
+    return mins >= (8 * 60 + 30)
+        && (Number.isFinite(sourceTime) ? mins < (15 * 60) : mins <= (15 * 60));
+}
+
+function dashboardChartRefreshSessionIsOpen(nowMs = Date.now(), ticker = selectedTicker) {
+    if (isCryptoTicker(ticker)) return true;
+    try {
+        const parts = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/Chicago',
+            weekday: 'short',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+        }).formatToParts(new Date(nowMs));
+        const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+        if (values.weekday === 'Sat' || values.weekday === 'Sun') return false;
+        const minutes = Number(values.hour) * 60 + Number(values.minute);
+        if (!Number.isFinite(minutes)) return false;
+
+        // The Dashboard's displayed sessions are 03:00–19:00 CT for extended
+        // trading and 08:30–15:00 CT for regular trading. Do not use wall-clock
+        // candle boundaries outside these windows: an equity provider will not
+        // deliver the "missing" bar and the heartbeat would otherwise retry it.
+        return currentChartSession === 'extended'
+            ? minutes >= (3 * 60) && minutes <= (19 * 60)
+            : minutes >= (8 * 60 + 30) && minutes <= (15 * 60);
+    } catch (error) {
+        // Keep a chart usable in an unusual browser locale; the server still
+        // coalesces duplicate requests if session detection is unavailable.
+        return true;
+    }
 }
 
 function getRangeStartTime(bars) {
@@ -301,6 +333,7 @@ function syncOscillatorRanges(range) {
     try { if (oscChartMystic && _visibleIndicators.mystic) oscChartMystic.timeScale().setVisibleLogicalRange(range); } catch (e) { }
     try { if (oscChartAdx && _visibleIndicators.adx) oscChartAdx.timeScale().setVisibleLogicalRange(range); } catch (e) { }
     try { if (oscChartBotbulls1 && _visibleIndicators.botbulls1) oscChartBotbulls1.timeScale().setVisibleLogicalRange(range); } catch (e) { }
+    window.StandardIndicatorSubcharts?.sync('dashboard', range);
 }
 
 function scheduleOscillatorRangeSync(range) {
@@ -333,25 +366,37 @@ let currentLogTab = "all"; // 'all' or 'trades'
 let currentWatchlistTab = "all"; // 'all', 'stocks', or 'crypto'
 let latestTradesData = []; // Cached log data
 let pendingDashboardRefreshMode = null;
+let dashboardHeartbeatTimer = null;
+let dashboardHeartbeatEnabled = false;
+let lastDashboardRefreshCompletedAt = 0;
+let authTokenRequestPromise = null;
+let authTokenRequestUserId = null;
+let genericDashboardCardsRequestPromise = null;
 const chartDataCache = new Map();
 let chartRequestSerial = 0;
-const CHART_CACHE_VERSION = 'v7';
+const CHART_CACHE_VERSION = 'v10';
 const CHART_CACHE_TTL_MS = 30 * 60 * 1000;
 const CHART_IDB_NAME = 'aiTradeBotChartCache';
 const CHART_IDB_VERSION = 1;
 const CHART_IDB_STORE = 'chartPayloads';
 const COMPLETED_CANDLE_HEARTBEAT_MS = 10000;
 const COMPLETED_CANDLE_DELAY_MS = 15000;
+const COMPLETED_CANDLE_RETRY_MS = 60000;
 const LIVE_PRICE_HEARTBEAT_MS = 10000;
 const DASHBOARD_FETCH_TIMEOUT_MS = 20000;
 const CHART_FETCH_TIMEOUT_MS = 30000;
-const QUOTE_FETCH_TIMEOUT_MS = 10000;
+const QUOTE_FETCH_TIMEOUT_MS = 4500;
+const DASHBOARD_VISIBILITY_REFRESH_MIN_AGE_MS = 15000;
 let completedCandleHeartbeatId = null;
 let lastCompletedChartFetchAt = 0;
 let lastCompletedChartBarTime = 0;
 let lastCompletedChartAttemptedCloseTime = 0;
+let lastCompletedChartAttemptAt = 0;
 let activeChartRefreshInFlight = false;
 let livePriceRequestSerial = 0;
+let livePriceRequestInFlight = false;
+let livePriceFailureCount = 0;
+let livePriceNextAttemptAt = 0;
 let chartIndexedDbPromise = null;
 let legacyChartLocalStorageCleared = false;
 let signalRefreshRequestSerial = 0;
@@ -389,6 +434,7 @@ function resetCompletedCandleState() {
     lastCompletedChartFetchAt = 0;
     lastCompletedChartBarTime = 0;
     lastCompletedChartAttemptedCloseTime = 0;
+    lastCompletedChartAttemptAt = 0;
     updateLastBarInfo(window._confirmedDisplayPriceHistory || [], selectedTicker);
 }
 
@@ -418,8 +464,15 @@ async function getAuthHeaders() {
         return baseHeaders;
     }
 
+    const userId = String(user.uid || 'current-user');
+    if (!authTokenRequestPromise || authTokenRequestUserId !== userId) {
+        authTokenRequestUserId = userId;
+        authTokenRequestPromise = Promise.resolve().then(() => user.getIdToken());
+    }
+    const tokenRequest = authTokenRequestPromise;
+
     try {
-        const token = await user.getIdToken();
+        const token = await tokenRequest;
         return {
             ...baseHeaders,
             'Authorization': `Bearer ${token}`
@@ -427,6 +480,11 @@ async function getAuthHeaders() {
     } catch (e) {
         console.error('[auth] Error getting ID token:', e);
         return baseHeaders;
+    } finally {
+        if (authTokenRequestPromise === tokenRequest) {
+            authTokenRequestPromise = null;
+            authTokenRequestUserId = null;
+        }
     }
 }
 
@@ -490,6 +548,7 @@ function formatLocalTime(isoString) {
 let lwChart = null;
 let extHoursSeries = null;
 let candleSeries = null;
+let volumeSeries = null;
 let oscChartRsi = null;
 let oscChartMacd = null;
 let oscChartMystic = null;
@@ -520,6 +579,7 @@ const _defaultVisibleIndicators = {
     botbulls1: false,
     botbulls2: false,
     botbulls3: false,
+    botbulls5: false,
     'Candle Patterns': false,
 };
 
@@ -635,14 +695,16 @@ function initChart() {
     });
 
     extHoursSeries = lwChart.addHistogramSeries({
-        color: 'rgba(100, 116, 139, 0.1)', // Slight grey background
-        priceFormat: { type: 'volume' },
+        color: 'rgba(100, 116, 139, 0.12)', // Slight grey background
+        priceFormat: { type: 'custom', formatter: () => '' },
         priceScaleId: 'ext-hours-bg',
         scaleMargins: { top: 0, bottom: 0 },
+        autoscaleInfoProvider: () => ({
+            priceRange: { minValue: 0, maxValue: 100 },
+        }),
     });
     lwChart.priceScale('ext-hours-bg').applyOptions({
         visible: false,
-        autoScale: false,
         scaleMargins: { top: 0, bottom: 0 },
     });
 
@@ -651,6 +713,16 @@ function initChart() {
         borderVisible: false,
         wickUpColor: '#10b981', wickDownColor: '#ef4444',
         priceScaleId: 'right',
+    });
+
+    volumeSeries = lwChart.addHistogramSeries({
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'volume',
+        scaleMargins: { top: 0.8, bottom: 0 },
+    });
+    lwChart.priceScale('volume').applyOptions({
+        scaleMargins: { top: 0.8, bottom: 0 },
+        visible: false,
     });
 
     let lastChartWidth = 0;
@@ -829,17 +901,39 @@ function updateChart(priceHistory, ticker) {
         updateChartControlState(ticker);
         return;
     }
+    let shouldFollowRealtime = true;
+    let logicalRange = null;
+    try {
+        const currentRange = lwChart.timeScale().getVisibleLogicalRange();
+        if (currentRange && window._displayPriceHistory) {
+            const oldLength = window._displayPriceHistory.length;
+            if (oldLength > 0) {
+                shouldFollowRealtime = currentRange.to >= oldLength - 3;
+                if (!shouldFollowRealtime) {
+                    const toIdx = Math.min(oldLength - 1, Math.max(0, Math.floor(currentRange.to)));
+                    const toTime = window._displayPriceHistory[toIdx]?.time;
+                    if (toTime) {
+                        const newToIdx = sorted.findIndex(b => b.time === toTime);
+                        if (newToIdx !== -1) {
+                            const shift = newToIdx - toIdx;
+                            logicalRange = { from: currentRange.from + shift, to: currentRange.to + shift };
+                        } else {
+                            logicalRange = currentRange;
+                        }
+                    } else {
+                        logicalRange = currentRange;
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        shouldFollowRealtime = true;
+    }
+
     window._displayPriceHistory = sorted;
     window._confirmedPriceHistory = rawSorted;
     window._confirmedDisplayPriceHistory = sorted;
     lastCompletedChartBarTime = Number(sorted[sorted.length - 1]?.time || 0);
-    let shouldFollowRealtime = true;
-    try {
-        const scrollPosition = lwChart?.timeScale?.().scrollPosition?.();
-        shouldFollowRealtime = !Number.isFinite(scrollPosition) || scrollPosition < 3;
-    } catch (e) {
-        shouldFollowRealtime = true;
-    }
     // Background highlight for Extended Hours
     if (extHoursSeries) {
         if (!isCryptoTicker(ticker) && currentChartSession === 'extended' && currentBackendTf !== '1Day') {
@@ -847,7 +941,7 @@ function updateChart(priceHistory, ticker) {
                 const isExt = !isRegularMarketBar(b);
                 return {
                     time: b.time,
-                    value: isExt ? 9999999 : 0,
+                    value: isExt ? 100 : 0,
                     color: isExt ? 'rgba(100, 116, 139, 0.12)' : 'rgba(0,0,0,0)'
                 };
             });
@@ -858,6 +952,13 @@ function updateChart(priceHistory, ticker) {
     }
 
     candleSeries.setData(sorted.map(b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })));
+    if (volumeSeries) {
+        volumeSeries.setData(sorted.map(b => ({
+            time: b.time,
+            value: Number(b.volume || 0),
+            color: b.close >= b.open ? 'rgba(16, 185, 129, 0.45)' : 'rgba(239, 68, 68, 0.45)',
+        })));
+    }
     if (shouldFollowRealtime) {
         try { lwChart.timeScale().scrollToRealTime(); } catch (e) {}
     }
@@ -874,10 +975,13 @@ function updateChart(priceHistory, ticker) {
             document.getElementById('ohlcvH').textContent = formatPrice(bar.high);
             document.getElementById('ohlcvL').textContent = formatPrice(bar.low);
             document.getElementById('ohlcvC').textContent = formatPrice(bar.close);
-            // volume from sorted bars by time
-            const ts = param.time;
-            const vBar = window._displayPriceHistory?.find(b => b.time === ts);
-            document.getElementById('ohlcvV').textContent = vBar ? fmtVol(vBar.volume) : '—';
+            const vEl = document.getElementById('ohlcvV');
+            if (vEl) {
+                const ts = param.time;
+                const vBar = window._displayPriceHistory?.find(b => b.time === ts);
+                const vol = (vBar && vBar.volume != null) ? vBar.volume : (bar && bar.volume != null ? bar.volume : null);
+                vEl.textContent = (vol != null && !isNaN(vol)) ? fmtVol(vol) : '—';
+            }
         });
     }
 
@@ -898,11 +1002,17 @@ function updateChart(priceHistory, ticker) {
         }, 150);
         window._lastFittedTicker = ticker;
         window._lastFittedRange = currentChartRange;
+    } else if (!shouldFollowRealtime && logicalRange !== null) {
+        try { lwChart.timeScale().setVisibleLogicalRange(logicalRange); } catch(e) {}
     }
 
     updateVisibleHighLow();
     const visibleRange = lwChart.timeScale().getVisibleLogicalRange();
     syncOscillatorRanges(visibleRange);
+
+    if (typeof setChartLoadingState === 'function') {
+        setChartLoadingState(false);
+    }
 }
 
 function _getOrCreate(map, key, chartInst, options) {
@@ -1007,9 +1117,9 @@ function _refreshOverlays(bars) {
         _removeSeries(_overlaySeries, 'ema_fast', lwChart);
         _removeSeries(_overlaySeries, 'ema_slow', lwChart);
     }
-    // VWAP
+    // AVWAP
     if (_visibleIndicators.vwap) {
-        _getOrCreate(_overlaySeries, 'vwap', lwChart, { color: '#f59e0b', lineWidth: 2.5, lineStyle: 0 })
+        _getOrCreate(_overlaySeries, 'vwap', lwChart, { color: IND_COLORS.vwap || '#000000', lineWidth: 2, lineStyle: 0 })
             .setData(clean(bars.filter(b => b.vwap != null).map(b => ({ time: b.time, value: b.vwap }))));
     } else {
         _removeSeries(_overlaySeries, 'vwap', lwChart);
@@ -1374,6 +1484,97 @@ function _refreshOverlays(bars) {
         }
     }
 
+    const dashboardIndicatorPrefs = getGlobalIndicatorPrefs();
+    (window.STANDARD_EXTENSION_OVERLAYS || []).forEach(definition => {
+        const show = dashboardIndicatorPrefs[definition.name] === true
+            && isDashboardIndicatorAllowed(definition.name);
+        definition.series.forEach(spec => {
+            const seriesKey = `standard_${spec.field}`;
+            if (show) {
+                const overlayParameters = spec.shiftPeriodsKey ? {
+                    [spec.shiftPeriodsKey]: indicatorParamValue(spec.shiftPeriodsKey, spec.shiftPeriodsFallback || 0),
+                } : {};
+                if (definition.name === 'BotBulls5') {
+                    overlayParameters.rolling24Hours = isCryptoTicker(selectedTicker);
+                }
+                const overlayData = window.StandardIndicatorSubcharts?.buildOverlayData
+                    ? window.StandardIndicatorSubcharts.buildOverlayData(bars, spec, overlayParameters)
+                    : clean(bars
+                        .filter(bar => bar?.[spec.field] != null)
+                        .map(bar => ({ time: bar.time, value: Number(bar[spec.field]) })));
+                _getOrCreate(_overlaySeries, seriesKey, lwChart, {
+                    color: spec.color,
+                    lineWidth: spec.lineWidth || 1,
+                    lineStyle: spec.lineStyle || 0,
+                    lineVisible: spec.lineVisible !== false,
+                    pointMarkersVisible: spec.pointMarkersVisible === true,
+                    pointMarkersRadius: spec.pointMarkersRadius || 2,
+                    priceLineVisible: false,
+                    lastValueVisible: false,
+                    crosshairMarkerVisible: false,
+                }).setData(overlayData);
+            } else {
+                _removeSeries(_overlaySeries, seriesKey, lwChart);
+            }
+        });
+    });
+    const botBulls5DrawingEnabled = dashboardIndicatorPrefs.BotBulls5 === true
+        && isDashboardIndicatorAllowed('BotBulls5');
+    const botBulls5DrawingLayers = botBulls5DrawingEnabled
+        ? (window.StandardIndicatorSubcharts?.buildBotBulls5PatternDrawing?.(bars, {
+            rolling24Hours: isCryptoTicker(selectedTicker),
+        }) || [])
+        : [];
+    const botBulls5DrawingKeys = new Set(
+        botBulls5DrawingLayers.map(layer => `bb5_drawing_${layer.key}`)
+    );
+    Object.keys(_overlaySeries)
+        .filter(key => key.startsWith('bb5_drawing_') && !botBulls5DrawingKeys.has(key))
+        .forEach(key => _removeSeries(_overlaySeries, key, lwChart));
+    botBulls5DrawingLayers.forEach(layer => {
+        _getOrCreate(_overlaySeries, `bb5_drawing_${layer.key}`, lwChart, {
+            color: layer.color,
+            lineWidth: layer.lineWidth || 2,
+            lineStyle: layer.lineStyle || 0,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+        }).setData(layer.data);
+    });
+
+    if (dashboardIndicatorPrefs.BotBulls5 === true && isDashboardIndicatorAllowed('BotBulls5')) {
+        const botBulls5VisibleTimes = window.StandardIndicatorSubcharts?.botBulls5RecentEventTimes
+            ? window.StandardIndicatorSubcharts.botBulls5RecentEventTimes(bars, {
+                rolling24Hours: isCryptoTicker(selectedTicker),
+            })
+            : new Set(bars.map(bar => Number(bar?.time)).filter(Number.isFinite));
+        bars.forEach(bar => {
+            if (!botBulls5VisibleTimes.has(Number(bar?.time))) return;
+            if (bar?.bb5_breakout_bull) {
+                activeMarkers.push({
+                    time: bar.time, position: 'belowBar', color: '#10b981',
+                    shape: 'arrowUp', text: `BB5 ${String(bar.bb5_pattern || 'Bull').replaceAll('_', ' ')}`, size: 1.2
+                });
+            } else if (bar?.bb5_breakout_bear) {
+                activeMarkers.push({
+                    time: bar.time, position: 'aboveBar', color: '#f43f5e',
+                    shape: 'arrowDown', text: `BB5 ${String(bar.bb5_pattern || 'Bear').replaceAll('_', ' ')}`, size: 1.2
+                });
+            }
+        });
+        const latestPattern = bars.at(-1);
+        if (latestPattern?.bb5_state === 'FORMING') {
+            activeMarkers.push({
+                time: latestPattern.time,
+                position: Number(latestPattern.bb5_direction) < 0 ? 'aboveBar' : 'belowBar',
+                color: '#f59e0b',
+                shape: 'circle',
+                text: `BB5 ${String(latestPattern.bb5_pattern).replaceAll('_', ' ')} FORMING`,
+                size: 1,
+            });
+        }
+    }
+
     // Apply merged markers
     activeMarkers.sort((a, b) => a.time - b.time);
     candleSeries.setMarkers(activeMarkers);
@@ -1634,6 +1835,27 @@ function _refreshOscillators(bars) {
         _removeSeries(_oscSeries, 'wt_os', oscChartBotbulls1);
         _removeSeries(_oscSeries, 'wt_zero', oscChartBotbulls1);
     }
+
+    const dashboardPrefs = getGlobalIndicatorPrefs();
+    const dashboardSubchartParameters = Object.fromEntries(
+        Object.entries(window.STANDARD_INDICATOR_DEFAULTS || {}).map(([key, fallback]) => [
+            key,
+            indicatorParamValue(key, fallback),
+        ])
+    );
+    let dashboardVisibleRange = null;
+    try { dashboardVisibleRange = lwChart?.timeScale().getVisibleLogicalRange() || null; } catch (e) {}
+    window.StandardIndicatorSubcharts?.render({
+        context: 'dashboard',
+        hostId: 'dashboardDynamicOscillators',
+        history: bars,
+        enabledIndicators: Object.keys(dashboardPrefs).filter(name => (
+            dashboardPrefs[name] === true && isDashboardIndicatorAllowed(name)
+        )),
+        parameters: dashboardSubchartParameters,
+        height: 120,
+        visibleRange: dashboardVisibleRange,
+    });
 }
 
 // Called by toolbar buttons
@@ -1671,8 +1893,8 @@ function syncChart() {
     }
 }
 
-function chartCacheKey(ticker, timeframe = currentBackendTf) {
-    return `${normalizeTicker(ticker)}|${timeframe}|${CHART_CACHE_VERSION}`;
+function chartCacheKey(ticker, timeframe = currentBackendTf, session = currentChartSession) {
+    return `${normalizeTicker(ticker)}|${timeframe}|${session}|${CHART_CACHE_VERSION}`;
 }
 
 function clearLegacyChartLocalStorageCaches() {
@@ -1818,7 +2040,6 @@ function renderFastChartPayload(data, requestedTicker) {
             scan.bearish_count ?? payload.bearish_count ?? 0
         );
         updateSizingPanel(scan);
-        recomputeConfluence();
     }
 
     if (window.lastDashboardData) {
@@ -1845,7 +2066,7 @@ async function refreshActiveTickerSignals(options = {}) {
     const requestId = ++signalRefreshRequestSerial;
     try {
         const headers = await getAuthHeaders();
-        const url = `${API_BASE}/api/signals/${encodeURIComponent(requestedTicker)}?timeframe=${encodeURIComponent(currentBackendTf)}&source=dashboard&force=${force ? 'true' : 'false'}`;
+        const url = `${API_BASE}/api/signals/${encodeURIComponent(requestedTicker)}?timeframe=${encodeURIComponent(currentBackendTf)}&source=dashboard&force=${force ? 'true' : 'false'}&session=${encodeURIComponent(currentChartSession)}`;
         const response = await fetchWithTimeout(url, { headers }, 12000);
         if (!response.ok) {
             console.error(`[signals] HTTP Error: ${response.status} - ${await response.text()}`);
@@ -1921,7 +2142,7 @@ async function loadTickerChartFast(ticker, options = {}) {
     try {
         const headers = await getAuthHeaders();
         const chartSource = getChartSourceForTicker(requestedTicker);
-        const url = `${API_BASE}/api/chart/${encodeURIComponent(requestedTicker)}?timeframe=${encodeURIComponent(currentBackendTf)}&force=${force ? 'true' : 'false'}&source=${encodeURIComponent(chartSource)}`;
+        const url = `${API_BASE}/api/chart/${encodeURIComponent(requestedTicker)}?timeframe=${encodeURIComponent(currentBackendTf)}&force=${force ? 'true' : 'false'}&source=${encodeURIComponent(chartSource)}&session=${encodeURIComponent(currentChartSession)}`;
         const response = await fetchWithTimeout(url, { headers }, CHART_FETCH_TIMEOUT_MS);
         if (!response.ok) {
             console.error(`[chart] HTTP Error: ${response.status} - ${await response.text()}`);
@@ -1944,6 +2165,7 @@ async function loadTickerChartFast(ticker, options = {}) {
         renderFastChartPayload(data, requestedTicker);
         return data;
     } catch (e) {
+        setChartLoadingState(false);
         if (isRequestTimeout(e) || isRequestAbort(e)) {
             console.warn(`[chart] Refresh skipped: ${e.message || e.name}`);
         } else {
@@ -1957,23 +2179,29 @@ async function refreshCompletedCandlesIfDue() {
     if (!shouldRunDashboardRefresh() || activeChartRefreshInFlight) return;
     const intervalSeconds = CHART_INTERVALS[currentBackendTf]?.seconds;
     if (!intervalSeconds || intervalSeconds >= 86400) return;
+    if (!dashboardChartRefreshSessionIsOpen()) return;
     if (Date.now() - lastCompletedChartFetchAt < COMPLETED_CANDLE_HEARTBEAT_MS) return;
 
     const now = Date.now();
-    const latestSafeClosedBarTime = Math.floor(((now - COMPLETED_CANDLE_DELAY_MS) / 1000) / intervalSeconds) * intervalSeconds;
-    if (latestSafeClosedBarTime <= 0) return;
-    if (lastCompletedChartBarTime >= latestSafeClosedBarTime) return;
-    if (lastCompletedChartAttemptedCloseTime >= latestSafeClosedBarTime) return;
+    const lastClosedBarTime = Number(lastCompletedChartBarTime || 0);
+    // Do not align to UTC hour boundaries. Equity intraday bars begin at the
+    // 08:30 CT open, so a 1-hour bar closes at :30. The prior floor-to-hour
+    // logic repeatedly requested a non-existent :00 candle during RTH.
+    const expectedNextCloseTime = lastClosedBarTime > 0
+        ? lastClosedBarTime + intervalSeconds
+        : Math.floor(((now - COMPLETED_CANDLE_DELAY_MS) / 1000) / intervalSeconds) * intervalSeconds;
+    if (expectedNextCloseTime <= 0) return;
+    if ((now - COMPLETED_CANDLE_DELAY_MS) / 1000 < expectedNextCloseTime) return;
+
+    const retryingSameMissingBar = lastCompletedChartAttemptedCloseTime === expectedNextCloseTime;
+    if (retryingSameMissingBar && now - lastCompletedChartAttemptAt < COMPLETED_CANDLE_RETRY_MS) return;
+    if (lastCompletedChartAttemptedCloseTime > expectedNextCloseTime) return;
 
     activeChartRefreshInFlight = true;
-    lastCompletedChartAttemptedCloseTime = latestSafeClosedBarTime;
+    lastCompletedChartAttemptedCloseTime = expectedNextCloseTime;
+    lastCompletedChartAttemptAt = now;
     try {
         await loadSelectedTickerChart({ force: true, renderCached: false, fetchFresh: true });
-        if (lastCompletedChartBarTime < latestSafeClosedBarTime) {
-            // Webull can lag completed candles by 1-2 minutes. Do not suppress
-            // retries for a candle that the provider has not actually returned.
-            lastCompletedChartAttemptedCloseTime = Math.max(0, lastCompletedChartBarTime);
-        }
     } finally {
         activeChartRefreshInFlight = false;
     }
@@ -1993,24 +2221,33 @@ function updateChartHeaderLivePrice(price) {
     priceEl.textContent = formatPrice(price, selectedTicker);
     priceEl.className = `text-xl font-black ${change >= 0 ? 'text-emerald-600' : 'text-red-500'}`;
     if (changeEl && baseline > 0) {
-        const sign = change >= 0 ? '+' : '';
-        changeEl.textContent = `${sign}${formatPrice(Math.abs(change), selectedTicker)} (${sign}${changePct.toFixed(2)}%)`;
-        changeEl.className = `text-xs font-bold ${change >= 0 ? 'text-emerald-500' : 'text-red-400'}`;
+        const sign = change > 0 ? '+' : (change < 0 ? '-' : '');
+        const diffStr = formatPrice(Math.abs(change), selectedTicker);
+        const pctSign = changePct > 0 ? '+' : (changePct < 0 ? '-' : '');
+        changeEl.textContent = `${sign}${diffStr} (${pctSign}${Math.abs(changePct).toFixed(2)}%)`;
+        changeEl.className = `text-xs font-bold ${change >= 0 ? 'text-emerald-500' : 'text-red-500'}`;
     }
 }
 
 async function fetchLivePriceForActiveTicker() {
     const requestedTicker = normalizeTicker(selectedTicker);
     if (!requestedTicker || !shouldRunDashboardRefresh()) return;
+    if (livePriceRequestInFlight || Date.now() < livePriceNextAttemptAt) return;
+    if (dashboardIndicatorSaveInFlight || dashboardIndicatorSaveTimer) return;
 
     const isAuthReady = window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true');
     if (!isAuthReady) return;
 
     const requestId = ++livePriceRequestSerial;
+    livePriceRequestInFlight = true;
     try {
         const headers = await getAuthHeaders();
         const response = await fetchWithTimeout(`${API_BASE}/api/quote/${encodeURIComponent(requestedTicker)}`, { headers }, QUOTE_FETCH_TIMEOUT_MS);
-        if (!response.ok) return;
+        if (!response.ok) {
+            livePriceFailureCount += 1;
+            livePriceNextAttemptAt = Date.now() + Math.min(60000, 5000 * (2 ** Math.min(livePriceFailureCount - 1, 4)));
+            return;
+        }
 
         const quote = await response.json();
         if (requestId !== livePriceRequestSerial || normalizeTicker(selectedTicker) !== requestedTicker) return;
@@ -2018,8 +2255,17 @@ async function fetchLivePriceForActiveTicker() {
 
         const price = Number(quote.price);
         updateChartHeaderLivePrice(price);
+        livePriceFailureCount = 0;
+        livePriceNextAttemptAt = 0;
     } catch (e) {
-        console.warn('[chart] Live price update failed:', e);
+        livePriceFailureCount += 1;
+        const retryDelay = Math.min(60000, 5000 * (2 ** Math.min(livePriceFailureCount - 1, 4)));
+        livePriceNextAttemptAt = Date.now() + retryDelay;
+        if (!isRequestTimeout(e) && !isRequestAbort(e)) {
+            console.warn('[chart] Live price update failed:', e);
+        }
+    } finally {
+        livePriceRequestInFlight = false;
     }
 }
 
@@ -2051,18 +2297,41 @@ function _updateChartHeader(bars) {
         priceEl.className = `text-xl font-black ${change >= 0 ? 'text-emerald-600' : 'text-red-500'}`;
     }
     if (changeEl) {
-        const sign = change >= 0 ? '+' : '';
-        changeEl.textContent = `${sign}${formatPrice(Math.abs(change), selectedTicker)} (${sign}${changePct.toFixed(2)}%)`;
-        changeEl.className = `text-xs font-bold ${change >= 0 ? 'text-emerald-500' : 'text-red-400'}`;
+        const sign = change > 0 ? '+' : (change < 0 ? '-' : '');
+        const diffStr = formatPrice(Math.abs(change), selectedTicker);
+        const pctSign = changePct > 0 ? '+' : (changePct < 0 ? '-' : '');
+        changeEl.textContent = `${sign}${diffStr} (${pctSign}${Math.abs(changePct).toFixed(2)}%)`;
+        changeEl.className = `text-xs font-bold ${change >= 0 ? 'text-emerald-500' : 'text-red-500'}`;
+    }
+}
+
+function setChartLoadingState(isLoading, ticker = '') {
+    const overlay = document.getElementById('chartLoadingOverlay');
+    const loadingText = document.getElementById('chartLoadingText');
+    if (!overlay) return;
+    if (isLoading) {
+        const displayTicker = ticker || selectedTicker || '';
+        const normalized = displayTicker ? normalizeTicker(displayTicker) : '';
+        if (loadingText) {
+            loadingText.textContent = normalized ? `Loading ${normalized} Chart...` : 'Loading Chart...';
+        }
+        overlay.classList.remove('hidden');
+        overlay.classList.add('flex');
+    } else {
+        overlay.classList.add('hidden');
+        overlay.classList.remove('flex');
     }
 }
 
 function clearChartVisuals() {
     if (candleSeries) candleSeries.setData([]);
+    if (volumeSeries) volumeSeries.setData([]);
     if (extHoursSeries) extHoursSeries.setData([]);
     if (_overlaySeries) Object.values(_overlaySeries).forEach(s => s && typeof s.setData === 'function' && s.setData([]));
     if (_oscSeries) Object.values(_oscSeries).forEach(s => s && typeof s.setData === 'function' && s.setData([]));
     
+    setChartLoadingState(true);
+
     const priceEl = document.getElementById('chartPrice');
     const changeEl = document.getElementById('chartPriceChange');
     if (priceEl) {
@@ -2079,6 +2348,7 @@ function showTickerChangeLoadingState(ticker, options = {}) {
     const normalized = normalizeTicker(ticker);
     if (!normalized) return;
 
+    setChartLoadingState(true, normalized);
     updateActiveTickerDisplay(normalized);
     window._lastSignals = null;
     window._lastSignalsTicker = normalized;
@@ -2130,6 +2400,7 @@ function setChartTimeframe(tf) {
     currentBackendTf = CHART_INTERVALS[tf]?.backend || tf;
     localStorage.setItem('lastChartTf', currentBackendTf);
     resetCompletedCandleState();
+    setChartLoadingState(true, selectedTicker);
 
     // If they choose a very small timeframe, check if the current range is too large.
     const smallTfs = ["1Min", "5Min", "15Min", "30Min"];
@@ -2156,6 +2427,7 @@ function setChartRange(range) {
     currentChartRange = range;
     localStorage.setItem('lastChartRange', range);
     resetCompletedCandleState();
+    setChartLoadingState(true, selectedTicker);
 
     // Only force 1Y and 5Y (and MAX) to minimum timeframes if they are currently set to smaller ones.
     if (range === '1Y') {
@@ -2188,10 +2460,9 @@ function setChartSession(session) {
     }
     localStorage.setItem('lastChartSession', currentChartSession);
     resetCompletedCandleState();
+    setChartLoadingState(true, selectedTicker);
     updateChartControlState(selectedTicker);
-    if (window._lastPriceHistory) {
-        updateChart(window._lastPriceHistory, window._lastTicker || selectedTicker);
-    }
+    loadSelectedTickerChart({ force: true, renderCached: true, fetchFresh: true });
 }
 
 // ──────────────────────────────────────────────
@@ -2283,7 +2554,7 @@ var INDICATOR_TOOLTIPS = {
     "Mystic Pulse": "Mystic Pulse is a custom proprietary oscillator. Purpose: Combines multi-timeframe momentum, volatility, and volume flow to detect early trend reversals.",
     "Candle patterns": "Candlestick Patterns identify specific OHLC price formations. Purpose: Provides visual clues about market psychology and potential reversals.",
     "ADX Trend": "Average Directional Index (ADX) quantifies trend strength. Purpose: Determines if the market is trending strongly (ADX > 25) or ranging.",
-    "VWAP": "Volume Weighted Average Price (VWAP) is the ratio of value traded to total volume. Purpose: Provides the true average price a security traded at throughout the day.",
+    "VWAP": "Anchored Volume Weighted Average Price (AVWAP) is a volume-weighted average anchored from the most recent major volume spike. Purpose: Tracks institutional-style cost basis and acceptance/rejection around high-volume events.",
     "Volume Profile": "Prior-session volume-at-price profile using POC, VAH, and VAL. Purpose: Identifies institutional acceptance/rejection zones where the most volume traded.",
     "Prior Day High/Low": "Uses the previous completed trading session's high and low as breakout/breakdown levels. Buffer is entered as %, with dotted trigger lines when non-zero.",
     "Pivot Points (S/R)": "Classic prior-session floor pivot levels. Draws up to 5 support/resistance ladders; bullish when price reclaims support/pivot, bearish when price rejects resistance or loses pivot.",
@@ -2309,8 +2580,10 @@ var INDICATOR_CONFIG_MAP = {
     'Botbulls4 News AI': ['SENTIMENT_BULLISH_PERCENTAGE', 'SENTIMENT_BEARISH_PERCENTAGE'],
     'BotBulls1': ['BOTBULLS1_WT_CHANNEL', 'BOTBULLS1_WT_AVERAGE', 'BOTBULLS1_WT_OVERSOLD', 'BOTBULLS1_WT_OVERBOUGHT', 'BOTBULLS1_MFI_BUY_RECLAIM', 'BOTBULLS1_MFI_SELL_REJECT', 'BOTBULLS1_CONFIRM_LOOKBACK', 'BOTBULLS1_REQUIRE_MFI_CONFIRM', 'BOTBULLS1_REQUIRE_CANDLE_CONFIRM', 'BOTBULLS1_REQUIRE_PRICE_CONFIRM', 'BOTBULLS1_PRICE_CONFIRM_EMA', 'BOTBULLS1_PRICE_CONFIRM_LOOKBACK'],
     'BotBulls2': ['BOTBULLS2_ATR_MULT', 'BOTBULLS2_TREND_TRACER_PERIOD', 'BOTBULLS2_REVERSAL_ZONE_PERIOD'],
-    'BotBulls3': ['BOTBULLS3_ATR_PERIOD', 'BOTBULLS3_ATR_MULT']
+    'BotBulls3': ['BOTBULLS3_ATR_PERIOD', 'BOTBULLS3_ATR_MULT'],
+    'BotBulls5': ['BOTBULLS5_MIN_CONFIDENCE', 'BOTBULLS5_BREAKOUT_BUFFER_ATR', 'BOTBULLS5_STRUCTURE_LOOKBACK', 'BOTBULLS5_SIGNAL_HOLD_BARS', 'BOTBULLS5_REQUIRE_VOLUME']
 };
+Object.assign(INDICATOR_CONFIG_MAP, window.STANDARD_INDICATOR_CONFIG_MAP || {});
 
 // Industry Defaults for indicators based on config.py
 var INDICATOR_DEFAULTS = {
@@ -2332,6 +2605,11 @@ var INDICATOR_DEFAULTS = {
     'BOTBULLS2_REVERSAL_ZONE_PERIOD': 50,
     'BOTBULLS3_ATR_PERIOD': 10,
     'BOTBULLS3_ATR_MULT': 1.0,
+    'BOTBULLS5_BREAKOUT_BUFFER_ATR': 0.10,
+    'BOTBULLS5_MIN_CONFIDENCE': 70.0,
+    'BOTBULLS5_SIGNAL_HOLD_BARS': 3,
+    'BOTBULLS5_REQUIRE_VOLUME': 0,
+    'BOTBULLS5_STRUCTURE_LOOKBACK': 48,
     'RSI_PERIOD': 14,
     'RSI_OVERBOUGHT': 70,
     'RSI_OVERSOLD': 30,
@@ -2367,6 +2645,7 @@ var INDICATOR_DEFAULTS = {
     'SENTIMENT_BULLISH_PERCENTAGE': 70,
     'SENTIMENT_BEARISH_PERCENTAGE': 30
 };
+Object.assign(INDICATOR_DEFAULTS, window.STANDARD_INDICATOR_DEFAULTS || {});
 
 let currentEditingIndicator = null;
 
@@ -2374,11 +2653,18 @@ let currentEditingIndicator = null;
 // 2.5 Global Indicator State Management
 // ──────────────────────────────────────────────
 const GLOBAL_INDICATOR_PREFS_KEY = 'globalIndicatorPrefs';
+const DASHBOARD_CONFLUENCE_PREFS_VERSION_KEY = 'dashboardConfluencePrefsVersion';
+const DASHBOARD_CONFLUENCE_PREFS_VERSION = 'v2';
+const DASHBOARD_DEFAULT_PREMIUM_NAMES = [
+    'BotBulls1', 'BotBulls2', 'BotBulls3', 'Botbulls4 News AI', 'BotBulls5'
+];
 const ALL_SIGNAL_NAMES = [
-    'RSI', 'MACD', 'EMA Cross', 'ADX Trend', 'Supertrend',
-    'Bollinger', 'VWAP', 'Volume Profile', 'SMA', 'Prior Day High/Low',
-    'Pivot Points (S/R)', 'Swing Points', 'Mystic Pulse', 'Candle Patterns',
-    'BotBulls1', 'BotBulls2', 'BotBulls3', 'Botbulls4 News AI'
+    ...(window.STANDARD_INDICATOR_NAMES || [
+        'RSI', 'MACD', 'EMA Cross', 'ADX Trend', 'Supertrend',
+        'Bollinger', 'VWAP', 'Volume Profile', 'SMA', 'Prior Day High/Low',
+        'Pivot Points (S/R)', 'Swing Points', 'Mystic Pulse', 'Candle Patterns',
+    ]),
+    'BotBulls1', 'BotBulls2', 'BotBulls3', 'Botbulls4 News AI', 'BotBulls5'
 ];
 const INDICATOR_TOGGLE_KEYS = {
     'RSI': 'ENABLE_RSI',
@@ -2399,82 +2685,407 @@ const INDICATOR_TOGGLE_KEYS = {
     'BotBulls1': 'ENABLE_BOTBULLS1',
     'BotBulls2': 'ENABLE_BOTBULLS2',
     'BotBulls3': 'ENABLE_BOTBULLS3',
+    'BotBulls5': 'ENABLE_BOTBULLS5',
 };
+Object.assign(INDICATOR_TOGGLE_KEYS, window.STANDARD_INDICATOR_TOGGLE_KEYS || {});
+const DASHBOARD_STANDARD_INDICATOR_NAMES = window.STANDARD_INDICATOR_NAMES || [];
+const DASHBOARD_STANDARD_INDICATOR_SET = new Set(DASHBOARD_STANDARD_INDICATOR_NAMES);
+const DASHBOARD_STANDARD_TOGGLE_KEYS = new Set(
+    DASHBOARD_STANDARD_INDICATOR_NAMES
+        .map(name => INDICATOR_TOGGLE_KEYS[name])
+        .filter(Boolean)
+);
 
 function getGlobalIndicatorPrefs() {
     try {
-        return JSON.parse(localStorage.getItem(GLOBAL_INDICATOR_PREFS_KEY)) || {};
+        let prefs = JSON.parse(localStorage.getItem(GLOBAL_INDICATOR_PREFS_KEY)) || {};
+        const storedVersion = localStorage.getItem(DASHBOARD_CONFLUENCE_PREFS_VERSION_KEY);
+
+        if (storedVersion !== DASHBOARD_CONFLUENCE_PREFS_VERSION) {
+            const hasResetArtifactShape = ALL_SIGNAL_NAMES.every(name => (
+                Object.prototype.hasOwnProperty.call(prefs, name)
+            ));
+            const enabledNames = ALL_SIGNAL_NAMES.filter(name => prefs[name] === true);
+
+            // The previous Reset implementation persisted every indicator OFF.
+            // If the user subsequently enabled BotBulls5 (or one other card), the
+            // Dashboard became a one-card grid. Repair only that exact legacy shape;
+            // valid partial preference maps and deliberate multi-indicator setups stay intact.
+            if (hasResetArtifactShape && enabledNames.length <= 1) {
+                prefs = getDashboardDefaultIndicatorPrefs();
+                localStorage.setItem(GLOBAL_INDICATOR_PREFS_KEY, JSON.stringify(prefs));
+                window._dashboardConfluenceBackendRepairPending = true;
+            }
+            localStorage.setItem(
+                DASHBOARD_CONFLUENCE_PREFS_VERSION_KEY,
+                DASHBOARD_CONFLUENCE_PREFS_VERSION
+            );
+        }
+        return prefs;
     } catch { return {}; }
+}
+
+function getDashboardWorkspaceShownSet() {
+    const fallback = (window.STANDARD_INDICATOR_NAMES || []).slice(0, 10);
+    const ticker = String(typeof selectedTicker !== 'undefined'
+        ? selectedTicker
+        : document.getElementById('chartTickerLabel')?.textContent || '')
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9.^/\-]/g, '');
+    const shown = window.IndicatorWorkspace?.getShownForScope?.('dashboard', ticker)
+        || window.IndicatorWorkspace?.getShown?.('dashboard');
+    if (Array.isArray(shown)) return new Set(shown);
+    try {
+        const store = JSON.parse(localStorage.getItem('botbullsIndicatorWorkspace:dashboard:v3') || 'null');
+        // Dashboard uses one shared indicator grid across every ticker. Keep
+        // the former ticker scope only as a pre-migration fallback while the
+        // workspace script initializes after a hard refresh.
+        const sharedShown = store?.scopes?.['dashboard:GLOBAL']?.shown;
+        const tickerShown = store?.scopes?.[`dashboard:${ticker || 'DEFAULT'}`]?.shown;
+        const scopedShown = Array.isArray(sharedShown) ? sharedShown : tickerShown;
+        if (Array.isArray(scopedShown)) {
+            return new Set([...new Set([...scopedShown, ...fallback])].slice(0, 10));
+        }
+    } catch (error) {}
+    return new Set(fallback);
+}
+
+function isDashboardIndicatorAllowed(indicatorName) {
+    const standardNames = window.STANDARD_INDICATOR_NAMES || [];
+    return !standardNames.includes(indicatorName) || getDashboardWorkspaceShownSet().has(indicatorName);
+}
+
+function getDashboardDefaultIndicatorPrefs() {
+    const shown = getDashboardWorkspaceShownSet();
+    const prefs = allIndicatorPrefs(false);
+    shown.forEach(name => {
+        if (Object.prototype.hasOwnProperty.call(prefs, name)) prefs[name] = true;
+    });
+    DASHBOARD_DEFAULT_PREMIUM_NAMES.forEach(name => {
+        if (Object.prototype.hasOwnProperty.call(prefs, name)) prefs[name] = true;
+    });
+    return prefs;
+}
+
+function getDashboardConfluenceToggleDefaults(prefs = getDashboardDefaultIndicatorPrefs()) {
+    return Object.fromEntries(
+        Object.entries(INDICATOR_TOGGLE_KEYS).map(([name, toggleKey]) => [
+            toggleKey,
+            prefs[name] === true,
+        ])
+    );
 }
 
 function allIndicatorPrefs(enabled = false) {
     return Object.fromEntries(ALL_SIGNAL_NAMES.map(name => [name, enabled]));
 }
 
-function setGlobalIndicatorPref(indicatorName, enabled, options = {}) {
+function getDashboardIndicatorWorkspacePayload(enabledOverride = null) {
+    const selected = window.IndicatorWorkspace?.getShown?.('dashboard')
+        || DASHBOARD_STANDARD_INDICATOR_NAMES.slice(0, 10);
+    const displayed = [...new Set([
+        ...selected.filter(name => DASHBOARD_STANDARD_INDICATOR_SET.has(name)),
+        ...DASHBOARD_STANDARD_INDICATOR_NAMES,
+    ])].slice(0, 10);
+    const displayedSet = new Set(displayed);
     const prefs = getGlobalIndicatorPrefs();
-    prefs[indicatorName] = enabled;
+    const enabledSource = Array.isArray(enabledOverride)
+        ? new Set(enabledOverride)
+        : null;
+    return {
+        displayed_indicators: displayed
+            .filter(name => DASHBOARD_STANDARD_INDICATOR_SET.has(name))
+            .slice(0, 10),
+        enabled_indicators: displayed.filter(name => (
+            DASHBOARD_STANDARD_INDICATOR_SET.has(name)
+            && (enabledSource ? enabledSource.has(name) : prefs[name] === true)
+        )),
+        favorites: (window.IndicatorWorkspace?.getFavorites?.() || [])
+            .filter(name => DASHBOARD_STANDARD_INDICATOR_SET.has(name)),
+    };
+}
+
+function applyDashboardIndicatorWorkspace(workspace) {
+    if (!workspace || typeof workspace !== 'object') return false;
+    const displayed = Array.isArray(workspace.displayed_indicators)
+        ? workspace.displayed_indicators.filter(name => DASHBOARD_STANDARD_INDICATOR_SET.has(name)).slice(0, 10)
+        : [];
+    const displayedSet = new Set(displayed);
+    const enabled = new Set(
+        (Array.isArray(workspace.enabled_indicators) ? workspace.enabled_indicators : [])
+            .filter(name => displayedSet.has(name))
+    );
+    const favorites = Array.isArray(workspace.favorites)
+        ? workspace.favorites.filter(name => DASHBOARD_STANDARD_INDICATOR_SET.has(name))
+        : [];
+
+    const prefs = getGlobalIndicatorPrefs();
+    DASHBOARD_STANDARD_INDICATOR_NAMES.forEach(name => {
+        prefs[name] = displayedSet.has(name) && enabled.has(name);
+        if (window._lastSignals?.[name]) window._lastSignals[name].enabled = prefs[name];
+    });
     localStorage.setItem(GLOBAL_INDICATOR_PREFS_KEY, JSON.stringify(prefs));
-    recomputeConfluence();
+    window.IndicatorWorkspace?.setDashboardState?.({
+        displayed_indicators: displayed,
+        favorites,
+    });
+    _syncIndicatorsFromSignals(window._lastSignals || {});
+    if (window._lastSignals) recomputeConfluence();
+    return true;
+}
 
-    // Sync to backend via existing toggleIndicator logic in background
-    const shouldRefreshChart = (options.refreshChart === true || enabled === true) && indicatorName !== 'Botbulls4 News AI';
-    const shouldRefreshNewsAI = enabled === true && indicatorName === 'Botbulls4 News AI';
-    const refreshChartOnce = async () => {
-        if (!shouldRefreshChart) return;
-        clearTimeout(window._indicatorToggleDebounce);
-        window._indicatorToggleDebounce = null;
-        window._indicatorRefreshRenderAllowed = true;
-        try {
-            if (typeof loadSelectedTickerChart === 'function') {
-                return await loadSelectedTickerChart({ force: true, renderCached: false });
-            } else if (typeof refreshActiveTickerSignals === 'function') {
-                return await refreshActiveTickerSignals({ force: true });
-            }
-            return null;
-        } finally {
-            window._indicatorRefreshRenderAllowed = false;
-        }
-    };
-    const refreshNewsAIOnce = async () => {
-        if (!shouldRefreshNewsAI || typeof fetchAIIndicator !== 'function') return;
-        clearTimeout(window._indicatorToggleDebounce);
-        window._indicatorToggleDebounce = null;
-        window._indicatorRefreshRenderAllowed = true;
-        try {
-            await fetchAIIndicator(selectedTicker, currentBackendTf, false);
-        } finally {
-            window._indicatorRefreshRenderAllowed = false;
-        }
-    };
-    const toggleKey = window._lastSignals?.[indicatorName]?.toggle_key || INDICATOR_TOGGLE_KEYS[indicatorName];
-    if (toggleKey) {
-        // we do this without triggering the full redraw since recomputeConfluence handles it
-        const wasDebouncing = window._indicatorToggleDebounce;
-        // Prevent fetchDashboard from ruining our optimistic UI
-        if (!wasDebouncing) window._indicatorToggleDebounce = setTimeout(() => { window._indicatorToggleDebounce = null; }, 2000);
+async function postDashboardIndicatorWorkspace(workspace, { refresh = false, applyResponse = true } = {}) {
+    const headers = await getAuthHeaders();
+    const response = await fetchWithTimeout(`${API_BASE}/api/settings/dashboard-indicator-workspace`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(workspace),
+    }, 8000);
+    if (!response.ok) throw new Error(`Dashboard indicator workspace save failed with HTTP ${response.status}`);
+    const saved = await response.json();
+    if (applyResponse) applyDashboardIndicatorWorkspace(saved);
+    if (refresh && saved.calculation_changed !== false) {
+        refreshDashboardSignalsAfterIndicatorSave();
+    }
+    return saved;
+}
 
-        getAuthHeaders().then(async headers => {
-            const response = await fetchWithTimeout(`${API_BASE}/api/settings/indicators?context=dashboard`, {
-                method: 'POST',
-                headers: headers,
-                body: JSON.stringify({ [toggleKey]: enabled })
-            }, 8000);
-            if (response.ok) {
-                await refreshChartOnce();
-                await refreshNewsAIOnce();
-            }
-        }).catch(e => console.error('Error saving setting:', e));
-    } else {
-        refreshChartOnce();
-        refreshNewsAIOnce();
+async function hydrateDashboardIndicatorWorkspace() {
+    try {
+        const headers = await getAuthHeaders();
+        const response = await fetchWithTimeout(`${API_BASE}/api/settings/dashboard-indicator-workspace`, {
+            headers,
+        }, 5000);
+        if (!response.ok) throw new Error(`Dashboard indicator workspace load failed with HTTP ${response.status}`);
+        const remote = await response.json();
+
+        if (remote.configured === true) {
+            applyDashboardIndicatorWorkspace(remote);
+            return remote;
+        }
+
+        // First-use migration: preserve the browser's shared Dashboard grid
+        // and favorites, but take the enabled subset from the server toggles.
+        const enabledFromServer = remote.legacy_enabled_indicators || remote.enabled_indicators || [];
+        const migration = getDashboardIndicatorWorkspacePayload(enabledFromServer);
+        return await postDashboardIndicatorWorkspace(migration, { refresh: false, applyResponse: true });
+    } catch (error) {
+        console.warn('[indicator-workspace] Backend workspace sync unavailable; using the local Dashboard cache.', error);
+        return null;
     }
 }
 
+let dashboardWorkspaceSaveTimer = null;
+let dashboardWorkspaceSaveInFlight = false;
+let dashboardWorkspaceSaveRetryCount = 0;
+let dashboardWorkspaceRefreshRequired = false;
+
+function scheduleDashboardWorkspaceSave({ refresh = false } = {}) {
+    dashboardWorkspaceRefreshRequired = dashboardWorkspaceRefreshRequired || refresh;
+    holdDashboardIndicatorRefreshLock();
+    clearTimeout(dashboardWorkspaceSaveTimer);
+    dashboardWorkspaceSaveTimer = setTimeout(flushDashboardWorkspaceSave, 120);
+}
+
+async function flushDashboardWorkspaceSave() {
+    dashboardWorkspaceSaveTimer = null;
+    if (dashboardWorkspaceSaveInFlight) {
+        scheduleDashboardWorkspaceSave();
+        return;
+    }
+    dashboardWorkspaceSaveInFlight = true;
+    const refreshAfterSave = dashboardWorkspaceRefreshRequired;
+    dashboardWorkspaceRefreshRequired = false;
+    try {
+        // Do not reapply the response here: the user may make another change
+        // while this request is in flight. The next queued snapshot must win.
+        await postDashboardIndicatorWorkspace(
+            getDashboardIndicatorWorkspacePayload(),
+            { refresh: refreshAfterSave, applyResponse: false }
+        );
+        dashboardWorkspaceSaveRetryCount = 0;
+    } catch (error) {
+        if (dashboardWorkspaceSaveRetryCount < 1) {
+            dashboardWorkspaceSaveRetryCount += 1;
+            dashboardWorkspaceRefreshRequired = dashboardWorkspaceRefreshRequired || refreshAfterSave;
+            dashboardWorkspaceSaveTimer = setTimeout(flushDashboardWorkspaceSave, 1200);
+        } else {
+            dashboardWorkspaceSaveRetryCount = 0;
+            console.warn('[indicator-workspace] Dashboard workspace save failed; local selection is retained.', error);
+        }
+    } finally {
+        dashboardWorkspaceSaveInFlight = false;
+        if (!dashboardWorkspaceSaveTimer && !dashboardIndicatorSaveInFlight) {
+            clearTimeout(window._indicatorToggleDebounce);
+            window._indicatorToggleDebounce = null;
+        }
+    }
+}
+
+let pendingDashboardIndicatorUpdates = {};
+let dashboardIndicatorSaveTimer = null;
+let dashboardIndicatorSaveInFlight = false;
+let dashboardIndicatorSaveRetryCount = 0;
+let dashboardIndicatorSignalRefreshes = 0;
+
+function holdDashboardIndicatorRefreshLock() {
+    clearTimeout(window._indicatorToggleDebounce);
+    window._indicatorToggleDebounce = setTimeout(() => {
+        window._indicatorToggleDebounce = null;
+    }, 15000);
+}
+
+function scheduleDashboardIndicatorSave(toggleKey, enabled) {
+    if (DASHBOARD_STANDARD_TOGGLE_KEYS.has(toggleKey)) {
+        scheduleDashboardWorkspaceSave({ refresh: true });
+        return;
+    }
+    pendingDashboardIndicatorUpdates[toggleKey] = enabled;
+    holdDashboardIndicatorRefreshLock();
+    clearTimeout(dashboardIndicatorSaveTimer);
+    dashboardIndicatorSaveTimer = setTimeout(flushDashboardIndicatorUpdates, 120);
+}
+
+function repairLegacyDashboardConfluenceStateIfNeeded() {
+    if (window._dashboardConfluenceBackendRepairPending !== true) return;
+    window._dashboardConfluenceBackendRepairPending = false;
+    const toggleDefaults = getDashboardConfluenceToggleDefaults(getGlobalIndicatorPrefs());
+    Object.entries(toggleDefaults).forEach(([toggleKey, enabled]) => {
+        scheduleDashboardIndicatorSave(toggleKey, enabled);
+    });
+}
+
+function refreshDashboardSignalsAfterIndicatorSave() {
+    dashboardIndicatorSignalRefreshes += 1;
+    window._indicatorRefreshRenderAllowed = true;
+    // A signal-only refresh cannot supply the per-candle fields for a newly
+    // enabled overlay/subchart. Fetch the chart once so its vote and drawing
+    // arrive from the same freshly calculated payload.
+    loadSelectedTickerChart({ force: true, renderCached: false, fetchFresh: true })
+        .finally(() => {
+            dashboardIndicatorSignalRefreshes = Math.max(0, dashboardIndicatorSignalRefreshes - 1);
+            window._indicatorRefreshRenderAllowed = dashboardIndicatorSignalRefreshes > 0;
+        });
+}
+
+async function flushDashboardIndicatorUpdates() {
+    dashboardIndicatorSaveTimer = null;
+    if (dashboardIndicatorSaveInFlight) return;
+
+    const updates = { ...pendingDashboardIndicatorUpdates };
+    if (!Object.keys(updates).length) {
+        clearTimeout(window._indicatorToggleDebounce);
+        window._indicatorToggleDebounce = null;
+        return;
+    }
+    pendingDashboardIndicatorUpdates = {};
+    dashboardIndicatorSaveInFlight = true;
+
+    try {
+        const headers = await getAuthHeaders();
+        const response = await fetchWithTimeout(`${API_BASE}/api/settings/indicators?context=dashboard`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(updates)
+        }, 8000);
+        if (!response.ok) throw new Error(`Indicator save failed with HTTP ${response.status}`);
+
+        dashboardIndicatorSaveRetryCount = 0;
+        refreshDashboardSignalsAfterIndicatorSave();
+
+        if (updates.ENABLE_AI_SENTIMENT === true && typeof fetchAIIndicator === 'function') {
+            fetchAIIndicator(selectedTicker, currentBackendTf, false).catch(error => {
+                console.warn('[confluence] News AI refresh failed:', error);
+            });
+        }
+    } catch (error) {
+        if (dashboardIndicatorSaveRetryCount < 1) {
+            dashboardIndicatorSaveRetryCount += 1;
+            Object.entries(updates).forEach(([key, value]) => {
+                if (!Object.prototype.hasOwnProperty.call(pendingDashboardIndicatorUpdates, key)) {
+                    pendingDashboardIndicatorUpdates[key] = value;
+                }
+            });
+        } else {
+            dashboardIndicatorSaveRetryCount = 0;
+            console.warn('[confluence] Indicator preference save failed; local selection is retained.', error);
+        }
+    } finally {
+        dashboardIndicatorSaveInFlight = false;
+        if (Object.keys(pendingDashboardIndicatorUpdates).length) {
+            holdDashboardIndicatorRefreshLock();
+            clearTimeout(dashboardIndicatorSaveTimer);
+            dashboardIndicatorSaveTimer = setTimeout(flushDashboardIndicatorUpdates, 1200);
+        } else if (!dashboardWorkspaceSaveTimer && !dashboardWorkspaceSaveInFlight) {
+            clearTimeout(window._indicatorToggleDebounce);
+            window._indicatorToggleDebounce = null;
+        }
+    }
+}
+
+function setGlobalIndicatorPref(indicatorName, enabled, options = {}) {
+    enabled = enabled === true && isDashboardIndicatorAllowed(indicatorName);
+    const prefs = getGlobalIndicatorPrefs();
+    prefs[indicatorName] = enabled;
+    localStorage.setItem(GLOBAL_INDICATOR_PREFS_KEY, JSON.stringify(prefs));
+    _syncIndicatorsFromSignals(window._lastSignals || {});
+    recomputeConfluence();
+    if (Array.isArray(window._displayPriceHistory) && window._displayPriceHistory.length) {
+        _refreshOverlays(window._displayPriceHistory);
+        _refreshOscillators(window._displayPriceHistory);
+    }
+
+    const toggleKey = window._lastSignals?.[indicatorName]?.toggle_key || INDICATOR_TOGGLE_KEYS[indicatorName];
+    if (toggleKey) {
+        scheduleDashboardIndicatorSave(toggleKey, enabled);
+    }
+}
+
+function reconcileDashboardIndicatorsWithWorkspace(event) {
+    const detail = event?.detail || {};
+    if (detail.contextLabel && detail.contextLabel !== 'dashboard') return;
+
+    const shown = new Set(detail.shown || getDashboardWorkspaceShownSet());
+    const prefs = getGlobalIndicatorPrefs();
+    const disabledNames = [];
+    (window.STANDARD_INDICATOR_NAMES || []).forEach(name => {
+        if (shown.has(name) || prefs[name] !== true) return;
+        prefs[name] = false;
+        disabledNames.push(name);
+    });
+
+    if (disabledNames.length) {
+        localStorage.setItem(GLOBAL_INDICATOR_PREFS_KEY, JSON.stringify(prefs));
+        disabledNames.forEach(name => {
+            const toggleKey = window._lastSignals?.[name]?.toggle_key || INDICATOR_TOGGLE_KEYS[name];
+            if (toggleKey) scheduleDashboardIndicatorSave(toggleKey, false);
+            if (window._lastSignals?.[name]) window._lastSignals[name].enabled = false;
+        });
+    }
+
+    _syncIndicatorsFromSignals(window._lastSignals || {});
+    if (Array.isArray(window._displayPriceHistory) && window._displayPriceHistory.length) {
+        _refreshOverlays(window._displayPriceHistory);
+        _refreshOscillators(window._displayPriceHistory);
+    }
+    if (window._lastSignals) recomputeConfluence();
+}
+
+window.addEventListener('indicator-workspace:selection-change', reconcileDashboardIndicatorsWithWorkspace);
+window.addEventListener('indicator-workspace:workspace-change', event => {
+    if (event?.detail?.contextLabel !== 'dashboard') return;
+    scheduleDashboardWorkspaceSave();
+});
+
 async function resetConfluenceIndicatorsToDefaults() {
     try {
-        const disabledPrefs = allIndicatorPrefs(false);
-        localStorage.setItem(GLOBAL_INDICATOR_PREFS_KEY, JSON.stringify(disabledPrefs));
+        const defaultPrefs = getDashboardDefaultIndicatorPrefs();
+        localStorage.setItem(GLOBAL_INDICATOR_PREFS_KEY, JSON.stringify(defaultPrefs));
+        localStorage.setItem(
+            DASHBOARD_CONFLUENCE_PREFS_VERSION_KEY,
+            DASHBOARD_CONFLUENCE_PREFS_VERSION
+        );
         localStorage.setItem('visibleIndicators', JSON.stringify(_defaultVisibleIndicators));
 
         _visibleIndicators = { ..._defaultVisibleIndicators };
@@ -2491,19 +3102,19 @@ async function resetConfluenceIndicatorsToDefaults() {
             window.lastDashboardData.indicator_toggle_overrides = {};
             window.lastDashboardData.indicator_parameters = { ...INDICATOR_DEFAULTS };
             if (window.lastDashboardData.primaryScan?.signals) {
-                for (const signal of Object.values(window.lastDashboardData.primaryScan.signals)) {
-                    signal.enabled = false;
+                for (const [name, signal] of Object.entries(window.lastDashboardData.primaryScan.signals)) {
+                    signal.enabled = defaultPrefs[name] === true;
                 }
             }
             if (window.lastDashboardData.signals) {
-                for (const signal of Object.values(window.lastDashboardData.signals)) {
-                    signal.enabled = false;
+                for (const [name, signal] of Object.entries(window.lastDashboardData.signals)) {
+                    signal.enabled = defaultPrefs[name] === true;
                 }
             }
         }
         if (window._lastSignals) {
-            for (const signal of Object.values(window._lastSignals)) {
-                signal.enabled = false;
+            for (const [name, signal] of Object.entries(window._lastSignals)) {
+                signal.enabled = defaultPrefs[name] === true;
             }
         }
         recomputeConfluence();
@@ -2516,7 +3127,10 @@ async function resetConfluenceIndicatorsToDefaults() {
         const response = await fetchWithTimeout(`${API_BASE}/api/settings/indicators?context=dashboard`, {
             method: 'POST',
             headers: headers,
-            body: JSON.stringify({ reset_confluence: true })
+            body: JSON.stringify({
+                reset_confluence: true,
+                confluence_toggles: getDashboardConfluenceToggleDefaults(),
+            })
         }, 8000);
         const resetPayload = response.ok ? await response.json().catch(() => null) : null;
         if (resetPayload?.toggles && window.lastDashboardData) {
@@ -2524,6 +3138,10 @@ async function resetConfluenceIndicatorsToDefaults() {
             window.lastDashboardData.indicator_overrides = {};
             window.lastDashboardData.indicator_parameters = { ...INDICATOR_DEFAULTS };
         }
+        await postDashboardIndicatorWorkspace(
+            getDashboardIndicatorWorkspacePayload(),
+            { refresh: false, applyResponse: false }
+        );
 
         clearTimeout(window._indicatorToggleDebounce);
         window._indicatorToggleDebounce = null;
@@ -2559,7 +3177,7 @@ function recomputeConfluence() {
     let bullish = 0, bearish = 0;
 
     for (const [name, data] of Object.entries(signals)) {
-        const isEnabled = prefs[name] === true;
+        const isEnabled = prefs[name] === true && isDashboardIndicatorAllowed(name);
         if (!isEnabled) continue;
         if (data.signal === 'BULLISH') bullish++;
         if (data.signal === 'BEARISH') bearish++;
@@ -2608,568 +3226,20 @@ async function loadOllamaModels() {
     }
 }
 
-var AI_INDICATOR_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
-let _aiIndicatorFetchId = 0; // prevents stale response rendering
-const AI_MODEL_MIGRATIONS = {
-    'mixtral-8x7b-32768': 'llama-3.3-70b-versatile',
-    'mistral-saba-24b': 'llama-3.3-70b-versatile',
-    'openai/gpt-oss-120b': 'llama-3.3-70b-versatile',
-    'openai/gpt-oss-20b': 'llama-3.1-8b-instant'
+window.onAIIndicatorUpdated = function (data, fromCache) {
+    if (window._lastSignals) {
+        renderSignals(
+            window._lastSignals,
+            window.lastDashboardData?.primaryScan?.action || 'HOLD',
+            window.lastDashboardData?.primaryScan?.reason || '',
+            window.lastDashboardData?.primaryScan?.bullish_count ?? 0,
+            window.lastDashboardData?.primaryScan?.bearish_count ?? 0
+        );
+    }
+    if (typeof recomputeConfluence === 'function') recomputeConfluence();
 };
 
-function normalizeSelectedAIModel(model) {
-    const value = String(model || '').trim() || 'llama-3.3-70b-versatile';
-    return AI_MODEL_MIGRATIONS[value] || value;
-}
 
-function getAIIndicatorCacheKey(ticker, timeframe, model) {
-    return `${normalizeTicker(ticker)}|${timeframe}|${model}|ai-hourly-v1`;
-}
-
-function isAICacheFresh(cached) {
-    return cached && cached.timestamp && (Date.now() - cached.timestamp) < AI_INDICATOR_CACHE_TTL;
-}
-
-function isAICacheForContext(cached, ticker, timeframe, model) {
-    if (!isAICacheFresh(cached)) return false;
-    const expectedKey = getAIIndicatorCacheKey(ticker, timeframe, model);
-    if (cached.key) return cached.key === expectedKey;
-    return (
-        normalizeTicker(cached.ticker) === normalizeTicker(ticker) &&
-        cached.timeframe === timeframe &&
-        cached.model === model
-    );
-}
-
-function getAICache(key) {
-    try {
-        const cachedStr = localStorage.getItem(`ai_cache_${key}`);
-        if (cachedStr) {
-            const cached = JSON.parse(cachedStr);
-            if (isAICacheFresh(cached)) {
-                return cached;
-            }
-            localStorage.removeItem(`ai_cache_${key}`);
-        }
-    } catch (e) { console.error('Cache read error', e); }
-    return null;
-}
-
-function normalizeCachedAISentimentScore(rawScore) {
-    const value = Number(rawScore);
-    if (!Number.isFinite(value)) return null;
-    if (value >= -1 && value <= 1) return value;
-    if (value >= 0 && value <= 100) return (value / 100) * 2 - 1;
-    return Math.max(-1, Math.min(1, value));
-}
-
-function getCachedAIAnalysisForTicker(ticker, timeframe = currentBackendTf) {
-    const normalizedTicker = normalizeTicker(ticker);
-    if (!normalizedTicker) return null;
-    const selectedModel = normalizeSelectedAIModel(localStorage.getItem('selected_ai_model'));
-    const exact = getAICache(getAIIndicatorCacheKey(normalizedTicker, timeframe, selectedModel));
-    if (exact?.data?.sentiment_score != null) return exact;
-
-    try {
-        const globalAi = JSON.parse(localStorage.getItem('latest_global_ai_analysis') || 'null');
-        if (
-            globalAi?.data?.sentiment_score != null &&
-            isAICacheForContext(globalAi, normalizedTicker, timeframe, selectedModel)
-        ) {
-            return globalAi;
-        }
-    } catch (e) {}
-
-    try {
-        const prefix = `ai_cache_${normalizedTicker}|`;
-        for (let i = localStorage.length - 1; i >= 0; i -= 1) {
-            const key = localStorage.key(i);
-            if (!key || !key.startsWith(prefix)) continue;
-            const cached = JSON.parse(localStorage.getItem(key) || 'null');
-            if (
-                cached?.data?.sentiment_score != null &&
-                isAICacheForContext(cached, normalizedTicker, timeframe, selectedModel)
-            ) return cached;
-        }
-    } catch (e) {}
-    return null;
-}
-
-function getCachedNewsAISentiment(ticker, timeframe = currentBackendTf) {
-    const cached = getCachedAIAnalysisForTicker(ticker, timeframe);
-    const data = cached?.data;
-    if (!data) return null;
-    const score = normalizeCachedAISentimentScore(data.sentiment_score);
-    if (score === null) return null;
-    return {
-        score,
-        pct: Math.round(((score + 1.0) / 2.0) * 100),
-        reason: data.sentiment_key_factor || data.key_catalyst || 'Mixed Catalysts',
-        summary: data.sentiment_summary || data.summary || '',
-        confidence: Number(data.sentiment_confidence ?? data.confidence ?? 0),
-    };
-}
-
-function renderCachedAIIndicatorForTicker(ticker = selectedTicker, timeframe = currentBackendTf) {
-    const cached = getCachedAIAnalysisForTicker(ticker, timeframe);
-    if (!cached?.data) return false;
-    renderAIIndicatorCard(cached.data, true);
-    return true;
-}
-
-function applyCachedNewsAISignal(signal, options = {}) {
-    if (!signal) return signal;
-    const sentiment = getCachedNewsAISentiment(options.ticker || selectedTicker, options.timeframe || currentBackendTf);
-    if (!sentiment) return signal;
-    signal.value = sentiment.score;
-    signal.reason = sentiment.reason;
-    signal.cached = true;
-    signal.sentiment_summary = sentiment.summary;
-    signal.sentiment_confidence = sentiment.confidence;
-    const params = options.params || window.lastDashboardData?.indicator_parameters || {};
-    const bullishThresh = params.SENTIMENT_BULLISH_PERCENTAGE ?? INDICATOR_DEFAULTS?.SENTIMENT_BULLISH_PERCENTAGE ?? 70;
-    const bearishThresh = params.SENTIMENT_BEARISH_PERCENTAGE ?? INDICATOR_DEFAULTS?.SENTIMENT_BEARISH_PERCENTAGE ?? 30;
-    signal.signal = sentiment.pct >= bullishThresh ? 'BULLISH' : sentiment.pct <= bearishThresh ? 'BEARISH' : 'NEUTRAL';
-    return signal;
-}
-
-function setAICache(key, data, meta = {}) {
-    try {
-        const payload = {
-            data: data,
-            timestamp: Date.now(),
-            key,
-            ticker: normalizeTicker(meta.ticker || data?.ticker),
-            timeframe: meta.timeframe,
-            model: meta.model
-        };
-        localStorage.setItem(`ai_cache_${key}`, JSON.stringify(payload));
-        localStorage.setItem(`latest_global_ai_analysis`, JSON.stringify(payload));
-    } catch (e) { console.error('Cache write error', e); }
-}
-
-async function fetchAIIndicator(ticker, timeframe, force = false) {
-    if (!ticker) return;
-    const normalizedTicker = normalizeTicker(ticker);
-    const selectedModel = normalizeSelectedAIModel(localStorage.getItem('selected_ai_model'));
-    localStorage.setItem('selected_ai_model', selectedModel);
-    const key = getAIIndicatorCacheKey(normalizedTicker, timeframe, selectedModel);
-
-    // Check client-side cache first (unless forced)
-    if (!force) {
-        const cached = getAICache(key);
-        if (cached) {
-            renderAIIndicatorCard(cached.data, true);
-            if (window._lastSignals) {
-                renderSignals(
-                    window._lastSignals,
-                    window.lastDashboardData?.primaryScan?.action || 'HOLD',
-                    window.lastDashboardData?.primaryScan?.reason || '',
-                    window.lastDashboardData?.primaryScan?.bullish_count ?? 0,
-                    window.lastDashboardData?.primaryScan?.bearish_count ?? 0
-                );
-            }
-            recomputeConfluence();
-            return;
-        }
-    }
-
-    // Show loading skeleton
-    _showAIIndicatorLoading(normalizedTicker);
-
-    const fetchId = ++_aiIndicatorFetchId;
-    try {
-        const headers = await getAuthHeaders();
-        const url = `${API_BASE}/api/ai-indicator?ticker=${encodeURIComponent(normalizedTicker)}&timeframe=${encodeURIComponent(timeframe)}&model=${encodeURIComponent(selectedModel)}${force ? '&force=true' : ''}`;
-        const res = await fetch(url, { headers });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-
-        // Guard against stale responses
-        if (fetchId !== _aiIndicatorFetchId) return;
-        if (data.error) {
-            if (selectedModel !== 'llama-3.3-70b-versatile') {
-                console.warn(`[ai-indicator] Model ${selectedModel} failed. Falling back to default Groq model.`);
-                localStorage.setItem('selected_ai_model', 'llama-3.3-70b-versatile');
-                fetchAIIndicator(ticker, timeframe, force);
-                return;
-            }
-            _showAIIndicatorError(data.error, ticker);
-            return;
-        }
-
-        setAICache(key, data, { ticker: normalizedTicker, timeframe, model: selectedModel });
-        renderAIIndicatorCard(data, false);
-        if (window._lastSignals) {
-            renderSignals(
-                window._lastSignals,
-                window.lastDashboardData?.primaryScan?.action || 'HOLD',
-                window.lastDashboardData?.primaryScan?.reason || '',
-                window.lastDashboardData?.primaryScan?.bullish_count ?? 0,
-                window.lastDashboardData?.primaryScan?.bearish_count ?? 0
-            );
-        }
-
-        // Refresh the signal grid so the Botbulls4 News AI row syncs with the fresh score
-        recomputeConfluence();
-    } catch (e) {
-        if (fetchId === _aiIndicatorFetchId) {
-            console.error('[ai-indicator] Fetch error:', e);
-            if (selectedModel !== 'llama-3.3-70b-versatile') {
-                console.warn(`[ai-indicator] Fetch failed for ${selectedModel}. Falling back to default Groq model.`);
-                localStorage.setItem('selected_ai_model', 'llama-3.3-70b-versatile');
-                fetchAIIndicator(ticker, timeframe, force);
-                return;
-            }
-            _showAIIndicatorError('Could not load AI analysis', ticker);
-        }
-    }
-}
-
-function _getAIModelSelectHtml(selectedModel, isError = false) {
-    let optionsHtml = '';
-    optionsHtml += '<optgroup label="Groq AI (Cloud)">';
-    const groqModels = [
-        { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B (Recommended)' },
-        { value: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B (Fast)' }
-    ];
-    groqModels.forEach(m => {
-        const sel = selectedModel === m.value ? 'selected' : '';
-        optionsHtml += `<option value="${m.value}" ${sel}>${m.label}</option>`;
-    });
-    optionsHtml += '</optgroup>';
-
-    optionsHtml += '<optgroup label="Ollama (Local)">';
-    if (window.ollamaModels && window.ollamaModels.length > 0) {
-        window.ollamaModels.forEach(m => {
-            const val = `ollama/${m}`;
-            const sel = selectedModel === val ? 'selected' : '';
-            optionsHtml += `<option value="${val}" ${sel}>${m}</option>`;
-        });
-    } else {
-        optionsHtml += `<option disabled>No local models found</option>`;
-    }
-    optionsHtml += '</optgroup>';
-
-    const borderCls = isError ? 'border-red-200 text-red-900 focus:ring-red-400' : 'border-amber-200/50 text-amber-900 focus:ring-amber-400';
-    return `
-        <select onchange="changeAIIndicatorModel(this.value)" class="bg-white/80 backdrop-blur border ${borderCls} text-[10px] font-black px-2 py-0.5 rounded-lg shadow-sm focus:ring-1 outline-none cursor-pointer">
-            ${optionsHtml}
-        </select>
-    `;
-}
-
-window.changeAIIndicatorModel = async function (model) {
-    model = normalizeSelectedAIModel(model);
-    localStorage.setItem('selected_ai_model', model);
-    try {
-        const headers = await getAuthHeaders();
-        await fetch(`${API_BASE}/api/settings/indicators?context=dashboard`, {
-            method: 'POST',
-            headers: headers,
-            body: JSON.stringify({ AI_INDICATOR_MODEL: model })
-        });
-    } catch (e) {
-        console.error('[ai-indicator] Failed to save model settings to backend:', e);
-    }
-    const ticker = (typeof selectedTicker !== 'undefined' ? selectedTicker : '') || 'TSLA';
-    const timeframe = currentBackendTf || (typeof selectedTimeframe !== 'undefined' ? selectedTimeframe : '') || '1Hour';
-    _showAIIndicatorLoading(ticker);
-    try {
-        await fetchAIIndicator(ticker, timeframe, true);
-    } catch (e) {
-        console.error('[ai-indicator] Failed to reload indicator:', e);
-    }
-};
-
-function _showAIIndicatorLoading(ticker) {
-    const el = document.getElementById('aiIndicatorCard');
-    if (!el) return;
-    const selectedModel = normalizeSelectedAIModel(localStorage.getItem('selected_ai_model'));
-    const isOllamaActive = selectedModel.startsWith('ollama/') || selectedModel.startsWith('ollama:');
-    const badgeHtml = isOllamaActive
-        ? `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-indigo-500 to-blue-600 text-white border border-indigo-600/50 shadow-sm">OLLAMA</span>`
-        : `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-amber-200 to-amber-300 text-amber-800 border border-amber-400/50 shadow-sm">GROQ AI</span>`;
-    const selectHtml = _getAIModelSelectHtml(selectedModel, false);
-
-    el.className = 'ai-indicator-card ai-indicator-loading border-amber-200/60 bg-gradient-to-br from-amber-50/50 to-orange-50/30';
-    el.innerHTML = `
-        <div class="ai-orb bg-gradient-to-r from-amber-400 to-orange-500 opacity-20"></div>
-        <div class="flex flex-wrap items-center justify-between gap-y-2 mb-3 relative z-10">
-            <div class="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                <span class="text-base drop-shadow-sm">🤖</span>
-                <span class="font-black text-xs text-amber-900 tracking-wide uppercase">BotBulls AI Analysis - ${ticker || '---'}</span>
-                ${badgeHtml}
-            </div>
-            <div class="flex items-center gap-2 relative z-30">
-                ${selectHtml}
-                <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm">
-                    ℹ
-                </button>
-                <button disabled class="w-5 h-5 rounded-full flex items-center justify-center text-xs text-amber-300 bg-amber-50 border border-amber-200 animate-spin">
-                    ↻
-                </button>
-            </div>
-        </div>
-        <div class="space-y-2 animate-pulse relative z-10">
-            <div class="h-8 bg-amber-200/60 rounded-lg w-2/3"></div>
-            <div class="h-4 bg-amber-200/40 rounded w-full"></div>
-            <div class="h-4 bg-amber-200/40 rounded w-4/5"></div>
-            <div class="h-4 bg-amber-200/40 rounded w-3/5"></div>
-        </div>
-        <p class="text-[0.6rem] text-amber-700 mt-3 flex items-center gap-1 font-bold relative z-10">
-            <svg class="h-3 w-3 animate-spin text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 4v4m0 8v4m4-12h-4m4 8h-4" />
-            </svg>
-            Analyzing market catalysts and news sentiment...
-        </p>
-    `;
-}
-
-function _showAIIndicatorError(err, ticker) {
-    const el = document.getElementById('aiIndicatorCard');
-    if (!el) return;
-    const selectedModel = normalizeSelectedAIModel(localStorage.getItem('selected_ai_model'));
-    const selectHtml = _getAIModelSelectHtml(selectedModel, true);
-
-    el.className = 'ai-indicator-card ai-indicator-error relative overflow-hidden p-4 rounded-xl border transition-all duration-300';
-    el.innerHTML = `
-        <div class="flex flex-wrap items-center justify-between gap-y-2 mb-3 relative z-10">
-            <div class="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                <span class="text-base">🤖</span>
-                <span class="font-black text-xs text-red-800 tracking-wide uppercase">BotBulls AI Analysis - ${ticker || '---'}</span>
-                <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-bold bg-red-100 text-red-600 border border-red-300/50">Error</span>
-            </div>
-            <div class="flex items-center gap-2 relative z-30">
-                ${selectHtml}
-                <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-red-500 hover:text-red-700 bg-red-100/50 hover:bg-red-100 transition-colors border border-red-300/30">
-                    ℹ
-                </button>
-                <button id="aiRefreshBtn" onclick="refreshAIIndicator()" title="Force refresh AI analysis" class="w-5 h-5 rounded-full flex items-center justify-center text-xs text-red-500 hover:text-red-700 bg-red-100/50 hover:bg-red-100 transition-colors border border-red-300/30">
-                    ↻
-                </button>
-            </div>
-        </div>
-        <p class="text-[0.6rem] text-red-500 relative z-10">${err || 'Could not load AI analysis'}</p>
-    `;
-}
-
-function renderAIIndicatorCard(data, fromCache = false) {
-    const el = document.getElementById('aiIndicatorCard');
-    if (!el) return;
-
-    const signal = String(data.signal || 'HOLD').toUpperCase();
-    const confidence = data.confidence || 0;
-    const confPct = Math.round(confidence * 100);
-    const summary = data.summary || '';
-    const catalyst = data.key_catalyst || '';
-    const risks = data.risk_factors || '';
-    const regime = data.volatility_regime || 'NORMAL';
-    const headlineCount = data.headline_count || 0;
-    const cached = fromCache || data.cached || false;
-
-    const sentSummary = data.sentiment_summary || '';
-    const sentKeyFactor = data.sentiment_key_factor || 'Mixed Catalysts';
-    const sentConfidence = data.sentiment_confidence != null ? data.sentiment_confidence : confidence;
-    const sentConfPct = Math.round(sentConfidence * 100);
-
-    const confBarWidth = `${confPct}%`;
-    // Confidence strength is the fill width; decision direction determines
-    // the color so SELL is never shown with a bullish green confidence bar.
-    const confBarColor = signal === 'BUY'
-        ? 'bg-emerald-500'
-        : signal === 'SELL'
-            ? 'bg-rose-500'
-            : 'bg-slate-400';
-    const confTextColor = signal === 'BUY'
-        ? 'text-emerald-600'
-        : signal === 'SELL'
-            ? 'text-rose-600'
-            : 'text-slate-500';
-
-    const sentScore = data.sentiment_score != null ? parseFloat(data.sentiment_score) : 0.0;
-    const sentPct = data.sentiment_pct != null
-        ? Math.round(parseFloat(data.sentiment_pct))
-        : Math.round(((sentScore + 1.0) / 2.0) * 100);
-    const newsDirection = data.sentiment_direction || (
-        sentPct >= 70 ? 'BULLISH' : sentPct <= 30 ? 'BEARISH' : 'NEUTRAL'
-    );
-    const rawModelSignal = data.model_signal || signal;
-    const alignmentReason = data.news_alignment_reason || '';
-    const sentBarWidth = `${sentPct}%`;
-    let sentBarColor = 'bg-slate-400';
-    let sentTextColor = 'text-slate-500';
-
-    if (newsDirection === 'BULLISH') {
-        sentBarColor = 'bg-emerald-500';
-        sentTextColor = 'text-emerald-600';
-    } else if (newsDirection === 'BEARISH') {
-        sentBarColor = 'bg-rose-500';
-        sentTextColor = 'text-rose-600';
-    } else if (sentPct > 55) {
-        sentBarColor = 'bg-amber-500';
-        sentTextColor = 'text-amber-600';
-    } else if (sentPct < 25) {
-        sentBarColor = 'bg-rose-500';
-        sentTextColor = 'text-rose-600';
-    } else if (sentPct < 45) {
-        sentBarColor = 'bg-amber-500';
-        sentTextColor = 'text-amber-600';
-    }
-
-    const sigColors = {
-        BUY: { bg: 'ai-indicator-buy', badge: 'bg-emerald-100 text-emerald-700 border-emerald-300/50', icon: '▲', iconCls: 'text-emerald-600', regimeCls: 'text-emerald-600' },
-        SELL: { bg: 'ai-indicator-sell', badge: 'bg-rose-100 text-rose-700 border-rose-300/50', icon: '▼', iconCls: 'text-rose-600', regimeCls: 'text-rose-600' },
-        HOLD: { bg: 'ai-indicator-hold', badge: 'bg-slate-100 text-slate-700 border-slate-300/50', icon: '●', iconCls: 'text-slate-500', regimeCls: 'text-slate-500' }
-    };
-    const colors = sigColors[signal] || sigColors['HOLD'];
-
-    const cachedBadge = cached
-        ? `<span class="text-[0.5rem] text-amber-600 opacity-60 ml-1">cached</span>`
-        : '';
-
-    const selectedModel = normalizeSelectedAIModel(localStorage.getItem('selected_ai_model'));
-    const usedModel = data.model || selectedModel;
-    const candleTimeframe = data.candle_timeframe || '1Hour';
-    const isOllamaActive = selectedModel.startsWith('ollama/') || selectedModel.startsWith('ollama:');
-    const badgeHtml = isOllamaActive
-        ? `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-indigo-500 to-blue-600 text-white border border-indigo-600/50 shadow-sm">OLLAMA</span>`
-        : `<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-gradient-to-r from-amber-200 to-amber-300 text-amber-800 border border-amber-400/50 shadow-sm">GROQ AI</span>`;
-    const usedModelHtml = `<span title="Actual model used for this response" class="px-1.5 py-0.5 rounded text-[0.5rem] font-bold bg-white/70 text-slate-600 border border-slate-200/70">${usedModel}</span>`;
-    const candleTimeframeHtml = `<span title="Candle timeframe used by AI market analysis" class="px-1.5 py-0.5 rounded text-[0.5rem] font-bold bg-fuchsia-50/80 text-fuchsia-700 border border-fuchsia-200/70">${candleTimeframe}</span>`;
-    const selectHtml = _getAIModelSelectHtml(selectedModel, false);
-
-    el.className = `ai-indicator-card ${colors.bg} relative overflow-hidden p-4 rounded-xl border border-amber-200/60 bg-gradient-to-br from-amber-50/50 to-orange-50/30 transition-all duration-300`;
-    el.innerHTML = `
-        <div class="ai-orb bg-gradient-to-r from-amber-400 to-orange-500 opacity-20"></div>
-        <div class="flex flex-wrap items-center justify-between gap-y-2 mb-3 relative z-10">
-            <div class="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                <span class="text-base drop-shadow-sm">🤖</span>
-                <span class="font-black text-xs text-amber-900 tracking-wide uppercase" id="aiIndicatorHeader">BotBulls AI Analysis - ${data.ticker || selectedTicker || '---'}</span>
-                ${badgeHtml}
-                ${usedModelHtml}
-                ${candleTimeframeHtml}
-                ${cachedBadge}
-            </div>
-            <div class="flex items-center gap-2 relative z-30">
-                ${selectHtml}
-                <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm">
-                    ℹ
-                </button>
-                <button id="aiRefreshBtn" onclick="refreshAIIndicator()" title="Force refresh AI analysis" class="w-5 h-5 rounded-full flex items-center justify-center text-xs text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm">
-                    ↻
-                </button>
-            </div>
-        </div>
-
-        <div class="flex items-center justify-between mb-3 relative z-10">
-            <div class="flex items-center gap-2 text-left">
-                <div>
-                    <div class="text-[0.55rem] text-slate-400 uppercase font-black tracking-wider">Trade Signal</div>
-                    <div class="flex items-center gap-1.5 mt-0.5">
-                        <span class="px-2 py-0.5 text-xs font-black rounded-full border ${colors.badge} flex items-center gap-1">
-                            ${signal} <span class="text-[9px] ${colors.iconCls}">${colors.icon}</span>
-                        </span>
-                    </div>
-                </div>
-            </div>
-            <div class="text-right">
-                <div class="text-[0.55rem] text-slate-400 uppercase font-black tracking-wider">Volatility Regime</div>
-                <div class="text-xs font-black ${colors.regimeCls}">${regime}</div>
-            </div>
-        </div>
-
-        <div class="mb-3.5 relative z-10 text-left">
-            <div class="text-[0.55rem] text-slate-500 font-extrabold uppercase tracking-wider mb-1">Decision Confidence <span class="normal-case font-semibold tracking-normal">(composite)</span></div>
-            <div class="flex items-center gap-2">
-                <div class="flex-1 bg-slate-200/50 rounded-full h-1.5 overflow-hidden">
-                    <div class="h-1.5 rounded-full ${confBarColor} transition-all duration-500" style="width: ${confBarWidth}"></div>
-                </div>
-                <span class="text-[10px] font-black leading-none ${confTextColor} px-1.5 py-0.5 rounded bg-white/60 border border-slate-200/50 shadow-sm">${confPct}%</span>
-            </div>
-        </div>
-
-        <div class="mb-3.5 relative z-10 text-left">
-            <div class="text-[0.55rem] text-slate-500 font-extrabold uppercase tracking-wider mb-1">News Sentiment Score <span class="normal-case font-semibold tracking-normal">(0–100%, ${newsDirection})</span></div>
-            <div class="flex items-center gap-2">
-                <div class="flex-1 bg-slate-200/50 rounded-full h-1.5 overflow-hidden">
-                    <div class="h-1.5 rounded-full ${sentBarColor} transition-all duration-500" style="width: ${sentBarWidth}"></div>
-                </div>
-                <span class="text-[10px] font-black leading-none ${sentTextColor} px-1.5 py-0.5 rounded bg-white/60 border border-slate-200/50 shadow-sm">${sentPct}%</span>
-            </div>
-        </div>
-
-        <div class="mb-3 p-2 rounded-lg ${data.news_alignment_applied ? 'bg-amber-50/80 border-amber-300/70' : 'bg-slate-50/70 border-slate-200/70'} border text-left relative z-10">
-            <span class="text-[0.52rem] font-black ${data.news_alignment_applied ? 'text-amber-700' : 'text-slate-500'} uppercase tracking-widest block mb-0.5">News / Decision Alignment</span>
-            <p class="text-[0.62rem] ${data.news_alignment_applied ? 'text-amber-800' : 'text-slate-600'} leading-snug font-semibold">${alignmentReason || (rawModelSignal === signal ? 'The composite decision is consistent with the directional news read.' : `Model ${rawModelSignal} was adjusted to ${signal}.`)}</p>
-        </div>
-
-        <div class="mb-3 p-2 rounded-lg bg-fuchsia-50/50 border border-fuchsia-200/50 text-left relative z-10">
-            <span class="text-[0.52rem] font-black text-fuchsia-600 uppercase tracking-widest block mb-0.5">🔥 Key Market Factor</span>
-            <p class="text-[0.65rem] font-bold text-fuchsia-800 leading-snug">${sentKeyFactor}</p>
-        </div>
-
-        ${sentSummary ? `
-        <div class="mb-3 p-2.5 rounded-lg bg-white/50 border border-purple-200/50 text-left relative z-10">
-            <span class="text-[0.52rem] font-black text-purple-600 uppercase tracking-widest block mb-0.5">📰 AI News Briefing & Catalyst Summary</span>
-            <p class="text-[0.6rem] text-violet-700 leading-relaxed font-medium">${sentSummary}</p>
-        </div>
-        ` : ''}
-
-        ${summary ? `
-        <div class="mb-3 p-3 rounded-lg bg-white/30 border border-violet-200/50 text-left relative z-10 shadow-sm">
-            <span class="text-[0.52rem] font-black text-violet-600 uppercase tracking-widest block mb-1">📝 Comprehensive Trade Thesis Summary</span>
-            <p class="text-[0.62rem] text-violet-700 leading-relaxed font-semibold">${summary}</p>
-        </div>
-        ` : ''}
-
-        <div class="grid grid-cols-2 gap-2 mb-3 relative z-10">
-            <div class="p-2.5 rounded-lg bg-emerald-50/40 border border-emerald-200/40 text-left shadow-sm">
-                <span class="text-[0.52rem] font-black text-emerald-600 uppercase tracking-widest block mb-1">⚡ Primary Catalyst</span>
-                <p class="text-[0.6rem] text-emerald-800 leading-snug font-bold">${catalyst || 'Confluence alignment'}</p>
-            </div>
-            <div class="p-2.5 rounded-lg bg-rose-50/40 border border-rose-200/40 text-left shadow-sm">
-                <span class="text-[0.52rem] font-black text-rose-600 uppercase tracking-widest block mb-1">⚠ Main Risk Factors</span>
-                <p class="text-[0.6rem] text-rose-800 leading-snug font-bold">${risks || 'Trend invalidation'}</p>
-            </div>
-        </div>
-
-        <div class="flex items-center justify-between pt-2 border-t border-violet-200/30 text-[8px] text-violet-400 relative z-10">
-            <span>${headlineCount} headlines analyzed</span>
-            <span>Advisory only — not investment advice</span>
-        </div>
-    `;
-}
-
-window.refreshAIIndicator = async function () {
-    const refreshBtn = document.getElementById('aiRefreshBtn');
-    if (refreshBtn) {
-        refreshBtn.classList.add('animate-spin');
-        refreshBtn.disabled = true;
-    }
-    const ticker = (typeof selectedTicker !== 'undefined' ? selectedTicker : '') || 'TSLA';
-    const timeframe = currentBackendTf || (typeof selectedTimeframe !== 'undefined' ? selectedTimeframe : '') || '1Hour';
-    try {
-        await fetchAIIndicator(ticker, timeframe, true);
-    } catch (e) {
-        console.error('[ai-indicator] Refresh failed:', e);
-    } finally {
-        if (refreshBtn) {
-            refreshBtn.classList.remove('animate-spin');
-            refreshBtn.disabled = false;
-        }
-    }
-};
-
-window.openAIInfoModal = function () {
-    const modal = document.getElementById('aiInfoModal');
-    if (modal) modal.classList.remove('hidden');
-};
-
-window.closeAIInfoModal = function () {
-    const modal = document.getElementById('aiInfoModal');
-    if (modal) modal.classList.add('hidden');
-};
 
 // 3. Render Signal Confluence Grid
 // ──────────────────────────────────────────────
@@ -3179,9 +3249,10 @@ const PREMIUM_INFO = {
     'BotBulls1': 'Confirmed WaveTrend reversal with MFI reclaim/rejection, then price confirmation within the BB1 window. Confluence stays bullish after the last BB1 BUY marker and bearish after the last BB1 SELL marker.',
     'BotBulls2': 'Adaptive ATR trailing stop with trend-smoothed EMA and reversal zone detection. Fires on trend flips confirmed by multi-condition confluence scoring (1-4 strength rating).',
     'BotBulls3': 'Heikin-Ashi noise filter + ATR-based trailing stop. Generates buy/sell alerts only on confirmed momentum flips — removing false signals from choppy markets.',
+    'BotBulls5': 'Premium causal chart-pattern engine for continuation, reversal, compression, channel, and rounded structures. It draws qualified geometry but votes only after a completed-candle breakout.',
     'Botbulls4 News AI': 'Groq-powered real-time AI news sentiment analysis. Parses current headlines and financial catalysts to determine market direction.',
 };
-const PREMIUM_SIGNAL_NAMES = new Set(['BotBulls1', 'BotBulls2', 'BotBulls3', 'Botbulls4 News AI']);
+const PREMIUM_SIGNAL_NAMES = new Set(DASHBOARD_DEFAULT_PREMIUM_NAMES);
 
 function lockSignalConfluencePanelHeight() {
     const panel = document.getElementById('signalConfluencePanel');
@@ -3189,10 +3260,22 @@ function lockSignalConfluencePanelHeight() {
 
     const height = Math.ceil(panel.getBoundingClientRect().height);
     const lockedHeight = parseFloat(panel.style.minHeight) || 0;
-    if (height > lockedHeight + 1) {
+    if (height > lockedHeight + 1 && height > 50) {
         panel.style.minHeight = `${height}px`;
         panel.dataset.heightLocked = 'true';
     }
+}
+
+function unlockSignalConfluencePanelHeight() {
+    const panel = document.getElementById('signalConfluencePanel');
+    if (!panel) return;
+    panel.style.minHeight = '';
+    panel.dataset.heightLocked = 'false';
+}
+
+if (typeof window !== 'undefined') {
+    window.addEventListener('resize', unlockSignalConfluencePanelHeight);
+    window.addEventListener('orientationchange', unlockSignalConfluencePanelHeight);
 }
 
 function setSignalConfluenceLoadingState(isLoading) {
@@ -3200,13 +3283,19 @@ function setSignalConfluenceLoadingState(isLoading) {
     const loading = document.getElementById('gridLoading');
     if (panel) panel.classList.toggle('signal-confluence-loading', isLoading);
     if (loading) loading.classList.toggle('hidden', !isLoading);
+    if (!isLoading) {
+        unlockSignalConfluencePanelHeight();
+    }
 }
 
 function buildMissingSignalPlaceholder(name, prefs) {
     const locallyEnabled = prefs && prefs[name] === true;
+    const disabledReason = name === 'RSI'
+        ? 'RSI: Disabled — click to enable'
+        : 'Disabled - click to enable';
     return {
         signal: 'NEUTRAL',
-        reason: locallyEnabled ? 'Waiting for refreshed values...' : 'Disabled - click to enable',
+        reason: locallyEnabled ? 'Waiting for refreshed values...' : disabledReason,
         enabled: locallyEnabled,
         toggle_key: INDICATOR_TOGGLE_KEYS[name],
         premium: PREMIUM_SIGNAL_NAMES.has(name),
@@ -3242,13 +3331,21 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
     }
 
     for (const [name, data] of Object.entries(displaySignals)) {
-        const isPremium = data.premium === true;
+        const isPremium = data.premium === true || PREMIUM_SIGNAL_NAMES.has(name);
         const targetGrid = isPremium ? premiumGrid : grid;
         if (!targetGrid) continue;
 
         // Local prefs override backend 'enabled' flag
         const hasLocalPref = Object.prototype.hasOwnProperty.call(prefs, name);
-        const isEnabled = hasLocalPref ? prefs[name] === true : data.enabled !== false;
+        const isInDashboardGrid = isPremium || isDashboardIndicatorAllowed(name);
+        const isEnabled = isInDashboardGrid
+            && (hasLocalPref ? prefs[name] === true : data.enabled !== false);
+
+        // The Dashboard-wide regular grid must always retain its selected 10
+        // cards. Premium cards also remain present in their own section. A
+        // disabled indicator is rendered as disabled instead of disappearing,
+        // so the user can see the full confluence layout and re-enable it.
+        if (!isInDashboardGrid) continue;
 
         // Sync Botbulls4 News AI with actual cached AI Indicator score before style evaluation
         if (name === 'Botbulls4 News AI') {
@@ -3262,15 +3359,15 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
         // Determine CSS class
         let signalClass;
         if (!isEnabled) {
-            signalClass = 'disabled-signal';
+            signalClass = isPremium ? 'premium-neutral' : 'neutral';
         } else if (isPremium) {
             signalClass = data.signal === 'BULLISH' ? 'premium-bullish' : data.signal === 'BEARISH' ? 'premium-bearish' : 'premium-neutral';
         } else {
             signalClass = data.signal === 'BULLISH' ? 'bullish' : data.signal === 'BEARISH' ? 'bearish' : 'neutral';
         }
 
-        const icon = data.signal === 'BULLISH' ? '▲' : data.signal === 'BEARISH' ? '▼' : '●';
-        const iconColor = data.signal === 'BULLISH' ? 'text-emerald-600' : data.signal === 'BEARISH' ? 'text-red-500' : 'text-purple-400';
+        const icon = !isEnabled ? '●' : data.signal === 'BULLISH' ? '▲' : data.signal === 'BEARISH' ? '▼' : '●';
+        const iconColor = !isEnabled ? 'text-slate-400' : data.signal === 'BULLISH' ? 'text-emerald-600' : data.signal === 'BEARISH' ? 'text-red-500' : 'text-purple-400';
 
         const cardId = 'signal-card-' + name.replace(/\s+/g, '-');
         if (isPremium) {
@@ -3287,7 +3384,7 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
             isNew = true;
         }
 
-        const newClassName = `signal-card group ${signalClass} fade-in cursor-pointer transition-all duration-300`;
+        const newClassName = `signal-card group ${signalClass}${isEnabled ? '' : ' disabled-signal'} fade-in cursor-pointer transition-all duration-300`;
         if (card.className !== newClassName) {
             card.className = newClassName;
         }
@@ -3301,14 +3398,18 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
             card.title = isEnabled ? "Click to disable this indicator" : "Click to enable this indicator";
         }
 
-        const cacheKey = `${isEnabled}-${data.signal}-${data.reason}-${data.value || ''}`;
+        const cacheKey = `${isEnabled}-${data.signal}-${data.reason}-${data.value || ''}-${data.percentage ?? data.sentiment_pct ?? ''}`;
         if (card.dataset.cacheKey !== cacheKey) {
-            let reasonHtml = data.reason;
+            let reasonHtml = isEnabled ? data.reason : 'Disabled — click to enable';
             const isNewsSentiment = name === 'Botbulls4 News AI';
 
             if (isNewsSentiment && data.value != null && isEnabled) {
                 const scoreVal = parseFloat(data.value);
-                const sentPct = Math.round(((scoreVal + 1.0) / 2.0) * 100);
+                const sentPct = Math.round(
+                    typeof normalizeAISentimentPct === 'function'
+                        ? normalizeAISentimentPct(data.percentage ?? data.sentiment_pct, scoreVal)
+                        : (((scoreVal + 1.0) / 2.0) * 100)
+                );
                 let scoreColor = 'text-slate-500';
 
                 const currentParams = window.lastDashboardData?.indicator_parameters || {};
@@ -3364,10 +3465,12 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
                 `;
             } else {
                 // Standard signal card
+                const displayName = name === 'VWAP' ? 'AVWAP' : name;
+                const labelClass = name === 'VWAP' ? 'vwap-indicator-label' : 'text-indigo-900';
                 card.innerHTML = `
                     <div class="flex items-start justify-between">
                         <div class="flex items-start gap-1">
-                            <span class="font-bold text-indigo-900 ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${name}</span>
+                            <span class="font-bold ${labelClass} ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${displayName}</span>
                             <div class="group/tooltip relative inline-flex items-center">
                                 <svg onclick="event.stopPropagation(); event.preventDefault(); typeof openInfoModal === 'function' ? openInfoModal('${name}') : null" xmlns="http://www.w3.org/2000/svg" class="text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -3397,6 +3500,14 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
         }
 
         if (isNew) {
+            if (!isPremium) {
+                const shownNames = window.IndicatorWorkspace?.getShown?.('dashboard')
+                    || (window.STANDARD_INDICATOR_NAMES || ALL_SIGNAL_NAMES).slice(0, 10);
+                const isShownInWorkspace = shownNames.includes(name);
+                card.hidden = !isShownInWorkspace;
+                card.classList.toggle('indicator-workspace-hidden', !isShownInWorkspace);
+                card.setAttribute('aria-hidden', isShownInWorkspace ? 'false' : 'true');
+            }
             targetGrid.appendChild(card);
         }
     }
@@ -3425,11 +3536,12 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
     // Sync chart overlays to match which indicators are enabled here
     _syncIndicatorsFromSignals(signals);
 
-    // Capture only the final real-signal height. Temporary loading placeholders
-    // can contain more cards than the normal desktop layout and must not enlarge it.
+    // Once real signals are fully rendered, unlock minHeight so the panel naturally sizes to fit its content without trailing blank space in landscape.
     if (!(options.allowEmpty && Object.keys(signals).length === 0)) {
-        lockSignalConfluencePanelHeight();
+        unlockSignalConfluencePanelHeight();
     }
+    window.IndicatorWorkspace?.refresh();
+    repairLegacyDashboardConfluenceStateIfNeeded();
 }
 
 // Map signal name → chart indicator key
@@ -3450,6 +3562,7 @@ const SIGNAL_TO_CHART_KEY = {
     'BotBulls1': 'botbulls1',
     'BotBulls2': 'botbulls2',
     'BotBulls3': 'botbulls3',
+    'BotBulls5': 'botbulls5',
     'Candle Patterns': 'Candle Patterns',
 };
 
@@ -3458,7 +3571,7 @@ function _syncIndicatorsFromSignals(signals) {
     const prefs = getGlobalIndicatorPrefs();
     for (const [name, key] of Object.entries(SIGNAL_TO_CHART_KEY)) {
         // If there's no explicitly saved preference, default to OFF.
-        const shouldShow = prefs[name] === true;
+        const shouldShow = prefs[name] === true && isDashboardIndicatorAllowed(name);
         if (_visibleIndicators[key] !== shouldShow) {
             _visibleIndicators[key] = shouldShow;
             
@@ -3831,6 +3944,36 @@ function updateSizingPanel(scan) {
 // ──────────────────────────────────────────────
 // 8. Main Fetch Loop
 // ──────────────────────────────────────────────
+function scheduleDashboardHeartbeat(delayMs = REFRESH_INTERVAL) {
+    if (!dashboardHeartbeatEnabled) return;
+    if (dashboardHeartbeatTimer) clearTimeout(dashboardHeartbeatTimer);
+
+    dashboardHeartbeatTimer = setTimeout(async () => {
+        dashboardHeartbeatTimer = null;
+        if (
+            shouldRunDashboardRefresh()
+            && !window._indicatorToggleDebounce
+            && !window._dashboardRefreshInFlight
+        ) {
+            await fetchDashboard('heavy');
+        }
+        if (!dashboardHeartbeatTimer && dashboardHeartbeatEnabled) {
+            scheduleDashboardHeartbeat();
+        }
+    }, Math.max(1000, Number(delayMs) || REFRESH_INTERVAL));
+}
+
+function stopDashboardHeartbeat() {
+    if (dashboardHeartbeatTimer) clearTimeout(dashboardHeartbeatTimer);
+    dashboardHeartbeatTimer = null;
+    dashboardHeartbeatEnabled = false;
+}
+
+function dashboardRefreshIsRecent(maxAgeMs = DASHBOARD_VISIBILITY_REFRESH_MIN_AGE_MS) {
+    return lastDashboardRefreshCompletedAt > 0
+        && Date.now() - lastDashboardRefreshCompletedAt < maxAgeMs;
+}
+
 async function fetchDashboard(mode = 'heavy', options = {}) {
     if (!shouldRunDashboardRefresh()) {
         return;
@@ -3845,8 +3988,8 @@ async function fetchDashboard(mode = 'heavy', options = {}) {
     try {
         const requestedTicker = normalizeTicker(selectedTicker);
         const url = requestedTicker
-            ? `${API_BASE}/api/dashboard?ticker=${encodeURIComponent(requestedTicker)}&timeframe=${encodeURIComponent(currentBackendTf)}&mode=${encodeURIComponent(mode)}&source=dashboard`
-            : `${API_BASE}/api/dashboard?mode=${mode}&timeframe=${encodeURIComponent(currentBackendTf)}&source=dashboard`;
+            ? `${API_BASE}/api/dashboard?ticker=${encodeURIComponent(requestedTicker)}&timeframe=${encodeURIComponent(currentBackendTf)}&mode=${encodeURIComponent(mode)}&source=dashboard&include_primary_analysis=false`
+            : `${API_BASE}/api/dashboard?mode=${mode}&timeframe=${encodeURIComponent(currentBackendTf)}&source=dashboard&include_primary_analysis=false`;
 
         const headers = await getAuthHeaders();
         // Removed redundant header log
@@ -3859,6 +4002,7 @@ async function fetchDashboard(mode = 'heavy', options = {}) {
             return;
         }
         const data = await response.json();
+        lastDashboardRefreshCompletedAt = Date.now();
         const responseTicker = normalizeTicker(data.primaryTicker);
         const activeTicker = normalizeTicker(selectedTicker);
         const responseDataTicker = responseTicker || requestedTicker;
@@ -3889,12 +4033,18 @@ async function fetchDashboard(mode = 'heavy', options = {}) {
             // Try to mirror global AI analysis if it exists
             let mirrored = false;
             try {
-                const globalAiStr = localStorage.getItem('latest_global_ai_analysis');
+                const aiContext = typeof getAIIndicatorPageContext === 'function' ? getAIIndicatorPageContext() : 'dashboard';
+                const globalAiStr = localStorage.getItem(`latest_ai_analysis:${aiContext}`);
                 if (globalAiStr) {
                     const globalAi = JSON.parse(globalAiStr);
-                    const selectedModel = normalizeSelectedAIModel(localStorage.getItem('selected_ai_model'));
+                    const selectedModel = typeof getSelectedAIModelForContext === 'function'
+                        ? getSelectedAIModelForContext(aiContext)
+                        : normalizeSelectedAIModel(null);
                     if (isAICacheForContext(globalAi, selectedTicker, currentBackendTf, selectedModel)) {
                         renderAIIndicatorCard(globalAi.data, true);
+                        if (typeof window.onAIIndicatorUpdated === 'function') {
+                            window.onAIIndicatorUpdated(globalAi.data, true);
+                        }
                         mirrored = true;
                     }
                 }
@@ -3997,12 +4147,11 @@ async function fetchDashboard(mode = 'heavy', options = {}) {
                 || DEFAULT_TICKER;
         }
 
-        // Update chart label + star state
+        // Update chart label + star state. Chart candles, overlays, and
+        // confluence signals are all owned by /api/chart.
         if (selectedTicker) {
             updateActiveTickerDisplay(selectedTicker);
             _updateStarState();
-            // Chart candles are owned by /api/chart so dashboard heartbeats do not
-            // trigger full redraws or overlay/oscillator recalculation.
         }
 
         // Watchlist scans are price-only. Full signals belong to the chart's primary ticker.
@@ -4011,22 +4160,48 @@ async function fetchDashboard(mode = 'heavy', options = {}) {
             normalizeTicker(data.primaryTicker) === selectedTicker
         ) ? data.primaryScan : null;
 
-
+        // Keep the chart-derived scan while refreshing dashboard/account data.
+        // The dashboard request explicitly omits primary analysis to avoid a
+        // duplicate indicator calculation every 60 seconds.
+        const previousDashboardData = window.lastDashboardData || {};
+        const primaryAnalysisIncluded = data.primaryAnalysisIncluded !== false;
+        const previousAnalysisMatchesTicker = (
+            normalizeTicker(previousDashboardData.primaryTicker) === normalizeTicker(data.primaryTicker)
+        );
+        window.lastDashboardData = primaryAnalysisIncluded
+            ? data
+            : {
+                ...previousDashboardData,
+                ...data,
+                primaryScan: previousAnalysisMatchesTicker
+                    ? (previousDashboardData.primaryScan || data.primaryScan)
+                    : data.primaryScan,
+                signals: previousAnalysisMatchesTicker
+                    ? (previousDashboardData.signals || {})
+                    : {},
+                priceHistory: previousAnalysisMatchesTicker
+                    ? (previousDashboardData.priceHistory || [])
+                    : [],
+            };
 
         // Signals
-        if (activeScan && mode !== 'fast') {
+        if (primaryAnalysisIncluded && activeScan && mode !== 'fast') {
+            const freshSignals = activeScan.signals || data.signals || {};
             if (normalizeTicker(data.primaryTicker) === normalizeTicker(selectedTicker)) {
                 window._lastSignalsTicker = normalizeTicker(selectedTicker);
             }
+            if (Object.keys(freshSignals).length) {
+                window._lastSignals = freshSignals;
+                renderSignals(
+                    freshSignals,
+                    activeScan.action || data.action || 'HOLD',
+                    activeScan.reason || data.reason || '',
+                    activeScan.bullish_count ?? data.bullish_count ?? 0,
+                    activeScan.bearish_count ?? data.bearish_count ?? 0,
+                );
+            }
             updateSizingPanel(activeScan);
         }
-
-        if (mode !== 'fast' && !isStaleTickerResponse) {
-            recomputeConfluence();
-        }
-
-        // Cache data first so renderWatchlist can access it safely
-        window.lastDashboardData = data;
 
         // Watchlist
         renderWatchlist(data.watchlistScans, data.watchlist);
@@ -4091,6 +4266,8 @@ async function fetchDashboard(mode = 'heavy', options = {}) {
         pendingDashboardRefreshMode = null;
         if (queuedMode && shouldRunDashboardRefresh()) {
             setTimeout(() => fetchDashboard(queuedMode, { queueIfBusy: true }), 0);
+        } else if (dashboardHeartbeatEnabled) {
+            scheduleDashboardHeartbeat();
         }
     }
 }
@@ -4218,6 +4395,15 @@ function updateFavoriteIcon() {
 window._indicatorToggleDebounce = null;
 window._dashboardRefreshInFlight = false;
 async function toggleIndicator(key, value) {
+    if (DASHBOARD_STANDARD_TOGGLE_KEYS.has(key)) {
+        const indicatorName = DASHBOARD_STANDARD_INDICATOR_NAMES.find(
+            name => INDICATOR_TOGGLE_KEYS[name] === key
+        );
+        if (indicatorName) {
+            setGlobalIndicatorPref(indicatorName, value === true);
+            return;
+        }
+    }
     try {
         const headers = await getAuthHeaders();
         await fetchWithTimeout(`${API_BASE}/api/settings/indicators?context=dashboard`, {
@@ -4274,42 +4460,11 @@ async function updateStrategyTf(newTf) {
 }
 
 // ──────────────────────────────────────────────
-// 10b. Background Bots Data Prefetch
-// Fires after fetchDashboard('fast') to populate sessionStorage
-// so bots.js can render instantly on navigation.
-// ──────────────────────────────────────────────
-async function prefetchBotsData() {
-    if (!shouldRunDashboardRefresh()) {
-        return;
-    }
-    try {
-        const headers = await getAuthHeaders();
-        const url = `${API_BASE}/api/dashboard?mode=fast&source=bots`;
-        const response = await fetch(url, { headers });
-        if (!response.ok) return;
-        const data = await response.json();
-        // Make available cross-page via sessionStorage (persists until browser close)
-        try {
-            sessionStorage.setItem('botsDataCache', JSON.stringify({
-                data,
-                fetchedAt: Date.now()
-            }));
-        } catch (e) {
-            console.warn('[prefetch] Could not cache bots data in sessionStorage:', e);
-        }
-        // Also make available if user navigates within same session without a full reload
-        window.lastBotsData = data;
-        console.log('[prefetch] Bots data cached successfully for instant bots page load.');
-    } catch (e) {
-        console.warn('[prefetch] Bots prefetch failed silently:', e);
-    }
-}
-
-// ──────────────────────────────────────────────
 // 11. Init
 // ──────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
     console.log('[dashboard] Initializing components...');
+    setChartLoadingState(true, selectedTicker);
     clearLegacyChartLocalStorageCaches();
     window.AlpacaStatusCache?.render();
     renderCachedGenericDashboardCards();
@@ -4331,6 +4486,9 @@ document.addEventListener('DOMContentLoaded', () => {
             clearInterval(checkAuth);
             console.log('[dashboard] Auth ready. Starting phased data stream.');
 
+            console.log('[dashboard] Phase 0.5 — Synchronizing Dashboard indicator workspace...');
+            await hydrateDashboardIndicatorWorkspace();
+
             // PHASE 1: Chart candles first — highest priority
             let chartWarmup = null;
             if (selectedTicker) {
@@ -4338,6 +4496,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 chartWarmup = loadSelectedTickerChart({ renderCached: true, fetchFresh: true });
             }
             startActiveChartHeartbeat();
+            dashboardHeartbeatEnabled = shouldRunDashboardRefresh();
+            if (dashboardHeartbeatEnabled) scheduleDashboardHeartbeat();
 
             // PHASE 2: Dashboard shell/watchlist — give chart candles the first network lane.
             console.log('[dashboard] Phase 2 — Scheduling fast dashboard scan after chart priority window...');
@@ -4356,25 +4516,12 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             // We intentionally do NOT await the warmups so the UI does not block if one of them hangs.
-            // PHASE 3: Bots data prefetch — delayed/idle so it never competes with chart startup.
-            console.log('[dashboard] Phase 3 — Scheduling bots prefetch for idle time...');
-            const runBotsPrefetch = () => {
-                if (!shouldRunDashboardRefresh()) return;
-                prefetchBotsData();
-            };
-            setTimeout(() => {
-                if (window.requestIdleCallback) {
-                    window.requestIdleCallback(runBotsPrefetch, { timeout: 2000 });
-                } else {
-                    runBotsPrefetch();
-                }
-            }, 3000);
-
-            // PHASE 4: All remaining background data — lowest priority, after chart + dashboard shell.
+            // PHASE 3: Remaining background data. The fast Dashboard response
+            // already contains the complete shell, so do not immediately
+            // download the same payload again in heavy mode.
             setTimeout(async () => {
                 if (!shouldRunDashboardRefresh()) return;
-                console.log('[dashboard] Phase 4 — Loading heavy background data...');
-                fetchDashboard('heavy', { queueIfBusy: true });
+                console.log('[dashboard] Phase 3 — Loading background data...');
                 const runBackground = async () => {
                     if (!shouldRunDashboardRefresh()) return;
                     fetchGenericDashboardCards();
@@ -4388,25 +4535,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (selectedTicker && shouldRunDashboardRefresh()) fetchAIIndicator(selectedTicker, currentBackendTf);
             }, 2500);
 
-            // Heartbeat refresh
-            setInterval(() => {
-                if (!shouldRunDashboardRefresh()) return;
-                if (window._indicatorToggleDebounce || window._dashboardRefreshInFlight) return;
-                fetchDashboard('heavy');
-            }, REFRESH_INTERVAL);
             setInterval(() => {
                 if (!shouldRunDashboardRefresh()) return;
                 fetchGenericDashboardCards();
-            }, 60000);
+            }, GENERIC_DASHBOARD_CARDS_REFRESH_MS);
         }
     }, 50);
 
     document.addEventListener('visibilitychange', () => {
         if (shouldRunDashboardRefresh()) {
-            fetchDashboard('fast');
+            dashboardHeartbeatEnabled = true;
+            if (!dashboardRefreshIsRecent() && !window._dashboardRefreshInFlight) {
+                fetchDashboard('fast');
+            } else {
+                scheduleDashboardHeartbeat();
+            }
             fetchGenericDashboardCards();
             fetchLivePriceForActiveTicker();
             refreshCompletedCandlesIfDue();
+        } else {
+            stopDashboardHeartbeat();
         }
     });
 
@@ -4771,10 +4919,18 @@ function openIndicatorSettings(indicatorName) {
     if (configKeys.length === 0) {
         container.innerHTML = '<p class="text-xs text-slate-500 italic">No adjustable parameters for this indicator.</p>';
     }
+    if (indicatorName === 'BotBulls5' && typeof window.renderBotBulls5PatternSummary === 'function') {
+        window.renderBotBulls5PatternSummary(
+            container,
+            window._displayPriceHistory || window.lastDashboardData?.price_history || [],
+            { rolling24Hours: isCryptoTicker(selectedTicker) },
+        );
+    }
 
     const currentParams = window.lastDashboardData?.indicator_parameters || {};
     const overrides = window.lastDashboardData?.indicator_overrides || {};
     const paramLabels = {
+        ...(window.STANDARD_INDICATOR_PARAM_LABELS || {}),
         DAILY_HIGH_LOW_BUFFER_PCT: 'Breakout Buffer (%)',
         PIVOT_LEVEL_COUNT: 'S/R Levels To Draw (1-5)',
         PIVOT_TOLERANCE_PCT: 'Reclaim/Rejection Tolerance (%)',
@@ -4797,6 +4953,18 @@ function openIndicatorSettings(indicatorName) {
         BOTBULLS1_REQUIRE_PRICE_CONFIRM: 'Require Price EMA Confirmation (1=On, 0=Off)',
         BOTBULLS1_PRICE_CONFIRM_EMA: 'Price Confirmation EMA Period',
         BOTBULLS1_PRICE_CONFIRM_LOOKBACK: 'Price Confirmation Window Candles',
+        BOTBULLS5_BREAKOUT_BUFFER_ATR: 'Breakout Close Buffer (ATR)',
+        BOTBULLS5_MIN_CONFIDENCE: 'Minimum Setup Quality (%)',
+        BOTBULLS5_SIGNAL_HOLD_BARS: 'Confluence Vote Duration (Bars)',
+        BOTBULLS5_REQUIRE_VOLUME: 'Require Breakout Volume (1=On, 0=Off)',
+        BOTBULLS5_STRUCTURE_LOOKBACK: 'Structural Pattern Lookback Bars',
+    };
+    const botbulls5InputAttrs = {
+        BOTBULLS5_BREAKOUT_BUFFER_ATR: 'min="0" max="1" step="0.05"',
+        BOTBULLS5_MIN_CONFIDENCE: 'min="40" max="95" step="1"',
+        BOTBULLS5_SIGNAL_HOLD_BARS: 'min="1" max="20" step="1"',
+        BOTBULLS5_REQUIRE_VOLUME: 'min="0" max="1" step="1"',
+        BOTBULLS5_STRUCTURE_LOOKBACK: 'min="20" max="120" step="1"',
     };
 
     configKeys.forEach(key => {
@@ -4804,7 +4972,7 @@ function openIndicatorSettings(indicatorName) {
         const val = currentParams[key] !== undefined ? currentParams[key] : (INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : '');
         const label = paramLabels[key] || key.replace(/_/g, ' ').toLowerCase();
         const isPercent = key.endsWith('_PCT') || key.endsWith('_PERCENTAGE');
-        const inputAttrs = key === 'PIVOT_LEVEL_COUNT'
+        const inputAttrs = botbulls5InputAttrs[key] || (key === 'PIVOT_LEVEL_COUNT'
             ? 'min="1" max="5" step="1"'
             : key === 'SWING_POINTS_LEVEL_COUNT'
                 ? 'min="1" max="5" step="1"'
@@ -4824,7 +4992,7 @@ function openIndicatorSettings(indicatorName) {
                 ? 'min="12" max="120" step="1"'
                 : key === 'VOLUME_PROFILE_CONFIRMATION_CANDLES'
                     ? 'min="1" max="5" step="1"'
-                    : 'step="any"';
+                    : (window.STANDARD_INDICATOR_INPUT_ATTRS?.[key] || 'step="any"'));
 
         const div = document.createElement('div');
         div.className = 'flex flex-col gap-1.5';
@@ -5030,6 +5198,10 @@ function readCachedGenericDashboardCards() {
     try {
         const cached = JSON.parse(sessionStorage.getItem(GENERIC_DASHBOARD_CARDS_CACHE_KEY) || 'null');
         if (!cached || !cached.payload || !cached.fetchedAt) return null;
+        if (cached.payload.market_data && cached.payload.market_data.sector_summary) {
+            const techAnalyzed = (cached.payload.market_data.sector_summary.tech || {}).analyzed_count || 0;
+            if (techAnalyzed < 24) return null;
+        }
         return cached;
     } catch (e) {
         console.warn('[dashboard] Could not read generic cards cache:', e);
@@ -5085,6 +5257,9 @@ async function fetchGenericDashboardCards(options = {}) {
     if (!shouldRunDashboardRefresh()) {
         return;
     }
+    if (genericDashboardCardsRequestPromise) {
+        return genericDashboardCardsRequestPromise;
+    }
     const { allowRecentCache = true, paintCachedFirst = true } = options;
     const cached = readCachedGenericDashboardCards();
     if (cached && paintCachedFirst) {
@@ -5097,18 +5272,31 @@ async function fetchGenericDashboardCards(options = {}) {
     ) {
         return;
     }
+
+    const requestPromise = (async () => {
+        try {
+            const headers = await getAuthHeaders();
+            const req = await fetch(`${API_BASE}/api/generic-dashboard-cards`, { headers });
+            if (!req.ok) throw new Error(`Generic card cache request failed (${req.status})`);
+            const payload = await req.json();
+            writeCachedGenericDashboardCards(payload);
+            await applyGenericDashboardCardsPayload(payload);
+            return payload;
+        } catch (e) {
+            console.warn("[dashboard] Combined generic-card cache failed; falling back to individual cached endpoints.", e);
+            fetchFearAndGreed();
+            fetchMarketData();
+            fetchMacroEvents();
+            return null;
+        }
+    })();
+    genericDashboardCardsRequestPromise = requestPromise;
     try {
-        const headers = await getAuthHeaders();
-        const req = await fetch(`${API_BASE}/api/generic-dashboard-cards`, { headers });
-        if (!req.ok) throw new Error(`Generic card cache request failed (${req.status})`);
-        const payload = await req.json();
-        writeCachedGenericDashboardCards(payload);
-        await applyGenericDashboardCardsPayload(payload);
-    } catch (e) {
-        console.warn("[dashboard] Combined generic-card cache failed; falling back to individual cached endpoints.", e);
-        fetchFearAndGreed();
-        fetchMarketData();
-        fetchMacroEvents();
+        return await requestPromise;
+    } finally {
+        if (genericDashboardCardsRequestPromise === requestPromise) {
+            genericDashboardCardsRequestPromise = null;
+        }
     }
 }
 
@@ -5250,10 +5438,10 @@ function switchSectorTab(sector) {
         const view = document.getElementById(`view-${s}`);
 
         if (s === sector) {
-            if (tab) tab.className = 'pb-3 text-sm font-bold border-b-2 border-indigo-600 text-indigo-700 transition-colors';
+            if (tab) tab.className = 'pb-2.5 sm:pb-3 px-1 sm:px-0 text-[10.5px] sm:text-sm font-bold border-b-2 border-indigo-600 text-indigo-700 transition-colors whitespace-nowrap';
             if (view) view.classList.remove('hidden');
         } else {
-            if (tab) tab.className = 'pb-3 text-sm font-bold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors';
+            if (tab) tab.className = 'pb-2.5 sm:pb-3 px-1 sm:px-0 text-[10.5px] sm:text-sm font-bold border-b-2 border-transparent text-slate-500 hover:text-slate-700 transition-colors whitespace-nowrap';
             if (view) view.classList.add('hidden');
         }
     });
@@ -5275,6 +5463,12 @@ async function fetchMarketData(cachedData = null) {
     }
     try {
         let data = cachedData;
+        if (data && (
+            (data.sector_summary && data.sector_summary.tech && data.sector_summary.tech.analyzed_count < 24) ||
+            (data.sectors && data.sectors['UBER'] === undefined)
+        )) {
+            data = null;
+        }
         if (!data) {
             const headers = await getAuthHeaders();
             const req = await fetch(`${API_BASE}/api/market-data`, {
@@ -5287,7 +5481,7 @@ async function fetchMarketData(cachedData = null) {
         // Update Sector Heatmap Modal (Dynamic Webull-Style Grid)
         if (data.sectors) {
             // Calculate actual mathematical averages for the main dashboard card
-            const techList = ["AAPL", "MSFT", "GOOG", "NVDA", "META", "TSLA", "AVGO", "AMD", "QCOM", "NFLX", "AMZN", "ADBE", "CRM", "INTC", "CSCO", "ORCL"];
+            const techList = ["AAPL", "MSFT", "GOOG", "NVDA", "META", "TSLA", "AVGO", "AMD", "QCOM", "NFLX", "AMZN", "ADBE", "CRM", "INTC", "CSCO", "ORCL", "IBM", "UBER", "ABNB", "PLTR", "MU", "TXN", "NOW", "SHOP"];
             const cryptoList = ["BTC-USD", "ETH-USD", "SOL-USD", "ADA-USD", "XRP-USD", "DOGE-USD", "DOT-USD", "LINK-USD", "LTC-USD", "NEAR-USD", "BCH-USD", "AVAX-USD"];
             const energyList = ["XOM", "CVX", "COP", "OXY", "SLB", "CAT", "GE", "HON", "UNP", "LMT", "DE", "MMM"];
             const financialsList = ["JPM", "BAC", "WFC", "MS", "GS", "V", "MA", "AXP", "BLK", "C", "SCHW", "HDB"];
@@ -5371,29 +5565,29 @@ async function fetchMarketData(cachedData = null) {
                         ? 'text-red-600'
                         : 'text-amber-600';
                 return `
-                    <div class="col-span-full rounded-xl border border-slate-200 bg-white/90 px-3 py-2 shadow-sm">
-                        <div class="flex items-start justify-between gap-2">
-                            <div>
-                                <p class="text-[11px] font-black text-slate-800 uppercase tracking-wide">${summary.label || 'Sector'} Summary</p>
-                                <p class="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Proxy: ${summary.benchmark || '--'}</p>
-                            </div>
-                            <span class="px-2 py-1 rounded-lg border text-[10px] font-black ${moveClass}">${moveText}</span>
-                        </div>
-                        <div class="mt-2 grid grid-cols-3 gap-2 text-center">
-                            <div>
-                                <p class="text-[9px] font-black text-slate-400 uppercase">Positive</p>
-                                <p class="text-sm font-black text-emerald-600">${summary.positive_count ?? 0}</p>
-                            </div>
-                            <div>
-                                <p class="text-[9px] font-black text-slate-400 uppercase">Negative</p>
-                                <p class="text-sm font-black text-red-600">${summary.negative_count ?? 0}</p>
-                            </div>
-                            <div>
-                                <p class="text-[9px] font-black text-slate-400 uppercase">Part.</p>
-                                <p class="text-sm font-black ${participationClass}">${participation}%</p>
+                    <div class="col-span-full rounded-xl border border-slate-200 bg-white/90 px-2.5 py-1.5 sm:px-3 sm:py-2 shadow-sm">
+                        <div class="flex items-center justify-between gap-1 sm:gap-2">
+                            <p class="text-[10px] sm:text-[11px] font-black text-slate-800 uppercase tracking-wide leading-tight truncate mr-1">${summary.label || 'Sector'} Summary</p>
+                            <div class="flex items-center gap-1 sm:gap-1.5 shrink-0">
+                                <span class="text-[8.5px] sm:text-[9.5px] font-bold text-slate-400 uppercase tracking-widest">Proxy: <strong class="text-slate-700 font-black">${summary.benchmark || '--'}</strong></span>
+                                <span class="px-1.5 py-0.5 rounded border text-[8.5px] sm:text-[9.5px] font-black leading-none ${moveClass}">${moveText}</span>
                             </div>
                         </div>
-                        <p class="mt-1 text-[10px] text-slate-400 font-bold">Analyzed: ${summary.analyzed_count ?? 0} • Avg constituents: ${avgMove >= 0 ? '+' : ''}${avgMove.toFixed(2)}%${summary.flat_count ? ` • Flat: ${summary.flat_count}` : ''}</p>
+                        <div class="mt-1 sm:mt-2 grid grid-cols-3 gap-1 sm:gap-2 text-center">
+                            <div>
+                                <p class="text-[8px] sm:text-[9px] font-black text-slate-400 uppercase leading-none">Positive</p>
+                                <p class="text-xs sm:text-sm font-black text-emerald-600 mt-0.5">${summary.positive_count ?? 0}</p>
+                            </div>
+                            <div>
+                                <p class="text-[8px] sm:text-[9px] font-black text-slate-400 uppercase leading-none">Negative</p>
+                                <p class="text-xs sm:text-sm font-black text-red-600 mt-0.5">${summary.negative_count ?? 0}</p>
+                            </div>
+                            <div>
+                                <p class="text-[8px] sm:text-[9px] font-black text-slate-400 uppercase leading-none">Part.</p>
+                                <p class="text-xs sm:text-sm font-black ${participationClass} mt-0.5">${participation}%</p>
+                            </div>
+                        </div>
+                        <p class="mt-1 text-[9px] sm:text-[10px] text-slate-400 font-bold leading-tight">Analyzed: ${summary.analyzed_count ?? 0} • Avg constituents: ${avgMove >= 0 ? '+' : ''}${avgMove.toFixed(2)}%${summary.flat_count ? ` • Flat: ${summary.flat_count}` : ''}</p>
                     </div>
                 `;
             };
@@ -5431,18 +5625,18 @@ async function fetchMarketData(cachedData = null) {
 
                     // Sizing and spanning classes based on relative market cap weight
                     const weight = TICKER_WEIGHTS[ticker] || 1;
-                    let spanClass = 'col-span-1 row-span-1 p-1.5 min-h-[42px] flex flex-col justify-center';
-                    let fontClass = 'text-xs font-bold';
-                    let changeFontClass = 'text-[9px]';
+                    let spanClass = 'col-span-1 row-span-1 p-1 sm:p-1.5 min-h-[36px] sm:min-h-[42px] flex flex-col justify-center';
+                    let fontClass = 'text-[11px] sm:text-xs font-bold leading-tight';
+                    let changeFontClass = 'text-[8.5px] sm:text-[9px] leading-none';
 
                     if (weight === 3) {
-                        spanClass = 'col-span-2 row-span-2 p-2 md:p-3 flex flex-col justify-center min-h-[88px]';
-                        fontClass = 'text-sm md:text-base font-black tracking-widest';
-                        changeFontClass = 'text-[10px] font-bold';
+                        spanClass = 'col-span-2 sm:col-span-2 row-span-1 sm:row-span-2 p-1.5 sm:p-2 md:p-3 flex flex-col justify-center min-h-[42px] sm:min-h-[80px]';
+                        fontClass = 'text-xs sm:text-sm md:text-base font-black tracking-wider leading-tight';
+                        changeFontClass = 'text-[9px] sm:text-[10px] font-bold leading-none';
                     } else if (weight === 2) {
-                        spanClass = 'col-span-2 row-span-1 p-1.5 md:p-2 flex flex-col justify-center min-h-[42px]';
-                        fontClass = 'text-xs md:text-sm font-black tracking-wider';
-                        changeFontClass = 'text-[10px] font-bold';
+                        spanClass = 'col-span-1 sm:col-span-2 row-span-1 p-1 sm:p-1.5 md:p-2 flex flex-col justify-center min-h-[36px] sm:min-h-[42px]';
+                        fontClass = 'text-[11px] sm:text-xs md:text-sm font-black tracking-wide leading-tight';
+                        changeFontClass = 'text-[8.5px] sm:text-[10px] font-bold leading-none';
                     }
 
                     const tileClass = `flex flex-col items-center justify-center rounded-xl border backdrop-blur-sm transition-all duration-300 hover:scale-[1.03] hover:shadow-md cursor-pointer text-center relative ${spanClass} ${bgClass}`;

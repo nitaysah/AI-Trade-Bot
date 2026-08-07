@@ -4,10 +4,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bot Bulls — Strategies</title>
+    <title>Strategies — Bot Bulls</title>
     <meta name="description"
         content="AI-powered quantitative trading dashboard with multi-indicator confluence and sentiment analysis.">
-    <link rel="icon" type="image/png" href="assets/bot_bulls_logo.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="assets/bot_bulls_logo.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="assets/bot_bulls_logo.png">
+    <link rel="shortcut icon" href="assets/bot_bulls_logo.png">
+    <link rel="apple-touch-icon" href="assets/bot_bulls_logo.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="assets/bot_bulls_logo.png">
+    <link rel="apple-touch-icon" sizes="152x152" href="assets/bot_bulls_logo.png">
+    <link rel="apple-touch-icon" sizes="167x167" href="assets/bot_bulls_logo.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="BotBulls">
+    <meta name="application-name" content="BotBulls">
+    <meta name="msapplication-TileImage" content="assets/bot_bulls_logo.png">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -202,46 +214,52 @@
         <header class="flex flex-col items-center text-center mb-3 gap-2 border-b border-purple-200/80 pb-2.5">
             <div class="space-y-1">
                 <h1
-                    class="flex items-center justify-center gap-3 text-2xl md:text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 leading-tight">
+                    class="flex items-center justify-center gap-3 text-2xl md:text-4xl font-black text-transparent bg-clip-text botbulls-brand-gradient bg-gradient-to-r from-purple-500 via-teal-400 to-emerald-500 leading-tight">
                     <img src="assets/bot_bulls_logo.png" alt="BotBulls logo" class="h-12 w-12 rounded-2xl border border-purple-200/80 bg-white/80 object-cover shadow-md shadow-purple-500/15">
-                    <span>Bot Bulls</span>
+                    <span>Strategies</span>
                 </h1>
-                <p class="text-purple-500 text-xs md:text-sm font-black uppercase tracking-[0.2em] opacity-80 font-sans">
-                    Advanced Algorithmic Trading Terminal
+                <p class="text-purple-500 text-xs md:text-sm font-black uppercase tracking-[0.2em] opacity-80">
+                    Backtested playbooks for entries, exits, risk, and deployment
                 </p>
             </div>
 
-            <div class="flex flex-wrap justify-center items-center gap-2 md:gap-3 w-full font-sans">
+            <div class="mobile-nav-grid flex flex-wrap justify-center items-center gap-2 md:gap-3 w-full font-sans">
                 <a href="dashboard.html"
                     class="flex items-center justify-center h-9 text-xs font-black bg-purple-50 text-indigo-600 border-2 border-purple-100 rounded-full px-5 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
-                    📈 Dashboard
+                    Dashboard
                 </a>
 
                 <a href="bots.html"
                     class="flex items-center justify-center h-9 text-xs font-black bg-purple-50 text-indigo-600 border-2 border-purple-100 rounded-full px-5 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
-                    🤖 Active Bots
+                    Active Bots
                 </a>
 
                 <a href="backtest.html"
                     class="flex items-center justify-center h-9 text-xs font-black bg-purple-50 text-indigo-600 border-2 border-purple-100 rounded-full px-5 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
-                    📊 Backtest Center
+                    Backtest Center
                 </a>
 
                 <a href="strategy.html"
                     class="flex items-center justify-center h-9 text-xs font-black bg-indigo-600 text-white border-2 border-indigo-600 rounded-full px-5 hover:bg-indigo-700 hover:border-indigo-700 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
-                    🧠 Strategies
+                    Strategies
                 </a>
 
-                <div class="flex items-center gap-2 md:gap-3">
-                    <span id="alpacaLinkStatus"
-                        class="flex items-center justify-center h-9 text-xs font-black px-5 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider">
-                        <span class="h-2 w-2 rounded-full mr-2" id="alpacaStatusDot"></span>
-                        <span id="alpacaStatusText">Checking...</span>
-                        <button id="btnUnlinkAlpaca" onclick="unlinkAlpaca()"
-                            class="hidden ml-3 px-2 py-0.5 bg-rose-500 text-white rounded-full text-[9px] hover:bg-rose-600 transition-all uppercase tracking-tighter">
-                            Unlink
+                <div class="nav-group flex items-center gap-2 md:gap-3">
+                    <div id="alpacaConnectionContainer" class="nav-group flex items-center">
+                        <button onclick="window.location.href='bots.html'" id="alpacaLinkRedirectBtn"
+                            class="flex items-center justify-center h-9 text-xs font-black bg-emerald-50 text-emerald-600 border-2 border-emerald-100 rounded-full px-5 hover:bg-emerald-600 hover:text-white transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
+                            Connect Alpaca
                         </button>
-                    </span>
+                        <span id="alpacaLinkStatus"
+                            class="hidden flex items-center justify-center h-9 text-xs font-black px-5 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider">
+                            <span class="h-2 w-2 rounded-full mr-2" id="alpacaStatusDot"></span>
+                            <span id="alpacaStatusText">Checking...</span>
+                            <button id="btnUnlinkAlpaca" onclick="unlinkAlpaca()"
+                                class="hidden ml-3 px-2 py-0.5 bg-rose-500 text-white rounded-full text-[9px] hover:bg-rose-600 transition-all uppercase tracking-tighter">
+                                Unlink
+                            </button>
+                        </span>
+                    </div>
 
                     <button onclick="window.logoutCommander()"
                         class="flex items-center justify-center h-9 text-xs font-black bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white transition-all px-5 rounded-full border-2 border-rose-100 shadow-sm whitespace-nowrap uppercase tracking-wider">
@@ -255,8 +273,8 @@
         <!-- ═══════════════ MAIN CONTENT ═══════════════ -->
         <div class="animate-in fade-in duration-700">
             <div class="text-center mb-10">
-                <h2 class="text-3xl font-black text-indigo-950 uppercase tracking-tight font-outfit">Research & Strategy Journal</h2>
-                <p class="text-sm font-bold text-purple-500 uppercase tracking-widest mt-2 font-sans">Mathematically Proven Setups based on Millions of Simulations</p>
+                <h2 class="text-3xl font-black text-indigo-950 uppercase tracking-tight font-outfit">Strategies Journal</h2>
+                <p class="text-sm font-bold text-purple-500 uppercase tracking-widest mt-2 font-sans">Backtested strategy setups based on millions of simulations</p>
             </div>
 
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 max-w-4xl mx-auto">
@@ -323,7 +341,7 @@
             <div class="bg-gradient-to-r from-fuchsia-100/90 to-purple-100/90 p-6 flex justify-between items-center border-b border-purple-200/50 relative z-10 backdrop-blur-xl">
                 <div>
                     <h2 class="text-2xl font-black text-indigo-950 uppercase tracking-wider font-outfit">SPY Trading Journal</h2>
-                    <p class="text-xs font-bold text-purple-600 uppercase tracking-widest mt-1 font-sans">Mathematically Proven Setups</p>
+                    <p class="text-xs font-bold text-purple-600 uppercase tracking-widest mt-1 font-sans">Backtested Strategy Setups</p>
                 </div>
                 <button onclick="closeSpyModal()" class="text-purple-600 hover:text-white transition-colors bg-white/80 hover:bg-white/80 p-2 rounded-xl">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>
@@ -543,7 +561,7 @@
             <div class="bg-gradient-to-r from-fuchsia-100/90 to-purple-100/90 p-6 flex justify-between items-center border-b border-purple-200/50 relative z-10 backdrop-blur-xl">
                 <div>
                     <h2 class="text-2xl font-black text-indigo-950 uppercase tracking-wider font-outfit">QQQ Trading Journal</h2>
-                    <p class="text-xs font-bold text-purple-600 uppercase tracking-widest mt-1 font-sans">Mathematically Proven Setups</p>
+                    <p class="text-xs font-bold text-purple-600 uppercase tracking-widest mt-1 font-sans">Backtested Strategy Setups</p>
                 </div>
                 <button onclick="closeQqqModal()" class="text-purple-600 hover:text-white transition-colors bg-white/80 hover:bg-white/80 p-2 rounded-xl">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>
@@ -729,7 +747,7 @@
             <div class="bg-gradient-to-r from-fuchsia-100/90 to-purple-100/90 p-6 flex justify-between items-center border-b border-purple-200/50 relative z-10 backdrop-blur-xl">
                 <div>
                     <h2 class="text-2xl font-black text-indigo-950 uppercase tracking-wider font-outfit">IWM Trading Journal</h2>
-                    <p class="text-xs font-bold text-purple-600 uppercase tracking-widest mt-1 font-sans">Mathematically Proven Setups</p>
+                    <p class="text-xs font-bold text-purple-600 uppercase tracking-widest mt-1 font-sans">Backtested Strategy Setups</p>
                 </div>
                 <button onclick="closeIwmModal()" class="text-purple-600 hover:text-white transition-colors bg-white/80 hover:bg-white/80 p-2 rounded-xl">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>

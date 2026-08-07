@@ -46,6 +46,416 @@ def _safe_float(value, fallback: float = 0.0) -> float:
         return fallback
 
 
+GRID_DEFAULT_ENTRY_LEVEL_PCTS = (1.0, 2.0, 3.0, 4.0, 5.0)
+GRID_DEFAULT_EXIT_LEVEL_PCTS = (2.0, 4.0, 6.0, 8.0, 10.0)
+GRID_RUNTIME_STATE_KEYS = (
+    "entry_grid_level",
+    "entry_grid_anchor_price",
+    "entry_grid_armed_level",
+    "entry_grid_last_fill_price",
+    "exit_grid_level",
+    "exit_grid_anchor_price",
+    "exit_grid_last_fill_price",
+    "entry_grid_pending_order_id",
+    "entry_grid_pending_level",
+    "entry_grid_pending_before_qty",
+    "entry_grid_pending_fill_price",
+    "entry_grid_pending_missing_scans",
+    "exit_grid_pending_order_id",
+    "exit_grid_pending_level",
+    "exit_grid_pending_before_qty",
+    "exit_grid_pending_fill_price",
+    "exit_grid_pending_entry_price",
+    "exit_grid_pending_final_level",
+    "exit_grid_pending_missing_scans",
+    # Legacy shared state is deliberately cleared during migration because it
+    # cannot safely describe independent scale-in and scale-out progress.
+    "grid_level",
+    "grid_last_execution_price",
+)
+
+
+def _grid_max_levels(settings: dict, side: str) -> int:
+    key = "grid_max_levels" if side == "entry" else "exit_grid_max_levels"
+    return min(5, max(1, int(_safe_float((settings or {}).get(key), 5))))
+
+
+def _grid_level_pct(settings: dict, side: str, level: int) -> float:
+    level = min(5, max(1, int(level)))
+    key = f"grid_entry_l{level}_pct" if side == "entry" else f"grid_exit_l{level}_pct"
+    defaults = GRID_DEFAULT_ENTRY_LEVEL_PCTS if side == "entry" else GRID_DEFAULT_EXIT_LEVEL_PCTS
+    fallback = defaults[level - 1]
+    return min(100.0, max(0.1, _safe_float((settings or {}).get(key), fallback)))
+
+
+def _reset_continuous_grid_state(settings: dict) -> bool:
+    changed = False
+    for key in GRID_RUNTIME_STATE_KEYS:
+        if key in settings:
+            settings.pop(key, None)
+            changed = True
+    return changed
+
+
+def _grid_pending_keys(side: str) -> tuple:
+    keys = (
+        f"{side}_grid_pending_order_id",
+        f"{side}_grid_pending_level",
+        f"{side}_grid_pending_before_qty",
+        f"{side}_grid_pending_fill_price",
+        f"{side}_grid_pending_missing_scans",
+    )
+    if side == "exit":
+        keys += (
+            "exit_grid_pending_entry_price",
+            "exit_grid_pending_final_level",
+        )
+    return keys
+
+
+def _clear_continuous_grid_pending(settings: dict, side: str) -> bool:
+    changed = False
+    for key in _grid_pending_keys(side):
+        if key in settings:
+            settings.pop(key, None)
+            changed = True
+    return changed
+
+
+def _set_continuous_grid_pending(
+    settings: dict,
+    *,
+    side: str,
+    order_id,
+    level: int,
+    before_qty: float,
+    fill_price: float,
+    entry_price: float = 0.0,
+    final_level: bool = False,
+) -> None:
+    _clear_continuous_grid_pending(settings, side)
+    settings[f"{side}_grid_pending_order_id"] = str(order_id)
+    settings[f"{side}_grid_pending_level"] = int(level or 0)
+    settings[f"{side}_grid_pending_before_qty"] = max(0.0, _safe_float(before_qty, 0.0))
+    settings[f"{side}_grid_pending_fill_price"] = max(0.0, _safe_float(fill_price, 0.0))
+    settings[f"{side}_grid_pending_missing_scans"] = 0
+    if side == "exit":
+        settings["exit_grid_pending_entry_price"] = max(0.0, _safe_float(entry_price, 0.0))
+        settings["exit_grid_pending_final_level"] = bool(final_level)
+
+
+def _reconcile_continuous_grid_pending(
+    settings: dict,
+    *,
+    current_qty: float,
+    average_entry_price: float,
+    current_price: float,
+    open_order_ids,
+    fill_events: list = None,
+) -> bool:
+    """Advance a grid rung only after the broker position confirms a fill."""
+    changed = False
+    qty = max(0.0, _safe_float(current_qty, 0.0))
+    open_ids = {str(order_id) for order_id in (open_order_ids or set()) if order_id}
+
+    for pending_side in ("entry", "exit"):
+        order_key = f"{pending_side}_grid_pending_order_id"
+        order_id = str(settings.get(order_key) or "")
+        if not order_id:
+            continue
+        if order_id in open_ids:
+            missing_key = f"{pending_side}_grid_pending_missing_scans"
+            if settings.get(missing_key):
+                settings[missing_key] = 0
+                changed = True
+            continue
+
+        before_qty = max(
+            0.0,
+            _safe_float(settings.get(f"{pending_side}_grid_pending_before_qty"), 0.0),
+        )
+        tolerance = max(0.00000001, before_qty * 0.000001)
+        stored_price = _safe_float(
+            settings.get(f"{pending_side}_grid_pending_fill_price"), current_price
+        )
+
+        quantity_confirmed = False
+        if pending_side == "entry" and qty > before_qty + tolerance:
+            quantity_confirmed = True
+            filled_qty = qty - before_qty
+            _record_continuous_grid_fill(
+                settings,
+                side="buy",
+                fill_price=_safe_float(average_entry_price, stored_price) or stored_price,
+                was_grid_order=True,
+                had_position=True,
+            )
+            if fill_events is not None:
+                fill_events.append({
+                    "side": "entry",
+                    "filled_qty": filled_qty,
+                    "fill_price": _safe_float(average_entry_price, stored_price) or stored_price,
+                    "position_closed": False,
+                })
+            changed = True
+        elif pending_side == "exit" and qty < before_qty - tolerance:
+            quantity_confirmed = True
+            filled_qty = before_qty - qty
+            final_level = bool(settings.get("exit_grid_pending_final_level", False))
+            entry_price = _safe_float(settings.get("exit_grid_pending_entry_price"), 0.0)
+            if final_level and qty > tolerance:
+                # A partially filled final close must retry the final rung for
+                # the remainder rather than marking the ladder complete.
+                settings["entry_grid_level"] = max(
+                    0, int(_safe_float(settings.get("entry_grid_level"), 0)) - 1
+                )
+                settings["exit_grid_last_fill_price"] = stored_price
+            else:
+                _record_continuous_grid_fill(
+                    settings,
+                    side="sell",
+                    fill_price=stored_price,
+                    was_grid_order=True,
+                    had_position=True,
+                    position_closed=qty <= tolerance,
+                )
+            if fill_events is not None:
+                fill_events.append({
+                    "side": "exit",
+                    "filled_qty": filled_qty,
+                    "fill_price": stored_price,
+                    "entry_price": entry_price,
+                    "position_closed": qty <= tolerance,
+                })
+            changed = True
+
+        if not quantity_confirmed:
+            # A single missing-order response may be a transient broker/API
+            # read. Require two consecutive scans before treating the order as
+            # canceled, which prevents accidental duplicate submissions.
+            missing_key = f"{pending_side}_grid_pending_missing_scans"
+            missing_scans = max(0, int(_safe_float(settings.get(missing_key), 0))) + 1
+            settings[missing_key] = missing_scans
+            changed = True
+            if missing_scans < 2:
+                continue
+
+        # The order is no longer open. If quantity did not change it was
+        # canceled/rejected, so clear only pending metadata and retry the rung.
+        changed = _clear_continuous_grid_pending(settings, pending_side) or changed
+
+    return changed
+
+
+def _prepare_continuous_grid_state(
+    settings: dict,
+    *,
+    has_position: bool,
+    current_price: float,
+    average_entry_price: float = 0.0,
+) -> bool:
+    """Initialize or reset independent grid state for one live position cycle."""
+    changed = False
+    # Migrate away from the old shared counter/last-price implementation.
+    for key in ("grid_level", "grid_last_execution_price"):
+        if key in settings:
+            settings.pop(key, None)
+            changed = True
+
+    if not has_position:
+        for key in GRID_RUNTIME_STATE_KEYS[:-2]:
+            if key in settings:
+                settings.pop(key, None)
+                changed = True
+        return changed
+
+    anchor = _safe_float(average_entry_price, 0.0) or _safe_float(current_price, 0.0)
+    if anchor <= 0:
+        return changed
+    if _safe_float(settings.get("entry_grid_anchor_price"), 0.0) <= 0:
+        settings["entry_grid_anchor_price"] = anchor
+        settings["entry_grid_level"] = 0
+        settings["entry_grid_armed_level"] = 0
+        changed = True
+    exit_anchor = _safe_float(settings.get("exit_grid_anchor_price"), 0.0)
+    # A scale-in changes the broker's average cost. Re-anchor the scale-out
+    # ladder to that live average so gain targets remain economically correct.
+    # Partial sells normally leave average cost unchanged and therefore do not
+    # disturb the ladder's progress.
+    average_cost_changed = (
+        average_entry_price > 0
+        and exit_anchor > 0
+        and abs(exit_anchor - average_entry_price) / average_entry_price > 0.000001
+    )
+    if exit_anchor <= 0 or average_cost_changed:
+        settings["exit_grid_anchor_price"] = anchor
+        settings["exit_grid_level"] = 0
+        changed = True
+    return changed
+
+
+def _evaluate_continuous_grid(
+    settings: dict,
+    *,
+    current_price: float,
+    has_position: bool,
+    average_entry_price: float = 0.0,
+) -> dict:
+    """Return at most one scale-in/scale-out instruction for the current scan.
+
+    Entry levels are cumulative declines from the first filled entry. In the
+    default dip/reclaim style, a level must first trade below its threshold and
+    then reclaim it, which avoids repeatedly buying a one-way falling candle.
+    Exit levels are cumulative gains from the position average and progress
+    independently from entry levels.
+    """
+    price = _safe_float(current_price, 0.0)
+    response = {"action": None, "state_changed": False}
+    response["state_changed"] = _prepare_continuous_grid_state(
+        settings,
+        has_position=has_position,
+        current_price=price,
+        average_entry_price=average_entry_price,
+    )
+    if not has_position or price <= 0:
+        return response
+
+    buy_mode = str(settings.get("buy_mode", "indicator") or "indicator").lower()
+    sell_mode = str(settings.get("sell_mode", "indicator") or "indicator").lower()
+
+    if settings.get("exit_grid_continuous_mode") and sell_mode in {"percentage", "hybrid_pct"}:
+        max_levels = _grid_max_levels(settings, "exit")
+        completed = min(max_levels, max(0, int(_safe_float(settings.get("exit_grid_level"), 0))))
+        if completed < max_levels:
+            level = completed + 1
+            gain_pct = _grid_level_pct(settings, "exit", level)
+            anchor = _safe_float(settings.get("exit_grid_anchor_price"), average_entry_price or price)
+            threshold = anchor * (1.0 + gain_pct / 100.0)
+            if anchor > 0 and price >= threshold:
+                response.update({
+                    "action": "SELL",
+                    "side": "exit",
+                    "level": level,
+                    "max_levels": max_levels,
+                    "level_pct": gain_pct,
+                    "anchor_price": anchor,
+                    "threshold_price": threshold,
+                    "final_level": level >= max_levels,
+                    "reason": (
+                        f"Scale-Out L{level}/{max_levels}: ${price:.4f} reached +{gain_pct:.2f}% "
+                        f"from average-cost anchor ${anchor:.4f}."
+                    ),
+                })
+                return response
+
+    if settings.get("grid_continuous_mode") and buy_mode in {"percentage", "hybrid_pct"}:
+        max_levels = _grid_max_levels(settings, "entry")
+        completed = min(max_levels, max(0, int(_safe_float(settings.get("entry_grid_level"), 0))))
+        if completed < max_levels:
+            level = completed + 1
+            dip_pct = _grid_level_pct(settings, "entry", level)
+            anchor = _safe_float(settings.get("entry_grid_anchor_price"), average_entry_price or price)
+            threshold = anchor * (1.0 - dip_pct / 100.0)
+            armed_level = max(0, int(_safe_float(settings.get("entry_grid_armed_level"), 0)))
+            entry_style = str(settings.get("entry_pct_style", "dip_reclaim") or "dip_reclaim").lower()
+
+            if entry_style == "dip_reclaim":
+                if armed_level != level and price <= threshold:
+                    settings["entry_grid_armed_level"] = level
+                    response["state_changed"] = True
+                    response.update({
+                        "side": "entry",
+                        "level": level,
+                        "max_levels": max_levels,
+                        "level_pct": dip_pct,
+                        "anchor_price": anchor,
+                        "threshold_price": threshold,
+                        "reason": (
+                            f"Scale-In L{level}/{max_levels} armed at -{dip_pct:.2f}% "
+                            f"(${threshold:.4f}); waiting for reclaim."
+                        ),
+                    })
+                    return response
+                reclaim_buffer_pct = min(2.0, max(0.0, _safe_float(settings.get("grid_reclaim_buffer_pct"), 0.15)))
+                reclaim_price = threshold * (1.0 + reclaim_buffer_pct / 100.0)
+                if armed_level == level and reclaim_price <= price < anchor:
+                    response.update({
+                        "action": "BUY",
+                        "side": "entry",
+                        "level": level,
+                        "max_levels": max_levels,
+                        "level_pct": dip_pct,
+                        "anchor_price": anchor,
+                        "threshold_price": threshold,
+                        "reclaim_price": reclaim_price,
+                        "reason": (
+                            f"Scale-In L{level}/{max_levels}: price reclaimed ${reclaim_price:.4f} "
+                            f"after a -{dip_pct:.2f}% dip from ${anchor:.4f}."
+                        ),
+                    })
+                    return response
+                if armed_level == level and price >= anchor:
+                    settings["entry_grid_armed_level"] = 0
+                    response["state_changed"] = True
+            elif price <= threshold:
+                response.update({
+                    "action": "BUY",
+                    "side": "entry",
+                    "level": level,
+                    "max_levels": max_levels,
+                    "level_pct": dip_pct,
+                    "anchor_price": anchor,
+                    "threshold_price": threshold,
+                    "reason": f"Scale-In L{level}/{max_levels}: -{dip_pct:.2f}% level reached.",
+                })
+    return response
+
+
+def _record_continuous_grid_fill(
+    settings: dict,
+    *,
+    side: str,
+    fill_price: float,
+    was_grid_order: bool,
+    had_position: bool,
+    position_closed: bool = False,
+) -> None:
+    price = _safe_float(fill_price, 0.0)
+    if position_closed:
+        _reset_continuous_grid_state(settings)
+        return
+    if side == "buy":
+        if not had_position:
+            settings["entry_grid_anchor_price"] = price
+            settings["entry_grid_level"] = 0
+            settings["entry_grid_armed_level"] = 0
+            settings["exit_grid_anchor_price"] = price
+            settings["exit_grid_level"] = 0
+        elif was_grid_order:
+            settings["entry_grid_level"] = min(
+                _grid_max_levels(settings, "entry"),
+                max(0, int(_safe_float(settings.get("entry_grid_level"), 0))) + 1,
+            )
+            settings["entry_grid_armed_level"] = 0
+            settings["exit_grid_level"] = max(0, int(_safe_float(settings.get("exit_grid_level"), 0)) - 1)
+        settings["entry_grid_last_fill_price"] = price
+    elif side == "sell" and was_grid_order:
+        settings["exit_grid_level"] = min(
+            _grid_max_levels(settings, "exit"),
+            max(0, int(_safe_float(settings.get("exit_grid_level"), 0))) + 1,
+        )
+        settings["entry_grid_level"] = max(0, int(_safe_float(settings.get("entry_grid_level"), 0)) - 1)
+        settings["exit_grid_last_fill_price"] = price
+
+
+def _continuous_grid_sell_fraction(settings: dict, result: dict) -> float:
+    if result.get("continuous_grid_side") != "exit":
+        return 1.0
+    if result.get("continuous_grid_final_level"):
+        return 1.0
+    return min(1.0, max(0.01, _safe_float(settings.get("exit_grid_sell_pct"), 25.0) / 100.0))
+
+
 def _price_history_days(price_history):
     return price_history_days_central(price_history)
 
@@ -206,6 +616,8 @@ class UserEngine:
         self.last_scan_time = None
         self.dashboard_primary_ticker = None
         self.loaded_from_cloud = False
+        self.alpaca_load_status = "not_loaded"
+        self.alpaca_load_error = ""
         self.load_lock = asyncio.Lock()
         self.settings_save_lock = asyncio.Lock()
         
@@ -308,6 +720,7 @@ class UserEngine:
                     "toggles": self.config.toggles,
                     "parameters": self.config.parameters,
                     "contexts": getattr(self.config, 'contexts', {}),
+                    "dashboard_indicator_workspace": getattr(self.config, 'dashboard_indicator_workspace', {}),
                     "legal_acceptance": getattr(self.config, 'legal_acceptance', {}),
                     "saved_at": time.time()
                 }
@@ -371,24 +784,44 @@ class UserEngine:
         self.last_history_save_ts = now_ts
 
     async def load_from_cloud(self):
-        if not self.db: return
+        if not self.db:
+            self.alpaca_load_status = "no_firestore"
+            self.alpaca_load_error = "Firestore is not configured on the server."
+            return False
+        self.alpaca_load_status = "loading"
+        self.alpaca_load_error = ""
         try:
             # Load Alpaca Settings
-            doc_alpaca = self.db.collection("users").document(self.uid).collection("settings").document("alpaca").get(timeout=2.5)
-            if doc_alpaca.exists:
-                data = doc_alpaca.to_dict()
-                from main import vault
-                api_cipher = data.get("api_key", "")
-                sec_cipher = data.get("secret_key", "")
-                
-                decrypted_key = vault.decrypt(api_cipher)
-                decrypted_secret = vault.decrypt(sec_cipher)
-                
-                if decrypted_key and decrypted_secret:
-                    self.config.ALPACA_API_KEY = decrypted_key
-                    self.config.ALPACA_SECRET_KEY = decrypted_secret
-                    self.config.ALPACA_PAPER = data.get("paper", True)
-                    self.broker.connect(self.config.ALPACA_API_KEY, self.config.ALPACA_SECRET_KEY, self.config.ALPACA_PAPER)
+            try:
+                doc_alpaca = self.db.collection("users").document(self.uid).collection("settings").document("alpaca").get(timeout=2.5)
+                if not doc_alpaca.exists:
+                    self.alpaca_load_status = "not_configured"
+                    self.alpaca_load_error = "No Alpaca settings document exists for this Firebase user."
+                else:
+                    data = doc_alpaca.to_dict() or {}
+                    from main import vault
+                    api_cipher = data.get("api_key", "")
+                    sec_cipher = data.get("secret_key", "")
+                    decrypted_key = vault.decrypt(api_cipher)
+                    decrypted_secret = vault.decrypt(sec_cipher)
+                    if not decrypted_key or not decrypted_secret:
+                        self.alpaca_load_status = "decrypt_failed"
+                        self.alpaca_load_error = "Alpaca credentials were found but could not be decrypted with the current server vault key."
+                    else:
+                        self.config.ALPACA_API_KEY = decrypted_key
+                        self.config.ALPACA_SECRET_KEY = decrypted_secret
+                        self.config.ALPACA_PAPER = data.get("paper", True)
+                        connected = self.broker.connect(self.config.ALPACA_API_KEY, self.config.ALPACA_SECRET_KEY, self.config.ALPACA_PAPER)
+                        if connected:
+                            self.alpaca_load_status = "connected"
+                            self.alpaca_load_error = ""
+                        else:
+                            self.alpaca_load_status = "connect_failed"
+                            self.alpaca_load_error = "Alpaca rejected the saved credentials or the broker client is unavailable."
+            except Exception as alpaca_exc:
+                self.alpaca_load_status = "firestore_error"
+                self.alpaca_load_error = f"Could not read Alpaca settings from Firestore: {alpaca_exc}"
+                print(f"[engine-{self.uid}] Alpaca settings load error: {alpaca_exc}")
 
             # Load UI Settings
             ui = {}
@@ -421,6 +854,8 @@ class UserEngine:
                 self.config.DEFAULT_TIMEFRAME = ui.get("strategy_timeframe", self.config.DEFAULT_TIMEFRAME)
                 self.config.TICKER_SETTINGS = ui.get("ticker_settings", {})
                 self.config.legal_acceptance = ui.get("legal_acceptance", {}) if isinstance(ui.get("legal_acceptance", {}), dict) else {}
+                workspace = ui.get("dashboard_indicator_workspace", {})
+                self.config.dashboard_indicator_workspace = workspace.copy() if isinstance(workspace, dict) else {}
                 self._hydrate_signal_reset_locks()
                 
                 # Load isolated contexts if present
@@ -457,9 +892,15 @@ class UserEngine:
             if doc_bot.exists:
                 self.bot_scans.update(doc_bot.to_dict().get("data", {}))
                 
-            self.loaded_from_cloud = True
+            load_ok = self.alpaca_load_status not in {"firestore_error", "cloud_load_failed"}
+            self.loaded_from_cloud = load_ok
+            return load_ok
         except Exception as e:
             print(f"[engine-{self.uid}] Load error: {e}")
+            if self.alpaca_load_status == "loading":
+                self.alpaca_load_status = "cloud_load_failed"
+                self.alpaca_load_error = str(e)
+            return False
 
     def _record_scan(self, result: dict):
         if not result: return
@@ -931,7 +1372,16 @@ class UserEngine:
                 sl = self.last_trailing_stops[ticker]
             else:
                 sl = base_stop
-            tp = round(entry_price * (1 + tp_pct), precision)
+            if t_settings.get('exit_grid_continuous_mode', False):
+                completed = max(0, int(_safe_float(t_settings.get('exit_grid_level'), 0)))
+                max_levels = _grid_max_levels(t_settings, 'exit')
+                next_level = min(max_levels, completed + 1)
+                next_gain = _grid_level_pct(t_settings, 'exit', next_level)
+                grid_anchor = _safe_float(t_settings.get('exit_grid_anchor_price'), entry_price)
+                tp = round(grid_anchor * (1 + next_gain / 100.0), precision)
+                source = f'{sell_mode}_scale_out_l{next_level}'
+            else:
+                tp = round(entry_price * (1 + tp_pct), precision)
 
         elif sell_mode in ('sltp', 'hybrid'):
             atr = _safe_float(result.get('atr'), 0.0)
@@ -1121,6 +1571,64 @@ class UserEngine:
                             continue
 
                         is_opt_bot = t_settings.get('options_trading', t_settings.get('is_option', False))
+
+                        # A max-trades limit counts successful entry orders. Do
+                        # not pause while a position is still open: the bot
+                        # must remain able to manage and close that position.
+                        max_trades = max(0, int(_safe_float(t_settings.get('max_trades'), 0)))
+                        entry_trades = max(0, int(_safe_float(t_settings.get('entry_trades'), 0)))
+                        if is_active and max_trades > 0 and entry_trades >= max_trades:
+                            if is_opt_bot:
+                                from option_selector import parse_occ_symbol
+                                has_limit_position = any(
+                                    parse_occ_symbol(str(p.get('symbol', '')).upper().replace('/', ''))
+                                    and parse_occ_symbol(str(p.get('symbol', '')).upper().replace('/', '')).get('underlying') == ticker_norm
+                                    and _safe_float(p.get('qty'), 0) > 0
+                                    for p in all_positions
+                                )
+                                has_limit_order = any(
+                                    parse_occ_symbol(str(o.get('symbol', '')).upper().replace('/', ''))
+                                    and parse_occ_symbol(str(o.get('symbol', '')).upper().replace('/', '')).get('underlying') == ticker_norm
+                                    for o in all_orders
+                                )
+                            else:
+                                has_limit_position = any(
+                                    str(p.get('symbol', '')).replace('/', '').upper() == ticker_norm
+                                    and _safe_float(p.get('qty'), 0) > 0
+                                    for p in all_positions
+                                )
+                                has_limit_order = any(
+                                    str(o.get('symbol', '')).replace('/', '').upper() == ticker_norm
+                                    for o in all_orders
+                                )
+
+                            if not has_limit_position and not has_limit_order:
+                                t_settings['paused'] = True
+                                t_settings['pause_reason'] = (
+                                    f"Trade limit reached ({entry_trades}/{max_trades} entry trades)."
+                                )
+                                try:
+                                    self.broker.cancel_orders_for_ticker(ticker)
+                                except Exception as err:
+                                    print(f"[engine-{self.uid}] Error cancelling limit orders for {ticker}: {err}")
+                                result = {
+                                    "time": self.get_now().isoformat(),
+                                    "action": "HALT",
+                                    "ticker": ticker,
+                                    "price": "$0.00",
+                                    "price_raw": 0.0,
+                                    "reason": f"🛑 BOT AUTO-PAUSED: {t_settings['pause_reason']}",
+                                    "signals": {},
+                                    "bullish_count": 0,
+                                    "bearish_count": 0,
+                                    "total_signals": 0,
+                                    "log_type": "Active Bot",
+                                }
+                                self.trade_log.insert(0, result)
+                                await self.save_history()
+                                await self.save_settings()
+                                continue
+
                         required_interval = getattr(self.config, 'OPTIONS_SCAN_INTERVAL_SECONDS', 10) if is_opt_bot else getattr(self.config, 'SCAN_INTERVAL_SECONDS', 60)
                         now_ts = time.time()
                         last_ts = self.last_bot_scan_time.get(ticker, 0)
@@ -1244,7 +1752,7 @@ class UserEngine:
                                     "bearish_count": 0,
                                     "total_signals": 0,
                                     "atr": 0.0,
-                                    "rsi": 50.0,
+                                    "rsi": None,
                                     "position_sizing": {},
                                     "log_type": "Active Bot"
                                 }
@@ -1345,7 +1853,7 @@ class UserEngine:
                                     "bearish_count": 5 if action == 'SELL' else 0,
                                     "total_signals": 1,
                                     "atr": ai_decision.get('atr', price_raw * 0.02),
-                                    "rsi": ai_decision.get('rsi', 50.0),
+                                    "rsi": ai_decision.get('rsi'),
                                     "position_sizing": position_sizing,
                                     "price_history": [],
                                     "risk_status": {},
@@ -1405,6 +1913,7 @@ class UserEngine:
                                 pos_info = None
                                 has_this_pos = False
                                 has_open_order = False
+                                has_open_sell_order = False
                                 
                                 if is_options_enabled:
                                     from option_selector import parse_occ_symbol
@@ -1422,15 +1931,119 @@ class UserEngine:
                                         o['side'].lower() == 'buy' 
                                         for o in all_orders
                                     )
+                                    has_open_sell_order = any(
+                                        parse_occ_symbol(o['symbol'])
+                                        and parse_occ_symbol(o['symbol'])['underlying'] == ticker_norm
+                                        and o['side'].lower() == 'sell'
+                                        for o in all_orders
+                                    )
                                 else:
                                     has_this_pos = any(p['symbol'].replace("/", "").upper() == ticker_norm and float(p.get('qty', 0)) > 0 for p in all_positions)
                                     has_open_order = any(o['symbol'] == ticker_norm and o['side'].lower() == 'buy' for o in all_orders)
+                                    has_open_sell_order = any(o['symbol'] == ticker_norm and o['side'].lower() == 'sell' for o in all_orders)
                                     pos_info = next((p for p in all_positions if p['symbol'].replace("/", "").upper() == ticker_norm), None)
 
                                 result["has_position"] = has_this_pos
                                 if not has_this_pos:
                                     result["exit_monitoring"] = False
 
+                                # --- CONTINUOUS SCALE-IN / SCALE-OUT GRID ---
+                                entry_grid_continuous = t_settings.get("grid_continuous_mode", False)
+                                exit_grid_continuous = t_settings.get("exit_grid_continuous_mode", False)
+                                if not is_options_enabled and (entry_grid_continuous or exit_grid_continuous):
+                                    current_p = float(result.get('price_raw', 0.0))
+                                    average_entry = _safe_float(pos_info.get('avg_price'), 0.0) if pos_info else 0.0
+                                    position_qty = _safe_float(pos_info.get('qty'), 0.0) if pos_info else 0.0
+                                    open_order_ids = {
+                                        str(order.get('id') or order.get('order_id'))
+                                        for order in all_orders
+                                        if order.get('id') or order.get('order_id')
+                                    }
+                                    grid_fill_events = []
+                                    if _reconcile_continuous_grid_pending(
+                                        t_settings,
+                                        current_qty=position_qty,
+                                        average_entry_price=average_entry,
+                                        current_price=current_p,
+                                        open_order_ids=open_order_ids,
+                                        fill_events=grid_fill_events,
+                                    ):
+                                        for fill_event in grid_fill_events:
+                                            self.last_trade_timestamps[ticker] = self.get_now()
+                                            if fill_event.get('side') == 'entry':
+                                                await self._increment_trade_count(ticker, entry=True)
+                                                continue
+                                            filled_qty = _safe_float(fill_event.get('filled_qty'), 0.0)
+                                            fill_price = _safe_float(fill_event.get('fill_price'), current_p)
+                                            entry_price = _safe_float(fill_event.get('entry_price'), average_entry)
+                                            if filled_qty > 0 and entry_price > 0:
+                                                confirmed_pl = (fill_price - entry_price) * filled_qty
+                                                current_realized = _safe_float(t_settings.get('realized_pl'), 0.0)
+                                                t_settings['realized_pl'] = round(current_realized + confirmed_pl, 2)
+                                                self._apply_compound_pl(t_settings, confirmed_pl, 'regular')
+                                            if fill_event.get('position_closed'):
+                                                from main import _clear_forecast_exit_snapshots
+                                                _clear_forecast_exit_snapshots(t_settings)
+                                                if t_settings.get('enable_signal_reset', getattr(self.config, 'ENABLE_SIGNAL_RESET', False)):
+                                                    self._set_signal_reset_lock(ticker, 'BUY', t_settings)
+                                            await self._increment_trade_count(ticker)
+                                        await self.save_settings()
+                                    grid_decision = _evaluate_continuous_grid(
+                                        t_settings,
+                                        current_price=current_p,
+                                        has_position=has_this_pos,
+                                        average_entry_price=average_entry,
+                                    )
+                                    if grid_decision.get("state_changed"):
+                                        await self.save_settings()
+                                    if grid_decision.get("action") == "BUY" and not has_open_order:
+                                        result['action'] = 'BUY'
+                                        result['reason'] = grid_decision['reason']
+                                        configured_grid_notional = max(
+                                            1.0, _safe_float(t_settings.get("grid_buy_allocation"), 1000.0)
+                                        )
+                                        cash_limited_notional = min(
+                                            configured_grid_notional,
+                                            max(0.0, _safe_float(avail_cash, 0.0) * 0.98),
+                                        )
+                                        max_position_pct = _safe_float(t_settings.get("max_position_pct"), 0.0)
+                                        if t_settings.get("enable_risk_management", True) and max_position_pct > 0:
+                                            current_position_value = abs(_safe_float(
+                                                pos_info.get("market_value") if pos_info else 0.0,
+                                                0.0,
+                                            ))
+                                            if current_position_value <= 0 and pos_info:
+                                                current_position_value = abs(
+                                                    _safe_float(pos_info.get("qty"), 0.0) * current_p
+                                                )
+                                            remaining_position_budget = max(
+                                                0.0,
+                                                (_safe_float(equity, 0.0) * max_position_pct) - current_position_value,
+                                            )
+                                            cash_limited_notional = min(
+                                                cash_limited_notional,
+                                                remaining_position_budget,
+                                            )
+                                        if cash_limited_notional >= 1.0:
+                                            result['position_sizing']['notional'] = cash_limited_notional
+                                        else:
+                                            result['action'] = 'HOLD'
+                                            result['reason'] = (
+                                                'Scale-In skipped: insufficient cash or position-risk budget.'
+                                            )
+                                    elif grid_decision.get("action") == "SELL" and not has_open_sell_order:
+                                        result['action'] = 'SELL'
+                                        result['reason'] = grid_decision['reason']
+                                    elif grid_decision.get("reason") and result.get('action') == 'HOLD':
+                                        result['reason'] = grid_decision['reason']
+
+                                    if grid_decision.get("action"):
+                                        result['continuous_grid_side'] = grid_decision.get("side")
+                                        result['continuous_grid_level'] = grid_decision.get("level")
+                                        result['continuous_grid_max_levels'] = grid_decision.get("max_levels")
+                                        result['continuous_grid_anchor_price'] = grid_decision.get("anchor_price")
+                                        result['continuous_grid_threshold_price'] = grid_decision.get("threshold_price")
+                                        result['continuous_grid_final_level'] = bool(grid_decision.get("final_level"))
                                 enable_cooldown = t_settings.get("enable_cooldown", True)
                                 if enable_cooldown and not has_this_pos:
                                     # Use custom cooldown if set, otherwise default to 4 candles
@@ -1496,7 +2109,7 @@ class UserEngine:
                                         action = result.get('action', 'HOLD')
                                         if action in ['BUY', 'SELL']:
                                             if smart_reentry_type == 'RSI':
-                                                rsi = _safe_float(result.get('rsi'), None)
+                                                rsi = _safe_float(result.get('_internal_rsi', result.get('rsi')), None)
                                                 if rsi is not None:
                                                     if action == 'BUY' and rsi > smart_reentry_rsi_call_max:
                                                         result['action'] = 'HOLD'
@@ -1531,7 +2144,7 @@ class UserEngine:
                                         from option_selector import parse_occ_symbol
                                         parsed_occ = parse_occ_symbol(pos_info['symbol'])
                                         opt_type = parsed_occ['type'] if parsed_occ else 'CALL'
-                                        
+
                                         exit_triggered = False
                                         exit_reason = ""
                                         swing_exit_lookback_days = int(t_settings.get('swing_exit_lookback_days', t_settings.get('swing_lookback_days', 20)) or 20)
@@ -1791,7 +2404,7 @@ class UserEngine:
                                         if t_settings.get('ai_autopilot', False):
                                             stop_loss = result['position_sizing'].get('stop_loss') or self.last_trailing_stops.get(ticker)
                                             take_profit = result['position_sizing'].get('take_profit')
-                                            
+
                                             if sell_mode == 'sltp' and result['action'] == 'SELL':
                                                 result['action'] = 'HOLD'
                                                 result['reason'] = 'AI Dynamic Sell Signal Ignored (Fixed SL/TP Mode)'
@@ -1839,7 +2452,7 @@ class UserEngine:
                                                 # ── NEW: Percentage-based exit ──────────────────────────────
                                                 base_stop = round(entry_price * (1 - sl_pct), precision)
                                                 take_profit = round(entry_price * (1 + tp_pct), precision)
-                                                
+
                                                 enable_trail = bool(t_settings.get('enable_pct_trail', False))
                                                 if enable_trail:
                                                     if ticker not in self.last_trailing_stops:
@@ -1854,14 +2467,46 @@ class UserEngine:
                                                     stop_loss = base_stop
                                                     sl_desc = f"Fixed SL {sl_pct*100:.1f}%"
                                                 
-                                                # In percentage mode: silence indicator SELL signals, rely on % levels
-                                                if sell_mode == 'percentage' and result['action'] == 'SELL':
+                                                grid_exit_active = bool(
+                                                    t_settings.get("exit_grid_continuous_mode", False)
+                                                    and sell_mode in ['percentage', 'hybrid_pct']
+                                                )
+
+                                                # Pure percentage mode ignores indicator exits. A continuous
+                                                # scale-out is allowed only when it came from the grid state machine.
+                                                if (
+                                                    sell_mode == 'percentage'
+                                                    and result['action'] == 'SELL'
+                                                    and result.get('continuous_grid_side') != 'exit'
+                                                ):
                                                     result['action'] = 'HOLD'
                                                     result['reason'] = 'Sell Signal Ignored (Percentage SL/TP Mode)'
                                                 
                                                 if current_price <= stop_loss:
                                                     result['action'] = 'SELL'
                                                     result['reason'] = f'Percentage Stop Loss Hit (${current_price:.{precision}f} <= ${stop_loss:.{precision}f}, {sl_desc})'
+                                                    result['continuous_grid_side'] = 'risk'
+                                                    result['continuous_grid_final_level'] = True
+                                                elif grid_exit_active:
+                                                    if result.get('continuous_grid_side') != 'exit' and result.get('action') != 'SELL':
+                                                        completed = max(0, int(_safe_float(t_settings.get('exit_grid_level'), 0)))
+                                                        max_levels = _grid_max_levels(t_settings, 'exit')
+                                                        next_level = min(max_levels, completed + 1)
+                                                        next_gain = _grid_level_pct(t_settings, 'exit', next_level)
+                                                        anchor = _safe_float(t_settings.get('exit_grid_anchor_price'), entry_price)
+                                                        next_target = anchor * (1 + next_gain / 100.0)
+                                                        _mark_exit_level_watch(
+                                                            result,
+                                                            'PCT Scale-Out',
+                                                            f'Position open. Scale-out L{next_level}/{max_levels} waits at ${next_target:.{precision}f} (+{next_gain:.2f}%); emergency {sl_desc} remains ${stop_loss:.{precision}f}.',
+                                                            {
+                                                                'price': current_price,
+                                                                'stop_loss': stop_loss,
+                                                                'next_grid_level': next_level,
+                                                                'next_grid_target': next_target,
+                                                                'grid_anchor': anchor,
+                                                            },
+                                                        )
                                                 elif current_price >= take_profit:
                                                     result['action'] = 'SELL'
                                                     result['reason'] = f'Percentage Take Profit Hit (${current_price:.{precision}f} >= ${take_profit:.{precision}f}, TP {tp_pct*100:.1f}%)'
@@ -2008,7 +2653,7 @@ class UserEngine:
                                                 if sell_mode == 'sltp' and result['action'] == 'SELL':
                                                     result['action'] = 'HOLD'
                                                     result['reason'] = 'Sell Signal Ignored (Fixed SL/TP Mode)'
-                                                    
+
                                                 if sell_mode in ['sltp', 'hybrid', 'atr', 'hybrid_atr']:
                                                     if current_price <= stop_loss:
                                                         result['action'] = 'SELL'
@@ -2039,17 +2684,62 @@ class UserEngine:
                                 if has_this_pos and pos_info and not is_options_enabled and not is_market_closed_skip:
                                     if result['action'] == 'SELL':
                                         self._cancel_exit_protection(ticker, result.get('reason', 'sell signal'))
+                                        # A full/risk exit outranks an in-flight scale order.
+                                        # Cancel both sides first so an old buy cannot refill a
+                                        # position after liquidation and an old partial sell
+                                        # cannot block the emergency close as a duplicate.
+                                        if result.get('continuous_grid_side') != 'exit' and hasattr(self.broker, 'cancel_orders_for_ticker'):
+                                            cancel_res = self.broker.cancel_orders_for_ticker(ticker)
+                                            if cancel_res.get('success'):
+                                                has_open_order = False
+                                                has_open_sell_order = False
                                     elif result['action'] == 'HOLD':
                                         protection = self._sync_exit_protection(ticker, result, pos_info, t_settings)
                                         if protection:
                                             result['exit_protection'] = protection
 
+                                # Once the entry limit is reached, block all
+                                # flat-account entries, but allow exits for an
+                                # already-open position.
+                                max_trades = max(0, int(_safe_float(t_settings.get('max_trades'), 0)))
+                                entry_trades = max(0, int(_safe_float(t_settings.get('entry_trades'), 0)))
+                                if (
+                                    max_trades > 0
+                                    and entry_trades >= max_trades
+                                    and result.get('action') in {'BUY', 'SELL'}
+                                    and (
+                                        not has_this_pos
+                                        or result.get('continuous_grid_side') == 'entry'
+                                    )
+                                ):
+                                    result['action'] = 'HOLD'
+                                    result['reason'] = (
+                                        f"Trade limit reached ({entry_trades}/{max_trades} entry trades). "
+                                        "Bot will pause after any open position is closed."
+                                    )
+
                                 options_execution_handled = False
                                 if is_options_enabled and not is_market_closed_skip:
                                     option_side = normalize_options_type(t_settings.get("options_type", "calls_only"), default="calls_only")
                                     option_intent = result.get("option_intent", "HOLD")
+                                    if (
+                                        max_trades > 0
+                                        and entry_trades >= max_trades
+                                        and not has_this_pos
+                                        and option_intent in {"OPEN_CALL", "OPEN_PUT"}
+                                    ):
+                                        option_intent = "HOLD"
+                                        result['action'] = 'HOLD'
+                                        result['option_intent'] = option_intent
+                                        result['reason'] = (
+                                            f"Trade limit reached ({entry_trades}/{max_trades} entry trades). "
+                                            "Bot will pause after any open position is closed."
+                                        )
                                     if has_this_pos and result.get('action') == 'SELL':
                                         option_intent = "CLOSE_OPTION"
+                                        result["option_intent"] = option_intent
+                                    elif not has_this_pos and result.get('action') not in ['BUY', 'SELL'] and option_intent in {"OPEN_CALL", "OPEN_PUT"}:
+                                        option_intent = "HOLD"
                                         result["option_intent"] = option_intent
                                     if option_side not in VALID_OPTION_DIRECTIONS and not has_this_pos:
                                         result['action'] = 'HOLD'
@@ -2088,21 +2778,46 @@ class UserEngine:
                                             )
                                             if success:
                                                 trade_executed = True
-                                                portfolio_count += 1
+                                                if not has_this_pos:
+                                                    portfolio_count += 1
                                                 result['action'] = 'BUY'
                                                 result['option_intent'] = option_intent
                                                 result['reason'] = f"✅ {result['reason']}"
                                                 self.last_trade_timestamps[ticker] = self.get_now()
-                                                await self._increment_trade_count(ticker)
+                                                await self._increment_trade_count(ticker, entry=True)
                                                 await self.save_settings()
 
                                     elif option_intent == "CLOSE_OPTION" and has_this_pos and pos_info:
                                         options_execution_handled = True
-                                        order_result = self.broker.close_position(
-                                            pos_info['symbol'],
-                                            market_session=t_settings.get('market_session', 'Regular'),
-                                            current_price=result.get('price_raw')
-                                        )
+
+                                        # Continuous grids are currently defined for the
+                                        # underlying stock/crypto position only. Never turn an
+                                        # unrelated options close signal into an accidental
+                                        # partial close merely because a stale flag exists.
+                                        if result.get("continuous_grid_side") == "exit":
+                                            grid_sell_pct = float(t_settings.get("exit_grid_sell_pct", 25.0)) / 100.0
+                                            total_qty = int(float(pos_info['qty']))
+                                            sell_qty = max(1, int(total_qty * grid_sell_pct))
+
+                                            if grid_sell_pct >= 0.99 or (total_qty - sell_qty) == 0:
+                                                order_result = self.broker.close_position(
+                                                    pos_info['symbol'],
+                                                    market_session=t_settings.get('market_session', 'Regular'),
+                                                    current_price=result.get('price_raw')
+                                                )
+                                            else:
+                                                order_result = self.broker.place_option_order(
+                                                    option_symbol=pos_info['symbol'],
+                                                    qty=sell_qty,
+                                                    side='sell',
+                                                    limit_price=result.get('price_raw')
+                                                )
+                                        else:
+                                            order_result = self.broker.close_position(
+                                                pos_info['symbol'],
+                                                market_session=t_settings.get('market_session', 'Regular'),
+                                                current_price=result.get('price_raw')
+                                            )
                                         if order_result.get('success'):
                                             result['order'] = order_result
                                             result['order_id'] = order_result.get('order_id')
@@ -2281,7 +2996,7 @@ class UserEngine:
                                                             except Exception as snapshot_err:
                                                                 print(f"[forecast] {ticker} CALL snapshot deferred until position fill is visible: {snapshot_err}")
                                                             self.last_trade_timestamps[ticker] = self.get_now()
-                                                            await self._increment_trade_count(ticker)
+                                                            await self._increment_trade_count(ticker, entry=True)
                                                             await self.save_settings()
                                                         else:
                                                             result['reason'] = f"Option buy failed: {order_result.get('error')}"
@@ -2299,9 +3014,9 @@ class UserEngine:
                                         if portfolio_count >= max_pos and not has_this_pos:
                                             result['action'] = 'HOLD'
                                             result['reason'] = f"Max positions reached ({portfolio_count}/{max_pos})."
-                                        elif has_this_pos:
+                                        elif has_this_pos and result.get('continuous_grid_side') != 'entry':
                                             result['action'] = 'HOLD'
-                                            result['reason'] = "Position already open. (Buy signal ignored)"
+                                            result['reason'] = "Position already open. Waiting for the next armed scale-in level."
                                         elif has_open_order:
                                             result['action'] = 'PENDING'
                                             result['reason'] = "Buy order pending."
@@ -2316,7 +3031,8 @@ class UserEngine:
                                                 result['order'] = order_result
                                                 result['order_id'] = order_result.get('order_id')
                                                 trade_executed = True
-                                                portfolio_count += 1
+                                                if not has_this_pos:
+                                                    portfolio_count += 1
                                                 
                                                 # Reset trailing stop so new strategy starts fresh from entry price
                                                 self.last_trailing_stops.pop(ticker, None)                                                
@@ -2329,7 +3045,35 @@ class UserEngine:
                                                 result['fees'] = float(order_result.get('fees', 0))
                                                 result['reason'] = f"✅ BOUGHT {result['qty']:.6f} shares at {result['price']}: {result['reason']}"
                                                 self.last_trade_timestamps[ticker] = self.get_now()
-                                                await self._increment_trade_count(ticker)
+
+                                                defer_grid_buy_confirmation = bool(
+                                                    result.get('continuous_grid_side') == 'entry'
+                                                    and not self.broker.simulation_mode
+                                                    and order_result.get('order_id')
+                                                )
+                                                if entry_grid_continuous or exit_grid_continuous:
+                                                    is_grid_buy = result.get('continuous_grid_side') == 'entry'
+                                                    if defer_grid_buy_confirmation:
+                                                        _set_continuous_grid_pending(
+                                                            t_settings,
+                                                            side='entry',
+                                                            order_id=order_result.get('order_id'),
+                                                            level=result.get('continuous_grid_level'),
+                                                            before_qty=_safe_float(pos_info.get('qty'), 0.0) if pos_info else 0.0,
+                                                            fill_price=float(result['price_raw']),
+                                                        )
+                                                    else:
+                                                        _record_continuous_grid_fill(
+                                                            t_settings,
+                                                            side="buy",
+                                                            fill_price=float(result['price_raw']),
+                                                            was_grid_order=is_grid_buy,
+                                                            had_position=has_this_pos,
+                                                        )
+                                                    await self.save_settings()
+
+                                                if not defer_grid_buy_confirmation:
+                                                    await self._increment_trade_count(ticker, entry=True)
                                                 try:
                                                     fresh_positions = self.broker.get_positions()
                                                     fresh_pos = self._find_position(fresh_positions, ticker_norm)
@@ -2533,7 +3277,7 @@ class UserEngine:
                                                                 except Exception as snapshot_err:
                                                                     print(f"[forecast] {ticker} PUT snapshot deferred until position fill is visible: {snapshot_err}")
                                                                 self.last_trade_timestamps[ticker] = self.get_now()
-                                                                await self._increment_trade_count(ticker)
+                                                                await self._increment_trade_count(ticker, entry=True)
                                                                 await self.save_settings()
                                                             else:
                                                                 result['reason'] = f"Option buy failed: {order_result.get('error')}"
@@ -2547,57 +3291,103 @@ class UserEngine:
                                         # Standard Stock/Crypto Sell execution
                                         if has_this_pos:
                                             pos_info = next((p for p in all_positions if p['symbol'].replace("/", "").upper() == ticker_norm), None)
-                                            order_result = self.broker.close_position(
-                                                ticker,
-                                                market_session=t_settings.get('market_session', 'Regular'),
-                                                current_price=result.get('price_raw')
-                                            )
-                                            if order_result.get('success'):
-                                                result['order'] = order_result
-                                                result['order_id'] = order_result.get('order_id')
-                                                trade_executed = True
-                                                portfolio_count -= 1
-                                                
-                                                order_qty = order_result.get('qty')
-                                                if order_qty and float(order_qty) > 0:
-                                                    result['qty'] = float(order_qty)
-                                                elif pos_info:
-                                                    result['qty'] = float(pos_info['qty'])
-                                                else:
-                                                    result['qty'] = 0
-
-                                                result['total_cost'] = float(pos_info['market_value']) if pos_info else order_result.get('proceeds', 0)
-                                                result['fees'] = float(order_result.get('fees', 0))
-
-                                                if pos_info:
-                                                    entry_price = float(pos_info['avg_price'])
-                                                    exit_price = result['price_raw']
-                                                    qty = float(order_result.get('qty')) if order_result.get('qty') else float(pos_info['qty'])
-                                                    pl = (exit_price - entry_price) * qty
-                                                    pl_pct = ((exit_price / entry_price) - 1) * 100
-                                                    result['pl'] = round(pl, 2)
-                                                    result['pl_pct'] = round(pl_pct, 2)
-                                                    result['reason'] = f"✅ SOLD at {result['price']} (Entry: ${entry_price:.4f}): {result['reason']}"
-                                                    
-                                                    # Accumulate realized P/L for the bot
-                                                    current_realized = t_settings.get('realized_pl', 0.0)
-                                                    t_settings['realized_pl'] = round(current_realized + pl, 2)
-                                                    self._apply_compound_pl(t_settings, pl, 'regular')
-                                                    from main import _clear_forecast_exit_snapshots
-                                                    _clear_forecast_exit_snapshots(t_settings)
-                                                    await self.save_settings()
-                                                else:
-                                                    result['reason'] = f"✅ SOLD at {result['price']}: {result['reason']}"
-                                                self.last_trade_timestamps[ticker] = self.get_now()
-                                                await self._increment_trade_count(ticker)
-
-                                                enable_signal_reset = t_settings.get('enable_signal_reset', getattr(self.config, 'ENABLE_SIGNAL_RESET', False))
-                                                if enable_signal_reset:
-                                                    self._set_signal_reset_lock(ticker, 'BUY', t_settings)
-                                                    await self.save_settings()
-                                                    print(f"[engine-{self.uid}] Signal Reset Activated: Locked BUY re-entry for standard asset {ticker}")
+                                            if has_open_sell_order:
+                                                result['action'] = 'PENDING'
+                                                result['reason'] = 'Sell order pending; no duplicate scale-out submitted.'
                                             else:
-                                                result['reason'] = f"Sell order failed: {order_result.get('error', 'Broker Error')}"
+                                                grid_scale_out = result.get('continuous_grid_side') == 'exit'
+                                                sell_fraction = _continuous_grid_sell_fraction(t_settings, result)
+                                                total_qty = float(pos_info['qty']) if pos_info else 0.0
+                                                sell_qty = total_qty * sell_fraction
+                                                closes_position = (
+                                                    not grid_scale_out
+                                                    or sell_fraction >= 0.99
+                                                    or (total_qty - sell_qty) < 0.0001
+                                                )
+
+                                                if closes_position:
+                                                    order_result = self.broker.close_position(
+                                                        ticker,
+                                                        market_session=t_settings.get('market_session', 'Regular'),
+                                                        current_price=result.get('price_raw')
+                                                    )
+                                                else:
+                                                    sell_notional = sell_qty * float(result.get('price_raw', 0.0))
+                                                    order_result = self.broker.place_order(
+                                                        symbol=ticker, notional=sell_notional, side='sell',
+                                                        market_session=t_settings.get('market_session', 'Regular'),
+                                                        current_price=result.get('price_raw')
+                                                    )
+                                                if order_result.get('success'):
+                                                    result['order'] = order_result
+                                                    result['order_id'] = order_result.get('order_id')
+                                                    trade_executed = True
+                                                    defer_grid_sell_confirmation = bool(
+                                                        grid_scale_out
+                                                        and not self.broker.simulation_mode
+                                                        and order_result.get('order_id')
+                                                    )
+                                                    if closes_position and not defer_grid_sell_confirmation:
+                                                        portfolio_count -= 1
+
+                                                    order_qty = _safe_float(order_result.get('qty'), 0.0)
+                                                    if order_qty <= 0:
+                                                        order_qty = total_qty if closes_position else sell_qty
+                                                    result['qty'] = order_qty
+                                                    exit_price = float(result.get('price_raw', 0.0))
+                                                    result['total_cost'] = _safe_float(order_result.get('proceeds'), order_qty * exit_price)
+                                                    result['fees'] = float(order_result.get('fees', 0))
+
+                                                    if pos_info:
+                                                        entry_price = float(pos_info['avg_price'])
+                                                        pl = (exit_price - entry_price) * order_qty
+                                                        pl_pct = ((exit_price / entry_price) - 1) * 100
+                                                        result['pl'] = round(pl, 2)
+                                                        result['pl_pct'] = round(pl_pct, 2)
+                                                        fill_label = 'CLOSED' if closes_position else f'SCALED OUT {sell_fraction * 100:.1f}%'
+                                                        result['reason'] = f"✅ {fill_label} at {result['price']} (Entry: ${entry_price:.4f}): {result['reason']}"
+
+                                                        if not defer_grid_sell_confirmation:
+                                                            current_realized = t_settings.get('realized_pl', 0.0)
+                                                            t_settings['realized_pl'] = round(current_realized + pl, 2)
+                                                            self._apply_compound_pl(t_settings, pl, 'regular')
+                                                        if defer_grid_sell_confirmation:
+                                                            _set_continuous_grid_pending(
+                                                                t_settings,
+                                                                side='exit',
+                                                                order_id=order_result.get('order_id'),
+                                                                level=result.get('continuous_grid_level'),
+                                                                before_qty=total_qty,
+                                                                fill_price=exit_price,
+                                                                entry_price=entry_price,
+                                                                final_level=closes_position,
+                                                            )
+                                                        else:
+                                                            _record_continuous_grid_fill(
+                                                                t_settings,
+                                                                side='sell',
+                                                                fill_price=exit_price,
+                                                                was_grid_order=grid_scale_out,
+                                                                had_position=True,
+                                                                position_closed=closes_position,
+                                                            )
+                                                        if closes_position and not defer_grid_sell_confirmation:
+                                                            from main import _clear_forecast_exit_snapshots
+                                                            _clear_forecast_exit_snapshots(t_settings)
+                                                        await self.save_settings()
+                                                    else:
+                                                        result['reason'] = f"✅ SOLD at {result['price']}: {result['reason']}"
+                                                    self.last_trade_timestamps[ticker] = self.get_now()
+                                                    if not (pos_info and defer_grid_sell_confirmation):
+                                                        await self._increment_trade_count(ticker)
+
+                                                    enable_signal_reset = t_settings.get('enable_signal_reset', getattr(self.config, 'ENABLE_SIGNAL_RESET', False))
+                                                    if closes_position and enable_signal_reset and not (pos_info and defer_grid_sell_confirmation):
+                                                        self._set_signal_reset_lock(ticker, 'BUY', t_settings)
+                                                        await self.save_settings()
+                                                        print(f"[engine-{self.uid}] Signal Reset Activated: Locked BUY re-entry for standard asset {ticker}")
+                                                else:
+                                                    result['reason'] = f"Sell order failed: {order_result.get('error', 'Broker Error')}"
                                         else:
                                             result['reason'] = "Signal SELL ignored: No open position detected."
                                             result['action'] = "HOLD"
@@ -2645,7 +3435,7 @@ class UserEngine:
             except asyncio.TimeoutError:
                 self.force_scan_trigger.clear()
 
-    async def _increment_trade_count(self, ticker: str):
+    async def _increment_trade_count(self, ticker: str, entry: bool = False):
         t_settings = self.config.TICKER_SETTINGS.get(ticker, {})
         if not t_settings:
             return
@@ -2655,6 +3445,8 @@ class UserEngine:
         
         # Increment total trades
         t_settings['total_trades'] = t_settings.get('total_trades', 0) + 1
+        if entry:
+            t_settings['entry_trades'] = t_settings.get('entry_trades', 0) + 1
         t_settings['last_trade_at'] = now.isoformat()
         
         # Increment today trades

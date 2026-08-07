@@ -87,8 +87,19 @@ class AlpacaBroker:
                     return original_request(*args, **kwargs)
                 self.client._session.request = request_with_timeout
 
-            # Test connection
-            account = self.client.get_account()
+            # Test connection with retries for transient Alpaca 500s
+            account = None
+            import time
+            for attempt in range(3):
+                try:
+                    account = self.client.get_account()
+                    break
+                except Exception as e:
+                    if attempt == 2:
+                        raise e
+                    print(f"[broker] Transient connection issue on attempt {attempt+1}: {e}. Retrying in 2s...")
+                    time.sleep(2)
+                    
             self.simulation_mode = False
             print(f"[broker] SUCCESS: Connected to Alpaca ({account.account_number}) - Equity: ${account.equity}")
             return True
@@ -97,6 +108,22 @@ class AlpacaBroker:
             self.simulation_mode = True
             self.client = None
             return False
+            
+    def _retry_api_call(self, func, *args, retries=3, delay=1.0, **kwargs):
+        """Helper to retry Alpaca API calls on transient 500 errors."""
+        import time
+        last_err = None
+        for attempt in range(retries):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                last_err = e
+                err_str = str(e).lower()
+                if "500" in err_str or "internal server error" in err_str or "timeout" in err_str:
+                    time.sleep(delay)
+                else:
+                    raise
+        raise last_err
 
     def get_account_info(self) -> dict:
         """Returns current account details."""
@@ -115,7 +142,7 @@ class AlpacaBroker:
             }
 
         try:
-            account = self.client.get_account()
+            account = self._retry_api_call(self.client.get_account)
             equity = float(account.equity)
             last_equity = float(account.last_equity)
             daily_pl = equity - last_equity
@@ -320,7 +347,7 @@ class AlpacaBroker:
             return positions
 
         try:
-            raw_positions = self.client.get_all_positions()
+            raw_positions = self._retry_api_call(self.client.get_all_positions)
             positions = []
             for p in raw_positions:
                 sym = p.symbol.replace("/", "").upper()
@@ -375,7 +402,7 @@ class AlpacaBroker:
 
         try:
             req = GetOrdersRequest(status=QueryOrderStatus.ALL, limit=limit)
-            orders = self.client.get_orders(filter=req)
+            orders = self._retry_api_call(self.client.get_orders, filter=req)
             history_list = []
             
             # Sort chronologically oldest first to build the position queues correctly
@@ -522,7 +549,7 @@ class AlpacaBroker:
         try:
             # Get only open orders
             req = GetOrdersRequest(status=QueryOrderStatus.OPEN)
-            orders = self.client.get_orders(filter=req)
+            orders = self._retry_api_call(self.client.get_orders, filter=req)
             open_list = []
             for o in orders:
                 sym = o.symbol.replace("/", "").upper()
@@ -575,7 +602,7 @@ class AlpacaBroker:
         try:
             symbol_norm = symbol.upper().replace("/", "")
             req = GetOrdersRequest(status=QueryOrderStatus.OPEN)
-            orders = self.client.get_orders(filter=req)
+            orders = self._retry_api_call(self.client.get_orders, filter=req)
             exit_orders = []
             prefix = self._bot_exit_prefix(symbol_norm)
             for o in orders:
@@ -702,7 +729,7 @@ class AlpacaBroker:
             return {'success': True, 'cancelled': 0}
 
         try:
-            orders = self.client.get_orders(filter=None)
+            orders = self._retry_api_call(self.client.get_orders, filter=None)
             ticker_norm = ticker.replace("/", "").upper()
             cancelled = 0
             for o in orders:
@@ -1215,7 +1242,7 @@ class AlpacaBroker:
             
             # Fetch closed orders to find recent fills
             req = GetOrdersRequest(status="closed", limit=limit, nested=True)
-            orders = self.client.get_orders(filter=req)
+            orders = self._retry_api_call(self.client.get_orders, filter=req)
             
             trades = []
             for o in orders:
@@ -1233,12 +1260,13 @@ class AlpacaBroker:
             print(f"[broker] Error getting recent trades: {e}")
             return []
 
-    def get_portfolio_history(self, period: str = "1M", timeframe: str = "1D") -> dict:
+    def get_portfolio_history(self, period: str = "1M", timeframe: str = "1D", force_sim: bool = False) -> dict:
         """
         Fetches the portfolio equity and profit/loss history from Alpaca API.
-        If in simulation mode, returns a high-fidelity generated portfolio history.
+        If in simulation mode or forced, returns a high-fidelity generated portfolio history.
         """
         import time
+        from alpaca.trading.requests import GetPortfolioHistoryRequest
         now_ts_cache = time.time()
         if not hasattr(self, '_ph_cache'):
             self._ph_cache = {}
@@ -1247,7 +1275,7 @@ class AlpacaBroker:
         if cache_key in self._ph_cache and (now_ts_cache - self._ph_cache[cache_key]['ts']) < ttl:
             return self._ph_cache[cache_key]['data']
 
-        if self.simulation_mode or not self.client:
+        if self.simulation_mode or not self.client or force_sim:
             # Generate highly realistic simulated portfolio history using random walk (Brownian motion)
             import random
             import time
@@ -1350,7 +1378,7 @@ class AlpacaBroker:
                 timeframe = timeframe.replace("MIN", "Min").replace("min", "Min")
                 
             req = GetPortfolioHistoryRequest(period=period, timeframe=timeframe)
-            ph = self.client.get_portfolio_history(req)
+            ph = self._retry_api_call(self.client.get_portfolio_history, req)
             
             # Extract and sanitize arrays
             raw_timestamp = list(ph.timestamp) if ph.timestamp else []
@@ -1465,6 +1493,25 @@ class AlpacaBroker:
                 clean_profit_loss = filtered_profit_loss
                 clean_profit_loss_pct = filtered_profit_loss_pct
             
+            # For non-1D periods, append the real-time live equity so the chart exactly matches the Account Total P/L
+            if period.upper() != "1D" and len(clean_timestamp) > 0 and self.client and not self.simulation_mode:
+                import time
+                now_ts = int(time.time())
+                if clean_timestamp[-1] < now_ts:
+                    try:
+                        acc = self.client.get_account()
+                        live_eq = round(float(acc.equity), 2)
+                        base_value = float(ph.base_value) if ph.base_value else last_valid_equity
+                        live_pl = round(live_eq - base_value, 2)
+                        live_pl_pct = round((live_pl / base_value) * 100, 4) if base_value > 0 else 0.0
+                        
+                        clean_timestamp.append(now_ts)
+                        clean_equity.append(live_eq)
+                        clean_profit_loss.append(live_pl)
+                        clean_profit_loss_pct.append(live_pl_pct)
+                    except Exception as acc_ex:
+                        print(f"[broker] Error getting live account details for timeline append: {acc_ex}")
+            
             res = {
                 "timestamp": clean_timestamp,
                 "equity": clean_equity,
@@ -1479,11 +1526,7 @@ class AlpacaBroker:
             if cache_key in self._ph_cache:
                 return self._ph_cache[cache_key]['data']
             # Fallback to simulated data rather than throwing an exception to avoid breaking the UI
-            # Temporarily toggle off real to run simulation
-            old_sim = self.simulation_mode
-            self.simulation_mode = True
-            fallback_data = self.get_portfolio_history(period=period, timeframe=timeframe)
-            self.simulation_mode = old_sim
+            fallback_data = self.get_portfolio_history(period=period, timeframe=timeframe, force_sim=True)
             return fallback_data
 
     def get_all_time_profit(self) -> tuple:
@@ -1533,6 +1576,9 @@ class AlpacaBroker:
                 self._all_time_pl_cache_time = now
                 return res
         except Exception as e:
+            # If Alpaca 500s on period="all", fallback to our last known cached value
+            if getattr(self, '_all_time_pl_cached', None) is not None:
+                return self._all_time_pl_cached
             print(f"[broker] Error getting all-time profit from Alpaca: {e}")
             
         # Fallback using current equity vs a default base

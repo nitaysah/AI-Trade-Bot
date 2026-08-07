@@ -19,6 +19,9 @@ class UserConfig:
         self.TIMEZONE = getattr(global_config, 'TIMEZONE', 'US/Central')
         # Versioned legal acceptance is persisted per user and enforced by the API.
         self.legal_acceptance = {}
+        # Dashboard-only regular indicator workspace. The backend owns the
+        # authoritative displayed order, enabled subset, and favorites.
+        self.dashboard_indicator_workspace = {}
         self.SCAN_INTERVAL_SECONDS = getattr(global_config, 'SCAN_INTERVAL_SECONDS', 60)
         self.OPTIONS_SCAN_INTERVAL_SECONDS = getattr(global_config, 'OPTIONS_SCAN_INTERVAL_SECONDS', 10)
         

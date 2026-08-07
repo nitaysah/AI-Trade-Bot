@@ -64,33 +64,50 @@ def calculate_delta(
     T: float,
     r: float,
     sigma: float,
-    option_type: str = "CALL"
+    option_type: str = "CALL",
+    q: float = 0.0
 ) -> float:
     """
     Calculates the option Delta.
-    Call Delta: N(d1)
-    Put Delta: N(d1) - 1
+    Call Delta: e^(-qT) * N(d1)
+    Put Delta: e^(-qT) * (N(d1) - 1)
     """
     option_type = option_type.upper()
     if S <= 0 or K <= 0:
         return 0.0
-    if T <= 0.00001:
-        if option_type == "CALL":
-            return 1.0 if S > K else 0.0
-        else:
-            return -1.0 if S < K else 0.0
-    if sigma <= 0.00001:
+    if T <= 0.00001 or sigma <= 0.00001:
         if option_type == "CALL":
             return 1.0 if S > K else 0.0
         else:
             return -1.0 if S < K else 0.0
 
-    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    discount_q = math.exp(-q * T)
     
     if option_type == "CALL":
-        return norm_cdf(d1)
+        return discount_q * norm_cdf(d1)
     else:
-        return norm_cdf(d1) - 1.0
+        return discount_q * (norm_cdf(d1) - 1.0)
+
+def calculate_gamma(
+    S: float,
+    K: float,
+    T: float,
+    r: float,
+    sigma: float,
+    option_type: str = "CALL",
+    q: float = 0.0
+) -> float:
+    """
+    Calculates option Gamma (rate of change of Delta per $1 move in underlying).
+    Same for both Call and Put options.
+    """
+    if S <= 0 or K <= 0 or T <= 0.00001 or sigma <= 0.00001:
+        return 0.0
+
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    discount_q = math.exp(-q * T)
+    return (discount_q * norm_pdf(d1)) / (S * sigma * math.sqrt(T))
 
 def calculate_theta(
     S: float,
@@ -98,30 +115,100 @@ def calculate_theta(
     T: float,
     r: float,
     sigma: float,
-    option_type: str = "CALL"
+    option_type: str = "CALL",
+    q: float = 0.0
 ) -> float:
     """
-    Calculates the option Theta (annualized decay rate).
-    To get daily theta, divide the returned value by 365.0.
+    Calculates daily option Theta (time decay per day in dollars per share).
+    Matches standard options platform OBBO convention (annualized decay / 365.0).
     """
     option_type = option_type.upper()
     if S <= 0 or K <= 0 or T <= 0.00001 or sigma <= 0.00001:
         return 0.0
 
-    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     d2 = d1 - sigma * math.sqrt(T)
 
-    discount = math.exp(-r * T)
+    discount_r = math.exp(-r * T)
+    discount_q = math.exp(-q * T)
     pdf_d1 = norm_pdf(d1)
     
-    term1 = -(S * pdf_d1 * sigma) / (2.0 * math.sqrt(T))
+    term1 = -(S * discount_q * pdf_d1 * sigma) / (2.0 * math.sqrt(T))
     
     if option_type == "CALL":
-        term2 = -r * K * discount * norm_cdf(d2)
-        return term1 + term2
+        annualized = term1 - r * K * discount_r * norm_cdf(d2) + q * S * discount_q * norm_cdf(d1)
     else:
-        term2 = r * K * discount * norm_cdf(-d2)
-        return term1 - term2
+        annualized = term1 + r * K * discount_r * norm_cdf(-d2) - q * S * discount_q * norm_cdf(-d1)
+    return annualized / 365.0
+
+def calculate_vega(
+    S: float,
+    K: float,
+    T: float,
+    r: float,
+    sigma: float,
+    option_type: str = "CALL",
+    q: float = 0.0
+) -> float:
+    """
+    Calculates option Vega (change in option price per 1 percentage point change in IV).
+    Same for Call and Put options.
+    """
+    if S <= 0 or K <= 0 or T <= 0.00001 or sigma <= 0.00001:
+        return 0.0
+
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    discount_q = math.exp(-q * T)
+    return (S * discount_q * norm_pdf(d1) * math.sqrt(T)) / 100.0
+
+def calculate_rho(
+    S: float,
+    K: float,
+    T: float,
+    r: float,
+    sigma: float,
+    option_type: str = "CALL",
+    q: float = 0.0
+) -> float:
+    """
+    Calculates option Rho (change in option price per 1 percentage point change in interest rate).
+    """
+    option_type = option_type.upper()
+    if S <= 0 or K <= 0 or T <= 0.00001 or sigma <= 0.00001:
+        return 0.0
+
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    discount_r = math.exp(-r * T)
+
+    if option_type == "CALL":
+        return (K * T * discount_r * norm_cdf(d2)) / 100.0
+    else:
+        return (-K * T * discount_r * norm_cdf(-d2)) / 100.0
+
+def calculate_greeks(
+    S: float,
+    K: float,
+    T: float,
+    r: float,
+    sigma: float,
+    option_type: str = "CALL",
+    q: float = 0.0
+) -> dict:
+    """
+    Returns Black-Scholes-Merton Greeks and a theoretical price in the platform
+    dictionary shape.  A separate historical bid/ask feed is required for an
+    executable OBBO price.
+    """
+    return {
+        "delta": round(calculate_delta(S, K, T, r, sigma, option_type, q), 4),
+        "gamma": round(calculate_gamma(S, K, T, r, sigma, option_type, q), 4),
+        "theta": round(calculate_theta(S, K, T, r, sigma, option_type, q), 4),
+        "vega": round(calculate_vega(S, K, T, r, sigma, option_type, q), 4),
+        "rho": round(calculate_rho(S, K, T, r, sigma, option_type, q), 4),
+        "iv": round(sigma, 4),
+        "price": round(black_scholes(S, K, T, r, sigma, option_type, q), 4)
+    }
 
 def calculate_historical_volatility(
     prices: Union[List[float], np.ndarray, pd.Series],
