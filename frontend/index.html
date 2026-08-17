@@ -18,6 +18,8 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="BotBulls">
     <meta name="application-name" content="BotBulls">
+    <meta name="theme-color" content="#312e81">
+    <link rel="manifest" href="manifest.webmanifest">
     <meta name="msapplication-TileImage" content="assets/bot_bulls_logo.png">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -63,6 +65,9 @@
         .modal-backdrop { background: rgba(2,6,23,.78); backdrop-filter: blur(12px); }
         .modal-panel { animation: modalIn .22s ease-out both; }
         @keyframes modalIn { from { opacity: 0; transform: translateY(12px) scale(.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+        .auth-transition-screen { background: #f5f3ff; }
+        .auth-transition-spinner { animation: authTransitionSpin 1s linear infinite; }
+        @keyframes authTransitionSpin { to { transform: rotate(360deg); } }
         @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
         /* Match the dashboard's bright purple glass language. */
         .dashboard-like .text-white { color: #312e81 !important; }
@@ -102,8 +107,18 @@
             body > main > .mobile-trade-flow > .grid { gap: 0.5rem !important; }
             body > main > .mobile-bottom-content { order: 4; margin-top: 0.5rem !important; }
             body > main > section:first-child > .mb-7 { margin-bottom: .5rem !important; }
-            body > main > section:first-child h1 { font-size: 1.7rem; line-height: 1.08; }
-            body > main > section:first-child > p { margin-top: .5rem !important; font-size: .78rem; line-height: 1.3rem; }
+            body > main > section:first-child h1 {
+                font-size: clamp(0.88rem, 4.7vw, 1.15rem);
+                line-height: 1.08;
+                letter-spacing: -0.06em;
+                white-space: nowrap;
+            }
+            body > main > section:first-child > p {
+                margin-top: .4rem !important;
+                font-size: .7rem;
+                line-height: 1.02rem;
+                letter-spacing: -0.01em;
+            }
             .steps-grid { margin-top: 0.5rem !important; gap: 0.5rem !important; }
             .steps-grid > div { padding: 0.65rem 0.5rem !important; border-radius: 0.85rem !important; }
             .steps-grid > div > div:nth-child(1) { font-size: 0.85rem !important; line-height: 1 !important; }
@@ -114,7 +129,12 @@
             .mobile-bottom-content > div > div:nth-child(2) { margin-top: .3rem; font-size: .68rem; }
             .mobile-bottom-content > div > div:last-child { font-size: .58rem; line-height: .8rem; }
             .auth-card { padding: .78rem !important; border-radius: 1.2rem; }
-            .auth-card h2 { margin-top: .3rem; font-size: 1.12rem; line-height: 1.12; }
+            .auth-card h2 {
+                margin-top: .3rem;
+                font-size: clamp(.7rem, 3.6vw, 1.12rem);
+                line-height: 1.05;
+                white-space: nowrap;
+            }
             .auth-card > .relative > p:first-of-type { margin-top: .45rem !important; font-size: .72rem; line-height: 1.1rem; }
             .agreement-disclaimer { font-size: 0.47rem !important; line-height: 0.68rem !important; }
             .auth-card .mt-7 { margin-top: .55rem !important; }
@@ -122,9 +142,31 @@
             .auth-card .mt-5 { margin-top: .5rem !important; }
             .auth-card .rounded-2xl { padding: .55rem !important; }
             .auth-card .space-y-3 > :not([hidden]) ~ :not([hidden]) { margin-top: .45rem; }
+            .auth-card .check-wrap {
+                gap: .45rem !important;
+                line-height: .8rem !important;
+            }
+            .auth-card .check-wrap label,
+            .auth-card .check-wrap > span:last-child {
+                font-size: .58rem !important;
+                line-height: .8rem !important;
+            }
+            .auth-card #termsOpen {
+                min-height: 23px;
+                padding: 0 7px;
+                font-size: .55rem !important;
+                line-height: .7rem !important;
+            }
+            .auth-card .space-y-3 > :not([hidden]) ~ :not([hidden]) {
+                margin-top: .3rem !important;
+            }
             #loginBtn { margin-top: .65rem !important; padding-top: .65rem; padding-bottom: .65rem; }
             #status { min-height: 0.3rem !important; padding-top: 0.15rem !important; }
             .auth-card .mt-3 { margin-top: 0.2rem !important; }
+            .mobile-install-guide summary { list-style: none; }
+            .mobile-install-guide summary::-webkit-details-marker { display: none; }
+            .mobile-install-guide ol { margin-top: .4rem; padding-left: 1rem; }
+            .mobile-install-guide li { margin-top: .25rem; line-height: .82rem; }
             body > footer { padding-top: 1rem !important; padding-bottom: 1rem !important; }
         }
     </style>
@@ -135,6 +177,16 @@
     <div class="fixed -left-24 top-16 h-72 w-72 rounded-full bg-cyan-500/10 blur-3xl hero-orb pointer-events-none"></div>
     <div class="fixed right-0 top-1/3 h-96 w-96 rounded-full bg-amber-400/10 blur-3xl hero-orb two pointer-events-none"></div>
     <div class="fixed left-0 top-0 h-1 w-full bg-gradient-to-r from-cyan-400 via-emerald-400 to-amber-300"></div>
+
+    <div id="authTransitionScreen" class="auth-transition-screen fixed inset-0 z-[100] hidden items-center justify-center" role="status" aria-live="polite" aria-label="Recording Agreement - Initializing">
+        <div class="flex flex-col items-center gap-4 text-indigo-800">
+            <div class="flex items-center gap-3">
+                <div id="authTransitionSpinner" class="auth-transition-spinner flex h-7 w-7 items-center justify-center rounded-full border-2 border-indigo-200 border-t-indigo-600 text-lg leading-none" aria-hidden="true">↻</div>
+                <div id="authTransitionMessage" class="text-sm font-bold tracking-tight">Recording Agreement - Initializing</div>
+            </div>
+            <button id="authTransitionRetry" type="button" class="hidden rounded-xl border border-indigo-200 bg-white px-4 py-2 text-xs font-bold text-indigo-700 shadow-sm hover:bg-indigo-50">Retry sign-in</button>
+        </div>
+    </div>
 
     <header class="relative z-10 mx-auto flex max-w-5xl flex-col items-center justify-center px-4 pt-4 pb-2 text-center sm:pt-4 sm:pb-1">
         <div class="inline-flex items-center gap-2.5 rounded-2xl border border-purple-300/30 bg-slate-900/60 px-3 py-1.5 shadow-xl shadow-purple-500/20 transition-all duration-300 hover:scale-[1.02] hover:border-purple-300/50 hover:shadow-purple-500/30 sm:px-4 sm:py-2">
@@ -148,7 +200,7 @@
             <div class="mb-4 inline-flex items-center gap-2 rounded-full border border-cyan-300/20 bg-cyan-300/5 px-3 py-1 text-[10px] font-semibold uppercase tracking-[.18em] text-cyan-200">
                 <span class="h-1.5 w-1.5 rounded-full bg-cyan-300"></span> Autonomous AI Trading Lab • A calmer way to trade
             </div>
-            <h1 class="max-w-3xl text-3xl font-bold leading-[1.05] tracking-[-.045em] text-white sm:text-5xl lg:text-6xl">Give your strategy a <span class="bg-gradient-to-r from-cyan-300 via-emerald-300 to-amber-200 bg-clip-text text-transparent">disciplined engine.</span></h1>
+            <h1 class="max-w-3xl bg-gradient-to-r from-cyan-300 via-emerald-300 to-amber-200 bg-clip-text text-3xl font-bold leading-[1.05] tracking-[-.045em] text-transparent sm:text-5xl lg:text-6xl">Give your strategy a <span>disciplined engine.</span></h1>
             <p class="mt-3.5 max-w-xl text-sm leading-6 text-slate-400 sm:text-base">BotBulls connects market data, technical signals, AI analysis, backtesting, and broker execution in one command center—so every trade has a plan before it has a position.</p>
 
             <div class="steps-grid mt-4 md:mt-5 grid max-w-xl grid-cols-3 gap-1.5 md:gap-3">
@@ -186,9 +238,12 @@
             <div class="auth-card glow relative overflow-hidden rounded-[2rem] p-6 sm:p-8">
                 <div class="scan-line pointer-events-none absolute left-0 right-0 top-0 h-20 bg-gradient-to-b from-transparent via-cyan-300/5 to-transparent"></div>
                 <div class="relative">
-                    <div class="flex items-start justify-between gap-4">
-                        <div><h2 class="text-2xl font-bold tracking-tight">Start with your own command center.</h2></div>
-                        <div class="rounded-xl border border-emerald-300/20 bg-emerald-300/10 px-2.5 py-2 text-center"><div class="h-2 w-2 mx-auto rounded-full bg-emerald-300 shadow-[0_0_12px_#6ee7b7]"></div><div class="mt-1 text-[9px] font-bold uppercase tracking-wider text-emerald-200">Ready</div></div>
+                    <div class="flex items-center justify-between gap-2">
+                        <div class="min-w-0 flex-1"><h2 class="text-lg font-bold tracking-tight whitespace-nowrap">Start with your own command center.</h2></div>
+                        <div class="auth-ready-badge flex shrink-0 items-center gap-1 rounded-xl border border-emerald-300/20 bg-emerald-300/10 px-2 py-1 text-center">
+                            <div class="h-1.5 w-1.5 rounded-full bg-emerald-300 shadow-[0_0_10px_#6ee7b7]"></div>
+                            <div class="text-[8px] font-bold uppercase tracking-wider text-emerald-200">Ready</div>
+                        </div>
                     </div>
                     <p class="mt-4 text-sm leading-6 text-slate-400">Sign in to save watchlists, bot settings, backtests, and execution history to your private workspace.</p>
 
@@ -210,7 +265,7 @@
                     </label>
                     </div>
 
-                    <button id="loginBtn" disabled class="google-btn mt-6 flex w-full items-center justify-center gap-3 rounded-xl bg-white px-5 py-4 text-sm font-bold text-slate-900">
+                    <button id="loginBtn" disabled class="google-btn mt-6 flex w-full items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm font-bold text-slate-900 shadow-md shadow-indigo-950/10">
                         <svg class="h-5 w-5" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.66l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
                         Continue with Google
                     </button>
@@ -219,6 +274,17 @@
                     <p class="agreement-disclaimer mt-1 text-center text-[7.5px] leading-3 text-slate-500/70">By continuing, you are creating an account and accepting the latest agreement version shown above. Legal protections depend on your applicable law and operating practices.</p>
                 </div>
             </div>
+            <details class="mobile-install-guide mt-3 md:hidden rounded-xl border border-indigo-200/70 bg-white/55 px-3 py-2 text-left text-[0.58rem] text-indigo-900 shadow-sm">
+                <summary class="cursor-pointer text-center font-black uppercase tracking-wider text-indigo-700" title="Tap to show mobile app instructions">📱 Tap here for app-style mobile instructions</summary>
+                <div class="mt-2 border-t border-indigo-100 pt-2 leading-tight">
+                    <p>Save this page to your phone so it opens like an app.</p>
+                    <ol class="list-decimal">
+                        <li><strong>iPhone/iPad Safari:</strong> tap Share → <strong>Add to Home Screen</strong> → Add.</li>
+                        <li><strong>Android Chrome:</strong> tap ⋮ → <strong>Add to Home screen</strong> or <strong>Install app</strong> → Add.</li>
+                        <li>Open BotBulls from the new icon. It will use an app-style window where supported; otherwise use the browser bookmark.</li>
+                    </ol>
+                </div>
+            </details>
         </section>
 
         <section class="mobile-trade-flow relative mx-auto block w-full max-w-md md:hidden" aria-label="How BotBulls automates a trade on mobile">
@@ -298,7 +364,14 @@
         const paperCheck = document.getElementById('paperCheck');
         const status = document.getElementById('status');
         const modal = document.getElementById('termsModal');
+        const authTransitionScreen = document.getElementById('authTransitionScreen');
+        const authTransitionSpinner = document.getElementById('authTransitionSpinner');
+        const authTransitionMessage = document.getElementById('authTransitionMessage');
+        const authTransitionRetry = document.getElementById('authTransitionRetry');
+        const AGREEMENT_REQUEST_TIMEOUT_MS = 15000;
         let redirecting = false;
+        let dashboardNavigationTimeout = null;
+        let dashboardNavigationCleanup = null;
         const isMobileBrowser = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.innerWidth <= 768;
 
         function readRedirectPending() {
@@ -354,6 +427,61 @@
             status.textContent = message;
             status.className = `min-h-5 pt-3 text-center text-[10px] font-bold uppercase tracking-[.15em] text-${tone}-300`;
         }
+        function showAuthTransition() {
+            authTransitionScreen.classList.remove('hidden');
+            authTransitionScreen.classList.add('flex');
+            authTransitionSpinner.classList.remove('hidden');
+            authTransitionMessage.textContent = 'Recording Agreement - Initializing';
+            authTransitionRetry.classList.add('hidden');
+            authTransitionScreen.setAttribute('aria-label', 'Recording Agreement - Initializing');
+            document.body.classList.add('overflow-hidden');
+        }
+        function showAuthTransitionError(message) {
+            authTransitionScreen.classList.remove('hidden');
+            authTransitionScreen.classList.add('flex');
+            authTransitionSpinner.classList.add('hidden');
+            authTransitionMessage.textContent = message;
+            authTransitionRetry.classList.remove('hidden');
+            authTransitionScreen.setAttribute('aria-label', message);
+            document.body.classList.add('overflow-hidden');
+        }
+        function hideAuthTransition() {
+            authTransitionScreen.classList.add('hidden');
+            authTransitionScreen.classList.remove('flex');
+            authTransitionSpinner.classList.remove('hidden');
+            authTransitionRetry.classList.add('hidden');
+            document.body.classList.remove('overflow-hidden');
+        }
+        function cancelDashboardNavigationWatch() {
+            if (dashboardNavigationTimeout) {
+                window.clearTimeout(dashboardNavigationTimeout);
+                dashboardNavigationTimeout = null;
+            }
+            if (dashboardNavigationCleanup) {
+                dashboardNavigationCleanup();
+                dashboardNavigationCleanup = null;
+            }
+        }
+        function navigateToDashboard() {
+            cancelDashboardNavigationWatch();
+            let pageLeft = false;
+            const onPageHide = () => {
+                pageLeft = true;
+                cancelDashboardNavigationWatch();
+            };
+            window.addEventListener('pagehide', onPageHide, { once: true });
+            dashboardNavigationCleanup = () => window.removeEventListener('pagehide', onPageHide);
+            dashboardNavigationTimeout = window.setTimeout(() => {
+                dashboardNavigationTimeout = null;
+                dashboardNavigationCleanup = null;
+                if (pageLeft) return;
+                redirecting = false;
+                clearGoogleRedirectMarker();
+                showAuthTransitionError('Dashboard could not be opened · retry');
+                console.error('[auth] Dashboard navigation did not start within 10 seconds.');
+            }, 10000);
+            window.location.replace('dashboard.html');
+        }
         function hasAcceptedPaperMode() {
             return readStoredVersion(PAPER_KEY);
         }
@@ -394,54 +522,86 @@
 
         async function syncAcceptanceToServer(user) {
             const token = await user.getIdToken();
-            const response = await fetch(`${API_BASE}/api/legal/acceptance`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ terms_version: TERMS_VERSION, paper_trading_acknowledged: paperCheck.checked })
-            });
-            if (!response.ok) {
-                let detail = 'Unable to record the agreement';
-                try {
-                    const errorBody = await response.json();
-                    detail = errorBody.detail?.message || errorBody.detail || detail;
-                } catch (_) {}
-                throw new Error(detail);
+            const controller = new AbortController();
+            const timeoutId = window.setTimeout(() => controller.abort(), AGREEMENT_REQUEST_TIMEOUT_MS);
+            try {
+                const response = await fetch(`${API_BASE}/api/legal/acceptance`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                    body: JSON.stringify({ terms_version: TERMS_VERSION, paper_trading_acknowledged: paperCheck.checked }),
+                    signal: controller.signal
+                });
+                if (!response.ok) {
+                    let detail = 'Unable to record the agreement';
+                    try {
+                        const errorBody = await response.json();
+                        detail = errorBody.detail?.message || errorBody.detail || detail;
+                    } catch (_) {}
+                    throw new Error(detail);
+                }
+                return response.json();
+            } catch (error) {
+                if (error?.name === 'AbortError') throw new Error('Agreement recording timed out');
+                throw error;
+            } finally {
+                window.clearTimeout(timeoutId);
             }
-            return response.json();
         }
 
         async function completeAuthenticatedUser(user) {
             if (!user || redirecting) return;
             if (hasAcceptedTerms() && hasAcceptedPaperMode()) {
                 redirecting = true;
+                showAuthTransition();
                 setStatus('Recording agreement · initializing');
                 try {
                     await syncAcceptanceToServer(user);
                     clearGoogleRedirectMarker();
                     localStorage.setItem('loginTimestamp', Date.now().toString());
-                    setTimeout(() => { window.location.href = "dashboard.html"; }, 850);
+                    navigateToDashboard();
                 } catch (error) {
+                    cancelDashboardNavigationWatch();
                     redirecting = false;
                     clearGoogleRedirectMarker();
                     const message = String(error?.message || '').toLowerCase();
                     const reason = message.includes('failed to fetch') || message.includes('network')
                         ? 'backend connection failed'
-                        : 'agreement could not be recorded';
-                    setStatus(`${reason} · retry`, 'rose');
-                    syncConsent();
+                        : message.includes('timed out')
+                            ? 'agreement recording timed out'
+                            : 'agreement could not be recorded';
+                    showAuthTransitionError(`${reason} · retry`);
                 }
             } else if (!hasAcceptedTerms()) {
+                if (returningFromGoogleRedirect) hideAuthTransition();
                 setStatus('Please review the agreement before continuing', 'amber');
             } else if (!hasAcceptedPaperMode()) {
+                if (returningFromGoogleRedirect) hideAuthTransition();
                 setStatus('Please acknowledge paper and live trading modes', 'amber');
             }
         }
 
         onAuthStateChanged(auth, async (user) => {
-            if (user) {
-                if (returningFromGoogleRedirect) setStatus('Google sign-in complete · finishing setup');
-                await completeAuthenticatedUser(user);
+            try {
+                if (user) {
+                    if (returningFromGoogleRedirect) setStatus('Google sign-in complete · finishing setup');
+                    await completeAuthenticatedUser(user);
+                }
+            } catch (error) {
+                console.error('[auth] Unexpected login completion error:', error);
+                cancelDashboardNavigationWatch();
+                redirecting = false;
+                clearGoogleRedirectMarker();
+                showAuthTransitionError('Login could not be completed · retry');
             }
+        });
+
+        authTransitionRetry.addEventListener('click', () => {
+            redirecting = false;
+            hideAuthTransition();
+            clearGoogleRedirectMarker();
+            syncConsent();
+            setStatus('Ready to retry sign-in', 'amber');
+            loginBtn.focus();
         });
 
         async function waitForRedirectUser(timeoutMs = 5000) {
@@ -495,6 +655,7 @@
         });
 
         if (returningFromGoogleRedirect) {
+            showAuthTransition();
             let redirectResultSettled = false;
             getRedirectResult(auth).then(async (result) => {
                 redirectResultSettled = true;
@@ -504,6 +665,7 @@
                 if (user) {
                     await completeAuthenticatedUser(user);
                 } else if (!redirecting) {
+                    hideAuthTransition();
                     clearGoogleRedirectMarker();
                     setStatus('Google returned without completing sign-in · retry', 'rose');
                     syncConsent();
@@ -511,6 +673,7 @@
             }).catch((error) => {
                 redirectResultSettled = true;
                 console.error('Google redirect result error:', error);
+                hideAuthTransition();
                 clearGoogleRedirectMarker();
                 const code = String(error?.code || '').replace(/^auth\//, '');
                 setStatus(code ? `Google sign-in failed (${code}) · retry` : 'Google sign-in could not be completed · please retry', 'rose');
@@ -518,6 +681,7 @@
             });
             window.setTimeout(() => {
                 if (!redirectResultSettled && !auth.currentUser && !redirecting && readRedirectPending()) {
+                    hideAuthTransition();
                     clearGoogleRedirectMarker();
                     setStatus('Google sign-in timed out · please retry', 'rose');
                     syncConsent();

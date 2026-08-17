@@ -205,23 +205,19 @@ function _showAIIndicatorLoading(ticker) {
     el.innerHTML = `
         <div class="ai-orb bg-gradient-to-r from-amber-400 to-orange-500 opacity-20"></div>
         <div class="flex flex-col gap-1.5 mb-3 relative z-10">
-            <div class="flex items-center gap-1.5 sm:gap-2">
+            <div class="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
                 <img src="assets/bot_bulls_logo.png" alt="BotBulls" class="h-4 w-4 sm:h-5 sm:w-5 rounded-md border border-amber-200/80 bg-white/80 object-cover shadow-sm shrink-0">
-                <span class="font-black text-xs text-amber-900 tracking-wide uppercase whitespace-nowrap shrink-0">BotBulls AI Analysis - ${ticker || '---'}</span>
+                <span class="flex-1 min-w-0 overflow-hidden text-ellipsis font-black text-xs text-amber-900 tracking-wide uppercase whitespace-nowrap">BotBulls AI Analysis - ${ticker || '---'}</span>
+                <div class="ai-analysis-actions flex items-center gap-1.5 sm:gap-2 relative z-30 shrink-0">
+                    <button onclick="openAISettingsModal()" title="Quant AI decision settings" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[11px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm shrink-0">⚙</button>
+                    <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm shrink-0">ℹ</button>
+                    <button disabled class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-xs text-amber-300 bg-amber-50 border border-amber-200 animate-spin shrink-0">↻</button>
+                </div>
             </div>
             <div class="flex flex-nowrap items-center justify-between gap-2 overflow-x-auto pb-1 ai-hdr-scroll" style="scrollbar-width: none; -ms-overflow-style: none;">
                 <style>.ai-hdr-scroll::-webkit-scrollbar { display: none; }</style>
                 <div class="flex flex-nowrap items-center gap-1.5 sm:gap-2 shrink-0">
                     <div class="shrink-0 flex">${badgeHtml}</div>
-                </div>
-                <div class="flex items-center gap-1.5 sm:gap-2 relative z-30 shrink-0">
-                    <button onclick="openAISettingsModal()" title="Quant AI decision settings" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[11px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm shrink-0">⚙</button>
-                    <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm shrink-0">
-                        ℹ
-                    </button>
-                    <button disabled class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-xs text-amber-300 bg-amber-50 border border-amber-200 animate-spin shrink-0">
-                        ↻
-                    </button>
                 </div>
             </div>
         </div>
@@ -248,23 +244,19 @@ function _showAIIndicatorError(err, ticker) {
     el.className = 'ai-indicator-card ai-indicator-error relative overflow-hidden p-4 rounded-xl border transition-all duration-300';
     el.innerHTML = `
         <div class="flex flex-col gap-1.5 mb-3 relative z-10">
-            <div class="flex items-center gap-1.5 sm:gap-2">
+            <div class="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
                 <img src="assets/bot_bulls_logo.png" alt="BotBulls" class="h-4 w-4 sm:h-5 sm:w-5 rounded-md border border-red-200/80 bg-white/80 object-cover shadow-sm shrink-0">
-                <span class="font-black text-xs text-red-800 tracking-wide uppercase whitespace-nowrap shrink-0">BotBulls AI Analysis - ${ticker || '---'}</span>
+                <span class="flex-1 min-w-0 overflow-hidden text-ellipsis font-black text-xs text-red-800 tracking-wide uppercase whitespace-nowrap">BotBulls AI Analysis - ${ticker || '---'}</span>
+                <div class="ai-analysis-actions flex items-center gap-1.5 sm:gap-2 relative z-30 shrink-0">
+                    <button onclick="openAISettingsModal()" title="Quant AI decision settings" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[11px] font-bold text-red-600 bg-red-100/50 hover:bg-red-100 border border-red-300/30 shrink-0">⚙</button>
+                    <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-red-500 hover:text-red-700 bg-red-100/50 hover:bg-red-100 transition-colors border border-red-300/30 shrink-0">ℹ</button>
+                    <button id="aiRefreshBtn" onclick="refreshAIIndicator()" title="Force refresh AI analysis" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-xs text-red-500 hover:text-red-700 bg-red-100/50 hover:bg-red-100 transition-colors border border-red-300/30 shrink-0">↻</button>
+                </div>
             </div>
             <div class="flex flex-nowrap items-center justify-between gap-2 overflow-x-auto pb-1 ai-hdr-scroll" style="scrollbar-width: none; -ms-overflow-style: none;">
                 <style>.ai-hdr-scroll::-webkit-scrollbar { display: none; }</style>
                 <div class="flex flex-nowrap items-center gap-1.5 sm:gap-2 shrink-0">
                     <span class="px-1.5 py-0.5 rounded text-[0.55rem] font-bold bg-red-100 text-red-600 border border-red-300/50 shrink-0 whitespace-nowrap">Error</span>
-                </div>
-                <div class="flex items-center gap-1.5 sm:gap-2 relative z-30 shrink-0">
-                    <button onclick="openAISettingsModal()" title="Quant AI decision settings" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[11px] font-bold text-red-600 bg-red-100/50 hover:bg-red-100 border border-red-300/30 shrink-0">⚙</button>
-                    <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-red-500 hover:text-red-700 bg-red-100/50 hover:bg-red-100 transition-colors border border-red-300/30 shrink-0">
-                        ℹ
-                    </button>
-                    <button id="aiRefreshBtn" onclick="refreshAIIndicator()" title="Force refresh AI analysis" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-xs text-red-500 hover:text-red-700 bg-red-100/50 hover:bg-red-100 transition-colors border border-red-300/30 shrink-0">
-                        ↻
-                    </button>
                 </div>
             </div>
         </div>
@@ -432,9 +424,14 @@ function renderAIIndicatorCard(data, fromCache = false) {
     el.className = 'ai-indicator-card relative overflow-hidden p-4 rounded-xl border border-amber-200/70 bg-gradient-to-br from-amber-50/60 to-white transition-all duration-300';
     el.innerHTML = `
         <div class="flex flex-col gap-1.5 mb-3 relative z-10">
-            <div class="flex items-center gap-1.5 sm:gap-2">
+            <div class="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
                 <img src="assets/bot_bulls_logo.png" alt="BotBulls" class="h-4 w-4 sm:h-5 sm:w-5 rounded-md border border-amber-200/80 bg-white/80 object-cover shadow-sm shrink-0">
-                <span class="font-black text-xs text-amber-900 tracking-wide uppercase whitespace-nowrap shrink-0" id="aiIndicatorHeader">BotBulls Quant AI — ${ticker}</span>
+                <span class="flex-1 min-w-0 overflow-hidden text-ellipsis font-black text-xs text-amber-900 tracking-wide uppercase whitespace-nowrap" id="aiIndicatorHeader">BotBulls Quant AI — ${ticker}</span>
+                <div class="ai-analysis-actions flex items-center gap-1.5 sm:gap-2 relative z-30 shrink-0">
+                    <button onclick="openAISettingsModal()" title="Quant AI decision settings" class="w-5 h-5 sm:w-6 sm:h-6 flex items-center justify-center rounded-full text-[11px] sm:text-[12px] font-bold text-amber-700 bg-amber-100 hover:bg-amber-200 border border-amber-300 shrink-0">⚙</button>
+                    <button onclick="openAIInfoModal()" title="How Quant AI works" class="w-5 h-5 sm:w-6 sm:h-6 flex items-center justify-center rounded-full text-[10px] font-bold text-amber-700 bg-amber-100 hover:bg-amber-200 border border-amber-300 shrink-0">ℹ</button>
+                    <button id="aiRefreshBtn" onclick="refreshAIIndicator()" title="Refresh technical decision and ticker news" class="w-5 h-5 sm:w-6 sm:h-6 flex items-center justify-center rounded-full text-[11px] sm:text-xs text-amber-700 bg-amber-100 hover:bg-amber-200 border border-amber-300 shrink-0">↻</button>
+                </div>
             </div>
             <div class="flex flex-nowrap items-center justify-between gap-2 overflow-x-auto pb-1 ai-hdr-scroll" style="scrollbar-width: none; -ms-overflow-style: none;">
                 <style>.ai-hdr-scroll::-webkit-scrollbar { display: none; }</style>
@@ -444,15 +441,10 @@ function renderAIIndicatorCard(data, fromCache = false) {
                     <span class="px-1.5 py-0.5 rounded text-[0.5rem] font-bold bg-fuchsia-50 text-fuchsia-700 border border-fuchsia-200 shrink-0 whitespace-nowrap">Decision ${activeTf}</span>
                     <span class="text-[0.5rem] text-slate-500 shrink-0 whitespace-nowrap">${escapeAIHtml(freshness)}</span>
                 </div>
-                <div class="flex items-center gap-1.5 sm:gap-2 relative z-30 shrink-0">
-                    <button onclick="openAISettingsModal()" title="Quant AI decision settings" class="w-5 h-5 sm:w-6 sm:h-6 flex items-center justify-center rounded-full text-[11px] sm:text-[12px] font-bold text-amber-700 bg-amber-100 hover:bg-amber-200 border border-amber-300 shrink-0">⚙</button>
-                    <button onclick="openAIInfoModal()" title="How Quant AI works" class="w-5 h-5 sm:w-6 sm:h-6 flex items-center justify-center rounded-full text-[10px] font-bold text-amber-700 bg-amber-100 hover:bg-amber-200 border border-amber-300 shrink-0">ℹ</button>
-                    <button id="aiRefreshBtn" onclick="refreshAIIndicator()" title="Refresh technical decision and ticker news" class="w-5 h-5 sm:w-6 sm:h-6 flex items-center justify-center rounded-full text-[11px] sm:text-xs text-amber-700 bg-amber-100 hover:bg-amber-200 border border-amber-300 shrink-0">↻</button>
-                </div>
             </div>
         </div>
 
-        <div class="grid grid-cols-2 md:grid-cols-5 gap-2 mb-3 relative z-10">
+        <div class="ai-summary-metrics grid grid-cols-2 md:grid-cols-5 gap-2 mb-3 relative z-10">
             <div class="col-span-2 md:col-span-1 rounded-xl border p-2.5 ${signalStyle.badge}">
                 <div class="text-[0.52rem] uppercase font-black tracking-wider opacity-70">Decision</div>
                 <div class="text-xs font-black mt-1">${escapeAIHtml(decisionLabel)} ${signalStyle.icon}</div>
@@ -479,7 +471,7 @@ function renderAIIndicatorCard(data, fromCache = false) {
             </div>
         </div>
 
-        <div class="rounded-xl border border-indigo-200 bg-indigo-50/55 p-3 mb-3 relative z-10">
+        <div class="ai-trade-plan rounded-xl border border-indigo-200 bg-indigo-50/55 p-3 mb-3 relative z-10">
             <div class="flex items-center justify-between gap-2 mb-2">
                 <span class="text-[0.58rem] font-black text-indigo-700 uppercase tracking-wider">Trade plan</span>
                 <span class="text-[9px] font-bold ${rr >= minRr ? 'text-emerald-700' : 'text-amber-700'}">R:R ${rr.toFixed(2)} · minimum ${minRr.toFixed(2)}${Number(data.position_size_usd || 0) > 0 ? ` · planned ${formatAIPrice(data.position_size_usd)}` : ''}</span>
@@ -494,7 +486,7 @@ function renderAIIndicatorCard(data, fromCache = false) {
             <div class="mt-1.5 text-[9px] text-slate-600"><span class="font-black">Invalidation:</span> ${escapeAIHtml(data.invalidation_condition || 'Not available')}</div>
         </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-2 mb-3 relative z-10">
+        <div class="ai-evidence-grid grid grid-cols-1 md:grid-cols-3 gap-2 mb-3 relative z-10">
             <div class="rounded-xl border border-emerald-200 bg-emerald-50/55 p-2.5"><div class="text-[0.54rem] font-black text-emerald-700 uppercase mb-1.5">Supports long</div><ul class="space-y-1 text-[9px] text-emerald-900 font-semibold">${evidenceList(bullishEvidence, '✓', 'No bullish confirmation')}</ul></div>
             <div class="rounded-xl border border-rose-200 bg-rose-50/55 p-2.5"><div class="text-[0.54rem] font-black text-rose-700 uppercase mb-1.5">Supports sell / avoid</div><ul class="space-y-1 text-[9px] text-rose-900 font-semibold">${evidenceList(bearishEvidence, '▼', 'No bearish confirmation')}</ul></div>
             <div class="rounded-xl border border-amber-200 bg-amber-50/55 p-2.5"><div class="text-[0.54rem] font-black text-amber-700 uppercase mb-1.5">Blocks or cautions</div><ul class="space-y-1 text-[9px] text-amber-900 font-semibold">${evidenceList(cautions, '⚠', 'No additional caution')}</ul></div>

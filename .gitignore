@@ -100,3 +100,12 @@ tsla_sweep_log.txt
 *.patch
 diff.txt
 /*.py
+
+# Validation, Test & Diagnostic Scripts
+backend/*_validation_test.py
+backend/*_validation.py
+backend/*_test.py
+*_validation_test.py
+*_validation.py
+backend/audit_*.py
+

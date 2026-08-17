@@ -65,6 +65,8 @@ OPTIONS_SCAN_INTERVAL_SECONDS = 10
 # ──────────────────────────────────────────────
 TRADE_COOLDOWN_SECONDS = 300    # Wait N seconds after a trade before re-evaluating same ticker
 MARKET_HOURS_ONLY = True        # If True, stocks only trade during market hours (9:30-16:00 ET)
+MAX_DAILY_DRAWDOWN = 0.05       # Halt all new bot entries after a 5% daily equity drawdown
+GLOBAL_HARD_STOP_PCT = 0.10     # Halt all new bot entries after a 10% loss from equity high-water mark
 
 # ──────────────────────────────────────────────
 # Ticker Amounts — Overrides for specific trade sizes (in USD)
@@ -139,6 +141,7 @@ RSI_OVERBOUGHT = 70
 RSI_OVERSOLD = 30
 EMA_FAST = 9
 EMA_SLOW = 21
+EMA_USE_SECOND_LINE = True
 MACD_FAST = 12
 MACD_SLOW = 26
 MACD_SIGNAL = 9
@@ -154,6 +157,8 @@ MYSTIC_PULSE_THRESHOLD = 5
 VOL_MA_PERIOD = 20
 VOL_SPIKE_MULTIPLIER = 1.5
 SMA_PERIOD = 200
+SMA_SECOND_PERIOD = 50
+SMA_USE_SECOND_LINE = True
 DAILY_HIGH_LOW_BUFFER_PCT = 0.0
 PIVOT_LEVEL_COUNT = 1
 PIVOT_TOLERANCE_PCT = 0.0

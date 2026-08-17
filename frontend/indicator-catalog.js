@@ -10,7 +10,7 @@
         { name: 'ADX Trend', label: 'ADX Trend', category: 'Trend strength' },
         { name: 'Supertrend', label: 'Supertrend', category: 'Trend' },
         { name: 'Bollinger', label: 'Bollinger Bands', category: 'Volatility' },
-        { name: 'VWAP', label: 'AVWAP', category: 'Volume / price' },
+        { name: 'VWAP', label: 'Session VWAP', category: 'Volume / price' },
         { name: 'Volume Profile', label: 'Volume Profile', category: 'Volume / structure' },
         { name: 'SMA', label: 'SMA', category: 'Trend filter' },
         { name: 'Prior Day High/Low', label: 'Prior Day High/Low', category: 'Price structure' },
@@ -54,18 +54,20 @@
         { name: 'Price Volume Trend', label: 'Price Volume Trend', category: 'Volume / trend' },
         { name: 'Ease of Movement', label: 'Ease of Movement', category: 'Volume / price' },
         { name: 'Force Index', label: 'Force Index', category: 'Volume / momentum' },
+        { name: 'Auto-AVWAP', label: 'Auto-AVWAP', category: 'Volume / price' },
     ];
 
     const configMap = {
         'RSI': ['RSI_PERIOD', 'RSI_OVERBOUGHT', 'RSI_OVERSOLD'],
         'MACD': ['MACD_FAST', 'MACD_SLOW', 'MACD_SIGNAL'],
-        'EMA Cross': ['EMA_FAST', 'EMA_SLOW'],
+        'EMA Cross': ['EMA_USE_SECOND_LINE', 'EMA_FAST', 'EMA_SLOW'],
         'ADX Trend': ['ADX_PERIOD', 'ADX_TRENDING_THRESHOLD'],
         'Supertrend': ['SUPERTREND_PERIOD', 'SUPERTREND_MULTIPLIER'],
         'Bollinger': ['BOLL_PERIOD', 'BOLL_STD_DEV'],
         'VWAP': [],
+        'Auto-AVWAP': ['VOL_MA_PERIOD', 'VOL_SPIKE_MULTIPLIER'],
         'Volume Profile': ['VOLUME_PROFILE_ROWS', 'VOLUME_PROFILE_VALUE_AREA_PCT', 'VOLUME_PROFILE_TOLERANCE_PCT', 'VOLUME_PROFILE_CONFIRMATION_CANDLES'],
-        'SMA': ['SMA_PERIOD'],
+        'SMA': ['SMA_USE_SECOND_LINE', 'SMA_PERIOD', 'SMA_SECOND_PERIOD'],
         'Prior Day High/Low': ['DAILY_HIGH_LOW_BUFFER_PCT'],
         'Pivot Points (S/R)': ['PIVOT_LEVEL_COUNT', 'PIVOT_TOLERANCE_PCT'],
         'Swing Points': ['SWING_POINTS_LOOKBACK_DAYS', 'SWING_POINTS_ENTRY_MODE', 'SWING_POINTS_LEVEL_COUNT'],
@@ -112,13 +114,13 @@
     const defaults = {
         RSI_PERIOD: 14, RSI_OVERBOUGHT: 70, RSI_OVERSOLD: 30,
         MACD_FAST: 12, MACD_SLOW: 26, MACD_SIGNAL: 9,
-        EMA_FAST: 9, EMA_SLOW: 21,
+        EMA_USE_SECOND_LINE: 1, EMA_FAST: 9, EMA_SLOW: 21,
         ADX_PERIOD: 14, ADX_TRENDING_THRESHOLD: 25,
         SUPERTREND_PERIOD: 10, SUPERTREND_MULTIPLIER: 3,
         BOLL_PERIOD: 20, BOLL_STD_DEV: 2,
         VOLUME_PROFILE_ROWS: 48, VOLUME_PROFILE_VALUE_AREA_PCT: 70,
         VOLUME_PROFILE_TOLERANCE_PCT: 0.15, VOLUME_PROFILE_CONFIRMATION_CANDLES: 1,
-        SMA_PERIOD: 200,
+        SMA_USE_SECOND_LINE: 1, SMA_PERIOD: 200, SMA_SECOND_PERIOD: 50,
         DAILY_HIGH_LOW_BUFFER_PCT: 0,
         PIVOT_LEVEL_COUNT: 1, PIVOT_TOLERANCE_PCT: 0,
         SWING_POINTS_LOOKBACK_DAYS: 20, SWING_POINTS_ENTRY_MODE: 'bounce_retest',
@@ -154,25 +156,30 @@
         OBV_SIGNAL_PERIOD: 20, CMF_PERIOD: 20, ADL_SIGNAL_PERIOD: 20,
         CHAIKIN_FAST: 3, CHAIKIN_SLOW: 10,
         PVT_SIGNAL_PERIOD: 20, EOM_PERIOD: 14, FORCE_INDEX_PERIOD: 13,
+        VOL_MA_PERIOD: 20, VOL_SPIKE_MULTIPLIER: 1.5,
     };
 
     const labels = {
         RSI_PERIOD: 'RSI Period', RSI_OVERBOUGHT: 'Overbought Level', RSI_OVERSOLD: 'Oversold Level',
         MACD_FAST: 'Fast EMA', MACD_SLOW: 'Slow EMA', MACD_SIGNAL: 'Signal EMA',
-        EMA_FAST: 'Fast EMA', EMA_SLOW: 'Slow EMA',
+        EMA_USE_SECOND_LINE: 'Use Two EMA Lines',
+        EMA_FAST: 'Primary EMA Period', EMA_SLOW: 'Secondary EMA Period',
         ADX_PERIOD: 'ADX / DI Period', ADX_TRENDING_THRESHOLD: 'Trend Strength Threshold',
         SUPERTREND_PERIOD: 'ATR Period', SUPERTREND_MULTIPLIER: 'ATR Multiplier',
         BOLL_PERIOD: 'Middle-Band Period', BOLL_STD_DEV: 'Standard-Deviation Multiplier',
         VOLUME_PROFILE_ROWS: 'Price Rows', VOLUME_PROFILE_VALUE_AREA_PCT: 'Value Area %',
         VOLUME_PROFILE_TOLERANCE_PCT: 'Level Tolerance %',
         VOLUME_PROFILE_CONFIRMATION_CANDLES: 'Acceptance Candles',
-        SMA_PERIOD: 'SMA Period',
+        SMA_USE_SECOND_LINE: 'Use Two SMA Lines',
+        SMA_PERIOD: 'Primary SMA Period',
+        SMA_SECOND_PERIOD: 'Secondary SMA Period',
         DAILY_HIGH_LOW_BUFFER_PCT: 'Breakout Buffer %',
         PIVOT_LEVEL_COUNT: 'Visible S/R Levels', PIVOT_TOLERANCE_PCT: 'Level Tolerance %',
         SWING_POINTS_LOOKBACK_DAYS: 'Structure Lookback Days',
         SWING_POINTS_ENTRY_MODE: 'Entry Confirmation Mode',
         SWING_POINTS_LEVEL_COUNT: 'Visible Structure Levels',
         MYSTIC_PULSE_THRESHOLD: 'Directional Score Threshold',
+        VOL_MA_PERIOD: 'Volume Average Period', VOL_SPIKE_MULTIPLIER: 'Spike Multiplier',
         ATR_PERIOD: 'ATR Period',
         ATR_BASELINE_PERIOD: 'Volatility Baseline Period',
         ATR_RANGE_MULTIPLIER: 'Expected Range Width (ATR)',
@@ -219,6 +226,7 @@
         'VOLUME_PROFILE_TOLERANCE_PCT', 'DAILY_HIGH_LOW_BUFFER_PCT', 'PIVOT_TOLERANCE_PCT',
         'ATR_STOP_MULTIPLIER', 'ATR_TRAIL_MULTIPLIER', 'ATR_TAKE_PROFIT_MULTIPLIER',
         'ATR_RANGE_MULTIPLIER', 'ATR_EXPANSION_THRESHOLD_PCT',
+        'VOL_SPIKE_MULTIPLIER',
         'PSAR_STEP', 'PSAR_MAX_STEP', 'KELTNER_MULTIPLIER',
         'CHOP_TREND_THRESHOLD', 'CHOP_RANGE_THRESHOLD', 'ALMA_OFFSET', 'ALMA_SIGMA',
     ]);
@@ -236,6 +244,20 @@
     inputAttrs.ATR_BASELINE_PERIOD = 'step="1" min="2" max="500"';
     inputAttrs.ATR_RANGE_MULTIPLIER = 'step="0.1" min="0.1" max="10"';
     inputAttrs.ATR_EXPANSION_THRESHOLD_PCT = 'step="0.5" min="0" max="100"';
+    inputAttrs.RSI_PERIOD = 'step="1" min="2" max="500"';
+    inputAttrs.RSI_OVERBOUGHT = 'step="1" min="0" max="100"';
+    inputAttrs.RSI_OVERSOLD = 'step="1" min="0" max="100"';
+    inputAttrs.MACD_FAST = 'step="1" min="2" max="500"';
+    inputAttrs.MACD_SLOW = 'step="1" min="2" max="500"';
+    inputAttrs.MACD_SIGNAL = 'step="1" min="2" max="500"';
+    inputAttrs.EMA_FAST = 'step="1" min="1" max="500"';
+    inputAttrs.EMA_SLOW = 'step="1" min="2" max="500"';
+    inputAttrs.SMA_PERIOD = 'step="1" min="1" max="500"';
+    inputAttrs.SMA_SECOND_PERIOD = 'step="1" min="1" max="500"';
+    inputAttrs.ADX_PERIOD = 'step="1" min="2" max="500"';
+    inputAttrs.ADX_TRENDING_THRESHOLD = 'step="1" min="0" max="100"';
+    inputAttrs.VOL_MA_PERIOD = 'step="1" min="2" max="200"';
+    inputAttrs.VOL_SPIKE_MULTIPLIER = 'step="0.1" min="0.1" max="10"';
     inputAttrs.SWING_POINTS_ENTRY_MODE = '';
 
     const toggleKeys = {
@@ -246,6 +268,7 @@
         'Supertrend': 'ENABLE_SUPERTREND',
         'Bollinger': 'ENABLE_BOLLINGER',
         'VWAP': 'ENABLE_VWAP',
+        'Auto-AVWAP': 'ENABLE_AUTO_AVWAP',
         'Volume Profile': 'ENABLE_VOLUME_PROFILE',
         'SMA': 'ENABLE_SMA',
         'Prior Day High/Low': 'ENABLE_DAILY_HIGH_LOW',
@@ -292,21 +315,22 @@
     };
 
     const guideText = {
-        'RSI': 'Measures the balance of recent gains and losses on a 0–100 scale. It is mainly an exhaustion/timing tool, not a complete trend system.',
-        'MACD': 'Measures the spread between fast and slow exponential averages, plus a signal average and histogram. It helps identify momentum direction and changes in trend speed.',
-        'EMA Cross': 'Compares a responsive fast EMA with a slower EMA. It is a trend-direction filter that is deliberately suppressed when ADX does not confirm a strengthening trend.',
-        'ADX Trend': 'Separates trend strength (ADX) from direction (+DI versus −DI). ADX itself is not bullish or bearish; the DI lines supply direction.',
+        'RSI': 'Uses textbook Wilder smoothing to compare average gains with average losses on a 0–100 scale. The first value requires one full period of completed price changes; earlier candles remain blank instead of receiving a future value.',
+        'MACD': 'Subtracts the slower completed-candle EMA from the faster EMA, smooths that MACD line into a signal line, and plots their difference as the histogram. If the two EMA settings are reversed, the lower period is automatically treated as fast.',
+        'EMA Cross': 'Dynamic EMA mode uses completed-candle exponential averages. With one line, price is compared with the primary EMA. With two lines, the lower-period EMA is automatically treated as the fast line and compared with the higher-period EMA, regardless of which period field contains the smaller number.',
+        'ADX Trend': 'Uses Wilder-smoothed ADX, +DI, and −DI. ADX measures trend strength rather than direction; +DI versus −DI supplies direction only after ADX reaches the configured strength threshold.',
         'Supertrend': 'Builds an ATR-based trailing trend line around price. It is useful for trend state and trailing-risk context, but can flip repeatedly in a range.',
         'Bollinger': 'Places standard-deviation envelopes around a moving average. The grid uses the outer portions of the channel as mean-reversion alert zones.',
-        'VWAP': 'Uses an anchored volume-weighted average price from the latest major volume event. It approximates the average price paid since that anchor.',
-        'Volume Profile': 'Builds a prior-session volume-at-price distribution. POC is the highest-volume price; VAH and VAL bound the selected value area.',
-        'SMA': 'A simple moving average smooths price equally across its lookback. The long default is intended as a broad regime filter.',
-        'Prior Day High/Low': 'Plots the previous completed session’s extremes. These levels are commonly watched for acceptance, breakout, failure, and liquidity tests.',
-        'Pivot Points (S/R)': 'Calculates classic floor-trader pivot and support/resistance levels from the previous session’s high, low, and close.',
-        'Swing Points': 'Clusters recent local highs and lows into structural support and resistance. It is price-structure logic rather than a mathematical oscillator.',
+        'VWAP': 'Calculates Session VWAP from cumulative typical price × volume divided by cumulative volume, resetting on each exchange-local session date. This is the Webull-comparable session line and is separate from Auto-AVWAP.',
+        'Auto-AVWAP': 'Automatically anchors a volume-weighted average at the latest candle whose volume qualifies as a spike versus its rolling volume average. The anchor persists until a newer qualified spike appears, so this structural line will not necessarily match Session VWAP.',
+        'Volume Profile': 'Builds a completed prior-session volume-at-price distribution and a matching right-side histogram. POC is the highest-volume price; VAH and VAL bound the selected percentage of accepted volume.',
+        'SMA': 'Dynamic SMA mode uses completed-candle simple averages without filling unavailable warm-up bars. With one line, price is compared with the primary SMA. With two lines, the lower-period SMA is automatically treated as the fast line and compared with the higher-period SMA.',
+        'Prior Day High/Low': 'Plots the previous completed session’s high and low, plus optional buffered trigger lines. It is an event-based breakout indicator: an old breakout is not repeatedly counted on every later candle.',
+        'Pivot Points (S/R)': 'Calculates classic floor-trader Pivot (P) and R1/S1 through R5/S5 from the previous completed session’s high, low, and close. The selected level count controls how much of the ladder is drawn.',
+        'Swing Points': 'Clusters rolling local highs and lows into up to five structural support and resistance levels, scored by rejection, volume, range expansion, recency, and repeated touches. It is price-structure logic rather than a mathematical oscillator.',
         'Mystic Pulse': 'Combines the app’s internal momentum, volatility, and volume features into separate bullish and bearish strength scores.',
-        'Candle Patterns': 'Classifies the latest completed OHLC formation using nearby candles. A pattern is context, not proof of a reversal by itself.',
-        'ATR Volatility': 'Measures the typical movement per completed candle with Wilder’s true-range method, including gaps. ATR is not directional. The chart also plots a causal expected range: each candle’s bands use the prior close plus or minus the prior completed ATR, so the range was available before that candle opened.',
+        'Candle Patterns': 'Classifies causal single- and multi-candle OHLC formations on every completed bar. The chart keeps recognized annotations from the latest trading day (rolling 24 hours for crypto), attached to the final candle that confirms each formation. Every candle used by the formation is emphasized with a dark outline: one bar for single-candle patterns, two for engulfing/harami/tweezer patterns, and three for star/soldier/crow/inside/outside patterns. Historical annotations are context, not proof of a reversal.',
+        'ATR Volatility': 'Measures movement per completed candle with Wilder’s true-range method, including gaps. ATR is not directional. Its expected-range bands are causal: each candle uses the prior close plus or minus the prior completed ATR multiplied by the selected width, so those bands were available before the candle opened.',
         'Stochastic': 'Compares the close with the recent high-low range. A %K/%D turn from below the oversold level supports a bullish reversal; a turn from above overbought supports a bearish reversal.',
         'Stochastic RSI': 'Applies the stochastic calculation to RSI for a faster momentum reading. Use its threshold turns as timing confirmation, especially with a separate trend filter.',
         'CCI': 'Measures price deviation from its statistical mean. The grid treats a rising oversold reading or a falling overbought reading as an exhaustion-reversal setup.',
@@ -344,20 +368,21 @@
         'Force Index': 'Combines price change and volume, then smooths the result. Positive force favors buyers; negative force favors sellers.',
     };
     const signalGuide = {
-        'RSI': 'Bullish only while RSI is below Oversold and rising; bearish only while above Overbought and falling; otherwise neutral.',
-        'MACD': 'Bullish when the MACD histogram is above zero, bearish below zero, and neutral at zero.',
-        'EMA Cross': 'When ADX is above its threshold and rising: fast EMA above slow is bullish and below is bearish. Otherwise the vote is neutral.',
-        'ADX Trend': 'ADX must be above its threshold and rising. Then +DI above −DI is bullish and −DI above +DI is bearish; otherwise neutral.',
+        'RSI': 'Bullish only while RSI is below Oversold and rising; bearish only while above Overbought and falling. RSI inside the range, moving deeper into an extreme, equal thresholds, or warm-up is neutral. The indicator contributes at most one vote.',
+        'MACD': 'A histogram above zero is one bullish vote and below zero is one bearish vote. A zero-line crossing is identified as a fresh crossover; continued positive or negative histogram remains directional. Equal fast/slow periods, zero, or warm-up is neutral.',
+        'EMA Cross': 'One line uses price versus the primary EMA. Two lines use lower-period EMA versus higher-period EMA; a fresh crossing is labeled in the reason and continued alignment keeps its direction. Warm-up is neutral, and EMA always contributes at most one vote.',
+        'ADX Trend': 'ADX at or above the strength threshold confirms a trend. Then +DI above −DI is bullish and −DI above +DI is bearish. Below the threshold or during warm-up, the vote is neutral; rising or falling ADX is reported as context rather than used as an extra gate.',
         'Supertrend': 'Bullish while the completed candle is in the upper trend state; bearish while in the lower trend state.',
         'Bollinger': 'Bullish in the lowest 20% of the band width, bearish in the highest 20%, and neutral in the middle 60%.',
-        'VWAP': 'Bullish on an AVWAP reclaim or a bullish candle bouncing near it; bearish below AVWAP; otherwise neutral while holding above.',
-        'Volume Profile': 'Bullish on acceptance above VAH, a POC reclaim, or VAL bounce. Bearish on acceptance below VAL, POC loss, or VAH rejection. Otherwise neutral.',
-        'SMA': 'Price at or above the SMA is bullish; price below it is bearish.',
-        'Prior Day High/Low': 'A fresh close through the buffered prior high is bullish; a fresh close through the buffered prior low is bearish; otherwise neutral.',
-        'Pivot Points (S/R)': 'A support bounce or pivot reclaim is bullish; a resistance rejection or pivot loss is bearish; otherwise neutral.',
-        'Swing Points': 'Confirmed support/reclaim structure is bullish; confirmed resistance/rejection structure is bearish; otherwise neutral.',
+        'VWAP': 'Bullish on a fresh Session VWAP reclaim or a bullish candle bouncing within 1.5% of it; bearish below Session VWAP; otherwise neutral while merely holding above.',
+        'Auto-AVWAP': 'Bullish on a fresh Auto-AVWAP reclaim or a bullish candle bouncing within 1.5% of it; bearish below Auto-AVWAP; otherwise neutral while merely holding above.',
+        'Volume Profile': 'Bullish on confirmed acceptance above VAH, a POC reclaim, or a VAL bounce. Bearish on confirmed acceptance below VAL, a POC loss, or a VAH rejection. Otherwise neutral inside value or without a qualifying event.',
+        'SMA': 'One line uses price versus the primary SMA. Two lines use lower-period SMA versus higher-period SMA; a fresh crossing is labeled in the reason and continued alignment keeps its direction. Warm-up is neutral, and SMA always contributes at most one vote.',
+        'Prior Day High/Low': 'A fresh completed-candle close through the buffered prior high is bullish; a fresh close through the buffered prior low is bearish. Holding beyond a level after an earlier break, remaining inside the range, or missing prior-session history is neutral.',
+        'Pivot Points (S/R)': 'An S1 support bounce within tolerance or a fresh Pivot reclaim is bullish; an R1 rejection within tolerance or a fresh Pivot loss is bearish. Otherwise, including missing prior-session history, the vote is neutral.',
+        'Swing Points': 'Bounce / Retest mode votes on confirmed support bounces and resistance rejections. Breakout / Retest mode votes on resistance reclaims and support losses. Without confirmed structure, it is neutral.',
         'Mystic Pulse': 'Bullish or bearish when its corresponding score reaches the threshold; otherwise neutral.',
-        'Candle Patterns': 'The latest completed recognized pattern supplies bullish or bearish direction; no recognized pattern is neutral.',
+        'Candle Patterns': 'Only the latest completed candle can contribute a bullish or bearish confluence vote. Earlier same-day annotations remain visible for review but do not keep contributing votes; no current recognized pattern is neutral.',
         'ATR Volatility': 'ATR must exceed the selected volatility baseline by the selected Expansion Threshold. Then an up close is bullish and a down close is bearish; normal volatility or a flat close is neutral. The range bands are context, not entry or stop orders.',
         'Stochastic': '%K above %D after a bullish cross or while oversold is bullish; %K below %D after a bearish cross or while overbought is bearish; otherwise neutral.',
         'Stochastic RSI': '%K above %D after a bullish cross or while oversold is bullish; the inverse after a bearish cross or while overbought is bearish; otherwise neutral.',
@@ -409,7 +434,7 @@
         name,
         `<div class="space-y-3">`
         + `<p><strong>Purpose:</strong> ${body}</p>`
-        + `<p><strong>Where it appears:</strong> ${subchartNames.has(name) ? 'A separate sub-chart below price.' : (name === 'Candle Patterns' ? 'Markers on the main price chart.' : 'The main price chart.')}</p>`
+        + `<p><strong>Where it appears:</strong> ${subchartNames.has(name) ? 'A separate sub-chart below price.' : (name === 'Candle Patterns' ? 'Confirmation markers and emphasized formation candles on the main price chart.' : 'The main price chart.')}</p>`
         + `<p><strong>How this app votes:</strong> ${signalGuide[name]}</p>`
         + `<p class="text-xs text-slate-500"><strong>Default settings:</strong> ${(configMap[name] || []).length ? configMap[name].map(key => `${labels[key] || key}: ${defaults[key]}`).join(' · ') : 'No adjustable calculation setting for this indicator.'}</p>`
         + `<p class="text-xs text-slate-500"><strong>Beginner note:</strong> Bullish and bearish are rule-based confluence votes, not guaranteed trades. Confirm with market structure, liquidity, and risk limits; test changes on the same ticker and timeframe before deployment.</p>`
@@ -592,7 +617,9 @@
                 container.appendChild(buildStrategyCard(item, target.mode, target.checkClass, target.handler));
             });
             const standardNames = new Set(catalog.map(item => item.name));
-            const defaultShown = new Set(catalog.slice(0, 10).map(item => item.name));
+            const defaultShown = new Set(
+                (window.STANDARD_INDICATOR_DEFAULT_NAMES || catalog.slice(0, 12)).slice(0, 12)
+            );
             container.querySelectorAll('.indicator-card').forEach(card => {
                 const name = card.querySelector('input.strategy-indicator-check')?.value;
                 if (!standardNames.has(name)) return;
@@ -604,8 +631,45 @@
         });
     }
 
+    function wireMovingAverageLineToggles(container) {
+        if (!container) return;
+        const pairs = [
+            ['EMA_USE_SECOND_LINE', 'EMA_SLOW'],
+            ['SMA_USE_SECOND_LINE', 'SMA_SECOND_PERIOD'],
+        ];
+        pairs.forEach(([toggleKey, secondaryKey]) => {
+            const toggle = container.querySelector(`[data-key="${toggleKey}"]`);
+            const secondary = container.querySelector(`[data-key="${secondaryKey}"]`);
+            if (!toggle || !secondary) return;
+            const sync = () => {
+                secondary.disabled = !toggle.checked;
+                const wrapper = secondary.closest('.flex-col');
+                if (wrapper) {
+                    wrapper.classList.toggle('opacity-45', !toggle.checked);
+                    wrapper.classList.toggle('pointer-events-none', !toggle.checked);
+                }
+            };
+            toggle.addEventListener('change', sync);
+            sync();
+        });
+    }
+
     window.STANDARD_INDICATOR_CATALOG = Object.freeze(catalog.map(item => Object.freeze({ ...item })));
     window.STANDARD_INDICATOR_NAMES = Object.freeze(catalog.map(item => item.name));
+    window.STANDARD_INDICATOR_DEFAULT_NAMES = Object.freeze([
+        'RSI',
+        'EMA Cross',
+        'SMA',
+        'VWAP',
+        'ADX Trend',
+        'Supertrend',
+        'ATR Volatility',
+        'Volume Profile',
+        'Candle Patterns',
+        'Prior Day High/Low',
+        'Swing Points',
+        'Pivot Points (S/R)',
+    ]);
     window.STANDARD_INDICATOR_CONFIG_MAP = Object.freeze(configMap);
     window.STANDARD_INDICATOR_DEFAULTS = Object.freeze(defaults);
     window.STANDARD_INDICATOR_PARAM_LABELS = Object.freeze(labels);
@@ -615,6 +679,7 @@
     window.ensureStandardIndicatorCards = ensureStandardIndicatorCards;
     window.getBotBulls5PatternSummary = botBulls5PatternSummary;
     window.renderBotBulls5PatternSummary = renderBotBulls5PatternSummary;
+    window.wireMovingAverageLineToggles = wireMovingAverageLineToggles;
 
     ensureStandardIndicatorCards();
     if (document.readyState === 'loading') {

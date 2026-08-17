@@ -10,6 +10,7 @@ from options_pricing import black_scholes, calculate_historical_volatility, calc
 from option_selector import add_us_market_trading_days, trading_days_until, _strike_profile, _target_strike_from_profile
 from indicator_catalog import EXTENSION_CHART_FIELDS, EXTENSION_CHART_GROUPS
 from prior_day_high_low import buffered_prior_day_levels, resolve_high_low_buffer_pct
+from trade_guards import is_stop_exit, opening_blackout_reason, quote_liquidity_reason, stabilization_reason
 
 def _unix_timestamp(t):
     try:
@@ -42,6 +43,7 @@ def _chart_indicator_fields(row, digits=4, enabled_indicators=None, buy_mode="",
         "ema_fast": _safe_chart_level(row, "EMA_Fast", digits),
         "ema_slow": _safe_chart_level(row, "EMA_Slow", digits),
         "sma": _safe_chart_level(row, "SMA", digits),
+        "sma_secondary": _safe_chart_level(row, "SMA_Secondary", digits),
         "vwap": _safe_chart_level(row, "VWAP", digits),
         "supertrend": _safe_chart_level(row, "Supertrend", digits),
         "supertrend_up": _safe_chart_bool(row, "Supertrend_Trend"),
@@ -144,8 +146,9 @@ def _chart_indicator_fields(row, digits=4, enabled_indicators=None, buy_mode="",
     keys = set()
     groups = {
         "EMA Cross": {"ema_fast", "ema_slow"},
-        "SMA": {"sma"},
+        "SMA": {"sma", "sma_secondary"},
         "VWAP": {"vwap"},
+        "Auto-AVWAP": {"auto_avwap"},
         "Supertrend": {"supertrend", "supertrend_up"},
         "Bollinger": {"boll_upper", "boll_middle", "boll_lower"},
         "RSI": {"rsi"},
@@ -202,7 +205,7 @@ class OptionsBacktester:
         option_contract_fee: float = 0.65,
         cancel_event=None,
         intraday_only: bool = False,
-        enable_signal_reset: bool = False,
+        enable_signal_reset: bool = True,
         enable_smart_reentry: bool = False,
         smart_reentry_type: str = "RSI",
         smart_reentry_rsi_call_max: int = 70,
@@ -237,7 +240,12 @@ class OptionsBacktester:
         market_session: str = "Regular",
         enable_risk: bool = True,
         daily_high_low_buffer_pct: float = None,
-        indicator_overrides: dict = None
+        indicator_overrides: dict = None,
+        post_stop_stabilization_bars: int = 3,
+        max_consecutive_losses: int = 2,
+        max_daily_loss_pct: float = 0.0,
+        options_max_entry_spread_pct: float = 5.0,
+        options_market_open_blackout_minutes: int = 15,
     ):
         self.ticker = ticker
         self.timeframe = timeframe
@@ -331,6 +339,15 @@ class OptionsBacktester:
         self.signal_locked_direction = None
         self.last_exit_time = None
         self.pending_order = None
+        self.post_stop_stabilization_bars = max(0, int(post_stop_stabilization_bars or 0))
+        self.max_consecutive_losses = max(0, int(max_consecutive_losses or 0))
+        self.max_daily_loss_pct = max(0.0, float(max_daily_loss_pct or 0.0))
+        self.options_max_entry_spread_pct = min(100.0, max(0.0, float(options_max_entry_spread_pct or 0.0)))
+        self.options_market_open_blackout_minutes = max(0, int(options_market_open_blackout_minutes or 0))
+        self.stop_exit_state = None
+        self.consecutive_losses = 0
+        self.daily_realized_pl = 0.0
+        self.guard_session_date = None
         self.raw_df = df
         self.df = None
         self.options_csv_cache = {}
@@ -615,23 +632,9 @@ class OptionsBacktester:
             raw_df = self.raw_df
         else:
             # Fetch with padding where the provider can actually satisfy it.
-            yahoo_intraday_limits = {
-                "1Min": 7,
-                "2Min": 60,
-                "3Min": 60,
-                "5Min": 60,
-                "10Min": 60,
-                "15Min": 60,
-                "30Min": 60,
-                "1Hour": 730,
-                "2Hour": 730,
-                "4Hour": 730,
-            }
-            requested_days = max(1, (self.end_date - self.start_date).days)
-            max_days = yahoo_intraday_limits.get(self.timeframe)
-            warmup_days = 100 if max_days is None else max(0, min(100, max_days - requested_days))
+            warmup_days = 100
             padded_start = self.start_date - datetime.timedelta(days=warmup_days)
-            raw_df = get_historical_data(self.ticker, self.timeframe, padded_start, self.end_date, force_yahoo=True)
+            raw_df = get_historical_data(self.ticker, self.timeframe, padded_start, self.end_date, force_yahoo=False)
 
         if raw_df is None or raw_df.empty:
             return {"error": "No underlying historical data found."}
@@ -650,7 +653,16 @@ class OptionsBacktester:
             return {"error": "Options trading is not supported for cryptocurrency tickers."}
         if not is_crypto and self.timeframe != "1Day":
             try:
-                time_idx = raw_df.index.time
+                time_index = pd.DatetimeIndex(raw_df.index)
+                if time_index.tz is None:
+                    time_index = time_index.tz_localize(
+                        "America/New_York",
+                        ambiguous="infer",
+                        nonexistent="shift_forward",
+                    )
+                else:
+                    time_index = time_index.tz_convert("America/New_York")
+                time_idx = time_index.time
                 start_time = pd.to_datetime("09:30:00").time()
                 # Options on index ETFs (SPY, QQQ, DIA, IWM) trade until 4:15 PM ET. Others trade until 4:00 PM ET.
                 end_str = "16:15:00" if clean_ticker in ["SPY", "QQQ", "DIA", "IWM"] else "16:00:00"
@@ -1079,8 +1091,7 @@ class OptionsBacktester:
                 if self.enable_signal_reset and self.signal_locked_direction:
                     locked_dir = self.signal_locked_direction
                     reset_count = bullish_count if locked_dir == "BUY" else bearish_count
-                    reset_threshold = buy_threshold if locked_dir == "BUY" else sell_threshold
-                    if entry_action != locked_dir and reset_count < reset_threshold:
+                    if entry_action != locked_dir and reset_count <= 0:
                         self.signal_locked_direction = None
 
                 allowed, block_reason = self._entry_guard_allows(entry_action, current_bar, current_price, timestamp)
@@ -1145,6 +1156,22 @@ class OptionsBacktester:
             return "Trade Cooldown Active"
         return None
 
+    def _refresh_guard_session(self, timestamp):
+        session_date = timestamp.date()
+        if self.guard_session_date != session_date:
+            self.guard_session_date = session_date
+            self.daily_realized_pl = 0.0
+            self.consecutive_losses = 0
+
+    def _loss_circuit_reason(self, timestamp):
+        self._refresh_guard_session(timestamp)
+        if self.max_consecutive_losses > 0 and self.consecutive_losses >= self.max_consecutive_losses:
+            return f"Loss circuit breaker active ({self.consecutive_losses} consecutive losses)"
+        loss_limit = self.initial_capital * self.max_daily_loss_pct
+        if loss_limit > 0 and self.daily_realized_pl <= -loss_limit:
+            return f"Daily strategy-loss limit active (${abs(self.daily_realized_pl):.2f} loss)"
+        return None
+
     def _smart_reentry_allows(self, action, bar, current_price):
         if action not in ["BUY", "SELL"] or not self.enable_smart_reentry:
             return True, None
@@ -1185,6 +1212,33 @@ class OptionsBacktester:
         cooldown_reason = self._cooldown_block_reason(timestamp)
         if cooldown_reason:
             return False, cooldown_reason
+
+        circuit_reason = self._loss_circuit_reason(timestamp)
+        if circuit_reason:
+            return False, circuit_reason
+
+        opening_reason = opening_blackout_reason(
+            timestamp,
+            self.options_market_open_blackout_minutes,
+            enabled=True,
+        )
+        if opening_reason:
+            return False, opening_reason
+
+        if self.stop_exit_state:
+            from engine import parse_timeframe_to_seconds
+            elapsed_seconds = max(0.0, (timestamp - self.stop_exit_state["time"]).total_seconds())
+            elapsed_bars = int(elapsed_seconds // max(1, parse_timeframe_to_seconds(self.timeframe)))
+            stabilization = stabilization_reason(
+                action,
+                bar,
+                self.stop_exit_state,
+                elapsed_bars,
+                self.post_stop_stabilization_bars,
+            )
+            if stabilization:
+                return False, stabilization
+            self.stop_exit_state = None
 
         return self._smart_reentry_allows(action, bar, current_price)
 
@@ -1319,6 +1373,40 @@ class OptionsBacktester:
         entry_premium, entry_iv, entry_price_source, entry_contract_symbol = self._resolve_option_valuation(
             timestamp, underlying_price, strike, option_type, expiration_close, vol, "BUY"
         )
+
+        snapshot = self._lookup_option_snapshot(
+            timestamp,
+            strike,
+            option_type,
+            self._trading_dte(timestamp, expiration_close),
+            expiration_close,
+            entry_contract_symbol,
+        )
+        if snapshot and snapshot.get("bid") and snapshot.get("ask"):
+            liquidity_reason, _, _ = quote_liquidity_reason(
+                bid=snapshot.get("bid"),
+                ask=snapshot.get("ask"),
+                max_spread_pct=self.options_max_entry_spread_pct,
+            )
+            if liquidity_reason:
+                if len(self.skipped_entries) < 25:
+                    self.skipped_entries.append({
+                        "time": self._to_utc_iso(timestamp),
+                        "reason": liquidity_reason,
+                        "option_type": option_type,
+                    })
+                return
+        elif entry_price_source == "black_scholes_proxy":
+            modeled_mid = max(0.01, entry_premium - (self.spread_width / 2.0))
+            modeled_spread_pct = (self.spread_width / modeled_mid) * 100.0
+            if modeled_spread_pct > self.options_max_entry_spread_pct:
+                if len(self.skipped_entries) < 25:
+                    self.skipped_entries.append({
+                        "time": self._to_utc_iso(timestamp),
+                        "reason": f"Liquidity filter: modeled spread {modeled_spread_pct:.2f}% exceeds {self.options_max_entry_spread_pct:.2f}%",
+                        "option_type": option_type,
+                    })
+                return
 
         if entry_premium <= 0:
             return
@@ -1497,6 +1585,15 @@ class OptionsBacktester:
         print(f"[{self._to_central_str(timestamp)}] SELL {self.ticker} {self.position['option_type']} @ ${option_premium:.4f} | P/L: ${pl:.2f} ({pl_pct:+.2f}%) | Reason: {reason}{stop_note}")
         if self.enable_signal_reset:
             self.signal_locked_direction = 'BUY' if self.position['option_type'] == 'CALL' else 'SELL'
+        self._refresh_guard_session(timestamp)
+        self.daily_realized_pl += float(pl)
+        self.consecutive_losses = self.consecutive_losses + 1 if pl < 0 else 0
+        if is_stop_exit(reason):
+            self.stop_exit_state = {
+                "direction": "BUY" if self.position['option_type'] == 'CALL' else "SELL",
+                "exit_price": float(underlying_price),
+                "time": timestamp,
+            }
         self.last_exit_time = timestamp
         self.position = None
 
@@ -1538,12 +1635,6 @@ class OptionsBacktester:
                         })
                     except Exception:
                         continue
-            # Mask out candlestick patterns for all candles except the single last candle to eliminate chart noise
-            if "Candle Patterns" in self.enabled_indicators and len(candles) > 1:
-                for c in candles[:-1]:
-                    c["cdl_name"] = "Neutral"
-                    c["cdl_bullish"] = False
-                    c["cdl_bearish"] = False
             no_trade_reason = (
                 self.skipped_entries[0]["reason"]
                 if self.skipped_entries
@@ -1692,13 +1783,6 @@ class OptionsBacktester:
                 })
             except Exception:
                 continue
-
-        # Mask out candlestick patterns for all candles except the single last candle to eliminate chart noise
-        if "Candle Patterns" in self.enabled_indicators and len(candles) > 1:
-            for c in candles[:-1]:
-                c["cdl_name"] = "Neutral"
-                c["cdl_bullish"] = False
-                c["cdl_bearish"] = False
 
         # Calculate average Greeks across all option executions
         avg_greeks = {}

@@ -10,7 +10,7 @@
     const STORAGE_KEY = `botbullsIndicatorWorkspace:${PAGE_CONTEXT}:v3`;
     const LEGACY_STORAGE_KEY = `botbullsIndicatorWorkspace:${PAGE_CONTEXT}:v2`;
     const DASHBOARD_SHARED_SCOPE_KEY = 'dashboard:GLOBAL';
-    const DISPLAY_LIMIT = 10;
+    const DISPLAY_LIMIT = 12;
     const FALLBACK_INDICATORS = [
         { name: 'RSI', label: 'RSI', category: 'Momentum' },
         { name: 'MACD', label: 'MACD', category: 'Trend' },
@@ -18,7 +18,7 @@
         { name: 'ADX Trend', label: 'ADX Trend', category: 'Trend strength' },
         { name: 'Supertrend', label: 'Supertrend', category: 'Trend' },
         { name: 'Bollinger', label: 'Bollinger Bands', category: 'Volatility' },
-        { name: 'VWAP', label: 'AVWAP', category: 'Volume / price' },
+        { name: 'VWAP', label: 'Session VWAP', category: 'Volume / price' },
         { name: 'Volume Profile', label: 'Volume Profile', category: 'Volume / structure' },
         { name: 'SMA', label: 'SMA', category: 'Trend filter' },
         { name: 'Prior Day High/Low', label: 'Prior Day High/Low', category: 'Price structure' },
@@ -26,13 +26,57 @@
         { name: 'Swing Points', label: 'Swing Points', category: 'Price structure' },
         { name: 'Mystic Pulse', label: 'Mystic Pulse', category: 'Custom momentum' },
         { name: 'Candle Patterns', label: 'Candle Patterns', category: 'Price action' },
+        { name: 'Auto-AVWAP', label: 'Auto-AVWAP', category: 'Volume / price' },
     ];
     const INDICATORS = Array.isArray(window.STANDARD_INDICATOR_CATALOG)
-        && window.STANDARD_INDICATOR_CATALOG.length === 50
+        && window.STANDARD_INDICATOR_CATALOG.length === 51
         ? window.STANDARD_INDICATOR_CATALOG
         : FALLBACK_INDICATORS;
-    const DEFAULT_SHOWN = INDICATORS.slice(0, DISPLAY_LIMIT).map(item => item.name);
+    // Stable popularity order keeps the selector readable and prevents an
+    // indicator from jumping to a different row when it is toggled off/on.
+    // The remaining catalog entries retain their canonical catalog order.
+    const POPULAR_INDICATOR_NAMES = [
+        'RSI',
+        'EMA Cross',
+        'SMA',
+        'VWAP',
+        'ADX Trend',
+        'Supertrend',
+        'ATR Volatility',
+        'Volume Profile',
+        'Candle Patterns',
+        'Prior Day High/Low',
+        'Swing Points',
+        'Pivot Points (S/R)',
+        'MACD',
+        'Bollinger',
+        'Stochastic',
+        'Ichimoku Cloud',
+        'Parabolic SAR',
+        'Donchian Channels',
+        'Keltner Channels',
+        'Money Flow Index',
+        'On-Balance Volume',
+        'Aroon',
+        'Choppiness Index',
+        'Auto-AVWAP',
+    ];
+    const popularityRank = new Map(POPULAR_INDICATOR_NAMES.map((name, index) => [name, index]));
+    const catalogIndex = new Map(INDICATORS.map((item, index) => [item.name, index]));
+    const DISPLAY_ORDER = [...INDICATORS].sort((a, b) => (
+        (popularityRank.get(a.name) ?? POPULAR_INDICATOR_NAMES.length + catalogIndex.get(a.name))
+        - (popularityRank.get(b.name) ?? POPULAR_INDICATOR_NAMES.length + catalogIndex.get(b.name))
+    ));
     const KNOWN_NAMES = new Set(INDICATORS.map(item => item.name));
+    const DEFAULT_SHOWN = (
+        Array.isArray(window.STANDARD_INDICATOR_DEFAULT_NAMES)
+            ? window.STANDARD_INDICATOR_DEFAULT_NAMES
+            : DISPLAY_ORDER.slice(0, 12).map(item => item.name)
+    ).filter(name => KNOWN_NAMES.has(name)).slice(0, DISPLAY_LIMIT);
+    const LEGACY_DEFAULT_SETS = [
+        new Set(['RSI', 'MACD', 'EMA Cross', 'ADX Trend', 'Supertrend', 'Bollinger', 'VWAP', 'Volume Profile', 'SMA', 'Prior Day High/Low']),
+        new Set(['RSI', 'MACD', 'EMA Cross', 'SMA', 'Bollinger', 'VWAP', 'ADX Trend', 'Supertrend', 'Stochastic', 'ATR Volatility']),
+    ];
 
     let store = loadStore();
     let activeTab = 'all';
@@ -43,7 +87,6 @@
     let modal = null;
     let surfaces = [];
     let applyQueued = false;
-    let dashboardReplacementName = '';
 
     function uniqueKnownNames(values) {
         const result = [];
@@ -53,10 +96,12 @@
         return result;
     }
 
-    function completeDashboardShown(values) {
+    function normalizeShown(values) {
         const shown = uniqueKnownNames(values);
-        shown.push(...INDICATORS.map(item => item.name).filter(name => !shown.includes(name)));
-        return shown.slice(0, DISPLAY_LIMIT);
+        const isLegacyDefault = shown.length === 10
+            && LEGACY_DEFAULT_SETS.some(legacy => shown.every(name => legacy.has(name)));
+        if (isLegacyDefault) return [...DEFAULT_SHOWN];
+        return (shown.length ? shown : [...DEFAULT_SHOWN]).slice(0, DISPLAY_LIMIT);
     }
 
     function normalizeTicker(value) {
@@ -101,11 +146,8 @@
                 const scopes = {};
                 Object.entries(saved.scopes || {}).forEach(([scopeKey, scopeState]) => {
                     let shown = Array.isArray(scopeState?.shown)
-                        ? uniqueKnownNames(scopeState.shown).slice(0, DISPLAY_LIMIT)
+                        ? normalizeShown(scopeState.shown)
                         : [...DEFAULT_SHOWN];
-                    if (PAGE_CONTEXT === 'dashboard' && scopeKey === DASHBOARD_SHARED_SCOPE_KEY) {
-                        shown = completeDashboardShown(shown);
-                    }
                     scopes[scopeKey] = {
                         shown,
                     };
@@ -139,8 +181,7 @@
             let shown = [...DEFAULT_SHOWN];
 
             // Migrate the active ticker's existing Dashboard grid into the
-            // new shared scope. This keeps the user's current arrangement
-            // instead of unexpectedly resetting it to the default ten.
+            // new shared scope while preserving the user's selected count.
             if (scopeKey === DASHBOARD_SHARED_SCOPE_KEY) {
                 const activeTicker = normalizeTicker(tickerOverride) || getPageTicker();
                 const activeTickerScope = activeTicker
@@ -149,7 +190,7 @@
                 const fallbackScope = activeTickerScope || Object.entries(store.scopes)
                     .find(([key]) => key.startsWith('dashboard:') && key !== DASHBOARD_SHARED_SCOPE_KEY)?.[1];
                 if (Array.isArray(fallbackScope?.shown)) {
-                    shown = completeDashboardShown(fallbackScope.shown);
+                    shown = normalizeShown(fallbackScope.shown);
                 }
             }
 
@@ -221,10 +262,7 @@
     }
 
     function orderSurface(cardsByName, surfaceState) {
-        const orderedNames = [
-            ...surfaceState.shown,
-            ...INDICATORS.map(item => item.name).filter(name => !surfaceState.shown.includes(name)),
-        ];
+        const orderedNames = DISPLAY_ORDER.map(item => item.name);
         orderedNames.forEach((name, index) => {
             const card = cardsByName.get(name);
             if (!card) return;
@@ -397,50 +435,25 @@
     }
 
     function sortedCatalog() {
-        const surfaceState = getSurfaceState();
-        const shownOrder = new Map(surfaceState.shown.map((name, index) => [name, index]));
-        return INDICATORS
+        return DISPLAY_ORDER
             .filter(item => activeTab === 'all' || store.favorites.includes(item.name))
             .filter(item => {
                 const query = searchQuery.trim().toLowerCase();
                 return !query || `${item.name} ${item.label} ${item.category}`.toLowerCase().includes(query);
             })
-            .slice()
-            .sort((a, b) => {
-                const aShown = shownOrder.has(a.name);
-                const bShown = shownOrder.has(b.name);
-                if (aShown !== bShown) return aShown ? -1 : 1;
-                if (aShown && bShown) return shownOrder.get(a.name) - shownOrder.get(b.name);
-                const aFavorite = store.favorites.includes(a.name);
-                const bFavorite = store.favorites.includes(b.name);
-                if (aFavorite !== bFavorite) return aFavorite ? -1 : 1;
-                return INDICATORS.indexOf(a) - INDICATORS.indexOf(b);
-            });
+            .slice();
     }
 
     function toggleShown(name) {
         const surfaceState = getSurfaceState();
         const previousShown = [...surfaceState.shown];
-        const dashboardExactTen = PAGE_CONTEXT === 'dashboard'
-            && activeSurface?.contextLabel === 'dashboard';
-
-        if (dashboardExactTen && surfaceState.shown.includes(name)) {
-            if (surfaceState.shown.length >= DISPLAY_LIMIT) {
-                dashboardReplacementName = dashboardReplacementName === name ? '' : name;
-            }
-            renderModal();
-            return;
-        }
-
-        if (dashboardExactTen && surfaceState.shown.length >= DISPLAY_LIMIT) {
-            const replacementIndex = surfaceState.shown.indexOf(dashboardReplacementName);
-            if (replacementIndex < 0) {
+        if (surfaceState.shown.includes(name)) {
+            // Keep one regular indicator available so every page always has
+            // a usable signal pool.
+            if (surfaceState.shown.length <= 1) {
                 renderModal();
                 return;
             }
-            surfaceState.shown[replacementIndex] = name;
-            dashboardReplacementName = '';
-        } else if (surfaceState.shown.includes(name)) {
             surfaceState.shown = surfaceState.shown.filter(item => item !== name);
         } else {
             if (surfaceState.shown.length >= DISPLAY_LIMIT) return;
@@ -480,24 +493,21 @@
 
         if (PAGE_CONTEXT === 'dashboard' && scopeKey === DASHBOARD_SHARED_SCOPE_KEY) {
             title.textContent = 'Add Indicator — Dashboard';
-            description.textContent = `Choose exactly ${DISPLAY_LIMIT} standard indicators for the Dashboard grid. This same list follows you when you switch tickers.`;
+            description.textContent = `Choose 1 to ${DISPLAY_LIMIT} standard indicators for the Dashboard grid. This same list follows you when you switch tickers.`;
             footerNote.textContent = 'Grid choices and favorites are shared across Dashboard tickers. Hidden indicators are disabled for Dashboard signals and charts.';
         } else {
             title.textContent = `Add Indicator — ${ticker}`;
-            description.textContent = `Choose up to ${DISPLAY_LIMIT} standard indicators for the ${surfaceLabel.replace('-', ' ')} grid. Other tickers and pages keep their own grid.`;
+            description.textContent = `Choose 1 to ${DISPLAY_LIMIT} standard indicators for the ${surfaceLabel.replace('-', ' ')} grid. Other tickers and pages keep their own grid.`;
             footerNote.textContent = `Grid choices are saved only for ${ticker} in ${surfaceLabel.replace('-', ' ')}. Hidden indicators are disabled for signals and charts.`;
         }
         count.textContent = `${surfaceState.shown.length} of ${DISPLAY_LIMIT} shown`;
         count.classList.toggle('iw-count-full', surfaceState.shown.length >= DISPLAY_LIMIT);
-        const dashboardExactTen = PAGE_CONTEXT === 'dashboard' && scopeKey === DASHBOARD_SHARED_SCOPE_KEY;
-        if (dashboardExactTen && surfaceState.shown.length >= DISPLAY_LIMIT) {
-            hint.textContent = dashboardReplacementName
-                ? `Choose a hidden indicator to replace ${dashboardReplacementName}.`
-                : 'Select one of the 10 shown indicators, then choose its replacement.';
+        if (surfaceState.shown.length >= DISPLAY_LIMIT) {
+            hint.textContent = `Maximum ${DISPLAY_LIMIT} selected — toggle one off before enabling another.`;
+        } else if (surfaceState.shown.length <= 1) {
+            hint.textContent = 'At least 1 indicator must remain selected.';
         } else {
-            hint.textContent = surfaceState.shown.length >= DISPLAY_LIMIT
-                ? 'Limit reached — hide one indicator before adding another.'
-                : `You can add ${DISPLAY_LIMIT - surfaceState.shown.length} more indicator${DISPLAY_LIMIT - surfaceState.shown.length === 1 ? '' : 's'}.`;
+            hint.textContent = `You can add ${DISPLAY_LIMIT - surfaceState.shown.length} more indicator${DISPLAY_LIMIT - surfaceState.shown.length === 1 ? '' : 's'}.`;
         }
         allTab.innerHTML = `All Indicators <span>${INDICATORS.length}</span>`;
         favoritesTab.innerHTML = `Favorites <span>${favoriteCount}</span>`;
@@ -532,17 +542,14 @@
             const isShown = surfaceState.shown.includes(item.name);
             const isFavorite = store.favorites.includes(item.name);
             const atLimit = surfaceState.shown.length >= DISPLAY_LIMIT;
-            const isReplacement = dashboardExactTen && dashboardReplacementName === item.name;
-            const disableHidden = !isShown && atLimit
-                && (!dashboardExactTen || !dashboardReplacementName);
-            const toggleLabel = isReplacement
-                ? 'Replacing'
-                : (isShown ? 'Shown' : (dashboardExactTen && atLimit ? 'Replace' : 'Hidden'));
+            const atMinimum = surfaceState.shown.length <= 1;
+            const disableToggle = (isShown && atMinimum) || (!isShown && atLimit);
+            const toggleLabel = isShown ? 'Shown' : 'Hidden';
             const toggleAria = isShown
-                ? `${isReplacement ? 'Cancel replacement of' : 'Select to replace'} ${item.label}`
-                : `${dashboardExactTen && atLimit ? 'Replace selected indicator with' : 'Show'} ${item.label}`;
+                ? `${atMinimum ? 'Keep' : 'Toggle off'} ${item.label}`
+                : `Toggle on ${item.label}`;
             const row = document.createElement('div');
-            row.className = `iw-catalog-row${isShown ? ' iw-row-shown' : ''}${isReplacement ? ' iw-row-replace' : ''}`;
+            row.className = `iw-catalog-row${isShown ? ' iw-row-shown' : ''}`;
             row.innerHTML = `
                 <button type="button" class="iw-favorite-button${isFavorite ? ' iw-favorite-active' : ''}"
                     aria-label="${isFavorite ? 'Remove' : 'Add'} ${item.label} ${isFavorite ? 'from' : 'to'} favorites"
@@ -555,7 +562,7 @@
                 </div>
                 <label class="iw-toggle">
                     <span class="iw-toggle-label">${toggleLabel}</span>
-                    <input type="checkbox" ${isShown ? 'checked' : ''} ${disableHidden ? 'disabled' : ''}
+                    <input type="checkbox" ${isShown ? 'checked' : ''} ${disableToggle ? 'disabled' : ''}
                         aria-label="${toggleAria}">
                     <span class="iw-toggle-track" aria-hidden="true"></span>
                 </label>`;
@@ -568,7 +575,6 @@
     function openModal(event, surface = null) {
         if (!modal) return;
         activeSurface = surface || activeSurface || surfaces[0] || null;
-        dashboardReplacementName = '';
         lastFocusedElement = event?.currentTarget || document.activeElement;
         activeTab = 'all';
         searchQuery = '';
@@ -581,7 +587,6 @@
 
     function closeModal() {
         if (!modal) return;
-        dashboardReplacementName = '';
         modal.classList.remove('iw-modal-open');
         modal.setAttribute('aria-hidden', 'true');
         document.body.classList.remove('iw-modal-lock');
@@ -589,7 +594,6 @@
     }
 
     function resetDefaults() {
-        dashboardReplacementName = '';
         const previousShown = [...getSurfaceState().shown];
         getSurfaceState().shown = [...DEFAULT_SHOWN];
         saveStore();
@@ -630,7 +634,7 @@
                     <div>
                         <p class="iw-eyebrow">Indicator workspace</p>
                         <h2 id="iwModalTitle">Add Indicator</h2>
-                        <p id="iwModalDescription">${PAGE_CONTEXT === 'dashboard' ? 'Choose exactly 10 standard indicators for the Dashboard.' : 'Choose up to 10 standard indicators for this ticker.'}</p>
+                        <p id="iwModalDescription">${PAGE_CONTEXT === 'dashboard' ? `Choose 1 to ${DISPLAY_LIMIT} standard indicators for the Dashboard.` : `Choose 1 to ${DISPLAY_LIMIT} standard indicators for this ticker.`}</p>
                     </div>
                     <button type="button" class="iw-close-button" data-iw-close aria-label="Close indicator selector">×</button>
                 </header>
@@ -645,12 +649,12 @@
                 <label class="iw-search">
                     <span aria-hidden="true">⌕</span>
                     <span class="sr-only">Search indicators</span>
-                    <input type="search" class="iw-search-input" placeholder="Search 50 indicators by name or category" autocomplete="off">
+                    <input type="search" class="iw-search-input" placeholder="Search ${INDICATORS.length} indicators by name or category" autocomplete="off">
                 </label>
                 <div class="iw-catalog"></div>
                 <footer class="iw-dialog-footer">
                     <div>
-                        <button type="button" class="iw-reset-button">Reset default 10</button>
+                        <button type="button" class="iw-reset-button">Reset default ${DEFAULT_SHOWN.length}</button>
                         <p class="iw-scope-note">${PAGE_CONTEXT === 'dashboard' ? 'Dashboard choices are shared across tickers.' : 'Grid choices are saved per ticker.'} Hidden indicators are disabled for signals and charts.</p>
                     </div>
                     <button type="button" class="iw-done-button" data-iw-close>Done</button>
@@ -716,11 +720,10 @@
             if (PAGE_CONTEXT !== 'dashboard' || !workspace || typeof workspace !== 'object') return false;
             const surface = surfaces.find(item => item.contextLabel === 'dashboard')
                 || { contextLabel: 'dashboard' };
-            const displayed = completeDashboardShown(workspace.displayed_indicators);
+            const displayed = normalizeShown(workspace.displayed_indicators);
             const favorites = uniqueKnownNames(workspace.favorites);
             store.scopes[DASHBOARD_SHARED_SCOPE_KEY] = { shown: displayed };
             store.favorites = favorites;
-            dashboardReplacementName = '';
             saveStore();
             applyAllSurfaces();
             dispatchSelectionChange(surface);

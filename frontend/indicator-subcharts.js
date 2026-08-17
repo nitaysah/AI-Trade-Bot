@@ -166,12 +166,14 @@
     ];
 
     // The remaining newly-added chart indicators belong on the price pane.
+    // ATR stays in its dedicated volatility pane. Rendering its expected-range
+    // bands on the price pane created an unattractive long entry stroke when
+    // the first ATR-valid candle was outside the visible chart window.
     const overlayDefinitions = [
         {
-            name: 'ATR Volatility',
+            name: 'Auto-AVWAP',
             series: [
-                { field: 'atr_range_upper', color: 'rgba(245,158,11,.72)', lineWidth: 1, lineStyle: 2, title: 'ATR expected range high' },
-                { field: 'atr_range_lower', color: 'rgba(245,158,11,.72)', lineWidth: 1, lineStyle: 2, title: 'ATR expected range low' },
+                { field: 'auto_avwap', color: '#7c3aed', lineWidth: 1.5, lineStyle: 2, title: 'Auto-AVWAP' },
             ],
         },
         {
@@ -381,6 +383,15 @@
 
         const sourceTime = row => Number(row?.source_time ?? row?.time);
         const displayTime = row => Number(row?.time);
+        const maxCandles = Math.floor(Number(options.maxCandles));
+        if (Number.isFinite(maxCandles) && maxCandles > 0) {
+            return new Set(rows
+                .slice()
+                .sort((left, right) => sourceTime(left) - sourceTime(right))
+                .slice(-maxCandles)
+                .map(displayTime)
+                .filter(Number.isFinite));
+        }
         if (options.rolling24Hours) {
             const cutoff = sourceTime(latest) - 86400;
             return new Set(rows
@@ -404,6 +415,128 @@
             .filter(row => dayKey(sourceTime(row)) === latestDay)
             .map(displayTime)
             .filter(Number.isFinite));
+    }
+
+    const candlePatternLengths = Object.freeze({
+        'doji': 1,
+        'bull marubozu': 1,
+        'bear marubozu': 1,
+        'hammer': 1,
+        'inverted hammer': 1,
+        'shooting star': 1,
+        'hanging man': 1,
+        'dragonfly doji': 1,
+        'gravestone doji': 1,
+        'bull harami': 2,
+        'bear harami': 2,
+        'tweezer bottom': 2,
+        'tweezer top': 2,
+        'bull engulfing': 2,
+        'bear engulfing': 2,
+        'piercing line': 2,
+        'dark cloud cover': 2,
+        'morning star': 3,
+        'evening star': 3,
+        '3 white soldiers': 3,
+        '3 black crows': 3,
+        '3 inside up': 3,
+        '3 inside down': 3,
+        '3 outside up': 3,
+        '3 outside down': 3,
+    });
+
+    function candlePatternContextTimes(history, options = {}) {
+        const rows = (Array.isArray(history) ? history : [])
+            .filter(row => Number.isFinite(Number(row?.time)))
+            .sort((left, right) => (
+                Number(left?.source_time ?? left?.time) - Number(right?.source_time ?? right?.time)
+            ));
+        const recentTimes = botBulls5RecentEventTimes(rows, options);
+        const maxCandles = Math.floor(Number(options.maxCandles));
+        const displayWindow = Number.isFinite(maxCandles) && maxCandles > 0
+            ? new Set(rows.slice(-maxCandles).map(row => Number(row?.time)).filter(Number.isFinite))
+            : null;
+        const contextTimes = new Set();
+
+        rows.forEach((row, index) => {
+            const time = Number(row?.time);
+            const name = String(row?.cdl_name || '').trim().toLowerCase();
+            if (!recentTimes.has(time) || !candlePatternLengths[name]) return;
+
+            const firstIndex = Math.max(0, index - candlePatternLengths[name] + 1);
+            for (let contextIndex = firstIndex; contextIndex <= index; contextIndex += 1) {
+                const contextTime = Number(rows[contextIndex]?.time);
+                if (Number.isFinite(contextTime) && (!displayWindow || displayWindow.has(contextTime))) {
+                    contextTimes.add(contextTime);
+                }
+            }
+        });
+
+        return contextTimes;
+    }
+
+    function highlightCandlePatternContext(candles, history, options = {}) {
+        const contextTimes = candlePatternContextTimes(history, options);
+        return (Array.isArray(candles) ? candles : []).map(candle => {
+            const time = Number(candle?.time);
+            if (!contextTimes.has(time)) return { ...candle };
+
+            const open = Number(candle?.open);
+            const close = Number(candle?.close);
+            const color = close > open ? '#047857' : close < open ? '#b91c1c' : '#d97706';
+            return {
+                ...candle,
+                color,
+                borderColor: '#111827',
+                wickColor: '#111827',
+            };
+        });
+    }
+
+    function buildCandlePatternMarkers(history, options = {}) {
+        const rows = Array.isArray(history) ? history : [];
+        const recentTimes = botBulls5RecentEventTimes(rows, options);
+        const markers = [];
+
+        rows.forEach(row => {
+            const time = Number(row?.time);
+            const name = String(row?.cdl_name || '').trim();
+            if (!Number.isFinite(time) || !recentTimes.has(time)) return;
+            if (!name || name === 'Neutral' || name === 'None') return;
+
+            const bullish = row?.cdl_bullish === true || Number(row?.cdl_bullish) === 1;
+            const bearish = row?.cdl_bearish === true || Number(row?.cdl_bearish) === 1;
+            if (bullish && !bearish) {
+                markers.push({
+                    time,
+                    position: 'belowBar',
+                    color: '#10b981',
+                    shape: 'arrowUp',
+                    text: name,
+                    size: 1.1,
+                });
+            } else if (bearish && !bullish) {
+                markers.push({
+                    time,
+                    position: 'aboveBar',
+                    color: '#ef4444',
+                    shape: 'arrowDown',
+                    text: name,
+                    size: 1.1,
+                });
+            } else {
+                markers.push({
+                    time,
+                    position: 'aboveBar',
+                    color: '#f59e0b',
+                    shape: 'circle',
+                    text: name,
+                    size: 1,
+                });
+            }
+        });
+
+        return markers;
     }
 
     function selectBotBulls5Pattern(history, options = {}) {
@@ -677,15 +810,24 @@
     }
 
     function chartOptions(element, height) {
+        const isMobile = typeof window !== 'undefined'
+            && (window.matchMedia?.('(max-width: 768px)').matches || window.innerWidth <= 768);
         return {
             width: Math.max(element.clientWidth || 280, 1),
             height: Math.max(element.clientHeight || height || 85, 1),
-            layout: { background: { color: '#fafbff' }, textColor: '#64748b' },
+            layout: {
+                background: { color: '#fafbff' },
+                textColor: '#64748b',
+                fontSize: isMobile ? 9 : 12,
+            },
             grid: {
                 vertLines: { color: 'rgba(168,85,247,.04)' },
                 horzLines: { color: 'rgba(168,85,247,.04)' },
             },
-            rightPriceScale: { borderColor: 'rgba(197,203,206,.6)', minimumWidth: 75 },
+            rightPriceScale: {
+                borderColor: 'rgba(197,203,206,.6)',
+                minimumWidth: isMobile ? 48 : 75,
+            },
             timeScale: { visible: false },
         };
     }
@@ -780,9 +922,13 @@
 
         const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(entries => {
             if (!entries[0]) return;
+            const isMobile = typeof window !== 'undefined'
+                && (window.matchMedia?.('(max-width: 768px)').matches || window.innerWidth <= 768);
             chart.applyOptions({
                 width: Math.max(entries[0].contentRect.width, 1),
                 height: Math.max(entries[0].contentRect.height, 1),
+                layout: { fontSize: isMobile ? 9 : 12 },
+                rightPriceScale: { minimumWidth: isMobile ? 48 : 75 },
             });
         });
         observer?.observe(paneElement);
@@ -888,6 +1034,9 @@
         destroy,
         buildOverlayData,
         buildBotBulls5PatternDrawing,
+        buildCandlePatternMarkers,
+        candlePatternContextTimes,
+        highlightCandlePatternContext,
         botBulls5RecentEventTimes,
         selectBotBulls5Pattern,
     });

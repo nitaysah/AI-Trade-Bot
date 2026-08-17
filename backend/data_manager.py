@@ -79,11 +79,12 @@ def _resample_df(df, timeframe):
         return df
 
 
-def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=False):
+def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=False, force_refresh=False):
     """
     Return a DataFrame of OHLCV data for *ticker* between *start_date* and
     *end_date*.  Uses a local CSV cache; downloads from Webull (if configured)
-    or Yahoo Finance on a cache miss.
+    or Yahoo Finance on a cache miss.  A forced refresh bypasses the local
+    cache and does not fall back to stale cached data if the provider fails.
     """
     import re
     # Strict sanitization to prevent path traversal
@@ -125,9 +126,9 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
                 file_start = df.index[0]
                 file_end = df.index[-1]
 
-                if file_start <= start_date and file_end >= (end_date - timedelta(days=1)):
+                if not force_refresh and file_start <= start_date and file_end >= (end_date - timedelta(days=1)):
                     print(f"[data] Cache hit for {ticker}")
-                    cached_source = "yahoo" if force_yahoo or source_suffix else "webull"
+                    cached_source = "yahoo" if force_yahoo or source_suffix else "alpaca"
                     try:
                         if os.path.exists(meta_path):
                             with open(meta_path, "r", encoding="utf-8") as meta_file:
@@ -142,101 +143,116 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
             df = None
 
     # ------------------------------------------------------------------
-    # 2. Download from Webull (if WEBULL_APP_KEY is configured)
+    # 2. Download from Alpaca (Primary Provider)
     # ------------------------------------------------------------------
-    webull_success = False
+    alpaca_success = False
     new_df = None
 
-    if not force_yahoo and config and getattr(config, "WEBULL_APP_KEY", ""):
+    if not force_yahoo:
         try:
-            from webull_broker import WebullBroker
-            print(f"[data] Attempting Webull fetch for {ticker} ({timeframe})...")
-            wb_map = {
-                "30Sec": "s30",  # Not officially supported in Webull's list, but kept as fallback
-                "1Min": "M1",
-                "2Min": "m2",    # Webull doesn't support 2Min, this might fail, fallback to Yahoo
-                "3Min": "m3",    # Same here
-                "5Min": "M5",
-                "10Min": "m10",  # Same here
-                "15Min": "M15",
-                "30Min": "M30",
-                "1Hour": "M60",
-                "2Hour": "M120",
-                "4Hour": "M240",
-                "1Day": "D",
-            }
-            timespan = wb_map.get(timeframe, "D")
-            
-            # Calculate dynamic count based on requested start/end range
-            diff_days = max(1, (end_date - start_date).days)
-            is_crypto_request = any(
-                clean_ticker.endswith(base) for base in ("USD", "USDT", "USDC")
-            )
-            multiplier_map = {
-                "30Sec": 2880,
-                # Equity extended history spans 04:00-20:00 ET. Budget the
-                # complete PRE + RTH + AFTER window instead of the old RTH-only
-                # bar count so a Manual Backtest request reaches the 20:00 close.
-                "1Min": 1440 if is_crypto_request else 960,
-                "2Min": 720,
-                "3Min": 480,
-                "5Min": 2880 if is_crypto_request else 192,
-                "10Min": 144,
-                "15Min": 96,
-                "30Min": 48,
-                "1Hour": 24,
-                "2Hour": 12,
-                "4Hour": 6,
-                "1Day": 1,
-            }
-            count = (diff_days * multiplier_map.get(timeframe, 1)) + 30
-            if count > 1200:
-                print(f'[data] Requested {int(count)} bars exceeds Webull 1200 limit. Bypassing to Yahoo.')
-                raise Exception('Count exceeds Webull limit')
-            count = max(100, int(count))
-            
-            wb = WebullBroker()
-            # Fetch exactly the calculated dynamic bar count
-            bars = wb.get_bars(ticker, timespan=timespan, count=count)
-            
-            if bars:
-                new_df = pd.DataFrame(bars)
-                # Convert time (ISO string or epoch seconds) to datetime index
-                try:
-                    dt_series = pd.to_datetime(new_df["time"], unit="s", errors="coerce")
-                    if dt_series.isna().all():
-                        dt_series = pd.to_datetime(new_df["time"])
-                except Exception:
-                    dt_series = pd.to_datetime(new_df["time"])
-                
-                if dt_series.dt.tz is None:
-                    dt_series = dt_series.dt.tz_localize("UTC")
-                if not any(ticker.upper().endswith(b) for b in ["USD", "USDT", "USDC"]):
-                    dt_series = dt_series.dt.tz_convert("America/New_York")
-                new_df["time"] = dt_series
-                new_df.set_index("time", inplace=True)
-                new_df.index = _strip_tz(new_df.index)
-                
-                # Standardise to lowercase column names
-                new_df = new_df.rename(columns={
-                    "open": "open",
-                    "high": "high",
-                    "low": "low",
-                    "close": "close",
-                    "volume": "volume"
-                })
-                new_df["adj_close"] = new_df["close"] # Compatibility
-                new_df.attrs["data_source"] = "webull"
-                
-                webull_success = True
-                print(f"[data] Webull fetch successful. Retrieved {len(new_df)} bars.")
-        except Exception as wb_exc:
-            print(f"[data] Webull download failed: {wb_exc}. Falling back to Yahoo...")
+            from broker_factory import get_alpaca_clients
+            from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
+            from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+            from alpaca.data.enums import DataFeed
+
+            s_client, c_client = get_alpaca_clients()
+
+            clean_ticker = re.sub(r'[^A-Za-z0-9.\-]', '', ticker).upper()
+            is_crypto = any(clean_ticker.endswith(base) for base in ("USD", "USDT", "USDC"))
+
+            client = c_client if is_crypto else s_client
+            if client is not None:
+                alpaca_tf_map = {
+                    "30Sec": TimeFrame.Minute,
+                    "1Min": TimeFrame.Minute,
+                    "2Min": TimeFrame(2, TimeFrameUnit.Minute),
+                    "3Min": TimeFrame(3, TimeFrameUnit.Minute),
+                    "5Min": TimeFrame(5, TimeFrameUnit.Minute),
+                    "10Min": TimeFrame(10, TimeFrameUnit.Minute),
+                    "15Min": TimeFrame(15, TimeFrameUnit.Minute),
+                    "30Min": TimeFrame(30, TimeFrameUnit.Minute),
+                    "1Hour": TimeFrame.Hour,
+                    "2Hour": TimeFrame(2, TimeFrameUnit.Hour),
+                    "4Hour": TimeFrame(4, TimeFrameUnit.Hour),
+                    "1Day": TimeFrame.Day,
+                }
+                tf_obj = alpaca_tf_map.get(timeframe, TimeFrame.Day)
+
+                print(f"[data] Attempting Alpaca fetch for {ticker} ({timeframe}) from {start_date} to {end_date}...")
+                if is_crypto:
+                    crypto_symbol = clean_ticker
+                    for base in ["USDT", "USDC", "USD"]:
+                        if clean_ticker.endswith(base) and not clean_ticker.startswith(f"{base}/"):
+                            crypto_symbol = clean_ticker.replace(base, f"/{base}")
+                            break
+                    req = CryptoBarsRequest(
+                        symbol_or_symbols=[crypto_symbol],
+                        timeframe=tf_obj,
+                        start=start_date,
+                        end=end_date,
+                    )
+                    bars = client.get_crypto_bars(req)
+                else:
+                    bars = None
+                    try:
+                        req_sip = StockBarsRequest(
+                            symbol_or_symbols=[clean_ticker],
+                            timeframe=tf_obj,
+                            start=start_date,
+                            end=end_date,
+                            feed=DataFeed.SIP,
+                        )
+                        bars = client.get_stock_bars(req_sip)
+                    except Exception as sip_err:
+                        print(f"[data] Alpaca SIP feed error: {sip_err}. Retrying with IEX feed...")
+                        bars = None
+
+                    if bars is None or not hasattr(bars, "df") or bars.df is None or bars.df.empty:
+                        req_iex = StockBarsRequest(
+                            symbol_or_symbols=[clean_ticker],
+                            timeframe=tf_obj,
+                            start=start_date,
+                            end=end_date,
+                            feed=DataFeed.IEX,
+                        )
+                        bars = client.get_stock_bars(req_iex)
+
+                if bars and hasattr(bars, "df") and bars.df is not None and not bars.df.empty:
+                    alpaca_df = bars.df.copy()
+                    if isinstance(alpaca_df.index, pd.MultiIndex):
+                        if "symbol" in alpaca_df.index.names:
+                            alpaca_df = alpaca_df.reset_index(level="symbol", drop=True)
+                        else:
+                            alpaca_df = alpaca_df.droplevel(0)
+
+                    # Timezone handling: convert all feeds to America/New_York naive format
+                    if hasattr(alpaca_df.index, "tz") and alpaca_df.index.tz is not None:
+                        alpaca_df.index = alpaca_df.index.tz_convert("America/New_York")
+                    alpaca_df.index = _strip_tz(alpaca_df.index)
+
+                    # Standardise column names
+                    rename_map = {}
+                    for col in alpaca_df.columns:
+                        rename_map[col] = col.lower()
+                    alpaca_df = alpaca_df.rename(columns=rename_map)
+                    if "adj_close" not in alpaca_df.columns and "close" in alpaca_df.columns:
+                        alpaca_df["adj_close"] = alpaca_df["close"]
+
+                    alpaca_df.attrs["data_source"] = "alpaca"
+                    new_df = alpaca_df
+                    alpaca_success = True
+                    print(f"[data] Alpaca fetch successful. Retrieved {len(new_df)} bars.")
+                else:
+                    print(f"[data] Alpaca returned no bars for {ticker}. Falling back to Yahoo...")
+            else:
+                print(f"[data] Alpaca client not available (keys missing). Falling back to Yahoo...")
+        except Exception as alpaca_exc:
+            print(f"[data] Alpaca download failed for {ticker}: {alpaca_exc}. Falling back to Yahoo...")
 
     # ------------------------------------------------------------------
     # 3. Fallback: Download from Yahoo Finance
     # ------------------------------------------------------------------
-    if not webull_success:
+    if not alpaca_success:
         interval_map = {
             "30Sec": "1m",
             "1Min": "1m",
@@ -289,9 +305,11 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
             new_df = yf.download(yf_ticker, period=period, interval=interval, prepost=True, progress=False)
 
             if new_df is None or new_df.empty:
-                return df  # return whatever cache we have, or None
+                return None if force_refresh else df
 
-            # Strip timezone immediately
+            # Convert timezone to America/New_York before stripping
+            if hasattr(new_df.index, "tz") and new_df.index.tz is not None:
+                new_df.index = new_df.index.tz_convert("America/New_York")
             new_df.index = _strip_tz(new_df.index)
 
             # Handle MultiIndex columns (newer yfinance versions)
@@ -310,13 +328,13 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
             new_df.attrs["data_source"] = "yahoo"
         except Exception as exc:
             print(f"[data] Yahoo Download error: {exc}")
-            return df
+            return None if force_refresh else df
 
     # ------------------------------------------------------------------
     # 4. Save and return merged results
     # ------------------------------------------------------------------
     if new_df is not None and not new_df.empty:
-        fetched_source = new_df.attrs.get("data_source") or ("yahoo" if force_yahoo or not webull_success else "webull")
+        fetched_source = new_df.attrs.get("data_source") or ("yahoo" if force_yahoo or not alpaca_success else "alpaca")
         # Merge with any existing cache
         if df is not None and not df.empty:
             combined = pd.concat([df, new_df])
@@ -340,6 +358,6 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
     # Return the requested slice
     if df is not None:
         sliced = df.loc[start_date:end_date]
-        sliced.attrs["data_source"] = df.attrs.get("data_source") or ("yahoo" if force_yahoo else "webull")
+        sliced.attrs["data_source"] = df.attrs.get("data_source") or ("yahoo" if force_yahoo else "alpaca")
         return sliced
     return None

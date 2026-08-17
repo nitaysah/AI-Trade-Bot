@@ -116,7 +116,7 @@ def _strike_profile(strike_type: str) -> Dict[str, float]:
             "min_delta": 0.55,
             "max_delta": 0.72,
             "target_depth_pct": 0.015,
-            "max_spread_pct": 0.12,
+            "max_spread_pct": 0.05,
         }
     if st == "OTM":
         return {
@@ -124,14 +124,14 @@ def _strike_profile(strike_type: str) -> Dict[str, float]:
             "min_delta": 0.25,
             "max_delta": 0.45,
             "target_depth_pct": 0.010,
-            "max_spread_pct": 0.15,
+            "max_spread_pct": 0.05,
         }
     return {
         "target_delta": 0.50,
         "min_delta": 0.43,
         "max_delta": 0.57,
         "target_depth_pct": 0.000,
-        "max_spread_pct": 0.12,
+        "max_spread_pct": 0.05,
     }
 
 def _target_strike_from_profile(current_price: float, option_type: str, strike_type: str, depth_pct: float) -> float:

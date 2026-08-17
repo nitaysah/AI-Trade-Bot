@@ -19,9 +19,11 @@ STANDARD_INDICATOR_NAMES = (
     "Arnaud Legoux Moving Average", "Least Squares Moving Average",
     "On-Balance Volume", "Chaikin Money Flow", "Accumulation/Distribution",
     "Chaikin Oscillator", "Price Volume Trend", "Ease of Movement", "Force Index",
+    "Auto-AVWAP",
 )
 
 EXTENSION_INDICATOR_TOGGLE_KEYS = {
+    "Auto-AVWAP": "ENABLE_AUTO_AVWAP",
     "ATR Volatility": "ENABLE_ATR_VOLATILITY",
     "Stochastic": "ENABLE_STOCHASTIC",
     "Stochastic RSI": "ENABLE_STOCH_RSI",
@@ -61,6 +63,7 @@ EXTENSION_INDICATOR_TOGGLE_KEYS = {
 }
 
 EXTENSION_INDICATOR_DEFAULTS = {
+    "VOL_MA_PERIOD": 20, "VOL_SPIKE_MULTIPLIER": 1.5,
     "ATR_PERIOD": 14, "ATR_BASELINE_PERIOD": 20,
     "ATR_RANGE_MULTIPLIER": 1.0, "ATR_EXPANSION_THRESHOLD_PCT": 5.0,
     "ATR_STOP_MULTIPLIER": 2.0, "ATR_TRAIL_MULTIPLIER": 3.0, "ATR_TAKE_PROFIT_MULTIPLIER": 4.0,
@@ -98,6 +101,7 @@ EXTENSION_INDICATOR_DEFAULTS = {
 }
 
 EXTENSION_CALCULATION_COLUMNS = (
+    "Auto_AVWAP",
     "ATR_Ext", "ATR_Ext_Avg", "ATR_Range_Upper", "ATR_Range_Lower", "Stoch_K", "Stoch_D", "Stoch_RSI_K", "Stoch_RSI_D",
     "CCI_Ext", "Williams_R", "ROC_Ext", "Momentum_Ext", "MFI_Ext", "Ultimate_Osc",
     "Awesome_Osc", "CMO", "TSI_Ext", "TSI_Signal", "TRIX_Ext", "TRIX_Signal",
@@ -115,6 +119,7 @@ EXTENSION_CALCULATION_COLUMNS = (
 # this mapping canonical prevents one page from silently receiving a different
 # subset of the 50-indicator calculation output.
 EXTENSION_CHART_FIELDS = {
+    "auto_avwap": "Auto_AVWAP",
     "atr_ext": "ATR_Ext",
     "atr_ext_avg": "ATR_Ext_Avg",
     "atr_range_upper": "ATR_Range_Upper",
@@ -175,6 +180,7 @@ EXTENSION_CHART_FIELDS = {
 }
 
 EXTENSION_CHART_GROUPS = {
+    "Auto-AVWAP": ("auto_avwap",),
     "ATR Volatility": ("atr_ext", "atr_ext_avg", "atr_range_upper", "atr_range_lower"),
     "Stochastic": ("stoch_k", "stoch_d"),
     "Stochastic RSI": ("stoch_rsi_k", "stoch_rsi_d"),
@@ -226,7 +232,7 @@ STANDARD_CHART_GROUPS = {
     "Bollinger": ("boll_upper", "boll_middle", "boll_lower"),
     "VWAP": ("vwap",),
     "Volume Profile": ("volume_profile_poc", "volume_profile_vah", "volume_profile_val"),
-    "SMA": ("sma",),
+    "SMA": ("sma", "sma_secondary"),
     "Prior Day High/Low": ("daily_high_low_high", "daily_high_low_low"),
     "Pivot Points (S/R)": ("pivot_p", "pivot_r1", "pivot_s1"),
     "Swing Points": ("swing_support_1", "swing_resistance_1"),

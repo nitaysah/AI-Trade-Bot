@@ -37,8 +37,12 @@ def get_alpaca_clients():
     usr_cfg = get_user_config()
     api_key = getattr(usr_cfg, 'ALPACA_API_KEY', '').strip()
     secret_key = getattr(usr_cfg, 'ALPACA_SECRET_KEY', '').strip()
-    
-    if not api_key or api_key == "your_alpaca_api_key_here" or api_key == "your_alpaca_key_here":
+
+    if not api_key or api_key.startswith("your_alpaca"):
+        api_key = getattr(config, 'ALPACA_API_KEY', '').strip()
+        secret_key = getattr(config, 'ALPACA_SECRET_KEY', '').strip()
+
+    if not api_key or api_key.startswith("your_alpaca"):
         return None, None
 
     cache_key = (api_key, secret_key)

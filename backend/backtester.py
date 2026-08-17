@@ -5,13 +5,14 @@ import uuid
 from typing import Dict, List, Optional
 import asyncio
 from data_manager import get_historical_data
-from indicators import calculate_indicators_for_df, _generate_signals
+from indicators import calculate_indicators_for_df, _generate_rsi_signal, _generate_signals
 from swing_strategy import build_entry_signal, build_swing_exit
 from trader import get_confluence_decision
 import config as global_config
 from indicator_catalog import EXTENSION_CHART_FIELDS, EXTENSION_CHART_GROUPS
 from user_config import get_user_config
 from prior_day_high_low import dynamic_high_low_exit_levels, prior_day_levels_from_history, resolve_high_low_buffer_pct
+from trade_guards import is_stop_exit
 
 def _unix_timestamp(t):
     try:
@@ -44,6 +45,7 @@ def _chart_indicator_fields(row, digits, enabled_indicators=None, buy_mode="", s
         "ema_fast": _safe_chart_level(row, "EMA_Fast", digits),
         "ema_slow": _safe_chart_level(row, "EMA_Slow", digits),
         "sma": _safe_chart_level(row, "SMA", digits),
+        "sma_secondary": _safe_chart_level(row, "SMA_Secondary", digits),
         "vwap": _safe_chart_level(row, "VWAP", digits),
         "supertrend": _safe_chart_level(row, "Supertrend", digits),
         "supertrend_up": _safe_chart_bool(row, "Supertrend_Trend"),
@@ -146,8 +148,9 @@ def _chart_indicator_fields(row, digits, enabled_indicators=None, buy_mode="", s
     keys = set()
     groups = {
         "EMA Cross": {"ema_fast", "ema_slow"},
-        "SMA": {"sma"},
+        "SMA": {"sma", "sma_secondary"},
         "VWAP": {"vwap"},
+        "Auto-AVWAP": {"auto_avwap"},
         "Supertrend": {"supertrend", "supertrend_up"},
         "Bollinger": {"boll_upper", "boll_middle", "boll_lower"},
         "RSI": {"rsi"},
@@ -178,7 +181,7 @@ def _chart_indicator_fields(row, digits, enabled_indicators=None, buy_mode="", s
     return {key: fields[key] for key in keys}
 
 class Backtester:
-    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=0.02, max_pos_pct=0.25, ext_hours=True, buy_mode="indicator", custom_buy_price=0.0, sell_mode="indicator", atr_stop_multiplier=2.0, atr_trail_multiplier=3.0, atr_take_profit_multiplier=4.0, enable_atr_trail=True, ai_autopilot=False, ai_interval=10, ai_model="llama-3.3-70b-versatile", enable_cooldown=True, cooldown_minutes=None, regular_stop_loss_pct=0.05, regular_take_profit_pct=0.10, regular_trailing_pct=0.03, enable_pct_trail=True, cancel_event=None, entry_atr_multiplier=None, entry_pct_move=None, entry_atr_style="pullback_reclaim", entry_pct_style="dip_reclaim", swing_entry_mode="bounce_retest", swing_entry_lookback_days=20, swing_exit_lookback_days=20, market_session="Regular", allocation_mode="fixed", trade_amount=None, custom_stop_loss_price=0.0, custom_take_profit_price=0.0, enable_signal_reset=False, enable_smart_reentry=False, smart_reentry_type="RSI", smart_reentry_rsi_call_max=70.0, smart_reentry_rsi_put_min=30.0, smart_reentry_vwap_call_max_dist_pct=0.5, smart_reentry_vwap_put_max_dist_pct=0.5, enable_risk=True, daily_high_low_buffer_pct=None, trade_direction_mode="long", max_completed_trades=None, indicator_overrides=None):
+    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=0.02, max_pos_pct=0.25, ext_hours=True, buy_mode="indicator", custom_buy_price=0.0, sell_mode="indicator", atr_stop_multiplier=2.0, atr_trail_multiplier=3.0, atr_take_profit_multiplier=4.0, enable_atr_trail=True, ai_autopilot=False, ai_interval=10, ai_model="llama-3.3-70b-versatile", enable_cooldown=True, cooldown_minutes=None, regular_stop_loss_pct=0.05, regular_take_profit_pct=0.10, regular_trailing_pct=0.03, enable_pct_trail=True, cancel_event=None, entry_atr_multiplier=None, entry_pct_move=None, entry_atr_style="pullback_reclaim", entry_pct_style="dip_reclaim", swing_entry_mode="bounce_retest", swing_entry_lookback_days=20, swing_exit_lookback_days=20, market_session="Regular", allocation_mode="fixed", trade_amount=None, custom_stop_loss_price=0.0, custom_take_profit_price=0.0, enable_signal_reset=True, enable_smart_reentry=False, smart_reentry_type="RSI", smart_reentry_rsi_call_max=70.0, smart_reentry_rsi_put_min=30.0, smart_reentry_vwap_call_max_dist_pct=0.5, smart_reentry_vwap_put_max_dist_pct=0.5, enable_risk=True, daily_high_low_buffer_pct=None, trade_direction_mode="long", max_completed_trades=None, indicator_overrides=None, post_stop_stabilization_bars=3, max_consecutive_losses=2, max_daily_loss_pct=0.0, enable_liquidity_filter=True, min_relative_volume=0.10, continuous_grid_settings=None):
         self.ticker = ticker
         self.timeframe = timeframe
         self.start_date = start_date
@@ -241,16 +244,57 @@ class Backtester:
         self.regular_take_profit_pct = regular_take_profit_pct
         self.regular_trailing_pct = regular_trailing_pct
         self.enable_pct_trail = bool(enable_pct_trail)
+        self.continuous_grid_settings = dict(continuous_grid_settings or {})
+        self.continuous_grid_settings.update({
+            "buy_mode": self.buy_mode,
+            "sell_mode": self.sell_mode,
+            "allocation_mode": self.allocation_mode,
+            "amount": self.trade_amount,
+            "compound_amount": self.current_trade_amount,
+        })
+        pct_grid = bool(
+            self.continuous_grid_settings.get("grid_continuous_mode")
+            and self.continuous_grid_settings.get("exit_grid_continuous_mode")
+            and self.buy_mode in {"percentage", "hybrid_pct"}
+            and self.sell_mode in {"percentage", "hybrid_pct"}
+        )
+        atr_grid = bool(
+            self.continuous_grid_settings.get("atr_grid_continuous_mode")
+            and self.continuous_grid_settings.get("exit_atr_grid_continuous_mode")
+            and self.buy_mode in {"atr", "hybrid_atr"}
+            and self.sell_mode in {"sltp", "hybrid", "atr", "hybrid_atr"}
+        )
+        self.adaptive_atr_grid = atr_grid
+        self.adaptive_continuous_grid = bool(
+            (pct_grid or atr_grid) and str(trade_direction_mode or "long").lower() == "long"
+        )
+        if self.adaptive_continuous_grid:
+            # Fixed percentage SL/TP/trailing controls are intentionally
+            # replaced by the adaptive sell ladder in both live and backtest.
+            self.enable_pct_trail = False
+            if self.adaptive_atr_grid:
+                self.enable_atr_trail = False
         self.cancel_event = cancel_event
         self._last_ai_decision = None
         self.last_exit_time = None
         self.signal_locked_direction = None
+        self.post_stop_stabilization_bars = max(0, int(post_stop_stabilization_bars or 0))
+        self.max_consecutive_losses = max(0, int(max_consecutive_losses or 0))
+        self.max_daily_loss_pct = max(0.0, float(max_daily_loss_pct or 0.0))
+        self.enable_liquidity_filter = bool(enable_liquidity_filter)
+        self.min_relative_volume = max(0.0, float(min_relative_volume or 0.0))
+        self.stop_exit_state = None
+        self.consecutive_losses = 0
+        self.daily_realized_pl = 0.0
+        self.guard_session_date = None
+        self.current_bar_index = 0
         
         self.equity = initial_capital
         self.position = None 
         self.trades = []
         self.equity_history = []
         self.df = None
+        self.volume_profile = {}
         self.data_source = "yahoo"
         self.max_completed_trades = int(max_completed_trades) if max_completed_trades else None
         self.overtrade_limit_hit = False
@@ -319,14 +363,15 @@ class Backtester:
         return self.trade_direction_mode == side
 
     def _build_simple_signal_cache(self):
-        """Vectorize the common RSI/Bollinger/AVWAP signal set for fast backtests."""
+        """Vectorize the common RSI/Bollinger/VWAP signal set for fast backtests."""
         enabled = set(self.enabled_indicators or [])
-        if not enabled or not enabled.issubset({"RSI", "Bollinger", "VWAP"}):
+        if not enabled or not enabled.issubset({"RSI", "Bollinger", "VWAP", "Auto-AVWAP"}):
             return None
 
         cfg = get_user_config()
         rsi_os = float(self.indicator_settings.get("RSI_OVERSOLD", cfg.get("RSI_OVERSOLD", 30)))
         rsi_ob = float(self.indicator_settings.get("RSI_OVERBOUGHT", cfg.get("RSI_OVERBOUGHT", 70)))
+        rsi_period = self.indicator_settings.get("RSI_PERIOD", cfg.get("RSI_PERIOD", 14))
         close = self.df["Close"].astype(float)
         prev_close = close.shift(1)
         rsi = self.df["RSI"].astype(float)
@@ -334,6 +379,8 @@ class Backtester:
         boll_hi = self.df["BOLL_Upper"].astype(float)
         vwap = self.df["VWAP"].astype(float)
         prev_vwap = vwap.shift(1).fillna(vwap)
+        auto_avwap = self.df["Auto_AVWAP"].astype(float) if "Auto_AVWAP" in self.df else close
+        prev_auto_avwap = auto_avwap.shift(1).fillna(auto_avwap)
         bull_candle = self.df.get("cdl_bullish", pd.Series(False, index=self.df.index)).fillna(False).astype(bool)
         is_near_vwap = ((close - vwap).abs() / vwap.replace(0, np.nan)).lt(0.015).fillna(False)
 
@@ -343,18 +390,14 @@ class Backtester:
             price = float(close.iloc[idx])
             if "RSI" in enabled:
                 rsi_val = float(rsi.iloc[idx])
-                previous_rsi = float(rsi.iloc[idx - 1]) if idx > 0 and pd.notna(rsi.iloc[idx - 1]) else rsi_val
-                rsi_signal = (
-                    "BULLISH" if rsi_val < rsi_os and rsi_val > previous_rsi
-                    else "BEARISH" if rsi_val > rsi_ob and rsi_val < previous_rsi
-                    else "NEUTRAL"
+                previous_rsi = float(rsi.iloc[idx - 1]) if idx > 0 and pd.notna(rsi.iloc[idx - 1]) else np.nan
+                signals["RSI"] = _generate_rsi_signal(
+                    rsi_val,
+                    previous_rsi,
+                    oversold=rsi_os,
+                    overbought=rsi_ob,
+                    period=rsi_period,
                 )
-                rsi_reason = (
-                    f"Oversold and rising {rsi_val:.1f}" if rsi_signal == "BULLISH"
-                    else f"Overbought and falling {rsi_val:.1f}" if rsi_signal == "BEARISH"
-                    else f"Neutral {rsi_val:.1f}"
-                )
-                signals["RSI"] = {"signal": rsi_signal, "reason": rsi_reason, "weight": 1}
             if "Bollinger" in enabled:
                 lo = float(boll_lo.iloc[idx])
                 hi = float(boll_hi.iloc[idx])
@@ -374,12 +417,25 @@ class Backtester:
                 bounced = price >= vw and bool(is_near_vwap.iloc[idx]) and bool(bull_candle.iloc[idx])
                 vwap_signal = "BULLISH" if crossed_up or bounced else "BEARISH" if price < vw else "NEUTRAL"
                 vwap_reason = (
-                    f"AVWAP Breakout ({vw:.1f})" if crossed_up
-                    else f"Bounce off AVWAP ({vw:.1f})" if bounced
-                    else f"Below AVWAP ({vw:.1f})" if price < vw
-                    else f"Holding above AVWAP ({vw:.1f})"
+                    f"Session VWAP Breakout ({vw:.1f})" if crossed_up
+                    else f"Bounce off Session VWAP ({vw:.1f})" if bounced
+                    else f"Below Session VWAP ({vw:.1f})" if price < vw
+                    else f"Holding above Session VWAP ({vw:.1f})"
                 )
                 signals["VWAP"] = {"signal": vwap_signal, "reason": vwap_reason, "weight": 1}
+            if "Auto-AVWAP" in enabled:
+                av = float(auto_avwap.iloc[idx])
+                prev_av = float(prev_auto_avwap.iloc[idx])
+                crossed_up = price >= av and prev_c < prev_av
+                bounced = price >= av and bool((abs(price - av) / av if av else 0) < 0.015) and bool(bull_candle.iloc[idx])
+                auto_signal = "BULLISH" if crossed_up or bounced else "BEARISH" if price < av else "NEUTRAL"
+                auto_reason = (
+                    f"Auto-AVWAP Breakout ({av:.1f})" if crossed_up
+                    else f"Bounce off Auto-AVWAP ({av:.1f})" if bounced
+                    else f"Below Auto-AVWAP ({av:.1f})" if price < av
+                    else f"Holding above Auto-AVWAP ({av:.1f})"
+                )
+                signals["Auto-AVWAP"] = {"signal": auto_signal, "reason": auto_reason, "weight": 1}
             cache.append(signals)
         return cache
 
@@ -393,26 +449,12 @@ class Backtester:
         if precomputed_df is not None:
             self.df = precomputed_df.loc[self.start_date:self.end_date]
         else:
-            # 1. Fetch Data with padding where the provider can actually satisfy it.
+            # 1. Fetch Data with padding for indicator warmup
             from datetime import timedelta
-            yahoo_intraday_limits = {
-                "1Min": 7,
-                "2Min": 60,
-                "3Min": 60,
-                "5Min": 60,
-                "10Min": 60,
-                "15Min": 60,
-                "30Min": 60,
-                "1Hour": 730,
-                "2Hour": 730,
-                "4Hour": 730,
-            }
-            requested_days = max(1, (self.end_date - self.start_date).days)
-            max_days = yahoo_intraday_limits.get(self.timeframe)
-            warmup_days = 100 if max_days is None else max(0, min(100, max_days - requested_days))
+            warmup_days = 100
             padded_start = self.start_date - timedelta(days=warmup_days)
-            raw_df = get_historical_data(self.ticker, self.timeframe, padded_start, self.end_date, force_yahoo=True)
-            
+            raw_df = get_historical_data(self.ticker, self.timeframe, padded_start, self.end_date, force_yahoo=False)
+
             if raw_df is None or raw_df.empty:
                 return {"error": "No data found for the selected range."}
 
@@ -421,7 +463,16 @@ class Backtester:
             is_crypto = any(clean_ticker.endswith(base) for base in ["USD", "USDT", "USDC"])
             if not is_crypto and not self.ext_hours and self.timeframe != "1Day":
                 try:
-                    time_idx = raw_df.index.time
+                    time_index = pd.DatetimeIndex(raw_df.index)
+                    if time_index.tz is None:
+                        time_index = time_index.tz_localize(
+                            "America/New_York",
+                            ambiguous="infer",
+                            nonexistent="shift_forward",
+                        )
+                    else:
+                        time_index = time_index.tz_convert("America/New_York")
+                    time_idx = time_index.time
                     start_time = pd.to_datetime("09:30:00").time()
                     end_time = pd.to_datetime("16:00:00").time()
                     rth_mask = (time_idx >= start_time) & (time_idx <= end_time)
@@ -447,6 +498,7 @@ class Backtester:
             result = calculate_indicators_for_df(raw_df, self.timeframe, self.ticker, settings=calc_settings)
             if not result:
                 return {"error": "Failed to calculate indicators."}
+            self.volume_profile = result.get("volume_profile") or {}
             
             full_df = result['df']
             
@@ -493,6 +545,7 @@ class Backtester:
 
         # 4. Simulate bar-by-bar
         for i in range(len(self.df)):
+            self.current_bar_index = i
             if self.overtrade_limit_hit:
                 break
             if self.cancel_event and self.cancel_event.is_set():
@@ -508,6 +561,24 @@ class Backtester:
 
             prev_bar = self.df.iloc[i-1]
             current_price = current_bar['Close']
+
+            if self.adaptive_continuous_grid:
+                from engine import _evaluate_continuous_grid
+                grid_decision = _evaluate_continuous_grid(
+                    self.continuous_grid_settings,
+                    current_price=float(current_price),
+                    has_position=bool(self.position),
+                    average_entry_price=float(self.position.get("entry_price", 0.0)) if self.position else 0.0,
+                    position_qty=float(self.position.get("qty", 0.0)) if self.position else 0.0,
+                    current_atr=float(current_bar.get("ATR", 0.0) or 0.0),
+                    price_history=self.df.iloc[max(0, i - 79):i + 1],
+                )
+                if grid_decision.get("action") == "BUY":
+                    if self._execute_continuous_grid_buy(current_bar, timestamp, grid_decision):
+                        continue
+                elif grid_decision.get("action") == "SELL" and self.position:
+                    if self._execute_continuous_grid_sell(current_bar, timestamp, grid_decision):
+                        continue
             
             # Check for SL / TP if in position
             if self.position:
@@ -518,7 +589,7 @@ class Backtester:
                     position_side = "long"
 
                 # ── ATR / AI-based hard stops (existing modes) ──────────────────
-                if self.sell_mode in ["sltp", "hybrid", "trend_rider", "ai_autopilot"]:
+                if self.sell_mode in ["sltp", "hybrid", "trend_rider", "ai_autopilot"] and not self.adaptive_atr_grid:
                     stop_hit = current_bar['Low'] <= self.position['stop_loss'] if position_side == "long" else current_bar['High'] >= self.position['stop_loss']
                     target_hit = current_bar['High'] >= self.position['take_profit'] if position_side == "long" else current_bar['Low'] <= self.position['take_profit']
                     if stop_hit:
@@ -543,7 +614,7 @@ class Backtester:
                         continue
 
                 # ── NEW: Percentage-based hard stops ────────────────────────────
-                elif self.sell_mode in ['percentage', 'hybrid_pct']:
+                elif self.sell_mode in ['percentage', 'hybrid_pct'] and not self.adaptive_continuous_grid:
                     # Ratchet trailing stop upward only if trailing is enabled
                     if self.enable_pct_trail and self.regular_trailing_pct > 0:
                         if position_side == "short":
@@ -825,18 +896,39 @@ class Backtester:
                 bearish_dominates = bearish_ready and (not bullish_ready or analysis['bearish_count'] > analysis['bullish_count'])
                 
                 if self.sell_mode == "trend_rider":
-                    ema_f = current_bar.get("EMA_Fast", 0)
-                    ema_s = current_bar.get("EMA_Slow", 0)
-                    prev_ema_f = prev_bar.get("EMA_Fast", 0)
-                    prev_ema_s = prev_bar.get("EMA_Slow", 0)
+                    ema_primary = current_bar.get("EMA_Fast", np.nan)
+                    ema_secondary = current_bar.get("EMA_Slow", np.nan)
+                    prev_ema_primary = prev_bar.get("EMA_Fast", np.nan)
+                    prev_ema_secondary = prev_bar.get("EMA_Slow", np.nan)
+                    try:
+                        ema_primary_period = max(1, min(500, int(float(self.indicator_settings.get("EMA_FAST", 9)))))
+                        ema_secondary_period = max(1, min(500, int(float(self.indicator_settings.get("EMA_SLOW", 21)))))
+                    except (TypeError, ValueError):
+                        ema_primary_period, ema_secondary_period = 9, 21
+                    if ema_primary_period <= ema_secondary_period:
+                        ema_f, ema_s = ema_primary, ema_secondary
+                        prev_ema_f, prev_ema_s = prev_ema_primary, prev_ema_secondary
+                        ema_fast_period, ema_slow_period = ema_primary_period, ema_secondary_period
+                    else:
+                        ema_f, ema_s = ema_secondary, ema_primary
+                        prev_ema_f, prev_ema_s = prev_ema_secondary, prev_ema_primary
+                        ema_fast_period, ema_slow_period = ema_secondary_period, ema_primary_period
                     st_bull = current_bar.get("Supertrend_Trend", True)
-                    sma_val = current_bar.get("SMA", 0)
+                    sma_val = current_bar.get("SMA", np.nan)
+                    try:
+                        sma_break = np.isfinite(float(sma_val)) and current_price < float(sma_val)
+                    except (TypeError, ValueError):
+                        sma_break = False
+                    try:
+                        sma_period = max(1, min(500, int(float(self.indicator_settings.get("SMA_PERIOD", 200)))))
+                    except (TypeError, ValueError):
+                        sma_period = 200
                     
                     # Entry: Golden Cross (or already crossed) AND Supertrend Bullish
                     golden_cross = (ema_f > ema_s) and (prev_ema_f <= prev_ema_s)
                     if golden_cross and st_bull:
                         action = "BUY"
-                        reason = "Trend Rider Entry (Golden Cross + Supertrend)"
+                        reason = f"Trend Rider Entry (EMA {ema_fast_period}/{ema_slow_period} Golden Cross + Supertrend)"
                     elif bullish_dominates:
                         action = "BUY"
                         names = [k for k, v in filtered_signals.items() if v['signal'] == 'BULLISH']
@@ -844,9 +936,9 @@ class Backtester:
 
                     # Exit: Trend Break (Death Cross or below SMA)
                     death_cross = (ema_f < ema_s) and (prev_ema_f >= prev_ema_s)
-                    if death_cross or current_price < sma_val:
+                    if death_cross or sma_break:
                         action = "SELL"
-                        reason = "Trend Rider Exit: Trend Broken (Death Cross or < SMA 200)"
+                        reason = f"Trend Rider Exit: Trend Broken (Death Cross or < SMA {sma_period})"
 
                 else:
                     entry_mode = self.buy_mode
@@ -986,9 +1078,9 @@ class Backtester:
                             action = "BUY"
                             reason = f"Indicator Exit: {analysis['bullish_count']} bullish signals ({', '.join(names)})"
 
-                if self.enable_signal_reset and not self.position and self.signal_locked_direction == "BUY" and action != "BUY" and analysis['bullish_count'] < self.threshold:
+                if self.enable_signal_reset and not self.position and self.signal_locked_direction == "BUY" and action != "BUY" and analysis['bullish_count'] <= 0:
                     self.signal_locked_direction = None
-                if self.enable_signal_reset and not self.position and self.signal_locked_direction == "SELL" and action != "SELL" and analysis['bearish_count'] < self.sell_threshold:
+                if self.enable_signal_reset and not self.position and self.signal_locked_direction == "SELL" and action != "SELL" and analysis['bearish_count'] <= 0:
                     self.signal_locked_direction = None
 
                 if action in {'BUY', 'SELL'} and not self.position:
@@ -1077,6 +1169,26 @@ class Backtester:
         side = str(side or "long").lower()
         base_notional = self.current_trade_amount if self.allocation_mode == "compound" else self.trade_amount
         base_notional = max(1.0, float(base_notional))
+        initial_grid = {}
+        if self.adaptive_continuous_grid and side == "long":
+            from engine import _initial_continuous_grid_entry_instruction
+            self.continuous_grid_settings["compound_amount"] = self.current_trade_amount
+            grid_history = (
+                self.df.iloc[max(0, self.current_bar_index - 79):self.current_bar_index + 1]
+                if self.df is not None
+                else [bar.to_dict() if hasattr(bar, "to_dict") else dict(bar)]
+            )
+            initial_grid = _initial_continuous_grid_entry_instruction(
+                self.continuous_grid_settings,
+                price_history=grid_history,
+                current_atr=float(bar.get("ATR", 0.0) or 0.0),
+            )
+            if initial_grid:
+                base_notional = max(0.0, float(initial_grid.get("level_amount", 0.0)))
+                reason = (
+                    f"Adaptive Grid Initial Buy L{initial_grid['level']}/5: "
+                    f"{initial_grid['allocation_pct']:.1f}% (${base_notional:.2f}). {reason}"
+                )
         max_notional = self.equity * self.max_pos_pct if self.enable_risk else self.equity
         allocated_cash = min(base_notional, max_notional, self.equity)
         qty = allocated_cash / price if price > 0 else 0
@@ -1087,7 +1199,7 @@ class Backtester:
 
         # Volatility Regime Sizing Filter: Scale down quantity by 50% if volatility (ATR / Price) is hyper-extended (> 3.0%)
         volatility_ratio = atr / price
-        if self.enable_risk and volatility_ratio > 0.03:
+        if self.enable_risk and volatility_ratio > 0.03 and not initial_grid:
             qty *= 0.5
             reason += " (Volatility Protection Active)"
 
@@ -1118,8 +1230,176 @@ class Backtester:
             'side': side,
             'reason': reason
         }
+        if initial_grid:
+            from engine import _record_continuous_grid_fill
+            _record_continuous_grid_fill(
+                self.continuous_grid_settings,
+                side="buy",
+                fill_price=float(price),
+                was_grid_order=True,
+                had_position=False,
+                filled_level=initial_grid.get("level"),
+                current_atr=float(atr),
+            )
         entry_label = "BUY" if side == "long" else "SELL"
         print(f"[{self._to_central_str(timestamp)}] {entry_label}  {self.ticker} @ ${price:.2f} | Stop: ${stop_loss:.2f} | Target: ${take_profit:.2f} | Reason: {reason}")
+
+    def _execute_continuous_grid_buy(self, bar, timestamp, decision):
+        from engine import _record_continuous_grid_fill
+
+        price = float(bar['Close'])
+        requested = max(0.0, float(decision.get("level_amount", 0.0) or 0.0))
+        if price <= 0 or requested < 1.0:
+            return False
+        current_cost = 0.0
+        current_market_value = 0.0
+        if self.position:
+            current_cost = float(self.position.get("qty", 0.0)) * float(self.position.get("entry_price", 0.0))
+            current_market_value = float(self.position.get("qty", 0.0)) * price
+        max_notional = self.equity * self.max_pos_pct if self.enable_risk else self.equity
+        available = max(0.0, min(self.equity - current_cost, max_notional - current_market_value))
+        if available + 0.01 < requested:
+            return False
+
+        qty = requested / price
+        had_position = bool(self.position)
+        if had_position:
+            old_qty = float(self.position.get("qty", 0.0))
+            old_entry = float(self.position.get("entry_price", price))
+            new_qty = old_qty + qty
+            self.position["qty"] = new_qty
+            self.position["entry_price"] = ((old_qty * old_entry) + (qty * price)) / new_qty
+            self.position["reason"] = str(decision.get("reason") or "Adaptive grid scale-in")
+        else:
+            precision = 6 if price < 1.0 else 2
+            self.position = {
+                "qty": qty,
+                "entry_price": price,
+                "entry_time": timestamp,
+                "stop_loss": round(price * (1 - self.regular_stop_loss_pct), precision),
+                "take_profit": round(price * (1 + self.regular_take_profit_pct), precision),
+                "initial_stop_loss": round(price * (1 - self.regular_stop_loss_pct), precision),
+                "initial_take_profit": round(price * (1 + self.regular_take_profit_pct), precision),
+                "side": "long",
+                "reason": str(decision.get("reason") or "Adaptive grid buy-back"),
+            }
+
+        _record_continuous_grid_fill(
+            self.continuous_grid_settings,
+            side="buy",
+            fill_price=price,
+            was_grid_order=True,
+            had_position=had_position,
+            filled_level=decision.get("level"),
+            current_atr=float(bar.get("ATR", 0.0) or 0.0),
+        )
+        levels = "+".join(
+            f"L{level}" for level in range(
+                int(decision.get("from_level", decision.get("level", 1))),
+                int(decision.get("level", 1)) + 1,
+            )
+            if level in decision.get("enabled_levels", range(1, 6))
+        )
+        level_label = levels or f"L{decision.get('level', 1)}"
+        print(
+            f"[{self._to_central_str(timestamp)}] BUY  {self.ticker} @ ${price:.4f} | "
+            f"Adaptive Grid {level_label} | ${requested:.2f}"
+        )
+        return True
+
+    def _execute_continuous_grid_sell(self, bar, timestamp, decision):
+        from engine import _continuous_grid_sell_fraction, _record_continuous_grid_fill
+
+        if not self.position or str(self.position.get("side", "long")).lower() != "long":
+            return False
+        price = float(bar['Close'])
+        total_qty = max(0.0, float(self.position.get("qty", 0.0)))
+        if price <= 0 or total_qty <= 0:
+            return False
+        result = {
+            "continuous_grid_side": "exit",
+            "continuous_grid_from_level": decision.get("from_level", decision.get("level")),
+            "continuous_grid_level": decision.get("level"),
+            "continuous_grid_runner_exit": bool(decision.get("continuous_grid_runner_exit")),
+        }
+        fraction = _continuous_grid_sell_fraction(
+            self.continuous_grid_settings,
+            result,
+            current_qty=total_qty,
+        )
+        sell_qty = min(total_qty, max(0.0, total_qty * fraction))
+        if sell_qty <= 0:
+            return False
+        closes_position = sell_qty >= total_qty - 0.00000001
+        reason = str(decision.get("reason") or "Adaptive grid scale-out")
+        if closes_position:
+            self._exit_trade(bar, timestamp, reason, exit_price_override=price)
+            self.continuous_grid_settings["compound_amount"] = self.current_trade_amount
+            _record_continuous_grid_fill(
+                self.continuous_grid_settings,
+                side="sell",
+                fill_price=price,
+                was_grid_order=True,
+                had_position=True,
+                position_closed=True,
+                continue_cycle=True,
+                filled_level=decision.get("level"),
+                current_atr=float(bar.get("ATR", 0.0) or 0.0),
+            )
+            return True
+
+        entry_price = float(self.position.get("entry_price", 0.0))
+        entry_cost = sell_qty * entry_price
+        exit_value = sell_qty * price
+        is_crypto = self.is_crypto
+        fee = round((entry_cost + exit_value) * 0.001, 2) if is_crypto else 0.0
+        pl = (price - entry_price) * sell_qty - fee
+        pl_pct = (pl / entry_cost * 100.0) if entry_cost > 0 else 0.0
+        self.equity += pl
+        self.position["qty"] = total_qty - sell_qty
+        self.trades.append({
+            "ticker": self.ticker,
+            "entry_time": self._to_utc_iso(self.position["entry_time"]),
+            "exit_time": self._to_utc_iso(timestamp),
+            "qty": round(sell_qty, 4),
+            "entry_price": round(entry_price, 8 if is_crypto else 2),
+            "exit_price": round(price, 8 if is_crypto else 2),
+            "entry_cost": round(entry_cost, 2),
+            "exit_value": round(exit_value, 2),
+            "fees": fee,
+            "pl": round(pl, 2),
+            "pl_pct": round(pl_pct, 2),
+            "reason": reason,
+            "side": "long",
+            "stop_loss": round(float(self.position.get("stop_loss", 0.0)), 8 if is_crypto else 2),
+            "take_profit": round(float(self.position.get("take_profit", 0.0)), 8 if is_crypto else 2),
+            "initial_stop_loss": round(float(self.position.get("initial_stop_loss", 0.0)), 8 if is_crypto else 2),
+            "initial_take_profit": round(float(self.position.get("initial_take_profit", 0.0)), 8 if is_crypto else 2),
+            "exit_stop_price": None,
+        })
+        if self.max_completed_trades and len(self.trades) >= self.max_completed_trades:
+            self.overtrade_limit_hit = True
+        self._refresh_guard_session(timestamp)
+        self.daily_realized_pl += float(pl)
+        self.consecutive_losses = self.consecutive_losses + 1 if pl < 0 else 0
+        if self.allocation_mode == "compound":
+            self.current_trade_amount = max(1.0, self.current_trade_amount + pl)
+            self.continuous_grid_settings["compound_amount"] = self.current_trade_amount
+        _record_continuous_grid_fill(
+            self.continuous_grid_settings,
+            side="sell",
+            fill_price=price,
+            was_grid_order=True,
+            had_position=True,
+            position_closed=False,
+            filled_level=decision.get("level"),
+            current_atr=float(bar.get("ATR", 0.0) or 0.0),
+        )
+        print(
+            f"[{self._to_central_str(timestamp)}] SELL {self.ticker} @ ${price:.4f} | "
+            f"Adaptive Grid L{decision.get('level', 1)} | Qty {sell_qty:.6f} | P/L ${pl:+.2f}"
+        )
+        return True
 
     def _exit_trade(self, bar, timestamp, reason, exit_price_override=None, exit_stop_price=None):
         if not self.position: return
@@ -1176,6 +1456,15 @@ class Backtester:
             self.overtrade_limit_hit = True
         self.position = None
         self.last_exit_time = timestamp
+        self._refresh_guard_session(timestamp)
+        self.daily_realized_pl += float(pl)
+        self.consecutive_losses = self.consecutive_losses + 1 if pl < 0 else 0
+        if is_stop_exit(reason):
+            self.stop_exit_state = {
+                "direction": "BUY" if side == "long" else "SELL",
+                "exit_price": float(exit_price),
+                "time": timestamp,
+            }
         if self.allocation_mode == "compound":
             self.current_trade_amount = max(1.0, self.current_trade_amount + pl)
         if self.enable_signal_reset:
@@ -1189,6 +1478,22 @@ class Backtester:
         cooldown_secs = self.cooldown_minutes * 60 if self.cooldown_minutes is not None else tf_seconds * 4
         if (timestamp - self.last_exit_time).total_seconds() < cooldown_secs:
             return "Trade Cooldown Active"
+        return None
+
+    def _refresh_guard_session(self, timestamp):
+        session_date = timestamp.date()
+        if self.guard_session_date != session_date:
+            self.guard_session_date = session_date
+            self.daily_realized_pl = 0.0
+            self.consecutive_losses = 0
+
+    def _loss_circuit_reason(self, timestamp):
+        self._refresh_guard_session(timestamp)
+        if self.max_consecutive_losses > 0 and self.consecutive_losses >= self.max_consecutive_losses:
+            return f"Loss circuit breaker active ({self.consecutive_losses} consecutive losses)"
+        loss_limit = self.initial_capital * self.max_daily_loss_pct
+        if loss_limit > 0 and self.daily_realized_pl <= -loss_limit:
+            return f"Daily strategy-loss limit active (${abs(self.daily_realized_pl):.2f} loss)"
         return None
 
     def _entry_guard_allows(self, action, bar, current_price, timestamp, side="long"):
@@ -1205,6 +1510,34 @@ class Backtester:
         cooldown_reason = self._cooldown_block_reason(timestamp)
         if cooldown_reason:
             return False, cooldown_reason
+
+        circuit_reason = self._loss_circuit_reason(timestamp)
+        if circuit_reason:
+            return False, circuit_reason
+
+        if self.stop_exit_state:
+            from engine import parse_timeframe_to_seconds
+            from trade_guards import stabilization_reason
+            elapsed_seconds = max(0.0, (timestamp - self.stop_exit_state["time"]).total_seconds())
+            elapsed_bars = int(elapsed_seconds // max(1, parse_timeframe_to_seconds(self.timeframe)))
+            stabilization = stabilization_reason(
+                action,
+                bar,
+                self.stop_exit_state,
+                elapsed_bars,
+                self.post_stop_stabilization_bars,
+            )
+            if stabilization:
+                return False, stabilization
+            self.stop_exit_state = None
+
+        if self.enable_liquidity_filter and self.df is not None:
+            from trade_guards import historical_volume_reason
+            start = max(0, self.current_bar_index - 20)
+            recent = self.df.iloc[start:self.current_bar_index]["Volume"].tolist() if "Volume" in self.df.columns else []
+            liquidity = historical_volume_reason(bar.get("Volume", 0), recent, self.min_relative_volume)
+            if liquidity:
+                return False, liquidity
 
         return self._smart_reentry_allows(bar, current_price, side=side)
 
@@ -1407,6 +1740,7 @@ class Backtester:
             "equity_curve": [],
             "trades": self.trades[::-1],
             "candles": [],
+            "volume_profile": self.volume_profile,
             "diagnostics": {"fast_metrics": True},
         }
 
@@ -1450,13 +1784,6 @@ class Backtester:
                 except Exception:
                     continue
 
-            # Mask out candlestick patterns for all candles except the single last candle to eliminate chart noise
-            if "Candle Patterns" in self.enabled_indicators and len(candles) > 1:
-                for c in candles[:-1]:
-                    c["cdl_name"] = "Neutral"
-                    c["cdl_bullish"] = False
-                    c["cdl_bearish"] = False
-
             no_trade_reason = "No trades executed during the period. Try lowering thresholds, enabling more indicators, or choosing a looser entry strategy."
             return {
                 "summary": {
@@ -1498,6 +1825,7 @@ class Backtester:
                 "equity_curve": equity_curve_downsampled,
                 "trades": [],
                 "candles": candles,
+                "volume_profile": self.volume_profile,
                 "diagnostics": {
                     "no_trade_reason": no_trade_reason,
                 },
@@ -1634,13 +1962,6 @@ class Backtester:
             except Exception:
                 continue
 
-        # Mask out candlestick patterns for all candles except the single last candle to eliminate chart noise
-        if "Candle Patterns" in self.enabled_indicators and len(candles) > 1:
-            for c in candles[:-1]:
-                c["cdl_name"] = "Neutral"
-                c["cdl_bullish"] = False
-                c["cdl_bearish"] = False
-
         return {
             "summary": {
                 "ticker": self.ticker,
@@ -1682,4 +2003,5 @@ class Backtester:
             "equity_curve": equity_curve_downsampled,
             "trades": self.trades[::-1],
             "candles": candles,
+            "volume_profile": self.volume_profile,
         }

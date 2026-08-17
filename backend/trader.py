@@ -19,7 +19,7 @@ from options_direction import normalize_options_type, VALID_OPTION_DIRECTIONS
 from prior_day_high_low import resolve_high_low_buffer_pct
 from indicator_catalog import EXTENSION_INDICATOR_TOGGLE_KEYS
 import config as global_config
-from user_config import get_user_config
+from user_config import active_evaluation_context, get_user_config
 
 
 from concurrent.futures import ThreadPoolExecutor
@@ -155,6 +155,7 @@ def get_confluence_decision(
     ai_sentiment_confidence=0.0,
     use_bot_settings=False,
     options_type="calls_only",
+    has_position=False,
 ):
     """
     Pure decision logic based on technical and AI signals.
@@ -384,22 +385,30 @@ def get_confluence_decision(
                 action = "HOLD"
                 reason = f"{contract_label} indicator entry waiting: {indicator_reason}"
         elif buy_mode in hybrid_modes:
+            mode_upper = str(buy_mode).upper()
+            struct_label = 'structure'
+            if 'ATR' in mode_upper: struct_label = 'ATR'
+            elif 'PCT' in mode_upper: struct_label = 'Pct'
+            elif 'PIVOT' in mode_upper: struct_label = 'Pivot'
+            elif 'HIGH_LOW' in mode_upper or 'HL' in mode_upper: struct_label = 'H/L'
+            elif 'SWING' in mode_upper: struct_label = 'Swing'
+
             if indicator_ok and structure_ok:
                 action = expected_action
                 option_intent = option_intent_open
-                reason = f"{contract_label} Hybrid Entry Triggered: {indicator_reason} AND {structure_reason}"
+                reason = f"{mode_upper} Triggered: {indicator_reason} AND {structure_reason}"
             elif indicator_ok:
                 action = "HOLD"
-                reason = f"Hybrid HOLD: {contract_label} indicators confirmed, waiting for {contract_label} structure."
+                reason = f"{mode_upper} Waiting: {contract_label} indicators confirmed, waiting for {contract_label} {struct_label}."
             elif structure_ok:
                 action = "HOLD"
-                reason = f"Hybrid HOLD: {contract_label} structure confirmed, waiting for {desired_direction.lower()} indicators."
+                reason = f"{mode_upper} Waiting: {struct_label} confirmed, only waiting for the indicator signals."
             elif structure_direction in {"BULLISH", "BEARISH"} and structure_direction != desired_direction:
                 action = "HOLD"
-                reason = f"HOLD: {structure_direction.title()} setup ignored because bot direction is {contract_label}."
+                reason = f"{mode_upper} Waiting: {structure_direction.title()} {struct_label} ignored; waiting for indicator signals and {contract_label} {struct_label}."
             else:
                 action = "HOLD"
-                reason = f"Hybrid HOLD: waiting for {contract_label} indicators and {contract_label} structure."
+                reason = f"{mode_upper} Waiting: waiting for indicator signals and {contract_label} {struct_label} confirmation."
         elif buy_mode in structural_modes:
             if structure_ok:
                 action = expected_action
@@ -407,7 +416,7 @@ def get_confluence_decision(
                 reason = f"{contract_label} Entry Triggered: {structure_reason}"
             elif structure_direction in {"BULLISH", "BEARISH"} and structure_direction != desired_direction:
                 action = "HOLD"
-                reason = f"HOLD: {structure_direction.title()} setup ignored because bot direction is {contract_label}."
+                reason = f"Waiting for Entry: {structure_direction.title()} setup ignored because bot direction is {contract_label}."
             else:
                 action = "HOLD"
                 reason = f"{contract_label} structural entry waiting: {structure_reason or 'no setup'}"
@@ -420,8 +429,7 @@ def get_confluence_decision(
                 action = "HOLD"
                 reason = f"{contract_label} entry waiting: {indicator_reason}"
 
-        if ticker in uc.TRADELIST:
-            print(f"[trader] {ticker} Options Decision: {option_intent}/{action} ({bullish_count}B/{bearish_count}S, need {min_buy}B/{min_sell}S) - {reason}")
+        pass
 
         return {
             "action": action,
@@ -432,6 +440,8 @@ def get_confluence_decision(
             "signals": filtered_signals,
             "indicator_direction": indicator_direction,
             "structure_direction": structure_direction,
+            "structure_ok": structure_ok,
+            "buy_mode": buy_mode,
         }
 
     non_option_hybrid_modes = {"hybrid_atr", "hybrid_pct", "hybrid_pivot", "hybrid_high_low", "hybrid_swing"}
@@ -457,27 +467,35 @@ def get_confluence_decision(
         structure_ok = entry_signal.get("action") == "BUY" and structure_direction == "BULLISH"
         indicator_ok = indicator_direction == "BULLISH"
 
+        # Determine clean mode name and structure label
+        mode_upper = str(buy_mode).upper()
+        struct_label = 'structure'
+        if 'ATR' in mode_upper: struct_label = 'ATR'
+        elif 'PCT' in mode_upper: struct_label = 'Pct'
+        elif 'PIVOT' in mode_upper: struct_label = 'Pivot'
+        elif 'HIGH_LOW' in mode_upper or 'HL' in mode_upper: struct_label = 'H/L'
+        elif 'SWING' in mode_upper: struct_label = 'Swing'
+
         if indicator_ok and structure_ok:
             action = "BUY"
-            reason = f"Hybrid BUY Triggered: {indicator_reason} AND {entry_signal.get('reason', 'bullish structure confirmed')}"
+            reason = f"{mode_upper} Triggered: {indicator_reason} AND {entry_signal.get('reason', f'bullish {struct_label} confirmed')}"
         elif indicator_direction == "BEARISH":
             action = "SELL"
             reason = f"SELL Triggered: {indicator_reason}"
         elif indicator_ok:
             action = "HOLD"
-            reason = "Hybrid HOLD: bullish indicators confirmed, waiting for bullish structure."
+            reason = f"{mode_upper} Waiting: {indicator_reason} confirmed, waiting for bullish {struct_label}."
         elif structure_ok:
             action = "HOLD"
-            reason = "Hybrid HOLD: bullish structure confirmed, waiting for bullish indicators."
+            reason = f"{mode_upper} Waiting: {struct_label} confirmed, only waiting for the indicator signals."
         elif structure_direction == "BEARISH":
             action = "HOLD"
-            reason = "Hybrid HOLD: bearish structure ignored for long entry; waiting for bullish indicators and bullish structure."
+            reason = f"{mode_upper} Waiting: bearish {struct_label} ignored; waiting for indicator signals and bullish {struct_label}."
         else:
             action = "HOLD"
-            reason = "Hybrid HOLD: waiting for bullish indicators and bullish structure."
+            reason = f"{mode_upper} Waiting: waiting for indicator signals and {struct_label} confirmation."
 
-        if ticker in uc.TRADELIST:
-            print(f"[trader] {ticker} Hybrid Decision: {action} ({bullish_count}B/{bearish_count}S, need {min_buy}B/{min_sell}S) - {reason}")
+        pass
 
         return {
             "action": action,
@@ -488,6 +506,8 @@ def get_confluence_decision(
             "signals": filtered_signals,
             "indicator_direction": indicator_direction,
             "structure_direction": structure_direction,
+            "structure_ok": structure_ok,
+            "buy_mode": buy_mode,
         }
 
     # Evaluate Swing Points entry first so the dedicated strategy family stays deterministic.
@@ -628,8 +648,7 @@ def get_confluence_decision(
         news_alignment = "CONFLICT_VETO"
         news_alignment_reason = reason
 
-    if ticker in uc.TRADELIST:
-        print(f"[trader] {ticker} Decision: {action} ({bullish_count}B/{bearish_count}S, need {min_buy}B/{min_sell}S) - {reason}")
+    pass
 
     return {
         "action": action,
@@ -649,7 +668,7 @@ def get_confluence_decision(
     }
 
 
-def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash: float = None, timeframe: str = None, data_source: str = "webull", use_bot_settings: bool = False, ignore_cache: bool = False):
+def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash: float = None, timeframe: str = None, data_source: str = "webull", use_bot_settings: bool = False, ignore_cache: bool = False, has_position: bool = False):
     """
     Full evaluation pipeline for a single ticker.
     Combines technical signals + AI sentiment + risk management.
@@ -689,7 +708,6 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         token = active_ticker_context.set(ticker_key) if use_bot_settings else None
         try:
             tech_ctx = contextvars.copy_context()
-            ai_ctx = contextvars.copy_context()
             analysis_settings = _analysis_settings_for_trade(uc, ticker_settings, use_bot_settings)
             tech_future = executor.submit(
                 tech_ctx.run,
@@ -699,8 +717,31 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
                 data_source=data_source,
                 settings=analysis_settings,
             )
-            ai_future = executor.submit(ai_ctx.run, get_ai_sentiment, ticker_key)
-            return tech_future.result(), ai_future.result()
+
+            # Determine if AI sentiment is enabled
+            allowed_indicators = ticker_settings.get('indicators') if use_bot_settings else None
+            ai_sentiment_enabled_for_bot = True
+            if allowed_indicators is not None:
+                ai_sentiment_enabled_for_bot = 'Botbulls4 News AI' in allowed_indicators
+
+            ai_enabled = ai_sentiment_enabled_for_bot and getattr(uc, 'ENABLE_AI_SENTIMENT', True)
+
+            if ai_enabled:
+                ai_ctx = contextvars.copy_context()
+                ai_future = executor.submit(ai_ctx.run, get_ai_sentiment, ticker_key)
+                return tech_future.result(), ai_future.result()
+            else:
+                dummy_ai_data = {
+                    "score": 0.0,
+                    "confidence": 0.0,
+                    "summary": "AI News Sentiment disabled.",
+                    "key_factor": "N/A",
+                    "headline_count": 0,
+                    "headlines": [],
+                    "articles": [],
+                    "analysis_model": "disabled"
+                }
+                return tech_future.result(), dummy_ai_data
         finally:
             if token: active_ticker_context.reset(token)
 
@@ -742,19 +783,22 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
             "_internal_rsi": None,
             "position_sizing": {},
             "risk_status": {},
-            "is_custom": False
+            "is_custom": False,
+            "structure_ok": False,
+            "buy_mode": "",
+            "sell_mode": ""
         }
         print(f"[perf] evaluate_trade {ticker_key} {timeframe_key}: {(time.perf_counter() - start_ts) * 1000:.1f}ms (no analysis)")
         return out
 
-    # 3. Get decision from confluence logic
     decision = get_confluence_decision(
         ticker,
         analysis, 
         ai_data['score'], 
         ai_data['confidence'],
         use_bot_settings=use_bot_settings,
-        options_type=ticker_settings.get('options_type', 'calls_only') if ticker_settings else 'calls_only'
+        options_type=ticker_settings.get('options_type', 'calls_only') if ticker_settings else 'calls_only',
+        has_position=has_position
     )
     action = decision['action']
     reason = decision['reason']
@@ -772,9 +816,16 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
             side=trade_side
         )
 
-    # 6. Check daily drawdown
-    can_trade = risk_mgr.check_drawdown(account_equity, ticker=ticker)
-    if not can_trade and action != "HOLD":
+    # 6. Respect the live global halt without recalculating account risk for
+    # every indicator evaluation. The UserEngine performs that account-level
+    # check once per live bots loop. Dashboard/backtest analysis must never
+    # mutate or inherit the live bot execution gate.
+    is_live_bot_context = active_evaluation_context.get() == "bots"
+    can_trade = not risk_mgr.trading_halted if is_live_bot_context else True
+    # A global halt blocks exposure-increasing entries but must never suppress
+    # an existing position's SELL/protective exit.
+    entry_action = action == "BUY" or (action == "SELL" and not has_position)
+    if not can_trade and entry_action:
         action = "HOLD"
         reason = f"Trading halted: {risk_mgr.halt_reason}"
 
@@ -797,6 +848,9 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         "bearish_count": decision['bearish_count'],
         "indicator_direction": decision.get("indicator_direction", "NONE"),
         "structure_direction": decision.get("structure_direction", "NONE"),
+        "structure_ok": decision.get("structure_ok", False),
+        "buy_mode": decision.get("buy_mode", ""),
+        "sell_mode": ticker_settings.get("sell_mode", "atr") if ticker_settings else "",
         "total_signals": len(analysis['signals']),
         "atr": analysis['atr'],
         "rsi": analysis.get('rsi'),

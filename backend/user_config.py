@@ -22,6 +22,9 @@ class UserConfig:
         # Dashboard-only regular indicator workspace. The backend owns the
         # authoritative displayed order, enabled subset, and favorites.
         self.dashboard_indicator_workspace = {}
+        # Account-level live-bot risk state. This is persisted separately from
+        # per-ticker pause settings so protective exits can keep running.
+        self.global_risk_state = {}
         self.SCAN_INTERVAL_SECONDS = getattr(global_config, 'SCAN_INTERVAL_SECONDS', 60)
         self.OPTIONS_SCAN_INTERVAL_SECONDS = getattr(global_config, 'OPTIONS_SCAN_INTERVAL_SECONDS', 10)
         

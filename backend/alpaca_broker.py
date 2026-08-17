@@ -9,6 +9,8 @@ Handles all communication with the Alpaca API:
 - Paper trading support
 """
 
+import hashlib
+
 import config
 
 try:
@@ -34,6 +36,9 @@ class AlpacaBroker:
     def __init__(self):
         self.simulation_mode = True  # Start in simulation, only go live on successful connection
         self.client = None
+        self._api_key = ""
+        self._secret_key = ""
+        self._risk_account_key = "alpaca:simulation"
 
         # Simulation state
         self.sim_equity = 100000.0
@@ -75,6 +80,8 @@ class AlpacaBroker:
             # Clean keys to prevent invisible whitespace errors
             api_key = api_key.strip()
             secret_key = secret_key.strip()
+            self._api_key = api_key
+            self._secret_key = secret_key
             
             print(f"[broker] Attempting connection (Paper={paper})...")
             self.client = TradingClient(api_key, secret_key, paper=paper)
@@ -101,6 +108,13 @@ class AlpacaBroker:
                     time.sleep(2)
                     
             self.simulation_mode = False
+            account_identity = str(
+                getattr(account, "account_number", "")
+                or getattr(account, "id", "")
+                or self._api_key
+            )
+            account_fingerprint = hashlib.sha256(account_identity.encode("utf-8")).hexdigest()[:16]
+            self._risk_account_key = f"alpaca:{'paper' if paper else 'live'}:{account_fingerprint}"
             print(f"[broker] SUCCESS: Connected to Alpaca ({account.account_number}) - Equity: ${account.equity}")
             return True
         except Exception as e:
@@ -108,6 +122,50 @@ class AlpacaBroker:
             self.simulation_mode = True
             self.client = None
             return False
+
+    def get_latest_quote(self, symbol: str) -> dict:
+        """Return a normalized two-sided stock/crypto quote for entry guards."""
+        if self.simulation_mode or not self._api_key or not self._secret_key:
+            return {}
+        normalized = symbol.upper().replace("/", "")
+        is_crypto = any(normalized.endswith(base) for base in ("USD", "USDT", "USDC"))
+        try:
+            if is_crypto:
+                from alpaca.data.historical.crypto import CryptoHistoricalDataClient
+                from alpaca.data.requests import CryptoLatestQuoteRequest
+
+                request_symbol = normalized
+                for base in ("USDT", "USDC", "USD"):
+                    if request_symbol.endswith(base):
+                        request_symbol = f"{request_symbol[:-len(base)]}/{base}"
+                        break
+                data_client = CryptoHistoricalDataClient(self._api_key, self._secret_key)
+                response = data_client.get_crypto_latest_quote(
+                    CryptoLatestQuoteRequest(symbol_or_symbols=[request_symbol])
+                )
+                quote = response.get(request_symbol) or response.get(normalized)
+            else:
+                from alpaca.data.historical.stock import StockHistoricalDataClient
+                from alpaca.data.requests import StockLatestQuoteRequest
+
+                data_client = StockHistoricalDataClient(self._api_key, self._secret_key)
+                response = data_client.get_stock_latest_quote(
+                    StockLatestQuoteRequest(symbol_or_symbols=[normalized])
+                )
+                quote = response.get(normalized)
+            if quote is None:
+                return {}
+            timestamp = getattr(quote, "timestamp", None)
+            return {
+                "bid": float(getattr(quote, "bid_price", 0.0) or 0.0),
+                "ask": float(getattr(quote, "ask_price", 0.0) or 0.0),
+                "bid_size": float(getattr(quote, "bid_size", 0.0) or 0.0),
+                "ask_size": float(getattr(quote, "ask_size", 0.0) or 0.0),
+                "timestamp": timestamp,
+            }
+        except Exception as exc:
+            print(f"[broker] Latest quote unavailable for {normalized}: {self._format_api_error(exc)}")
+            return {}
             
     def _retry_api_call(self, func, *args, retries=3, delay=1.0, **kwargs):
         """Helper to retry Alpaca API calls on transient 500 errors."""
@@ -136,9 +194,11 @@ class AlpacaBroker:
                 'equity': self.sim_equity,
                 'cash': self.sim_cash,
                 'buying_power': self.sim_cash,
+                'daily_starting_equity': self.sim_daily_start_equity,
                 'daily_pl': round(daily_pl, 2),
                 'daily_pl_pct': round(daily_pl_pct, 2),
-                'simulation': True
+                'simulation': True,
+                '_risk_account_key': self._risk_account_key,
             }
 
         try:
@@ -158,9 +218,11 @@ class AlpacaBroker:
                 'cash': round(float(account.cash), 2),
                 'buying_power': round(float(account.buying_power), 2),
                 'non_marginable_buying_power': max(0.0, round(non_marginable, 2)),
+                'daily_starting_equity': round(last_equity, 2),
                 'daily_pl': round(daily_pl, 2),
                 'daily_pl_pct': round(daily_pl_pct, 2),
-                'simulation': False
+                'simulation': False,
+                '_risk_account_key': self._risk_account_key,
             }
         except Exception as e:
             print(f"[broker] Account info unavailable: {self._format_api_error(e)}")
@@ -723,18 +785,23 @@ class AlpacaBroker:
             return {'success': False, 'error': str(e)}
 
     def cancel_orders_for_ticker(self, ticker: str, side_filter: str = None) -> dict:
-        """Cancels all pending orders for a specific ticker. Optionally filter by side ('buy' or 'sell')."""
+        """Cancel pending equity/crypto orders and option orders for an underlying ticker."""
         self._invalidate_caches()
         if self.simulation_mode:
             return {'success': True, 'cancelled': 0}
 
         try:
+            import re
             orders = self._retry_api_call(self.client.get_orders, filter=None)
             ticker_norm = ticker.replace("/", "").upper()
             cancelled = 0
             for o in orders:
                 order_symbol = o.symbol.replace("/", "").upper()
-                if order_symbol == ticker_norm:
+                option_match = re.fullmatch(r"([A-Z]{1,6})\d{6}[CP]\d{8}", order_symbol)
+                belongs_to_ticker = order_symbol == ticker_norm or bool(
+                    option_match and option_match.group(1) == ticker_norm
+                )
+                if belongs_to_ticker:
                     if side_filter and o.side.value.lower() != side_filter.lower():
                         continue
                     try:
@@ -747,6 +814,29 @@ class AlpacaBroker:
         except Exception as e:
             print(f"[broker] Error cancelling orders for {ticker}: {e}")
             return {'success': False, 'error': str(e)}
+
+    def cancel_all_entry_orders(self) -> dict:
+        """Cancel all working BUY orders while preserving protective SELL exits."""
+        self._invalidate_caches()
+        if self.simulation_mode:
+            return {'success': True, 'cancelled': 0}
+        try:
+            orders = self._retry_api_call(self.client.get_orders, filter=None)
+            cancelled = 0
+            errors = []
+            for order in orders:
+                side = getattr(getattr(order, "side", None), "value", getattr(order, "side", ""))
+                if str(side).lower() != "buy":
+                    continue
+                try:
+                    self.client.cancel_order_by_id(str(order.id))
+                    cancelled += 1
+                except Exception as exc:
+                    errors.append(str(exc))
+            return {'success': not errors, 'cancelled': cancelled, 'errors': errors}
+        except Exception as e:
+            print(f"[broker] Error cancelling global entry orders: {e}")
+            return {'success': False, 'cancelled': 0, 'errors': [str(e)]}
 
     def place_order(self, symbol: str, notional: float, side: str = 'buy',
                     stop_loss: float = 0, take_profit: float = 0,

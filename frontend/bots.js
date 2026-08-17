@@ -29,8 +29,10 @@ const DASHBOARD_FETCH_TIMEOUT_MS = 15000;
 const PORTFOLIO_FETCH_TIMEOUT_MS = 15000;
 const PORTFOLIO_SHORT_REFRESH_INTERVAL = 30000;
 const PORTFOLIO_LONG_REFRESH_INTERVAL = 5 * 60 * 1000;
-const BOT_CHART_CACHE_VERSION = 'v7';
-const BOT_CHART_CACHE_TTL_MS = 10 * 60 * 1000;
+const BOT_CHART_CACHE_VERSION = 'v8';
+// Preview calculations can include a fresh provider fetch plus indicator
+// warm-up. Leave a small cushion beyond the backend's 45s calculation limit.
+const BOT_CHART_PREVIEW_FETCH_TIMEOUT_MS = 50000;
 const BOT_CHART_IDB_NAME = 'aiTradeBotChartCache';
 const BOT_CHART_IDB_VERSION = 1;
 const BOT_CHART_IDB_STORE = 'chartPayloads';
@@ -54,6 +56,7 @@ let botsCountdownTimerId = null;
 let botsSoftRefreshTimerId = null;
 let botChartPreviewIndexedDbPromise = null;
 const botChartPreviewPayloadCache = new Map();
+const botChartPreviewRequests = new Map();
 const botFullSettingsCache = new Map();
 const botsPartitionSnapshots = { options: null, regular: null };
 const botsFetchState = {
@@ -230,8 +233,14 @@ const OPTIONS_DEFAULT_TRAIL_PCT = 10;
 
 function isCrypto(ticker) {
     if (!ticker) return false;
-    const clean = ticker.toString().toUpperCase().trim();
-    return clean.includes('USD') || ['BTC', 'ETH', 'LTC', 'SOL', 'DOGE', 'ADA', 'DOT', 'SHIB', 'AVAX', 'XRP'].some(c => clean.startsWith(c));
+    const raw = ticker.toString().toUpperCase().trim();
+    const clean = raw.replace(/[\/\-\s]/g, '');
+    const settingsByTicker = typeof window !== 'undefined' ? (window.lastBotsData?.ticker_settings || {}) : {};
+    const assetClass = String(settingsByTicker[raw]?.asset_class || settingsByTicker[clean]?.asset_class || '').toLowerCase();
+    if (assetClass === 'crypto' || assetClass === 'cryptocurrency') return true;
+    if (['stock', 'equity', 'us_equity', 'options', 'option'].includes(assetClass)) return false;
+    return clean.endsWith('USD') || clean.endsWith('USDT') || clean.endsWith('USDC') ||
+        ['BTC', 'ETH', 'LTC', 'SOL', 'DOGE', 'ADA', 'DOT', 'SHIB', 'AVAX', 'XRP'].includes(clean);
 }
 
 function getMarketSessionForStrategy(mode = 'regular') {
@@ -473,12 +482,89 @@ function sanitizePlainText(text) {
     return String(text || '').replace(/<[^>]*>?/gm, '');
 }
 
+const botLossPauseAlertQueue = [];
+let botLossPauseAlertOpen = false;
+const botLossPauseAlertSeen = new Set();
+
+try {
+    const seenIds = JSON.parse(sessionStorage.getItem('botLossPauseAlertSeen') || '[]');
+    if (Array.isArray(seenIds)) seenIds.forEach(id => botLossPauseAlertSeen.add(String(id)));
+} catch (_) { }
+
+function rememberBotLossPauseAlert(eventId) {
+    botLossPauseAlertSeen.add(eventId);
+    try {
+        sessionStorage.setItem('botLossPauseAlertSeen', JSON.stringify(Array.from(botLossPauseAlertSeen).slice(-100)));
+    } catch (_) { }
+}
+
+function showNextBotLossPauseAlert() {
+    if (botLossPauseAlertOpen || !botLossPauseAlertQueue.length) return;
+    const alertItem = botLossPauseAlertQueue.shift();
+    botLossPauseAlertOpen = true;
+
+    const overlay = document.createElement('div');
+    overlay.id = 'botLossPauseAlert';
+    overlay.className = 'fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-slate-950/55 backdrop-blur-sm';
+    overlay.innerHTML = `
+        <div role="alertdialog" aria-modal="true" aria-labelledby="botLossPauseAlertTitle"
+            class="w-full max-w-md rounded-3xl border border-rose-200/70 bg-white/95 p-6 shadow-2xl">
+            <div class="flex items-start gap-3">
+                <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-rose-100 text-xl">🛑</div>
+                <div>
+                    <h2 id="botLossPauseAlertTitle" class="text-base font-black text-slate-900">Bot paused for safety</h2>
+                    <p data-role="message" class="mt-2 text-sm font-semibold leading-relaxed text-slate-600"></p>
+                </div>
+            </div>
+            <div class="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <button type="button" data-action="dismiss"
+                    class="rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-black uppercase tracking-wider text-slate-600 hover:bg-slate-50">Dismiss</button>
+                <button type="button" data-action="review"
+                    class="rounded-xl bg-rose-600 px-4 py-2.5 text-xs font-black uppercase tracking-wider text-white shadow-lg shadow-rose-500/20 hover:bg-rose-700">Review Bot Settings</button>
+            </div>
+        </div>`;
+
+    overlay.querySelector('[data-role="message"]').textContent =
+        `${alertItem.ticker} reached 3 consecutive losing trades and was automatically paused. Review its strategy and risk settings, then activate the bot again manually.`;
+
+    const closeAlert = (reviewSettings = false) => {
+        overlay.remove();
+        botLossPauseAlertOpen = false;
+        if (reviewSettings && typeof window.openStrategyModal === 'function') {
+            window.openStrategyModal(alertItem.ticker, 'edit');
+        }
+        setTimeout(showNextBotLossPauseAlert, 0);
+    };
+    overlay.querySelector('[data-action="dismiss"]').addEventListener('click', () => closeAlert(false));
+    overlay.querySelector('[data-action="review"]').addEventListener('click', () => closeAlert(true));
+    document.body.appendChild(overlay);
+    overlay.querySelector('[data-action="review"]').focus();
+}
+
+function checkBotLossPauseAlerts(data) {
+    const settingsByTicker = data?.ticker_settings || {};
+    Object.entries(settingsByTicker).forEach(([ticker, settings]) => {
+        if (!settings?.paused || settings.pause_code !== 'consecutive_losses') return;
+        const eventId = String(settings.pause_event_id || `${ticker}:${settings.paused_at || settings.pause_reason || 'loss-streak'}`);
+        if (botLossPauseAlertSeen.has(eventId)) return;
+        rememberBotLossPauseAlert(eventId);
+        botLossPauseAlertQueue.push({ ticker, eventId });
+    });
+    showNextBotLossPauseAlert();
+}
+
 function scanLogStatusClass(status) {
     switch (status) {
         case 'MARKET_CLOSED':
             return 'bg-red-100 text-red-800 border-red-300 font-bold';
+        case 'COOLDOWN':
+            return 'bg-purple-100 text-purple-800 border-purple-300 font-bold animate-pulse';
+        case 'SIGNAL_RESET':
+            return 'bg-indigo-100 text-indigo-800 border-indigo-300 font-bold';
         case 'READY':
             return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+        case 'GRID_MONITORING':
+            return 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200';
         case 'BLOCKED':
             return 'bg-rose-50 text-rose-700 border-rose-200';
         case 'NEAR_ENTRY':
@@ -538,6 +624,63 @@ function formatProtectionBox(protection, fallbackStatus = '') {
     `;
 }
 
+function formatContinuousGridForecastBox(forecast, compact = false, isCryptoAsset = false) {
+    if (!forecast?.enabled) return '';
+    const formatSide = (side, type) => {
+        if (!side?.enabled) return '';
+        const isEntry = type === 'entry';
+        const label = isEntry ? 'Next Buy' : 'Next Sell';
+        const color = isEntry
+            ? 'bg-fuchsia-50/70 border-fuchsia-200 text-fuchsia-900'
+            : 'bg-purple-50/70 border-purple-200 text-purple-900';
+        const status = String(side.status || 'monitoring');
+        const progress = `${Number(side.completed_count || 0)}/${Number(side.enabled_count || 0)}`;
+        let primary = '';
+        if (status === 'waiting_position') {
+            primary = 'Waiting for a position';
+        } else if (status === 'waiting_initial_entry') {
+            const level = Number(side.next_level || side.display_level || 0);
+            const allocationPct = Number(side.allocation_pct || 0);
+            const allocationAmount = Number(side.allocation_amount || 0);
+            primary = `Initial L${level} after signal • Buy ${allocationPct.toFixed(1)}%${allocationAmount > 0 ? ` / $${formatAssetPrice(allocationAmount, false)}` : ''}`;
+        } else if (status === 'all_levels_complete') {
+            primary = 'All enabled levels completed';
+        } else {
+            const level = Number(status === 'order_pending' ? side.pending_level : side.next_level) || 0;
+            const fromLevel = Number(side.from_level || level);
+            const rungLabel = fromLevel < level ? `L${fromLevel}–L${level}` : `L${level}`;
+            const trigger = Number(side.trigger_price || 0);
+            const allocationPct = Number(side.allocation_pct || 0);
+            const action = isEntry ? 'at/below' : 'at/above';
+            const allocation = isEntry
+                ? `${allocationPct.toFixed(1)}%${Number(side.allocation_amount || 0) > 0 ? ` / $${formatAssetPrice(Number(side.allocation_amount), false)}` : ''}`
+                : `${allocationPct.toFixed(1)}% of start qty`;
+            primary = `${rungLabel} ${action} $${formatAssetPrice(trigger, isCryptoAsset)} • ${allocation}`;
+        }
+        const pendingBadge = status === 'order_pending'
+            ? '<span class="px-1 py-0.5 rounded border border-amber-300 bg-amber-100 text-amber-700 text-[0.45rem] font-black uppercase">Order Pending</span>'
+            : '';
+        const anchor = Number(side.anchor_price || 0);
+        const anchorText = anchor > 0
+            ? `${isEntry ? 'Buy anchor' : 'Avg-cost anchor'} $${formatAssetPrice(anchor, isCryptoAsset)}`
+            : 'Anchor pending';
+        return `
+            <div class="rounded-lg border ${color} px-2 py-1.5 min-w-0">
+                <div class="flex items-center gap-1 flex-wrap">
+                    <span class="text-[0.48rem] font-black uppercase tracking-wider">${label}</span>
+                    <span class="px-1 py-0.5 rounded bg-white/70 border border-current/10 text-[0.45rem] font-black">${progress} DONE</span>
+                    ${pendingBadge}
+                </div>
+                <div class="text-[0.5rem] sm:text-[0.55rem] font-black font-mono leading-normal break-words">${primary}</div>
+                ${compact ? '' : `<div class="text-[0.46rem] sm:text-[0.5rem] font-bold opacity-70 font-mono">${anchorText}</div>`}
+            </div>
+        `;
+    };
+    const sides = [formatSide(forecast.entry, 'entry'), formatSide(forecast.exit, 'exit')].filter(Boolean).join('');
+    if (!sides) return '';
+    return `<div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5 ${compact ? 'mt-0.5' : 'mt-1'}">${sides}</div>`;
+}
+
 function renderTradelist(scans, tradelist, tickerAmounts = {}) {
     const container = document.getElementById('tradelistContainer');
     if (!container) return;
@@ -548,13 +691,17 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
     const subEl = document.getElementById('botStatusSub');
 
     const totalCount = (tradelist || []).length;
-    const pausedCount = tradelist ? tradelist.filter(t => (window.lastBotsData?.ticker_settings || {})[t]?.paused).length : 0;
-    const runningCount = totalCount - pausedCount;
+    const globalRiskHalted = Boolean(window.lastBotsData?.global_risk_status?.halted);
+    const individuallyPausedCount = tradelist ? tradelist.filter(t => (window.lastBotsData?.ticker_settings || {})[t]?.paused).length : 0;
+    const pausedCount = globalRiskHalted ? totalCount : individuallyPausedCount;
+    const runningCount = globalRiskHalted ? 0 : totalCount - individuallyPausedCount;
 
     if (countEl) countEl.textContent = totalCount;
     if (subEl) {
         if (totalCount > 0) {
-            subEl.innerHTML = `<span class="text-emerald-500">${runningCount} Active</span> • <span class="text-amber-500">${pausedCount} Paused</span>`;
+            subEl.innerHTML = globalRiskHalted
+                ? `<span class="text-rose-600">0 Active</span> • <span class="text-rose-500">${totalCount} Global Halted</span>`
+                : `<span class="text-emerald-500">${runningCount} Active</span> • <span class="text-amber-500">${pausedCount} Paused</span>`;
         } else {
             subEl.textContent = 'No bots running';
         }
@@ -582,12 +729,12 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
     filteredTradelist.forEach((ticker, index) => {
         const scan = (scans || {})[ticker];
         const tickerSettings = (window.lastBotsData?.ticker_settings || {})[ticker] || {};
-        const isOptions = tickerSettings.options_trading || false;
-        const isCryptoFlag = ticker.includes('USD') || ticker.includes('BTC') || ticker.includes('ETH') || ticker.includes('SOL') || ticker.includes('DOGE') || ticker.includes('LTC');
-        const premiumCardClass = isOptions ? 'options-premium-card' : (isCryptoFlag ? 'crypto-premium-card' : '');
+        const isCryptoFlag = isCrypto(ticker);
+        const isOptions = !isCryptoFlag && Boolean(tickerSettings.options_trading);
+        const premiumCardClass = isCryptoFlag ? 'crypto-premium-card' : (isOptions ? 'options-premium-card' : '');
 
         const item = document.createElement('div');
-        item.className = `watchlist-item group active-bot ${premiumCardClass} ${selectedTicker === ticker ? 'active' : ''} ${botArrangeMode ? 'ring-1 ring-emerald-200 bg-emerald-50/30' : ''} p-3 mb-2 flex flex-col gap-2 transition-transform duration-200`;
+        item.className = `watchlist-item group active-bot ${premiumCardClass} ${selectedTicker === ticker ? 'active' : ''} ${botArrangeMode ? 'ring-1 ring-emerald-200 bg-emerald-50/30' : ''} p-2.5 mb-1.5 flex flex-col gap-1.5 transition-transform duration-200`;
         item.dataset.ticker = ticker;
         item.dataset.ticker = ticker;
 
@@ -610,10 +757,10 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
 
         const action = scan?.action || '—';
         let price = '---';
-        const isCrypto = ticker.includes('USD') || ticker.includes('BTC') || ticker.includes('ETH') || ticker.includes('SOL') || ticker.includes('DOGE') || ticker.includes('LTC');
+        const isCryptoAsset = isCrypto(ticker);
         if (scan?.price) {
             const parsedPrice = parseFloat(scan.price.toString().replace('$', ''));
-            price = `$${formatAssetPrice(parsedPrice, isCrypto)}`;
+            price = `$${formatAssetPrice(parsedPrice, isCryptoAsset)}`;
         }
         const bullish = scan?.bullish_count ?? 0;
         const bearish = scan?.bearish_count ?? 0;
@@ -662,11 +809,11 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
 
         // ── Determine whether each side actively uses indicator pool ──
         const isEntryIndActive = !isAiAutopilot && !PURE_STRUCTURAL_ENTRY_MODES.has(buyMode);
-        const isExitIndActive  = !isAiAutopilot && !PURE_STRUCTURAL_EXIT_MODES.has(sellMode);
+        const isExitIndActive = !isAiAutopilot && !PURE_STRUCTURAL_EXIT_MODES.has(sellMode);
 
         // ── Label prefixes ──
         const entryLabel = isAiAutopilot ? 'Entry AI' : (HYBRID_ENTRY_MODES.has(buyMode) ? 'Entry Hybrid Ind' : 'Entry Ind');
-        const exitLabel  = isAiAutopilot ? 'Exit AI' : (HYBRID_EXIT_MODES.has(sellMode) ? 'Exit Hybrid Ind' : 'Exit Ind');
+        const exitLabel = isAiAutopilot ? 'Exit AI' : (HYBRID_EXIT_MODES.has(sellMode) ? 'Exit Hybrid Ind' : 'Exit Ind');
 
         // ── Badge color for the Decision badge (action uses BUY/SELL/HOLD) ──
         const badgeColor = (signal) => signal === 'BUY'
@@ -704,7 +851,9 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             : 'text-red-600 bg-red-50 border-red-100';
         const tickerTf = (window.lastBotsData?.ticker_settings || {})[ticker]?.timeframe || '';
         const tfLabel = tickerTf || (window.lastBotsData?.strategyTimeframe || '5Min');
-        const isPaused = (window.lastBotsData?.ticker_settings || {})[ticker]?.paused || false;
+        const isLocallyPaused = (window.lastBotsData?.ticker_settings || {})[ticker]?.paused || false;
+        const isGlobalRiskHalted = Boolean(window.lastBotsData?.global_risk_status?.halted);
+        const isPaused = isLocallyPaused || isGlobalRiskHalted;
         const inWatchlist = (window.lastBotsData?.watchlist || []).includes(ticker);
         const dotClass = isPaused
             ? 'h-2 w-2 bg-slate-300 rounded-full'
@@ -743,15 +892,15 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         const isPutPosition = !!activePosition && (
             (activePosition.option_type === 'PUT') ||
             (typeof activePosition.symbol === 'string' &&
-             activePosition.symbol.length >= 15 &&
-             activePosition.symbol.charAt(activePosition.symbol.length - 9) === 'P')
+                activePosition.symbol.length >= 15 &&
+                activePosition.symbol.charAt(activePosition.symbol.length - 9) === 'P')
         );
 
         // ── Options contract direction ──
         const optionsType = tickerSettings.options_type || 'calls_only'; // 'calls_only' | 'puts_only'
         const isLegacyBoth = isOptions && optionsType === 'both';
         const isCallsOnly = isOptions && optionsType === 'calls_only';
-        const isPutsOnly  = isOptions && optionsType === 'puts_only';
+        const isPutsOnly = isOptions && optionsType === 'puts_only';
 
         // ── N/A badge (shared style for inactive sides) ──
         const naClass = 'bg-slate-50 text-slate-400 border-slate-100';
@@ -869,7 +1018,9 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             exitIndHtml = exitLabelBadge + exitProgressBadges;
         }
 
-        const pauseReason = (window.lastBotsData?.ticker_settings || {})[ticker]?.pause_reason || '';
+        const pauseReason = isGlobalRiskHalted
+            ? `Global risk halt: ${window.lastBotsData?.global_risk_status?.halt_reason || 'Review global risk controls before reactivation.'}`
+            : ((window.lastBotsData?.ticker_settings || {})[ticker]?.pause_reason || '');
         let pauseReasonHtml = '';
         if (isPaused && pauseReason) {
             pauseReasonHtml = `
@@ -882,6 +1033,8 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
 
         let positionHtml = '';
         let scanLogHtml = '';
+        const continuousGridForecast = scan?.continuous_grid_forecast || scan?.scan_log?.continuous_grid_forecast || null;
+        const continuousGridForecastHtml = formatContinuousGridForecastBox(continuousGridForecast, false, isCryptoAsset);
         if (activePosition) {
             const qty = activePosition.qty;
             const avgCostVal = activePosition.avg_price;
@@ -940,9 +1093,11 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 </div>
                 <div class="mt-1.5 pt-1.5 border-t border-slate-50 flex flex-col justify-center cursor-pointer w-full min-w-0" onclick="selectTicker('${ticker}')">
                     <div class="flex items-center gap-1.5 mb-1 flex-wrap">
-                        <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Forecast Exit Strategy</span>
+                        <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">${continuousGridForecast?.enabled ? 'Live Adaptive Grid Forecast' : 'Forecast Exit Strategy'}</span>
                     </div>
-                    <span class="text-[0.5rem] sm:text-[0.55rem] font-bold text-slate-500 font-mono leading-normal whitespace-normal break-words w-full min-w-0" title="${sanitizePlainText(forecastExitText)}">${forecastExitText}</span>
+                    ${continuousGridForecast?.enabled
+                        ? continuousGridForecastHtml
+                        : `<span class="text-[0.5rem] sm:text-[0.55rem] font-bold text-slate-500 font-mono leading-normal whitespace-normal break-words w-full min-w-0" title="${sanitizePlainText(forecastExitText)}">${forecastExitText}</span>`}
                 </div>
             `;
         } else {
@@ -951,11 +1106,11 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             positionHtml = `
                 <div class="mt-2 pt-2 border-t border-slate-50 flex flex-col justify-center cursor-pointer w-full min-w-0" onclick="selectTicker('${ticker}')">
                     <div class="flex items-center gap-1.5 mb-1 flex-wrap">
-                        <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Forecast Entry Strategy</span>
+                        <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">${continuousGridForecast?.enabled ? 'Live Adaptive Grid Forecast' : 'Forecast Entry Strategy'}</span>
                     </div>
-                    <span class="text-[0.5rem] sm:text-[0.55rem] font-bold text-slate-500 font-mono leading-normal whitespace-normal break-words w-full min-w-0" title="${forecastText.replace(/<[^>]*>?/gm, '')}">
-                        ${forecastText}
-                    </span>
+                    ${continuousGridForecast?.enabled
+                        ? continuousGridForecastHtml
+                        : `<span class="text-[0.5rem] sm:text-[0.55rem] font-bold text-slate-500 font-mono leading-normal whitespace-normal break-words w-full min-w-0" title="${forecastText.replace(/<[^>]*>?/gm, '')}">${forecastText}</span>`}
                 </div>
             `;
         }
@@ -972,6 +1127,11 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             const protection = scanLog.exit_protection || activePosition?.exit_protection || {};
             const protectionText = protection.status || activePosition?.exit_protection_status || '';
             const protectionBoxHtml = formatProtectionBox(protection, protectionText);
+            const gridScanForecastHtml = formatContinuousGridForecastBox(
+                scanLog.continuous_grid_forecast || continuousGridForecast,
+                true,
+                isCryptoAsset
+            );
             const statusText = String(scanLog.status || 'WAITING_ENTRY').replace(/_/g, ' ');
             const confirmedStrength = Number.isFinite(Number(scanLog.confirmed_weight))
                 ? Number(scanLog.confirmed_weight)
@@ -1001,10 +1161,10 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 const secToPre = Number(scanLog.seconds_to_pre_open || 0);
                 const secToOpen = Number(scanLog.seconds_to_open || 0);
                 const nextOpenStr = scanLog.next_open_str || 'Market Open';
-                const countdownText = secToPre > 0 
+                const countdownText = secToPre > 0
                     ? `⏱️ Starts scanning in ${formatDurationCompactJs(secToPre)} (2m prior to Market Open)`
                     : `🔥 Pre-Market Active! Scanning started (${formatDurationCompactJs(secToOpen)} until Open)`;
-                
+
                 const sessionTag = isOptBot ? 'Options' : (scanLog.market_session || (tickerSettings.market_session && tickerSettings.market_session.toLowerCase() === 'extended' ? 'Extended' : 'Regular'));
 
                 scanLogHtml = `
@@ -1015,13 +1175,14 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                                 <span>MARKET CLOSED</span>
                                 <span class="px-1.5 py-0.5 rounded bg-red-600 dark:bg-red-500 text-white font-mono font-bold text-[0.5rem] uppercase tracking-normal">${sessionTag}</span>
                             </div>
-                            <span class="options-market-countdown font-mono font-bold text-[0.55rem] sm:text-[0.6rem] text-red-700 dark:text-red-300 bg-red-500/10 px-2 py-1 rounded-lg border border-red-500/30" data-rendered-at="${Date.now()}" data-initial-pre-open="${secToPre}" data-initial-open="${secToOpen}">
+                            <span class="options-market-countdown font-mono font-bold text-[0.55rem] sm:text-[0.6rem] bg-red-500/10 px-2 py-1 rounded-lg border border-red-500/30" style="color: #991b1b !important;" data-rendered-at="${Date.now()}" data-initial-pre-open="${secToPre}" data-initial-open="${secToOpen}">
                                 ${countdownText}
                             </span>
                         </div>
                         <span class="text-[0.5rem] sm:text-[0.55rem] font-medium text-slate-500 dark:text-slate-400 leading-normal whitespace-normal break-words w-full min-w-0">
                             ⚡ Scanning resumes automatically 2 minutes prior to ${nextOpenStr}.
                         </span>
+                        ${gridScanForecastHtml}
                     </div>
                 `;
             } else {
@@ -1037,7 +1198,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                             const timeStr = dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
                             timeAgoText = `<span class="scan-countdown text-[0.48rem] font-mono text-slate-400 font-normal ml-auto" data-rendered-at="${Date.now()}" data-refresh-rate="${refreshRate}" data-initial-remaining="${initialRemaining}" title="Last scan at ${timeStr} (${secAgo}s ago)">⏱️ Refreshing in ${initialRemaining}s</span>`;
                         }
-                    } catch (e) {}
+                    } catch (e) { }
                 }
 
                 scanLogHtml = `
@@ -1049,6 +1210,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                             ${timeAgoText}
                         </div>
                         <span class="text-[0.5rem] sm:text-[0.55rem] font-bold text-slate-500 font-mono leading-normal whitespace-normal break-words w-full min-w-0" title="${sanitizePlainText(scanLog.summary || summaryText)}">${summaryText}</span>
+                        ${gridScanForecastHtml}
                         ${protectionBoxHtml}
                         ${detailHtml}
                     </div>
@@ -1182,12 +1344,14 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 <!-- 2nd Line: Active/Passive Status, Timeframe (TF), and Signal Indicators -->
                 <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-1 cursor-pointer" onclick="selectTicker('${ticker}')">
                     <div class="flex items-center gap-1.5 flex-wrap">
-                        ${isPaused ? '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-500 border border-amber-200">PAUSED</span>' : '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-100">ACTIVE</span>'}
+                        ${isGlobalRiskHalted
+                ? '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-rose-50 text-rose-600 border border-rose-200">GLOBAL HALT</span>'
+                : (isPaused ? '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-500 border border-amber-200">PAUSED</span>' : '<span class="text-[0.5rem] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-100">ACTIVE</span>')}
                         ${isOptions
                 ? `<span class="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-700 font-black text-[0.5rem] border border-amber-500/20 uppercase tracking-widest">Options</span>
                                    <span class="px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 font-black text-[0.45rem] border border-amber-200 uppercase tracking-widest">${tickerSettings.options_type === 'puts_only' ? 'PUT' : (tickerSettings.options_type === 'both' ? 'Legacy Both Disabled' : 'CALL')}</span>
                                    <span class="px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 font-black text-[0.45rem] border border-amber-200 uppercase tracking-widest">${tickerSettings.options_expiry_days || 7}D Exp</span>`
-                : (isCrypto
+                : (isCryptoFlag
                     ? `<span class="px-1.5 py-0.5 rounded bg-fuchsia-500/10 text-fuchsia-700 font-black text-[0.5rem] border border-fuchsia-500/20 uppercase tracking-widest">Crypto</span>`
                     : `<span class="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-700 font-black text-[0.5rem] border border-indigo-500/20 uppercase tracking-widest">Stocks</span>`)
             }
@@ -1664,30 +1828,84 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
         row.className = 'border-b border-purple-100 fade-in hover:bg-purple-50/30 transition-colors';
 
         if (currentLogTab === 'all') {
+            const rawReason = String(item.reason || '');
+            // Basic cleanup of generic prefixes
+            let cleanReason = rawReason.replace(/Hybrid HOLD:/gi, 'Hybrid Waiting:').replace(/^HOLD:/gi, 'Waiting:');
+            // Enhance Hybrid waiting reason with mode and structure status
+            if (cleanReason.toLowerCase().startsWith('hybrid waiting:')) {
+                const mode = String(item.buy_mode || item.sell_mode || '').toUpperCase();
+                let structLabel = 'structure';
+                if (mode.includes('ATR')) structLabel = 'ATR';
+                else if (mode.includes('PCT')) structLabel = 'Pct';
+                else if (mode.includes('PIVOT')) structLabel = 'Pivot';
+                else if (mode.includes('HIGH_LOW') || mode.includes('HL')) structLabel = 'H/L';
+                else if (mode.includes('SWING')) structLabel = 'Swing';
+
+                if (item.structure_ok) {
+                    cleanReason = `${mode} Waiting: ${structLabel} confirmed, only waiting for the indicator signals.`;
+                } else {
+                    cleanReason = `${mode} Waiting: waiting for indicator signals and ${structLabel} confirmation.`;
+                }
+            }
+            const isCooldown = cleanReason.includes('Cooldown Active');
+            const isSignalReset = cleanReason.includes('Signal Reset Active');
+            const isWaitingEntry = !item.exit_monitoring && (item.action === 'HOLD' || cleanReason.toLowerCase().includes('waiting') || cleanReason.toLowerCase().includes('entry'));
+
+            const actionLabel = isCooldown
+                ? 'COOLDOWN'
+                : (isSignalReset
+                    ? 'RESET'
+                    : (isWaitingEntry ? 'WAITING' : item.action));
+
             const actionColor = item.action === 'BUY'
                 ? 'text-emerald-600 font-bold'
                 : item.action === 'SELL'
                     ? 'text-red-500 font-bold'
-                    : 'text-purple-500 font-medium';
+                    : isCooldown
+                        ? 'text-purple-600 font-bold'
+                        : isSignalReset
+                            ? 'text-indigo-600 font-bold'
+                            : (isWaitingEntry ? 'text-blue-600 font-medium' : 'text-purple-500 font-medium');
 
-            const signalBadge = item.exit_monitoring && item.exit_signal_label
-                ? item.exit_signal_label
+            let signalBadge = item.exit_monitoring && item.exit_signal_label
+                ? item.exit_signal_label.replace(/Exit\s*/gi, '').trim()
                 : item.bullish_count !== undefined
-                ? `${item.bullish_count}B / ${item.bearish_count}S`
-                : '—';
+                    ? `${item.bullish_count}B / ${item.bearish_count}S`
+                    : '—';
+
+            // For Hybrid strategies (Indicator + Structural/ATR), display single compact badge: e.g. "2B/1S + ATR"
+            const modeStr = String(item.buy_mode || item.sell_mode || cleanReason).toLowerCase();
+            if (modeStr.includes('hybrid') && !item.exit_monitoring && item.bullish_count !== undefined) {
+                let structLabel = 'ATR';
+                if (modeStr.includes('pct')) structLabel = 'Pct';
+                else if (modeStr.includes('pivot')) structLabel = 'Pivot';
+                else if (modeStr.includes('high_low') || modeStr.includes('hl')) structLabel = 'H/L';
+                else if (modeStr.includes('swing')) structLabel = 'Swing';
+
+                const isStructOk = item.structure_ok || cleanReason.toLowerCase().includes('structure confirmed');
+                const badgeText = isStructOk
+                    ? `${item.bullish_count}B/${item.bearish_count}S + ${structLabel} (OK)`
+                    : `${item.bullish_count}B/${item.bearish_count}S + ${structLabel}`;
+
+                const badgeColor = isStructOk
+                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                    : 'bg-purple-100 text-purple-700 border border-purple-200';
+
+                signalBadge = `<span class="px-1.5 py-0.5 rounded ${badgeColor} font-mono text-[0.58rem] sm:text-[0.62rem] whitespace-nowrap">${badgeText}</span>`;
+            } else {
+                signalBadge = `<span class="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-mono text-[0.6rem] whitespace-nowrap">${signalBadge}</span>`;
+            }
 
             row.innerHTML = `
                 <td class="py-2 pr-2 text-purple-600 text-[10px] sm:text-xs whitespace-normal leading-tight max-w-[65px] sm:max-w-none">${formatLocalTime(item.time)}</td>
-                <td class="py-2 pr-2 ${actionColor} text-[10px] sm:text-xs">${item.action}</td>
+                <td class="py-2 pr-2 ${actionColor} text-[10px] sm:text-xs">${actionLabel}</td>
                 <td class="py-2 pr-2 text-indigo-950 font-bold text-[10px] sm:text-xs">${item.ticker}</td>
                 <td class="py-2 pr-2 text-center">
                     <span class="px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-500 font-black text-[0.55rem] border border-indigo-100">${item.timeframe || '5M'}</span>
                 </td>
                 <td class="py-2 pr-2 text-indigo-700 font-medium text-[10px] sm:text-xs">${item.price}</td>
-                <td class="py-2 pr-2 text-[10px] sm:text-xs">
-                    <span class="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-mono text-[0.6rem]">${signalBadge}</span>
-                </td>
-                <td class="py-2 pr-2 text-purple-600 italic text-[10px] sm:text-xs min-w-[200px] sm:min-w-[280px] whitespace-normal leading-snug" title="${item.reason}">${item.reason}</td>
+                <td class="py-2 pr-2 text-[10px] sm:text-xs flex items-center gap-1 flex-wrap">${signalBadge}</td>
+                <td class="py-2 pr-2 text-purple-600 italic text-[10px] sm:text-xs min-w-[200px] sm:min-w-[280px] whitespace-normal leading-snug" title="${cleanReason}">${cleanReason}</td>
             `;
         } else if (currentLogTab === 'trades') {
             const sideColor = item.side === 'buy' ? 'text-emerald-600 font-bold' : 'text-rose-500 font-bold';
@@ -1838,7 +2056,7 @@ function changeLogPage(delta) {
 // Unified Bot Strategy Modal
 // ──────────────────────────────────────────────
 let currentStrategySymbol = null;
-    window.currentStrategySymbol = null;
+window.currentStrategySymbol = null;
 let strategyModalMode = 'deploy'; // 'deploy' or 'edit'
 let strategyDraftIndicatorOverrides = {};
 let botChartPreviewState = {
@@ -1850,6 +2068,7 @@ let botChartPreviewState = {
     settings: {},
     signals: {},
     priceHistory: [],
+    volumeProfile: {},
     previewMeta: {},
 };
 let botChartPreviewIndicatorSettingsContext = false;
@@ -2020,7 +2239,7 @@ async function saveBotChartPreviewCache(key, payload, ticker, settings) {
     });
     try {
         await writeRecord();
-        pruneBotChartPreviewCache().catch(() => {});
+        pruneBotChartPreviewCache().catch(() => { });
         return true;
     } catch (e) {
         await pruneBotChartPreviewCache(12);
@@ -2106,6 +2325,31 @@ function getCooldownMinutesValue(mode = 'regular') {
     return parseInt(val) || 60;
 }
 
+function getCoreTradeGuardSettings(mode = 'regular') {
+    const isOptions = mode === 'options';
+    const shared = {
+        post_stop_stabilization_bars: Math.max(0, parseInt(document.getElementById(`strategyPostStopBars_${mode}`)?.value || '3', 10)),
+        max_consecutive_losses: 3,
+        enable_liquidity_filter: true,
+    };
+    if (isOptions) {
+        return {
+            ...shared,
+            options_max_entry_spread_pct: parseFloat(document.getElementById('strategyOptionsMaxSpreadPct')?.value || '5'),
+            enable_options_market_open_filter: true,
+            options_market_open_blackout_minutes: Math.max(0, parseInt(document.getElementById('strategyOptionsOpenBlackoutMinutes')?.value || '15', 10)),
+            options_limit_aggression: 0.25,
+            options_entry_order_timeout_seconds: 20,
+            options_exit_order_timeout_seconds: 10,
+        };
+    }
+    return {
+        ...shared,
+        stock_max_spread_pct: parseFloat(document.getElementById('strategyStockMaxSpreadPct')?.value || '0.25'),
+        crypto_max_spread_pct: parseFloat(document.getElementById('strategyCryptoMaxSpreadPct')?.value || '0.50'),
+    };
+}
+
 function getDefaultSignalThreshold(type = 'buy') {
     const key = type === 'sell' ? 'MIN_BEARISH_SIGNALS' : 'MIN_BULLISH_SIGNALS';
     return parseInt(INDICATOR_DEFAULTS[key] || 4, 10) || 4;
@@ -2127,7 +2371,7 @@ function normalizeSignalThreshold(value, checkedCount, type = 'buy', minVal = 1)
 
 function getBotWorkspaceShownSet(mode = window.activeTradingMode || 'regular', ticker = currentStrategySymbol) {
     const contextLabel = `bots-${mode === 'options' ? 'options' : 'regular'}`;
-    const fallback = (window.STANDARD_INDICATOR_NAMES || []).slice(0, 10);
+    const fallback = (window.STANDARD_INDICATOR_NAMES || []).slice(0, 12);
     const shown = window.IndicatorWorkspace?.getShownForScope?.(contextLabel, ticker)
         || window.IndicatorWorkspace?.getShown?.(contextLabel)
         || fallback;
@@ -2312,23 +2556,233 @@ window.updateAllocationModeUI = function (mode = 'regular', settings = null) {
         hint.textContent = '';
         hint.classList.add('hidden');
     }
+    if (mode === 'regular' && window.updateLivePreview_bots) {
+        window.updateLivePreview_bots('regular', 'entry');
+    }
 };
 
-window.updateGridLevelInputs = function(mode, type) {
+function ensureContinuousGridLevelSizingUi(mode = 'regular') {
+    if (mode !== 'regular') return;
+    const defaultEntryBuyPcts = [40, 25, 15, 10, 10];
+    const defaultExitSellPcts = [10, 10, 15, 20, 20];
+    const enhance = (type) => {
+        const isEntry = type === 'entry';
+        const panel = document.getElementById(
+            isEntry ? `strategyGridLevelPcts_${mode}` : `strategyExitGridLevelPcts_${mode}`
+        );
+        const rows = Array.from(panel?.querySelectorAll(`[id^="${isEntry ? 'gridEntry' : 'gridExit'}L"][id$="_wrap_${mode}"]`) || []);
+        const grid = rows[0]?.parentElement;
+        if (grid) grid.className = 'grid grid-cols-1 sm:grid-cols-2 gap-1.5';
+
+        rows.forEach((row, index) => {
+            const level = index + 1;
+            if (row.dataset.sizingEnhanced === 'true') return;
+            const pctLabel = row.querySelector('label');
+            const pctInput = row.querySelector('input');
+            if (!pctLabel || !pctInput) return;
+            pctInput.addEventListener('input', () => window.updateContinuousGridUi?.(mode, type));
+            const pctColumn = document.createElement('div');
+            pctColumn.className = 'space-y-0.5';
+            pctLabel.textContent = isEntry ? `L${level} Dip %` : `L${level} Gain %`;
+            row.insertBefore(pctColumn, pctLabel);
+            pctColumn.append(pctLabel, pctInput);
+
+            const sizeColumn = document.createElement('div');
+            sizeColumn.className = 'space-y-0.5';
+            const sizeLabel = document.createElement('label');
+            sizeLabel.className = `block text-[0.5rem] font-black uppercase ${isEntry ? 'text-fuchsia-600' : 'text-purple-600'}`;
+            sizeLabel.textContent = isEntry ? 'Buy %' : 'Sell %';
+            const sizeInput = document.createElement('input');
+            sizeInput.type = 'number';
+            sizeInput.step = isEntry ? '1' : '1';
+            sizeInput.min = '1';
+            sizeInput.max = '100';
+            sizeInput.id = isEntry
+                ? `strategyGridEntryL${level}BuyPct_${mode}`
+                : `strategyGridExitL${level}SellPct_${mode}`;
+            sizeInput.value = isEntry
+                ? String(defaultEntryBuyPcts[level - 1])
+                : String(defaultExitSellPcts[level - 1]);
+            sizeInput.className = `w-full bg-white/60 border rounded-lg px-2 py-1 text-xs font-black text-indigo-950 outline-none ${isEntry ? 'border-fuchsia-200' : 'border-purple-200'}`;
+            sizeInput.addEventListener('input', () => window.updateContinuousGridUi?.(mode, type));
+            const enabledLabel = document.createElement('label');
+            enabledLabel.className = `col-span-2 flex items-center gap-2 cursor-pointer rounded-md px-1 py-0.5 ${isEntry ? 'text-fuchsia-800' : 'text-purple-800'}`;
+            const enabledInput = document.createElement('input');
+            enabledInput.type = 'checkbox';
+            enabledInput.checked = true;
+            enabledInput.id = isEntry
+                ? `strategyGridEntryL${level}Enabled_${mode}`
+                : `strategyGridExitL${level}Enabled_${mode}`;
+            enabledInput.className = `h-3.5 w-3.5 ${isEntry ? 'accent-fuchsia-500' : 'accent-purple-500'}`;
+            const enabledText = document.createElement('span');
+            enabledText.className = 'text-[0.52rem] font-black uppercase tracking-wider';
+            enabledText.textContent = `Enable Level ${level}`;
+            enabledLabel.append(enabledInput, enabledText);
+            enabledInput.addEventListener('change', () => window.updateGridLevelInputs?.(mode, type));
+            row.prepend(enabledLabel);
+            sizeColumn.append(sizeLabel, sizeInput);
+            row.append(sizeColumn);
+            row.className = `grid grid-cols-2 gap-1.5 rounded-lg border p-1.5 ${isEntry ? 'border-fuchsia-100 bg-fuchsia-50/40' : 'border-purple-100 bg-purple-50/40'}`;
+            row.dataset.sizingEnhanced = 'true';
+        });
+    };
+
+    enhance('entry');
+    enhance('exit');
+
+    [
+        'strategyGridBuyAllocation_regular',
+        'strategyGridMaxLevels_regular',
+        'strategyExitGridSellPct_regular',
+        'strategyExitGridMaxLevels_regular',
+    ].forEach((id) => {
+        const legacy = document.getElementById(id);
+        if (!legacy) return;
+        legacy.disabled = true;
+        const legacyBox = legacy.closest('.space-y-1');
+        legacyBox?.classList.add('hidden');
+    });
+}
+
+function getEnabledGridLevels(mode = 'regular', type = 'entry') {
+    const prefix = type === 'entry' ? 'Entry' : 'Exit';
+    return Array.from({ length: 5 }, (_, index) => index + 1).filter(level =>
+        document.getElementById(`strategyGrid${prefix}L${level}Enabled_${mode}`)?.checked
+    );
+}
+
+function ensureSmartDynamicGridControls(kind, parentId) {
+    const suffix = kind === 'atr' ? 'Atr' : 'Pct';
+    if (document.getElementById(`strategySmartGridMode${suffix}_regular`)) return;
+    const parent = document.getElementById(parentId);
+    if (!parent) return;
+    const box = document.createElement('div');
+    box.className = 'rounded-xl border border-sky-200/70 bg-sky-50/50 p-2 space-y-2';
+    box.innerHTML = `<label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="strategySmartGridMode${suffix}_regular" checked class="h-3.5 w-3.5 accent-sky-500"><span class="text-[0.55rem] font-black uppercase tracking-widest text-sky-900">Smart Dynamic Ladder (Entry + Exit)</span></label><label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="strategySmartGridTrail${suffix}_regular" checked class="h-3.5 w-3.5 accent-sky-500"><span class="text-[0.52rem] font-black uppercase text-sky-800">Ratchet buy levels and sell levels from price peaks</span></label><p class="text-[0.52rem] text-slate-600 font-semibold">Shared trend and volatility controls: buys use a favorable high-water mark; sells activate at profit and trail the favorable peak.</p><div class="grid grid-cols-2 gap-2"><label class="text-[0.5rem] font-black uppercase text-sky-700">Adaptation Strength %<input id="strategySmartGridStrength${suffix}_regular" type="number" min="0" max="100" step="5" value="50" class="mt-0.5 w-full rounded-lg border border-sky-200 bg-white/70 px-2 py-1 text-xs font-black text-indigo-950"></label><label class="text-[0.5rem] font-black uppercase text-sky-700">Minimum Cycle Edge %<input id="strategySmartGridEdge${suffix}_regular" type="number" min="0" max="10" step="0.05" value="0.35" class="mt-0.5 w-full rounded-lg border border-sky-200 bg-white/70 px-2 py-1 text-xs font-black text-indigo-950"></label></div>${kind === 'pct' ? '<div class="grid grid-cols-2 gap-2 border-t border-sky-200/70 pt-2"><label class="text-[0.5rem] font-black uppercase text-sky-700">PCT Regime Profile<select id="strategyPctGridRegimeMode_regular" class="mt-0.5 w-full rounded-lg border border-sky-200 bg-white/70 px-2 py-1 text-xs font-black text-indigo-950"><option value="auto">Auto (recommended)</option><option value="balanced">Balanced</option><option value="runner">Always keep runner</option></select></label><label class="text-[0.5rem] font-black uppercase text-sky-700">Runner %<input id="strategyPctGridRunnerPct_regular" type="number" min="0" max="60" step="1" value="25" class="mt-0.5 w-full rounded-lg border border-sky-200 bg-white/70 px-2 py-1 text-xs font-black text-indigo-950"></label><label class="text-[0.5rem] font-black uppercase text-sky-700">Runner trail %<input id="strategyPctGridRunnerTrail_regular" type="number" min="0.1" max="25" step="0.1" value="3" class="mt-0.5 w-full rounded-lg border border-sky-200 bg-white/70 px-2 py-1 text-xs font-black text-indigo-950"></label><label class="text-[0.5rem] font-black uppercase text-sky-700">Bull trend threshold<input id="strategyPctGridBullishThreshold_regular" type="number" min="0" max="0.95" step="0.05" value="0.35" class="mt-0.5 w-full rounded-lg border border-sky-200 bg-white/70 px-2 py-1 text-xs font-black text-indigo-950"></label></div><p class="text-[0.52rem] text-sky-800 font-semibold">Exit profile: Auto sells about 75% through the ladder and retains the runner until its trailing exit.</p>' : ''}`;
+    parent.prepend(box);
+    if (kind === 'pct') {
+        const profileGrid = document.getElementById('strategyPctGridRegimeMode_regular')?.closest('.grid');
+        const profileHint = profileGrid?.nextElementSibling;
+        const exitFields = document.getElementById('strategyExitGridFields_regular');
+        if (profileGrid && exitFields) {
+            const exitProfile = document.createElement('div');
+            exitProfile.className = 'rounded-xl border border-purple-200/70 bg-purple-50/50 p-2 space-y-2';
+            const heading = document.createElement('p');
+            heading.className = 'text-[0.55rem] font-black uppercase tracking-widest text-purple-900';
+            heading.textContent = 'PCT Exit Profile & Runner';
+            exitProfile.append(heading, profileGrid);
+            if (profileHint) exitProfile.append(profileHint);
+            exitFields.prepend(exitProfile);
+        }
+    }
+    box.querySelectorAll('input, select').forEach(input => input.addEventListener(input.type === 'checkbox' || input.tagName === 'SELECT' ? 'change' : 'input', () => {
+        const other = suffix === 'Atr' ? 'Pct' : 'Atr';
+        const sourceId = input.id.replace(suffix, other);
+        const target = document.getElementById(sourceId);
+        if (target) target[input.type === 'checkbox' ? 'checked' : 'value'] = input[input.type === 'checkbox' ? 'checked' : 'value'];
+        window.updateLivePreview_bots?.('regular', 'entry');
+    }));
+    if (kind === 'pct') {
+        ['strategyPctGridRegimeMode_regular', 'strategyPctGridRunnerPct_regular', 'strategyPctGridRunnerTrail_regular', 'strategyPctGridBullishThreshold_regular']
+            .map(id => document.getElementById(id))
+            .filter(Boolean)
+            .forEach(input => input.addEventListener(input.tagName === 'SELECT' ? 'change' : 'input', () => {
+                window.updateLivePreview_bots?.('regular', 'exit');
+            }));
+    }
+}
+
+function loadSmartDynamicGridSettings(settings = {}, newSetup = false) {
+    const enabled = settings.continuous_grid_adaptive_mode !== undefined
+        ? !!settings.continuous_grid_adaptive_mode
+        : !!newSetup;
+    for (const suffix of ['Pct', 'Atr']) {
+        const toggle = document.getElementById(`strategySmartGridMode${suffix}_regular`);
+        const strength = document.getElementById(`strategySmartGridStrength${suffix}_regular`);
+        const edge = document.getElementById(`strategySmartGridEdge${suffix}_regular`);
+        const trail = document.getElementById(`strategySmartGridTrail${suffix}_regular`);
+        if (toggle) toggle.checked = enabled;
+        if (trail) trail.checked = settings.continuous_grid_trailing_mode !== undefined ? !!settings.continuous_grid_trailing_mode : enabled;
+        if (strength) strength.value = settings.continuous_grid_adaptation_strength ?? 50;
+        if (edge) edge.value = settings.continuous_grid_min_edge_pct ?? (isCrypto(currentStrategySymbol) ? 0.6 : 0.35);
+    }
+    const regime = document.getElementById('strategyPctGridRegimeMode_regular');
+    const runnerPct = document.getElementById('strategyPctGridRunnerPct_regular');
+    const runnerTrail = document.getElementById('strategyPctGridRunnerTrail_regular');
+    const threshold = document.getElementById('strategyPctGridBullishThreshold_regular');
+    if (regime) regime.value = settings.pct_grid_regime_mode || 'auto';
+    if (runnerPct) runnerPct.value = settings.pct_grid_runner_pct ?? 25;
+    if (runnerTrail) runnerTrail.value = settings.pct_grid_runner_trail_pct ?? 3;
+    if (threshold) threshold.value = settings.pct_grid_bullish_trend_threshold ?? 0.35;
+}
+
+function getSmartDynamicGridSettings() {
+    const atrActive = !!document.getElementById('strategyAtrGridContinuous_regular')?.checked;
+    const suffix = atrActive ? 'Atr' : 'Pct';
+    return {
+        continuous_grid_adaptive_mode: !!document.getElementById(`strategySmartGridMode${suffix}_regular`)?.checked,
+        continuous_grid_trailing_mode: !!document.getElementById(`strategySmartGridTrail${suffix}_regular`)?.checked,
+        continuous_grid_adaptation_strength: parseFloat(document.getElementById(`strategySmartGridStrength${suffix}_regular`)?.value || 50),
+        continuous_grid_min_edge_pct: parseFloat(document.getElementById(`strategySmartGridEdge${suffix}_regular`)?.value || (isCrypto(currentStrategySymbol) ? 0.6 : 0.35)),
+        pct_grid_regime_mode: document.getElementById('strategyPctGridRegimeMode_regular')?.value || 'auto',
+        pct_grid_runner_pct: parseFloat(document.getElementById('strategyPctGridRunnerPct_regular')?.value || 25),
+        pct_grid_runner_trail_pct: parseFloat(document.getElementById('strategyPctGridRunnerTrail_regular')?.value || 3),
+        pct_grid_bullish_trend_threshold: parseFloat(document.getElementById('strategyPctGridBullishThreshold_regular')?.value || 0.35),
+    };
+}
+
+function setAdaptiveGridLegacyControls(type, enabled) {
+    const ids = type === 'entry'
+        ? ['strategyEntryPctMove_regular', 'strategyEntryPctStyle_regular']
+        : ['strategyRegularSlPct', 'strategyRegularTpPct', 'strategyEnablePctTrail', 'strategyRegularTrailPct'];
+    ids.forEach(id => {
+        const control = document.getElementById(id);
+        if (!control) return;
+        const mustRemainDisabled = type === 'exit'
+            && id === 'strategyRegularTrailPct'
+            && !document.getElementById('strategyEnablePctTrail')?.checked;
+        control.disabled = enabled || mustRemainDisabled;
+        const box = control.closest('.space-y-1') || control.parentElement;
+        box?.classList.toggle('opacity-40', enabled);
+        box?.classList.toggle('cursor-not-allowed', enabled);
+        control.title = enabled
+            ? `Replaced by the adaptive continuous ${type === 'entry' ? 'buy' : 'sell'} ladder.`
+            : '';
+    });
+    const legacyRegion = type === 'entry'
+        ? Array.from(document.getElementById('strategyEntryPctFields_regular')?.children || []).slice(0, 2)
+        : Array.from(document.getElementById('exitFieldsPct')?.children || []).slice(0, 1);
+    legacyRegion.forEach(region => {
+        region.classList.toggle('opacity-40', enabled);
+        region.title = enabled
+            ? `Disabled while the adaptive continuous ${type === 'entry' ? 'buy' : 'sell'} ladder is enabled.`
+            : '';
+    });
+}
+
+window.updateGridLevelInputs = function (mode, type) {
+    ensureContinuousGridLevelSizingUi(mode);
     const isEntry = type === 'entry';
-    const selId = isEntry ? `strategyGridMaxLevels_${mode}` : `strategyExitGridMaxLevels_${mode}`;
-    const maxLvls = parseInt(document.getElementById(selId)?.value || '5', 10);
     const prefix = isEntry ? `gridEntry` : `gridExit`;
     for (let i = 1; i <= 5; i++) {
         const wrap = document.getElementById(`${prefix}L${i}_wrap_${mode}`);
-        if (wrap) {
-            wrap.classList.toggle('hidden', i > maxLvls);
-        }
+        const enabledInput = document.getElementById(`strategyGrid${isEntry ? 'Entry' : 'Exit'}L${i}Enabled_${mode}`);
+        const levelEnabled = !!enabledInput?.checked;
+        wrap?.classList.toggle('opacity-40', !levelEnabled);
+        wrap?.classList.toggle('bg-slate-50/60', !levelEnabled);
+        const pctInput = document.getElementById(`strategyGrid${isEntry ? 'Entry' : 'Exit'}L${i}_${mode}`);
+        const sizeInput = document.getElementById(
+            isEntry ? `strategyGridEntryL${i}BuyPct_${mode}` : `strategyGridExitL${i}SellPct_${mode}`
+        );
+        if (pctInput) pctInput.disabled = !levelEnabled;
+        if (sizeInput) sizeInput.disabled = !levelEnabled;
     }
     if (window.updateContinuousGridUi) window.updateContinuousGridUi(mode, type);
 };
 
-window.updateContinuousGridUi = function(mode, type) {
+window.updateContinuousGridUi = function (mode, type) {
+    ensureContinuousGridLevelSizingUi(mode);
+    if (mode === 'regular') ensureSmartDynamicGridControls('pct', 'strategyGridFields_regular');
     const isEntry = type === 'entry';
     const checkbox = document.getElementById(
         isEntry ? `strategyGridContinuous_${mode}` : `strategyExitGridContinuous_${mode}`
@@ -2337,33 +2791,160 @@ window.updateContinuousGridUi = function(mode, type) {
         isEntry ? `strategyGridFields_${mode}` : `strategyExitGridFields_${mode}`
     );
     const enabled = mode === 'regular' && !!checkbox?.checked;
+    if (enabled) {
+        const atrEntry = document.getElementById('strategyAtrGridContinuous_regular');
+        const atrExit = document.getElementById('strategyExitAtrGridContinuous_regular');
+        if (atrEntry) atrEntry.checked = false;
+        if (atrExit) atrExit.checked = false;
+        window.updateContinuousAtrGridUi?.('entry');
+    }
     if (mode !== 'regular' && checkbox) checkbox.checked = false;
     if (fields) fields.classList.toggle('hidden', !enabled);
+    if (mode === 'regular') setAdaptiveGridLegacyControls(type, enabled);
+    if (mode === 'regular' && checkbox && !window.__adaptiveGridToggleSync) {
+        const otherType = isEntry ? 'exit' : 'entry';
+        const otherCheckbox = document.getElementById(
+            isEntry ? `strategyExitGridContinuous_${mode}` : `strategyGridContinuous_${mode}`
+        );
+        if (otherCheckbox && otherCheckbox.checked !== checkbox.checked) {
+            window.__adaptiveGridToggleSync = true;
+            otherCheckbox.checked = checkbox.checked;
+            window.updateContinuousGridUi(mode, otherType);
+            window.__adaptiveGridToggleSync = false;
+        }
+    }
 
     if (mode === 'regular' && isEntry) {
-        const allocation = Math.max(0, parseFloat(document.getElementById('strategyGridBuyAllocation_regular')?.value || 0));
-        const levels = Math.max(1, parseInt(document.getElementById('strategyGridMaxLevels_regular')?.value || 5, 10));
+        const levels = getEnabledGridLevels('regular', 'entry');
+        const totalBuyPct = levels.map(level =>
+            Math.max(0, parseFloat(document.getElementById(`strategyGridEntryL${level}BuyPct_regular`)?.value || 0))
+        ).reduce((sum, value) => sum + value, 0);
         const help = document.getElementById('strategyGridEntryHelp_regular');
         if (help) {
-            help.textContent = `After the initial Percentage Entry fills, each level is a cumulative dip from that first fill. Dip / Reclaim arms below the level and buys after a 0.15% reclaim. Maximum additional allocation: $${(allocation * levels).toLocaleString(undefined, { maximumFractionDigits: 2 })}. The stop-loss remains active and can end the cycle before deeper levels fill.`;
+            help.textContent = `Enabled: ${levels.length ? levels.map(level => `L${level}`).join(', ') : 'none'} • Buy allocation: ${totalBuyPct.toFixed(1)}%. Each Buy % is calculated from bot capital. Crossed enabled levels combine into one protected order.`;
+            help.classList.toggle('text-red-600', !levels.length || totalBuyPct > 100.0001);
+            help.classList.toggle('text-fuchsia-800', !!levels.length && totalBuyPct <= 100.0001);
         }
     }
     if (mode === 'regular' && !isEntry) {
-        const sellPct = Math.max(1, parseFloat(document.getElementById('strategyExitGridSellPct_regular')?.value || 25));
+        const levels = getEnabledGridLevels('regular', 'exit');
+        const sizes = levels.map(level => Math.max(1, parseFloat(document.getElementById(`strategyGridExitL${level}SellPct_regular`)?.value || 20)));
+        const totalSellPct = sizes.reduce((sum, value) => sum + value, 0);
         const help = document.getElementById('strategyGridExitHelp_regular');
         if (help) {
-            help.textContent = `Levels are cumulative gains from live average cost and replace the single fixed take-profit. Each non-final level sells ${sellPct}% of the then-current position; the last level closes the remainder. Stop-loss and trailing-stop events always close the remainder immediately.`;
-        }
-        const takeProfit = document.getElementById('strategyRegularTpPct');
-        if (takeProfit) {
-            takeProfit.disabled = enabled;
-            takeProfit.classList.toggle('opacity-50', enabled);
-            takeProfit.title = enabled
-                ? 'Continuous Scale-Out replaces the single fixed take-profit with the level ladder.'
-                : '';
+            help.textContent = `Enabled: ${levels.length ? levels.map(level => `L${level}`).join(', ') : 'none'} • Sell allocation: ${totalSellPct.toFixed(1)}% of the ladder-start position. Crossed enabled levels combine into one protected order.`;
+            help.classList.toggle('text-red-600', !levels.length || totalSellPct > 100.0001);
+            help.classList.toggle('text-purple-800', !!levels.length && totalSellPct <= 100.0001);
         }
     }
+    if (mode === 'regular' && window.updateLivePreview_bots) {
+        window.updateLivePreview_bots('regular', type);
+    }
 };
+
+function ensureContinuousAtrGridUi() {
+    if (document.getElementById('strategyAtrGridContinuous_regular')) return;
+    const defaults = [2, 4, 6, 8, 10];
+    const build = (side, parentId) => {
+        const entry = side === 'entry';
+        const parent = document.getElementById(parentId);
+        if (!parent) return;
+        const wrapper = document.createElement('div');
+        wrapper.className = entry ? 'col-span-1 sm:col-span-2 pt-2 border-t border-cyan-500/20' : 'col-span-1 sm:col-span-3 pt-3 border-t border-cyan-500/20';
+        const toggleId = entry ? 'strategyAtrGridContinuous_regular' : 'strategyExitAtrGridContinuous_regular';
+        const panelId = entry ? 'strategyAtrGridFields_regular' : 'strategyExitAtrGridFields_regular';
+        const rows = defaults.map((mult, index) => {
+            const level = index + 1;
+            const prefix = entry ? 'strategyAtrGridEntry' : 'strategyAtrGridExit';
+            return `<div class="grid grid-cols-2 gap-1.5 rounded-lg border border-cyan-100 bg-cyan-50/40 p-1.5" data-atr-grid-row="${side}-${level}">
+                <label class="col-span-2 flex items-center gap-2 cursor-pointer text-cyan-800"><input type="checkbox" id="${prefix}L${level}Enabled_regular" checked class="h-3.5 w-3.5 accent-cyan-500"><span class="text-[0.52rem] font-black uppercase tracking-wider">Enable Level ${level}</span></label>
+                <div class="space-y-0.5"><label class="block text-[0.5rem] font-black text-cyan-600 uppercase">L${level} ATR Multiple</label><input type="number" step="0.1" min="0.1" max="100" id="${prefix}L${level}Mult_regular" value="${mult}" class="w-full bg-white/60 border border-cyan-200 rounded-lg px-2 py-1 text-xs font-black text-indigo-950 outline-none"></div>
+                <div class="space-y-0.5"><label class="block text-[0.5rem] font-black text-cyan-600 uppercase">${entry ? 'Buy' : 'Sell'} %</label><input type="number" step="1" min="1" max="100" id="${prefix}L${level}${entry ? 'Buy' : 'Sell'}Pct_regular" value="20" class="w-full bg-white/60 border border-cyan-200 rounded-lg px-2 py-1 text-xs font-black text-indigo-950 outline-none"></div>
+            </div>`;
+        }).join('');
+        wrapper.innerHTML = `<label class="flex items-center gap-2 mb-2 cursor-pointer group"><span class="relative flex items-center"><input type="checkbox" id="${toggleId}" class="sr-only peer"><span class="w-8 h-4 bg-slate-300 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-cyan-500 shadow-inner"></span></span><span class="text-[0.6rem] font-black text-indigo-950 uppercase tracking-widest">Enable Adaptive Continuous ATR ${entry ? 'Buy' : 'Sell'} Grid</span></label><div id="${panelId}" class="hidden space-y-2"><div class="text-[0.55rem] font-black text-cyan-900 uppercase tracking-widest">ATR Ladder — Enable • ATR Multiple • ${entry ? 'Buy' : 'Sell'} %</div><div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5">${rows}</div><p id="${panelId}Help" class="text-[0.55rem] text-cyan-800 font-bold"></p><p class="text-[0.52rem] text-slate-500 font-semibold">Anchor ATR is kept for cycle context; active trigger prices recalculate from bounded live ATR as volatility changes.</p></div>`;
+        parent.appendChild(wrapper);
+        wrapper.querySelectorAll('input').forEach(input => input.addEventListener(input.type === 'checkbox' ? 'change' : 'input', () => window.updateContinuousAtrGridUi?.(side)));
+    };
+    build('entry', 'strategyEntryAtrFields_regular');
+    build('exit', 'exitFieldsATR');
+    ensureSmartDynamicGridControls('atr', 'strategyAtrGridFields_regular');
+}
+
+function getEnabledAtrGridLevels(side) {
+    const prefix = side === 'entry' ? 'strategyAtrGridEntry' : 'strategyAtrGridExit';
+    return Array.from({ length: 5 }, (_, i) => i + 1).filter(level => document.getElementById(`${prefix}L${level}Enabled_regular`)?.checked);
+}
+
+window.updateContinuousAtrGridUi = function (side = 'entry') {
+    ensureContinuousAtrGridUi();
+    const entryToggle = document.getElementById('strategyAtrGridContinuous_regular');
+    const exitToggle = document.getElementById('strategyExitAtrGridContinuous_regular');
+    const source = side === 'entry' ? entryToggle : exitToggle;
+    if (!window.__adaptiveAtrGridToggleSync && source) {
+        window.__adaptiveAtrGridToggleSync = true;
+        if (entryToggle) entryToggle.checked = source.checked;
+        if (exitToggle) exitToggle.checked = source.checked;
+        window.__adaptiveAtrGridToggleSync = false;
+    }
+    const enabled = !!entryToggle?.checked && !!exitToggle?.checked;
+    if (enabled) {
+        const pctEntry = document.getElementById('strategyGridContinuous_regular');
+        const pctExit = document.getElementById('strategyExitGridContinuous_regular');
+        if (pctEntry) pctEntry.checked = false;
+        if (pctExit) pctExit.checked = false;
+        document.getElementById('strategyGridFields_regular')?.classList.add('hidden');
+        document.getElementById('strategyExitGridFields_regular')?.classList.add('hidden');
+        setAdaptiveGridLegacyControls('entry', false);
+        setAdaptiveGridLegacyControls('exit', false);
+    }
+    document.getElementById('strategyAtrGridFields_regular')?.classList.toggle('hidden', !enabled);
+    document.getElementById('strategyExitAtrGridFields_regular')?.classList.toggle('hidden', !enabled);
+    ['strategyEntryAtrMult_regular', 'strategyEntryAtrStyle_regular', 'strategyAtrStopMult', 'strategyAtrTpMult', 'strategyEnableAtrTrail', 'strategyAtrTrailMult'].forEach(id => {
+        const el = document.getElementById(id); if (!el) return;
+        el.disabled = enabled || (id === 'strategyAtrTrailMult' && !document.getElementById('strategyEnableAtrTrail')?.checked);
+        el.closest('.space-y-1')?.classList.toggle('opacity-40', enabled);
+    });
+    for (const ladderSide of ['entry', 'exit']) {
+        const levels = getEnabledAtrGridLevels(ladderSide);
+        const prefix = ladderSide === 'entry' ? 'strategyAtrGridEntry' : 'strategyAtrGridExit';
+        for (let level = 1; level <= 5; level++) {
+            const active = levels.includes(level);
+            document.querySelector(`[data-atr-grid-row="${ladderSide}-${level}"]`)?.classList.toggle('opacity-40', !active);
+            const mult = document.getElementById(`${prefix}L${level}Mult_regular`);
+            const size = document.getElementById(`${prefix}L${level}${ladderSide === 'entry' ? 'Buy' : 'Sell'}Pct_regular`);
+            if (mult) mult.disabled = !active; if (size) size.disabled = !active;
+        }
+        const total = levels.reduce((sum, level) => sum + Math.max(0, Number(document.getElementById(`${prefix}L${level}${ladderSide === 'entry' ? 'Buy' : 'Sell'}Pct_regular`)?.value || 0)), 0);
+        const help = document.getElementById(`${ladderSide === 'entry' ? 'strategyAtrGridFields_regular' : 'strategyExitAtrGridFields_regular'}Help`);
+        if (help) { help.textContent = `Enabled: ${levels.length ? levels.map(level => `L${level}`).join(', ') : 'none'} • ${ladderSide === 'entry' ? 'Buy' : 'Sell'} allocation: ${total.toFixed(1)}% (maximum 100%).`; help.classList.toggle('text-red-600', !levels.length || total > 100.0001); }
+    }
+    window.updateLivePreview_bots?.('regular', side);
+};
+
+function loadContinuousAtrGridSettings(settings = {}) {
+    ensureContinuousAtrGridUi();
+    const entryToggle = document.getElementById('strategyAtrGridContinuous_regular');
+    const exitToggle = document.getElementById('strategyExitAtrGridContinuous_regular');
+    if (entryToggle) entryToggle.checked = !!settings.atr_grid_continuous_mode;
+    if (exitToggle) exitToggle.checked = !!settings.exit_atr_grid_continuous_mode;
+    for (let level = 1; level <= 5; level++) {
+        const fallback = level * 2;
+        const fields = [
+            [`strategyAtrGridEntryL${level}Mult_regular`, settings[`grid_atr_entry_l${level}_mult`] ?? fallback],
+            [`strategyAtrGridEntryL${level}BuyPct_regular`, settings[`grid_atr_entry_l${level}_buy_pct`] ?? 20],
+            [`strategyAtrGridExitL${level}Mult_regular`, settings[`grid_atr_exit_l${level}_mult`] ?? fallback],
+            [`strategyAtrGridExitL${level}SellPct_regular`, settings[`grid_atr_exit_l${level}_sell_pct`] ?? 20],
+        ];
+        fields.forEach(([id, value]) => { const el = document.getElementById(id); if (el) el.value = value; });
+        const entryEnabled = document.getElementById(`strategyAtrGridEntryL${level}Enabled_regular`);
+        const exitEnabled = document.getElementById(`strategyAtrGridExitL${level}Enabled_regular`);
+        if (entryEnabled) entryEnabled.checked = settings[`grid_atr_entry_l${level}_enabled`] ?? true;
+        if (exitEnabled) exitEnabled.checked = settings[`grid_atr_exit_l${level}_enabled`] ?? true;
+    }
+    window.updateContinuousAtrGridUi?.('entry');
+    window.updateContinuousAtrGridUi?.('exit');
+}
 
 function getStrategyModeSettings(mode = 'regular') {
     const isRegular = mode === 'regular';
@@ -2383,21 +2964,55 @@ function getStrategyModeSettings(mode = 'regular') {
         entry_atr_style: document.getElementById(`strategyEntryAtrStyle_${mode}`)?.value || 'pullback_reclaim',
         entry_pct_style: document.getElementById(`strategyEntryPctStyle_${mode}`)?.value || 'dip_reclaim',
         grid_continuous_mode: document.getElementById(`strategyGridContinuous_${mode}`)?.checked || false,
-        grid_buy_allocation: parseFloat(document.getElementById(`strategyGridBuyAllocation_${mode}`)?.value || 1000),
-        grid_max_levels: parseInt(document.getElementById(`strategyGridMaxLevels_${mode}`)?.value || 5),
+        continuous_grid_ladder_version: 3,
+        ...getSmartDynamicGridSettings(),
+        grid_max_levels: 5,
         grid_entry_l1_pct: parseFloat(document.getElementById(`strategyGridEntryL1_${mode}`)?.value || 1),
         grid_entry_l2_pct: parseFloat(document.getElementById(`strategyGridEntryL2_${mode}`)?.value || 2),
         grid_entry_l3_pct: parseFloat(document.getElementById(`strategyGridEntryL3_${mode}`)?.value || 3),
         grid_entry_l4_pct: parseFloat(document.getElementById(`strategyGridEntryL4_${mode}`)?.value || 4),
         grid_entry_l5_pct: parseFloat(document.getElementById(`strategyGridEntryL5_${mode}`)?.value || 5),
+        grid_entry_l1_buy_pct: parseFloat(document.getElementById(`strategyGridEntryL1BuyPct_${mode}`)?.value || 40),
+        grid_entry_l2_buy_pct: parseFloat(document.getElementById(`strategyGridEntryL2BuyPct_${mode}`)?.value || 25),
+        grid_entry_l3_buy_pct: parseFloat(document.getElementById(`strategyGridEntryL3BuyPct_${mode}`)?.value || 15),
+        grid_entry_l4_buy_pct: parseFloat(document.getElementById(`strategyGridEntryL4BuyPct_${mode}`)?.value || 10),
+        grid_entry_l5_buy_pct: parseFloat(document.getElementById(`strategyGridEntryL5BuyPct_${mode}`)?.value || 10),
+        grid_entry_l1_enabled: document.getElementById(`strategyGridEntryL1Enabled_${mode}`)?.checked ?? true,
+        grid_entry_l2_enabled: document.getElementById(`strategyGridEntryL2Enabled_${mode}`)?.checked ?? true,
+        grid_entry_l3_enabled: document.getElementById(`strategyGridEntryL3Enabled_${mode}`)?.checked ?? true,
+        grid_entry_l4_enabled: document.getElementById(`strategyGridEntryL4Enabled_${mode}`)?.checked ?? true,
+        grid_entry_l5_enabled: document.getElementById(`strategyGridEntryL5Enabled_${mode}`)?.checked ?? true,
         exit_grid_continuous_mode: document.getElementById(`strategyExitGridContinuous_${mode}`)?.checked || false,
-        exit_grid_sell_pct: parseFloat(document.getElementById(`strategyExitGridSellPct_${mode}`)?.value || 25),
-        exit_grid_max_levels: parseInt(document.getElementById(`strategyExitGridMaxLevels_${mode}`)?.value || 5),
-        grid_exit_l1_pct: parseFloat(document.getElementById(`strategyGridExitL1_${mode}`)?.value || 2),
-        grid_exit_l2_pct: parseFloat(document.getElementById(`strategyGridExitL2_${mode}`)?.value || 4),
-        grid_exit_l3_pct: parseFloat(document.getElementById(`strategyGridExitL3_${mode}`)?.value || 6),
-        grid_exit_l4_pct: parseFloat(document.getElementById(`strategyGridExitL4_${mode}`)?.value || 8),
-        grid_exit_l5_pct: parseFloat(document.getElementById(`strategyGridExitL5_${mode}`)?.value || 10),
+        exit_grid_sell_pct: parseFloat(document.getElementById(`strategyGridExitL1SellPct_${mode}`)?.value || document.getElementById(`strategyExitGridSellPct_${mode}`)?.value || 20),
+        exit_grid_max_levels: 5,
+        grid_exit_l1_pct: parseFloat(document.getElementById(`strategyGridExitL1_${mode}`)?.value || 1),
+        grid_exit_l2_pct: parseFloat(document.getElementById(`strategyGridExitL2_${mode}`)?.value || 2),
+        grid_exit_l3_pct: parseFloat(document.getElementById(`strategyGridExitL3_${mode}`)?.value || 3),
+        grid_exit_l4_pct: parseFloat(document.getElementById(`strategyGridExitL4_${mode}`)?.value || 4),
+        grid_exit_l5_pct: parseFloat(document.getElementById(`strategyGridExitL5_${mode}`)?.value || 5),
+        grid_exit_l1_sell_pct: parseFloat(document.getElementById(`strategyGridExitL1SellPct_${mode}`)?.value || 10),
+        grid_exit_l2_sell_pct: parseFloat(document.getElementById(`strategyGridExitL2SellPct_${mode}`)?.value || 10),
+        grid_exit_l3_sell_pct: parseFloat(document.getElementById(`strategyGridExitL3SellPct_${mode}`)?.value || 15),
+        grid_exit_l4_sell_pct: parseFloat(document.getElementById(`strategyGridExitL4SellPct_${mode}`)?.value || 20),
+        grid_exit_l5_sell_pct: parseFloat(document.getElementById(`strategyGridExitL5SellPct_${mode}`)?.value || 20),
+        grid_exit_l1_enabled: document.getElementById(`strategyGridExitL1Enabled_${mode}`)?.checked ?? true,
+        grid_exit_l2_enabled: document.getElementById(`strategyGridExitL2Enabled_${mode}`)?.checked ?? true,
+        grid_exit_l3_enabled: document.getElementById(`strategyGridExitL3Enabled_${mode}`)?.checked ?? true,
+        grid_exit_l4_enabled: document.getElementById(`strategyGridExitL4Enabled_${mode}`)?.checked ?? true,
+        grid_exit_l5_enabled: document.getElementById(`strategyGridExitL5Enabled_${mode}`)?.checked ?? true,
+        atr_grid_continuous_mode: mode === 'regular' && !!document.getElementById('strategyAtrGridContinuous_regular')?.checked,
+        exit_atr_grid_continuous_mode: mode === 'regular' && !!document.getElementById('strategyExitAtrGridContinuous_regular')?.checked,
+        ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => {
+            const level = index + 1;
+            return [
+                [`grid_atr_entry_l${level}_mult`, parseFloat(document.getElementById(`strategyAtrGridEntryL${level}Mult_regular`)?.value || level * 2)],
+                [`grid_atr_entry_l${level}_buy_pct`, parseFloat(document.getElementById(`strategyAtrGridEntryL${level}BuyPct_regular`)?.value || 20)],
+                [`grid_atr_entry_l${level}_enabled`, document.getElementById(`strategyAtrGridEntryL${level}Enabled_regular`)?.checked ?? true],
+                [`grid_atr_exit_l${level}_mult`, parseFloat(document.getElementById(`strategyAtrGridExitL${level}Mult_regular`)?.value || level * 2)],
+                [`grid_atr_exit_l${level}_sell_pct`, parseFloat(document.getElementById(`strategyAtrGridExitL${level}SellPct_regular`)?.value || 20)],
+                [`grid_atr_exit_l${level}_enabled`, document.getElementById(`strategyAtrGridExitL${level}Enabled_regular`)?.checked ?? true],
+            ];
+        }).flat()),
         swing_entry_mode: document.getElementById(`strategySwingEntryMode_${mode}`)?.value || 'bounce_retest',
         swing_entry_lookback_mode: document.getElementById(`strategySwingEntryLookback_${mode}`)?.value || '20D',
         swing_entry_lookback_days: getSwingLookbackDaysValue(mode, 'entry'),
@@ -2405,7 +3020,9 @@ function getStrategyModeSettings(mode = 'regular') {
         swing_exit_lookback_days: getSwingLookbackDaysValue(mode, 'exit'),
         enable_risk_management: document.getElementById(`strategyEnableRisk_${mode}`)?.checked || false,
         enable_atr_trail: getStrategyExitChecked(mode, 'strategyEnableAtrTrail', 'strategyEnableAtrTrail_options', true),
-        enable_pct_trail: getStrategyExitChecked(mode, 'strategyEnablePctTrail', 'strategyEnablePctTrail_options', true),
+        enable_pct_trail: mode === 'regular' && document.getElementById('strategyExitGridContinuous_regular')?.checked
+            ? false
+            : getStrategyExitChecked(mode, 'strategyEnablePctTrail', 'strategyEnablePctTrail_options', true),
         regular_stop_loss_pct: (isRegular || isAutopilot) ? parseFloat(document.getElementById('strategyRegularSlPct')?.value || 5) / 100.0 : undefined,
         regular_take_profit_pct: (isRegular || isAutopilot) ? parseFloat(document.getElementById('strategyRegularTpPct')?.value || 10) / 100.0 : undefined,
         regular_trailing_pct: (isRegular || isAutopilot) ? parseFloat(document.getElementById('strategyRegularTrailPct')?.value || 3) / 100.0 : undefined,
@@ -2426,7 +3043,7 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         const activeBots = window.lastBotsData?.tradelist || [];
         if (activeBots.includes(currentStrategySymbol)) {
             const existingSettings = (window.lastBotsData?.ticker_settings || {})[currentStrategySymbol] || {};
-            const modeLabel = existingSettings.options_trading ? 'Options' : 'Stock';
+            const modeLabel = existingSettings.options_trading ? 'Options' : (isCrypto(currentStrategySymbol) ? 'Crypto' : 'Stock');
             alert(
                 `⚠️ Active Bot Already Deployed for ${currentStrategySymbol}\n\n` +
                 `An active ${modeLabel} bot is already running for ${currentStrategySymbol}.\n\n` +
@@ -2469,10 +3086,10 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         window.updateAllocationModeUI?.('regular');
         window.updateAllocationModeUI?.('options');
         window.updateAllocationModeUI?.('ai_autopilot');
-        document.getElementById('strategyBuyThreshold_regular').value = getDefaultSignalThreshold('buy');
-        document.getElementById('strategyBuyThreshold_options').value = getDefaultSignalThreshold('buy');
-        document.getElementById('strategySellThreshold_regular').value = getDefaultSignalThreshold('sell');
-        document.getElementById('strategySellThreshold_options').value = getDefaultSignalThreshold('sell');
+        document.getElementById('strategyBuyThreshold_regular').value = 0;
+        document.getElementById('strategyBuyThreshold_options').value = 0;
+        document.getElementById('strategySellThreshold_regular').value = 0;
+        document.getElementById('strategySellThreshold_options').value = 0;
         document.getElementById('strategyTimeframe_regular').value = "1Hour";
         document.getElementById('strategyTimeframe_options').value = "5Min";
         if (document.getElementById('strategyTimeframe_ai_autopilot')) document.getElementById('strategyTimeframe_ai_autopilot').value = "1Hour";
@@ -2495,6 +3112,31 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         if (document.getElementById('strategyEntryAtrStyle_options')) document.getElementById('strategyEntryAtrStyle_options').value = 'pullback_reclaim';
         if (document.getElementById('strategyEntryPctStyle_regular')) document.getElementById('strategyEntryPctStyle_regular').value = 'dip_reclaim';
         if (document.getElementById('strategyEntryPctStyle_options')) document.getElementById('strategyEntryPctStyle_options').value = 'dip_reclaim';
+        ensureContinuousGridLevelSizingUi('regular');
+        const entryGridToggle = document.getElementById('strategyGridContinuous_regular');
+        const exitGridToggle = document.getElementById('strategyExitGridContinuous_regular');
+        if (entryGridToggle) entryGridToggle.checked = false;
+        if (exitGridToggle) exitGridToggle.checked = false;
+        for (let level = 1; level <= 5; level++) {
+            const entryEnabled = document.getElementById(`strategyGridEntryL${level}Enabled_regular`);
+            const exitEnabled = document.getElementById(`strategyGridExitL${level}Enabled_regular`);
+            const entryTrigger = document.getElementById(`strategyGridEntryL${level}_regular`);
+            const exitTrigger = document.getElementById(`strategyGridExitL${level}_regular`);
+            const buyPct = document.getElementById(`strategyGridEntryL${level}BuyPct_regular`);
+            const sellPct = document.getElementById(`strategyGridExitL${level}SellPct_regular`);
+            if (entryEnabled) entryEnabled.checked = true;
+            if (exitEnabled) exitEnabled.checked = true;
+            if (entryTrigger) entryTrigger.value = level;
+            if (exitTrigger) exitTrigger.value = level;
+            if (buyPct) buyPct.value = [40, 25, 15, 10, 10][level - 1];
+            if (sellPct) sellPct.value = [10, 10, 15, 20, 20][level - 1];
+        }
+        window.updateGridLevelInputs?.('regular', 'entry');
+        window.updateGridLevelInputs?.('regular', 'exit');
+        window.updateContinuousGridUi?.('regular', 'entry');
+        window.updateContinuousGridUi?.('regular', 'exit');
+        loadContinuousAtrGridSettings({});
+        loadSmartDynamicGridSettings({}, true);
         applyMarketSessionForSymbol(currentStrategySymbol, {});
         if (document.getElementById('strategySwingEntryMode_regular')) document.getElementById('strategySwingEntryMode_regular').value = "bounce_retest";
         if (document.getElementById('strategySwingEntryMode_options')) document.getElementById('strategySwingEntryMode_options').value = "bounce_retest";
@@ -2534,7 +3176,7 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyEnableRisk_options').checked = true;
         window.toggleRiskControls(true, 'regular');
         window.toggleRiskControls(true, 'options');
-        if(document.getElementById('strategyOptionsRiskPerTrade')) {
+        if (document.getElementById('strategyOptionsRiskPerTrade')) {
             document.getElementById('strategyOptionsRiskPerTrade').value = '30';
             document.getElementById('strategyOptionsMaxDailyDrawdown').value = '60';
             document.getElementById('strategyOptionsMaxPositionPct').value = '100';
@@ -2563,14 +3205,22 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyCooldownCustomContainer_options').classList.add('hidden');
         document.getElementById('strategyCooldownCustomMinutes_regular').value = "";
         document.getElementById('strategyCooldownCustomMinutes_options').value = "";
+        ['regular', 'options'].forEach(mode => {
+            const signalReset = document.getElementById(mode === 'regular' ? 'strategyRegularSignalReset' : 'strategyOptionsSignalReset');
+            if (signalReset) signalReset.checked = true;
+            if (document.getElementById(`strategyPostStopBars_${mode}`)) document.getElementById(`strategyPostStopBars_${mode}`).value = '3';
+            if (document.getElementById(`strategyMaxConsecutiveLosses_${mode}`)) document.getElementById(`strategyMaxConsecutiveLosses_${mode}`).value = '3';
+        });
+        if (document.getElementById('strategyStockMaxSpreadPct')) document.getElementById('strategyStockMaxSpreadPct').value = '0.25';
+        if (document.getElementById('strategyCryptoMaxSpreadPct')) document.getElementById('strategyCryptoMaxSpreadPct').value = '0.50';
+        if (document.getElementById('strategyOptionsMaxSpreadPct')) document.getElementById('strategyOptionsMaxSpreadPct').value = '5';
+        if (document.getElementById('strategyOptionsOpenBlackoutMinutes')) document.getElementById('strategyOptionsOpenBlackoutMinutes').value = '15';
 
 
 
-        // Keep the initial trading pool aligned with the 10 indicators shown
-        // by default so threshold counts and chart preview data agree.
-        const defaultIndicators = new Set(BOT_DEFAULT_STRATEGY_INDICATORS);
+        // All indicators start in unchecked mode with default settings when deploying new bots
         document.querySelectorAll('.strategy-indicator-check').forEach(chk => {
-            chk.checked = defaultIndicators.has(chk.value);
+            chk.checked = false;
         });
 
         const addWatchlistEl = document.getElementById('strategyAddWatchlist');
@@ -2637,12 +3287,16 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
                 const ev = new Event('change');
                 gridCont.dispatchEvent(ev);
             }
-            if (document.getElementById(`strategyGridBuyAllocation_${m}`)) document.getElementById(`strategyGridBuyAllocation_${m}`).value = settings.grid_buy_allocation ?? 1000;
+            if (document.getElementById(`strategyGridBuyAllocation_${m}`)) document.getElementById(`strategyGridBuyAllocation_${m}`).value = 20;
             if (document.getElementById(`strategyGridMaxLevels_${m}`)) document.getElementById(`strategyGridMaxLevels_${m}`).value = settings.grid_max_levels ?? 5;
             const entryDefaults = [1, 2, 3, 4, 5];
             for (let i = 1; i <= 5; i++) {
                 const el = document.getElementById(`strategyGridEntryL${i}_${m}`);
                 if (el) el.value = settings[`grid_entry_l${i}_pct`] !== undefined ? settings[`grid_entry_l${i}_pct`] : entryDefaults[i - 1];
+                const buyPctEl = document.getElementById(`strategyGridEntryL${i}BuyPct_${m}`);
+                if (buyPctEl) buyPctEl.value = settings[`grid_entry_l${i}_buy_pct`] ?? [40, 25, 15, 10, 10][i - 1];
+                const enabledEl = document.getElementById(`strategyGridEntryL${i}Enabled_${m}`);
+                if (enabledEl) enabledEl.checked = settings[`grid_entry_l${i}_enabled`] ?? (i <= (settings.grid_max_levels ?? 5));
             }
             if (window.updateGridLevelInputs) window.updateGridLevelInputs(m, 'entry');
 
@@ -2652,15 +3306,38 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
                 const ev = new Event('change');
                 exitGridCont.dispatchEvent(ev);
             }
-            if (document.getElementById(`strategyExitGridSellPct_${m}`)) document.getElementById(`strategyExitGridSellPct_${m}`).value = settings.exit_grid_sell_pct ?? 25;
+            if (document.getElementById(`strategyExitGridSellPct_${m}`)) document.getElementById(`strategyExitGridSellPct_${m}`).value = settings.exit_grid_sell_pct ?? 20;
             if (document.getElementById(`strategyExitGridMaxLevels_${m}`)) document.getElementById(`strategyExitGridMaxLevels_${m}`).value = settings.exit_grid_max_levels ?? 5;
-            const exitDefaults = [2, 4, 6, 8, 10];
+            const savedExitTriggers = Array.from({ length: 5 }, (_, index) =>
+                Number(settings[`grid_exit_l${index + 1}_pct`] ?? [2, 4, 6, 8, 10][index])
+            );
+            const savedExitSizes = Array.from({ length: 5 }, (_, index) =>
+                Number(settings[`grid_exit_l${index + 1}_sell_pct`] ?? [10, 10, 15, 20, 20][index])
+            );
+            const legacyLadder = Number(settings.continuous_grid_ladder_version || 0) < 2;
+            const migrateLegacyTriggers = legacyLadder
+                && savedExitTriggers.every((value, index) => Math.abs(value - [2, 4, 6, 8, 10][index]) < 0.000001);
+            const migrateLegacySizes = legacyLadder && (
+                savedExitSizes.every((value, index) => Math.abs(value - [25, 25, 25, 25, 100][index]) < 0.000001)
+                || savedExitSizes.every(value => Math.abs(value - 25) < 0.000001)
+            );
+            const exitDefaults = [1, 2, 3, 4, 5];
             for (let i = 1; i <= 5; i++) {
                 const el = document.getElementById(`strategyGridExitL${i}_${m}`);
-                if (el) el.value = settings[`grid_exit_l${i}_pct`] !== undefined ? settings[`grid_exit_l${i}_pct`] : exitDefaults[i - 1];
+                if (el) el.value = migrateLegacyTriggers
+                    ? exitDefaults[i - 1]
+                    : (settings[`grid_exit_l${i}_pct`] !== undefined ? settings[`grid_exit_l${i}_pct`] : exitDefaults[i - 1]);
+                const sellEl = document.getElementById(`strategyGridExitL${i}SellPct_${m}`);
+                if (sellEl) sellEl.value = migrateLegacySizes
+                    ? [10, 10, 15, 20, 20][i - 1]
+                    : (settings[`grid_exit_l${i}_sell_pct`] ?? settings.exit_grid_sell_pct ?? [10, 10, 15, 20, 20][i - 1]);
+                const enabledEl = document.getElementById(`strategyGridExitL${i}Enabled_${m}`);
+                if (enabledEl) enabledEl.checked = settings[`grid_exit_l${i}_enabled`] ?? (i <= (settings.exit_grid_max_levels ?? 5));
             }
             if (window.updateGridLevelInputs) window.updateGridLevelInputs(m, 'exit');
         });
+        loadContinuousAtrGridSettings(settings);
+        loadSmartDynamicGridSettings(settings, false);
 
         applyMarketSessionForSymbol(currentStrategySymbol, settings);
         if (document.getElementById('strategySellMode_regular')) if (document.getElementById('strategySellMode_regular')) document.getElementById('strategySellMode_regular').value = settings.sell_mode || 'indicator';
@@ -2716,7 +3393,7 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         // Load Smart Re-entry and Signal Reset
         ['regular', 'options'].forEach(m => {
             const capMode = m === 'regular' ? 'Regular' : 'Options';
-            if (document.getElementById(`strategy${capMode}SignalReset`)) document.getElementById(`strategy${capMode}SignalReset`).checked = settings.enable_signal_reset || false;
+            if (document.getElementById(`strategy${capMode}SignalReset`)) document.getElementById(`strategy${capMode}SignalReset`).checked = settings.enable_signal_reset !== undefined ? settings.enable_signal_reset : true;
             if (document.getElementById(`strategy${capMode}SmartReentry`)) document.getElementById(`strategy${capMode}SmartReentry`).checked = settings.enable_smart_reentry || false;
             if (document.getElementById(`strategy${capMode}SmartReentryType`)) document.getElementById(`strategy${capMode}SmartReentryType`).value = settings.smart_reentry_type || 'RSI';
             if (document.getElementById(`strategy${capMode}RsiCallMax`)) document.getElementById(`strategy${capMode}RsiCallMax`).value = settings.smart_reentry_rsi_call_max !== undefined ? settings.smart_reentry_rsi_call_max : 70;
@@ -2724,12 +3401,20 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
             if (document.getElementById(`strategy${capMode}VwapCallMaxPct`)) document.getElementById(`strategy${capMode}VwapCallMaxPct`).value = settings.smart_reentry_vwap_call_max_dist_pct !== undefined ? settings.smart_reentry_vwap_call_max_dist_pct : 0.5;
             if (document.getElementById(`strategy${capMode}VwapPutMaxPct`)) document.getElementById(`strategy${capMode}VwapPutMaxPct`).value = settings.smart_reentry_vwap_put_max_dist_pct !== undefined ? settings.smart_reentry_vwap_put_max_dist_pct : 0.5;
         });
+        ['regular', 'options'].forEach(mode => {
+            if (document.getElementById(`strategyPostStopBars_${mode}`)) document.getElementById(`strategyPostStopBars_${mode}`).value = settings.post_stop_stabilization_bars ?? 3;
+            if (document.getElementById(`strategyMaxConsecutiveLosses_${mode}`)) document.getElementById(`strategyMaxConsecutiveLosses_${mode}`).value = 3;
+        });
+        if (document.getElementById('strategyStockMaxSpreadPct')) document.getElementById('strategyStockMaxSpreadPct').value = settings.stock_max_spread_pct ?? 0.25;
+        if (document.getElementById('strategyCryptoMaxSpreadPct')) document.getElementById('strategyCryptoMaxSpreadPct').value = settings.crypto_max_spread_pct ?? 0.50;
+        if (document.getElementById('strategyOptionsMaxSpreadPct')) document.getElementById('strategyOptionsMaxSpreadPct').value = settings.options_max_entry_spread_pct ?? 5;
+        if (document.getElementById('strategyOptionsOpenBlackoutMinutes')) document.getElementById('strategyOptionsOpenBlackoutMinutes').value = settings.options_market_open_blackout_minutes ?? 15;
         window.updateStrategySmartReentryFields('regular');
         window.updateStrategySmartReentryFields('options');
 
         // Load Risk Overrides
         const hasRisk = (settings.risk_per_trade !== undefined && settings.risk_per_trade !== null);
-        
+
         document.getElementById('strategyEnableRisk_regular').checked = hasRisk;
         document.getElementById('strategyEnableRisk_options').checked = hasRisk;
         window.toggleRiskControls(hasRisk, 'regular');
@@ -2738,9 +3423,9 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyRiskPerTrade').value = hasRisk ? (settings.risk_per_trade * 100).toFixed(0) : 10;
         document.getElementById('strategyMaxDailyDrawdown').value = hasRisk ? (settings.max_daily_drawdown * 100).toFixed(0) : 50;
         document.getElementById('strategyMaxPositionPct').value = hasRisk ? (settings.max_position_pct * 100).toFixed(0) : 100;
-        
+
         // Also fix options inputs
-        if(document.getElementById('strategyOptionsRiskPerTrade')) {
+        if (document.getElementById('strategyOptionsRiskPerTrade')) {
             document.getElementById('strategyOptionsRiskPerTrade').value = hasRisk ? (settings.risk_per_trade * 100).toFixed(0) : 30;
             document.getElementById('strategyOptionsMaxDailyDrawdown').value = hasRisk ? (settings.max_daily_drawdown * 100).toFixed(0) : 60;
             document.getElementById('strategyOptionsMaxPositionPct').value = hasRisk ? (settings.max_position_pct * 100).toFixed(0) : 100;
@@ -2798,7 +3483,7 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         const enabledIndicators = settings.indicators;
         document.querySelectorAll('.strategy-indicator-check').forEach(chk => {
             if (enabledIndicators === undefined) {
-                chk.checked = true;
+                chk.checked = false;
             } else {
                 chk.checked = enabledIndicators.includes(chk.value);
             }
@@ -2843,7 +3528,7 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js';
         script.async = true;
         script.innerHTML = JSON.stringify({
-            "symbol": currentStrategySymbol.includes('USD') && !currentStrategySymbol.includes('^') ? `CRYPTO:${currentStrategySymbol}` : currentStrategySymbol,
+            "symbol": isCrypto(currentStrategySymbol) && !currentStrategySymbol.includes('^') ? `CRYPTO:${currentStrategySymbol}` : currentStrategySymbol,
             "width": "100%",
             "height": "100%",
             "locale": "en",
@@ -3012,10 +3697,10 @@ window.toggleRiskSection = function () {
     const arrow = document.getElementById('riskArrowIcon');
     if (content.classList.contains('hidden')) {
         content.classList.remove('hidden');
-        if(arrow) arrow.classList.add('rotate-180');
+        if (arrow) arrow.classList.add('rotate-180');
     } else {
         content.classList.add('hidden');
-        if(arrow) arrow.classList.remove('rotate-180');
+        if (arrow) arrow.classList.remove('rotate-180');
     }
 };
 
@@ -3102,16 +3787,11 @@ window.handleStrategyAutopilotToggle = function (enabled) {
 };
 
 window.checkStrategyCryptoOptionStatus = function (symbol) {
-    const isCrypto = symbol && (
-        symbol.toUpperCase().includes('USD') ||
-        symbol.toUpperCase().includes('USDT') ||
-        symbol.toUpperCase().includes('USDC') ||
-        ['BTC', 'ETH', 'LTC', 'SOL', 'DOGE', 'ADA', 'DOT', 'SHIB', 'AVAX'].some(c => symbol.toUpperCase().startsWith(c))
-    );
+    const cryptoSymbol = isCrypto(symbol);
     const btnOpt = document.getElementById('btnOptionsMode');
     const tooltip = document.getElementById('optionsCryptoDisableTooltip');
 
-    if (isCrypto) {
+    if (cryptoSymbol) {
         if (btnOpt) {
             btnOpt.disabled = true;
             btnOpt.style.opacity = '0.5';
@@ -3119,7 +3799,7 @@ window.checkStrategyCryptoOptionStatus = function (symbol) {
             btnOpt.onmouseover = () => tooltip && tooltip.classList.remove('hidden');
             btnOpt.onmouseout = () => tooltip && tooltip.classList.add('hidden');
         }
-        
+
         // Force back to regular if they were on options
         if (window.activeTradingMode === 'options') {
             window.toggleModeActive('regular');
@@ -3139,7 +3819,28 @@ window.checkStrategyCryptoOptionStatus = function (symbol) {
 function validateContinuousGridSettings(symbol, mode, buyMode, sellMode) {
     const entryEnabled = !!document.getElementById(`strategyGridContinuous_${mode}`)?.checked;
     const exitEnabled = !!document.getElementById(`strategyExitGridContinuous_${mode}`)?.checked;
-    if (!entryEnabled && !exitEnabled) return null;
+    const atrEntryEnabled = mode === 'regular' && !!document.getElementById('strategyAtrGridContinuous_regular')?.checked;
+    const atrExitEnabled = mode === 'regular' && !!document.getElementById('strategyExitAtrGridContinuous_regular')?.checked;
+    if (!entryEnabled && !exitEnabled && !atrEntryEnabled && !atrExitEnabled) return null;
+    if ((entryEnabled || exitEnabled) && (atrEntryEnabled || atrExitEnabled)) {
+        return { valid: false, title: '❌ Choose One Grid Type', message: 'Use either the Percentage ladder or the ATR ladder for this bot. Their saved values remain separate when you switch strategy modes.' };
+    }
+    if (atrEntryEnabled || atrExitEnabled) {
+        if (atrEntryEnabled !== atrExitEnabled) return { valid: false, title: '❌ ATR Grid Requires Both Sides', message: 'Enable both the continuous ATR Buy and Sell ladders.' };
+        if (!['atr', 'hybrid_atr'].includes(buyMode) || !['sltp', 'hybrid', 'atr', 'hybrid_atr'].includes(sellMode)) {
+            return { valid: false, title: '❌ ATR Strategy Required', message: `Select ATR or Hybrid ATR Entry and ATR / Volatility or Hybrid ATR Exit for ${symbol}.` };
+        }
+        for (const side of ['entry', 'exit']) {
+            const levels = getEnabledAtrGridLevels(side);
+            if (!levels.length) return { valid: false, title: '❌ ATR Ladder Has No Levels', message: `Enable at least one ATR ${side === 'entry' ? 'buy' : 'sell'} level.` };
+            const prefix = side === 'entry' ? 'strategyAtrGridEntry' : 'strategyAtrGridExit';
+            const multiples = levels.map(level => Number(document.getElementById(`${prefix}L${level}Mult_regular`)?.value));
+            if (multiples.some((value, index) => !Number.isFinite(value) || value < 0.1 || value > 100 || (index > 0 && value <= multiples[index - 1]))) return { valid: false, title: '❌ Invalid ATR Ladder', message: 'Enabled ATR multiples must be valid and strictly increase, for example 2, 4, 6, 8, 10.' };
+            const total = levels.reduce((sum, level) => sum + Number(document.getElementById(`${prefix}L${level}${side === 'entry' ? 'Buy' : 'Sell'}Pct_regular`)?.value || 0), 0);
+            if (total <= 0 || total > 100.0001) return { valid: false, title: '❌ ATR Allocation Exceeds 100%', message: `The enabled ATR ${side === 'entry' ? 'Buy' : 'Sell'} percentages must total between 1% and 100%.` };
+        }
+        return null;
+    }
     if (mode !== 'regular') {
         return {
             valid: false,
@@ -3147,28 +3848,31 @@ function validateContinuousGridSettings(symbol, mode, buyMode, sellMode) {
             message: 'Continuous scale-in/scale-out currently manages stock and crypto positions only. Disable it for this options bot.'
         };
     }
+    if (entryEnabled !== exitEnabled) {
+        return {
+            valid: false,
+            title: '❌ Adaptive Grid Requires Both Sides',
+            message: 'Enable both Continuous Scale-In and Continuous Scale-Out. A continuous grid needs sell fills to reopen buy capacity and buy fills to rebuild the exit ladder.'
+        };
+    }
 
     const validateLevels = (side, maximum) => {
         const isEntry = side === 'entry';
-        const maxElement = document.getElementById(
-            isEntry ? `strategyGridMaxLevels_${mode}` : `strategyExitGridMaxLevels_${mode}`
-        );
-        const count = parseInt(maxElement?.value || '0', 10);
-        if (!Number.isInteger(count) || count < 1 || count > 5) {
-            return `${side === 'entry' ? 'Scale-In' : 'Scale-Out'} levels must be between 1 and 5.`;
+        const activeLevels = getEnabledGridLevels(mode, side);
+        if (!activeLevels.length) {
+            return `Enable at least one ${side === 'entry' ? 'buy' : 'sell'} ladder level.`;
         }
-        const values = [];
-        for (let level = 1; level <= count; level++) {
+        const values = activeLevels.map(level => {
             const id = isEntry
                 ? `strategyGridEntryL${level}_${mode}`
                 : `strategyGridExitL${level}_${mode}`;
-            values.push(parseFloat(document.getElementById(id)?.value));
-        }
+            return parseFloat(document.getElementById(id)?.value);
+        });
         if (values.some(value => !Number.isFinite(value) || value < 0.1 || value > maximum)) {
             return `${side === 'entry' ? 'Scale-In' : 'Scale-Out'} percentages must be between 0.1% and ${maximum}%.`;
         }
         if (values.some((value, index) => index > 0 && value <= values[index - 1])) {
-            return `${side === 'entry' ? 'Scale-In' : 'Scale-Out'} percentages must increase at every level (for example 2, 4, 6, 8, 10).`;
+            return `${side === 'entry' ? 'Scale-In' : 'Scale-Out'} percentages must increase across enabled levels (for example 1, 2, 3, 4, 5).`;
         }
         return null;
     };
@@ -3181,20 +3885,23 @@ function validateContinuousGridSettings(symbol, mode, buyMode, sellMode) {
                 message: `Select Percentage or Hybrid Percentage as the Entry Strategy for ${symbol}, or disable Continuous Scale-In.`
             };
         }
-        const style = document.getElementById(`strategyEntryPctStyle_${mode}`)?.value;
-        if (style !== 'dip_reclaim') {
+        const activeLevels = getEnabledGridLevels(mode, 'entry');
+        const buyPcts = activeLevels.map(level =>
+            parseFloat(document.getElementById(`strategyGridEntryL${level}BuyPct_${mode}`)?.value)
+        );
+        if (buyPcts.some(buyPct => !Number.isFinite(buyPct) || buyPct < 1 || buyPct > 100)) {
             return {
                 valid: false,
-                title: '❌ Scale-In Requires Dip / Reclaim',
-                message: 'Continuous Scale-In waits for each falling level and then a small reclaim confirmation. Select Dip / Reclaim as the Percentage Entry Style.'
+                title: '❌ Invalid Scale-In Buy %',
+                message: 'Every active scale-in level must use a Buy % between 1% and 100%.'
             };
         }
-        const allocation = parseFloat(document.getElementById(`strategyGridBuyAllocation_${mode}`)?.value);
-        if (!Number.isFinite(allocation) || allocation <= 0) {
+        const totalBuyPct = buyPcts.reduce((sum, value) => sum + value, 0);
+        if (totalBuyPct > 100.0001) {
             return {
                 valid: false,
-                title: '❌ Invalid Scale-In Allocation',
-                message: 'Buy Alloc must be greater than $0 for every additional scale-in level.'
+                title: '❌ Scale-In Budget Exceeds 100%',
+                message: `The active Buy % levels total ${totalBuyPct.toFixed(1)}%. Reduce them to 100% or less of the bot capital.`
             };
         }
         const levelError = validateLevels('entry', 50);
@@ -3209,12 +3916,23 @@ function validateContinuousGridSettings(symbol, mode, buyMode, sellMode) {
                 message: `Select Percentage or Hybrid Percentage as the Exit Strategy for ${symbol}, or disable Continuous Scale-Out.`
             };
         }
-        const sellPct = parseFloat(document.getElementById(`strategyExitGridSellPct_${mode}`)?.value);
-        if (!Number.isFinite(sellPct) || sellPct < 1 || sellPct > 100) {
+        const activeLevels = getEnabledGridLevels(mode, 'exit');
+        const sellSizes = activeLevels.map(level =>
+            parseFloat(document.getElementById(`strategyGridExitL${level}SellPct_${mode}`)?.value)
+        );
+        if (sellSizes.some(sellPct => !Number.isFinite(sellPct) || sellPct < 1 || sellPct > 100)) {
             return {
                 valid: false,
                 title: '❌ Invalid Scale-Out Size',
-                message: 'Sell Size must be between 1% and 100% of the position remaining at each non-final level.'
+                message: 'Every active scale-out level must use a Sell % between 1% and 100%.'
+            };
+        }
+        const totalSellPct = sellSizes.reduce((sum, value) => sum + value, 0);
+        if (totalSellPct > 100.0001) {
+            return {
+                valid: false,
+                title: '❌ Scale-Out Allocation Exceeds 100%',
+                message: `The active Sell % levels total ${totalSellPct.toFixed(1)}%. Reduce them to 100% or less of the ladder-start position.`
             };
         }
         const levelError = validateLevels('exit', 100);
@@ -3298,11 +4016,11 @@ window.validateStrategyPreflight = function (symbol, mode = 'regular') {
         }
     } else if (['percentage', 'hybrid_pct'].includes(buyMode)) {
         const pctMove = parseFloat(document.getElementById(`strategyEntryPctMove_${mode}`)?.value || 0);
-        if (!Number.isFinite(pctMove) || pctMove <= 0) {
+        if (!Number.isFinite(pctMove) || pctMove < 0.1 || pctMove > 100) {
             return {
                 valid: false,
                 title: "❌ Entry Strategy Error: Invalid Pullback %",
-                message: `You selected a Percentage entry strategy for ${symbol}, but the Pullback % is set to 0 or negative.\n\nHow to fix: Enter a valid percentage (e.g. 3.0 or 5.0) under Percentage Entry fields.`
+                message: `Percentage entry must be between 0.1% and 100%. Enter a valid pullback value such as 3% or 5%.`
             };
         }
     }
@@ -3345,6 +4063,22 @@ window.validateStrategyPreflight = function (symbol, mode = 'regular') {
                 title: "❌ Exit Strategy Error: Invalid Custom Underlying SL/TP",
                 message: `You selected Custom Underlying SL/TP exit mode for ${symbol}, but the Underlying Stop-Loss or Take-Profit price is set to $0.00 or blank.\n\nHow to fix: Enter valid dollar prices greater than $0.00 for both Underlying SL and TP.`
             };
+        }
+    }
+    if (['percentage', 'hybrid_pct'].includes(sellMode) && !(mode === 'regular' && document.getElementById('strategyExitGridContinuous_regular')?.checked)) {
+        const prefix = mode === 'options' ? 'Options' : 'Regular';
+        const stop = parseFloat(document.getElementById(`strategy${prefix}SlPct`)?.value);
+        const target = parseFloat(document.getElementById(`strategy${prefix}TpPct`)?.value);
+        const trailEnabled = !!document.getElementById(mode === 'options' ? 'strategyEnablePctTrail_options' : 'strategyEnablePctTrail')?.checked;
+        const trail = parseFloat(document.getElementById(`strategy${prefix}TrailPct`)?.value);
+        if (!Number.isFinite(stop) || stop < 0.1 || stop >= 100) {
+            return { valid: false, title: '❌ Invalid Percentage Stop', message: 'Stop Loss must be between 0.1% and 99%.' };
+        }
+        if (!Number.isFinite(target) || target < 0.1 || target > 1000) {
+            return { valid: false, title: '❌ Invalid Percentage Target', message: 'Take Profit must be between 0.1% and 1000%.' };
+        }
+        if (trailEnabled && (!Number.isFinite(trail) || trail < 0.1 || trail >= 100)) {
+            return { valid: false, title: '❌ Invalid Trailing Stop', message: 'Trailing Stop must be between 0.1% and 99%, or disable Trail.' };
         }
     }
     if (indicatorModes.includes(sellMode)) {
@@ -3471,13 +4205,14 @@ async function saveTickerSettings() {
             ai_autopilot: mode === 'ai_autopilot',
             ai_model: normalizeBotAIModel(document.getElementById('strategyAiModel')?.value || 'llama-3.3-70b-versatile'),
             risk_per_trade: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyRiskPerTrade' : 'strategyOptionsRiskPerTrade')?.value || 2.0) / 100.0 : null,
-            max_daily_drawdown: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxDailyDrawdown' : 'strategyOptionsMaxDailyDrawdown')?.value || (mode === 'regular' ? 5.0 : 50.0)) / 100.0 : null,
+            max_daily_drawdown: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxDailyDrawdown' : 'strategyOptionsMaxDailyDrawdown')?.value || (mode === 'regular' ? 50.0 : 60.0)) / 100.0 : null,
             max_position_pct: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxPositionPct' : 'strategyOptionsMaxPositionPct')?.value || 100.0) / 100.0 : null,
             atr_stop_multiplier: getStrategyExitNumber(mode, 'strategyAtrStopMult', 'strategyAtrStopMult_options', 2.0),
             atr_trail_multiplier: getStrategyExitNumber(mode, 'strategyAtrTrailMult', 'strategyAtrTrailMult_options', 3.0),
             take_profit_multiplier: getStrategyExitNumber(mode, 'strategyAtrTpMult', 'strategyAtrTpMult_options', 4.0),
             enable_cooldown: document.getElementById(`strategyEnableCooldown_${mode}`)?.checked || false,
             cooldown_minutes: getCooldownMinutesValue(mode),
+            ...getCoreTradeGuardSettings(mode),
             options_trading: mode === 'options',
             options_type: document.getElementById('strategyOptionsType')?.value || 'calls_only',
             options_trade_amount: parseFloat(document.getElementById('strategyOptionsTradeAmount')?.value || 100),
@@ -3836,18 +4571,19 @@ function applyBotsData(data) {
     }
 
     // Portfolio cards
-        if (document.getElementById('globalMaxDrawdown')) {
+    if (document.getElementById('globalMaxDrawdown')) {
         if (document.activeElement !== document.getElementById('globalMaxDrawdown')) {
             let dd = data.indicator_parameters?.MAX_DAILY_DRAWDOWN;
-            if (dd !== undefined && dd !== null) document.getElementById('globalMaxDrawdown').value = Math.round(dd * 100);
+            if (dd !== undefined && dd !== null) document.getElementById('globalMaxDrawdown').value = Number((dd * 100).toFixed(2));
         }
     }
     if (document.getElementById('globalHardStop')) {
         if (document.activeElement !== document.getElementById('globalHardStop')) {
             let hs = data.indicator_parameters?.GLOBAL_HARD_STOP_PCT;
-            if (hs !== undefined && hs !== null) document.getElementById('globalHardStop').value = Math.round(hs * 100);
+            if (hs !== undefined && hs !== null) document.getElementById('globalHardStop').value = Number((hs * 100).toFixed(2));
         }
     }
+    renderGlobalRiskCard(data.global_risk_status || {});
 
     if (document.getElementById('totalCapital')) {
         document.getElementById('totalCapital').textContent = data.capital || '---';
@@ -3897,13 +4633,14 @@ function applyBotsData(data) {
         currentBackendTf = data.strategyTimeframe;
     }
 
-    // Active bots list
-    renderTradelist(data.botScans || data.watchlistScans, data.tradelist, data.tickerAmounts);
-
-    // Auto-select first active bot if none selected
+    // Auto-select first active bot if none selected BEFORE rendering tradelist
     if (!selectedTicker && data.tradelist && data.tradelist.length > 0) {
         selectedTicker = data.tradelist[0];
     }
+
+    // Active bots list
+    renderTradelist(data.botScans || data.watchlistScans, data.tradelist, data.tickerAmounts);
+    checkBotLossPauseAlerts(data);
 
     // Reuse fresh AI analysis across Dashboard/Bots navigation before starting a request.
     let mirrored = false;
@@ -4079,7 +4816,8 @@ const INDICATOR_META = {
     'EMA Cross': { key: 'ENABLE_EMA', desc: '9/21 EMA Crossover', icon: '✂️' },
     'Supertrend': { key: 'ENABLE_SUPERTREND', desc: 'ATR Trend Follower', icon: '🚀' },
     'Bollinger': { key: 'ENABLE_BOLLINGER', desc: 'Volatility Bands', icon: '🎯' },
-    'VWAP': { key: 'ENABLE_VWAP', label: 'AVWAP', desc: 'Anchored Volume Weighted Avg', icon: '⚖️' },
+    'VWAP': { key: 'ENABLE_VWAP', label: 'Session VWAP', desc: 'Webull-compatible session VWAP', icon: '⚖️' },
+    'Auto-AVWAP': { key: 'ENABLE_AUTO_AVWAP', desc: 'Automatic volume-spike AVWAP', icon: '⚖️' },
     'Mystic Pulse': { key: 'ENABLE_MYSTIC_PULSE', desc: 'Trend Persistence', icon: '🔮' },
     'Candle Patterns': { key: 'ENABLE_CANDLE_PATTERNS', desc: 'Reversal Detection', icon: '🕯️' },
     'Botbulls4 News AI': { key: 'ENABLE_AI_SENTIMENT', desc: 'Premium AI News Sentiment', icon: '🧠' },
@@ -4109,19 +4847,22 @@ const BOT_CHART_PREVIEW_INDICATORS = [
         'Bollinger', 'VWAP', 'Volume Profile', 'SMA', 'Prior Day High/Low',
         'Pivot Points (S/R)', 'Swing Points', 'Mystic Pulse', 'Candle Patterns',
     ]),
-    'Botbulls4 News AI',
     'BotBulls1',
     'BotBulls2',
     'BotBulls3',
+    'Botbulls4 News AI',
     'BotBulls5',
 ];
-const BOT_DEFAULT_STRATEGY_INDICATORS = BOT_CHART_PREVIEW_INDICATORS.slice(0, 10);
+const BOT_DEFAULT_STRATEGY_INDICATORS = (
+    window.STANDARD_INDICATOR_DEFAULT_NAMES || BOT_CHART_PREVIEW_INDICATORS
+).slice(0, 12);
 
 const BOT_CHART_PREVIEW_OVERLAY_INDICATORS = new Set([
     'EMA Cross',
     'Supertrend',
     'Bollinger',
     'VWAP',
+    'Auto-AVWAP',
     'Volume Profile',
     'SMA',
     'Prior Day High/Low',
@@ -4241,6 +4982,7 @@ let botChartPreviewCandleSeries = null;
 let botChartPreviewVolumeSeries = null;
 let botChartPreviewExtHoursSeries = null;
 let botChartPreviewOverlaySeries = {};
+let botChartPreviewVolumeProfileOverlay = null;
 let botChartPreviewOscCharts = {};
 let botChartPreviewOscSeries = {};
 let botChartPreviewResizeObserver = null;
@@ -4558,6 +5300,7 @@ function collectStrategyPreviewSettings(mode = window.activeTradingMode || 'regu
     settings.options_take_profit_pct = parseFloat(document.getElementById('strategyOptionsTpPct')?.value || settings.options_take_profit_pct || OPTIONS_DEFAULT_TP_PCT) / 100.0;
     settings.options_trailing_pct = parseFloat(document.getElementById('strategyOptionsTrailPct')?.value || settings.options_trailing_pct || OPTIONS_DEFAULT_TRAIL_PCT) / 100.0;
     settings.enable_signal_reset = document.getElementById(mode === 'regular' ? 'strategyRegularSignalReset' : 'strategyOptionsSignalReset')?.checked || false;
+    Object.assign(settings, getCoreTradeGuardSettings(mode));
     settings.enable_smart_reentry = document.getElementById(mode === 'regular' ? 'strategyRegularSmartReentry' : 'strategyOptionsSmartReentry')?.checked || false;
     settings.smart_reentry_type = document.getElementById(mode === 'regular' ? 'strategyRegularSmartReentryType' : 'strategyOptionsSmartReentryType')?.value || 'RSI';
     settings.smart_reentry_rsi_call_max = parseInt(document.getElementById(mode === 'regular' ? 'strategyRegularRsiCallMax' : 'strategyOptionsRsiCallMax')?.value || 70, 10);
@@ -4648,7 +5391,7 @@ function updateBotChartPreviewVisibleHighLow() {
         if (range?.from && range?.to) {
             visibleBars = bars.filter(b => b.time >= range.from && b.time <= range.to);
         }
-    } catch (e) {}
+    } catch (e) { }
     if (!visibleBars.length) visibleBars = bars;
 
     const highBar = visibleBars.reduce((max, b) => (b.high > max.high ? b : max), visibleBars[0]);
@@ -4656,7 +5399,7 @@ function updateBotChartPreviewVisibleHighLow() {
 
     if (window._botChartPreviewHlLines) {
         window._botChartPreviewHlLines.forEach(l => {
-            try { botChartPreviewCandleSeries.removePriceLine(l); } catch (e) {}
+            try { botChartPreviewCandleSeries.removePriceLine(l); } catch (e) { }
         });
     }
 
@@ -4696,7 +5439,7 @@ function syncBotChartPreviewOscillatorRanges(range) {
     Object.values(botChartPreviewOscCharts).forEach(chart => {
         try {
             if (chart) chart.timeScale().setVisibleLogicalRange(range);
-        } catch (e) {}
+        } catch (e) { }
     });
     window.StandardIndicatorSubcharts?.sync('bots', range);
 }
@@ -4790,10 +5533,31 @@ function ensureBotChartPreviewChart() {
     botChartPreviewCandleSeries = botChartPreviewChart.addCandlestickSeries({
         upColor: '#10b981',
         downColor: '#ef4444',
-        borderVisible: false,
+        borderVisible: true,
+        borderUpColor: '#10b981',
+        borderDownColor: '#ef4444',
         wickUpColor: '#10b981',
         wickDownColor: '#ef4444',
     });
+
+    botChartPreviewVolumeProfileOverlay = window.VolumeProfileOverlay?.attach({
+        chart: botChartPreviewChart,
+        priceSeries: botChartPreviewCandleSeries,
+        container,
+        profile: botChartPreviewState.volumeProfile,
+        candles: botChartPreviewState.priceHistory || [],
+        enabled: false,
+        onProfileChange: (profile, enabled) => {
+            if (!enabled || !profile || !Number.isFinite(profile.startTime) || !Number.isFinite(profile.endTime)) return;
+            const visibleBars = botChartPreviewDisplayHistory.filter(bar => (
+                Number(bar.time) >= profile.startTime && Number(bar.time) <= profile.endTime
+            ));
+            const lineData = value => visibleBars.map(bar => ({ time: Number(bar.time), value: Number(value) }));
+            setBotChartPreviewLineSeries('volume_profile_poc', lineData(profile.poc), { color: '#7c2d12', lineWidth: 3, lineStyle: 0, priceLineTitle: 'POC' });
+            setBotChartPreviewLineSeries('volume_profile_vah', lineData(profile.vah), { color: '#ea580c', lineWidth: 2, lineStyle: 2, priceLineTitle: 'VAH' });
+            setBotChartPreviewLineSeries('volume_profile_val', lineData(profile.val), { color: '#0f766e', lineWidth: 2, lineStyle: 2, priceLineTitle: 'VAL' });
+        },
+    }) || null;
 
     botChartPreviewVolumeSeries = botChartPreviewChart.addHistogramSeries({
         priceFormat: { type: 'volume' },
@@ -4831,7 +5595,7 @@ function ensureBotChartPreviewChart() {
         botChartPreviewChart.timeScale().subscribeVisibleTimeRangeChange(() => {
             scheduleBotChartPreviewRangeUiRefresh();
         });
-    } catch (e) {}
+    } catch (e) { }
 
     return botChartPreviewChart;
 }
@@ -4904,7 +5668,7 @@ function getBotChartPreviewRightVisiblePoint(data) {
         const range = botChartPreviewChart.timeScale().getVisibleRange();
         from = Number(range?.from);
         to = Number(range?.to);
-    } catch (e) {}
+    } catch (e) { }
     if (Number.isFinite(to)) {
         for (let i = data.length - 1; i >= 0; i -= 1) {
             const pointTime = Number(data[i]?.time);
@@ -4924,7 +5688,7 @@ function refreshBotChartPreviewPriceLineLabel(seriesKey) {
     const series = botChartPreviewOverlaySeries[seriesKey];
     if (!meta || !series) return;
     if (botChartPreviewOverlayPriceLines[seriesKey]) {
-        try { series.removePriceLine(botChartPreviewOverlayPriceLines[seriesKey]); } catch (e) {}
+        try { series.removePriceLine(botChartPreviewOverlayPriceLines[seriesKey]); } catch (e) { }
         delete botChartPreviewOverlayPriceLines[seriesKey];
     }
     const point = getBotChartPreviewRightVisiblePoint(meta.data);
@@ -4997,12 +5761,18 @@ function updateBotChartPreviewChart(priceHistory, settings) {
         }
     }
 
+    const enabled = new Set(getEffectivePreviewIndicators(botChartPreviewState.signals, settings));
     const candles = sanitizeBotChartPreviewCandles(history);
+    const displayedCandles = enabled.has('Candle Patterns')
+        ? (window.StandardIndicatorSubcharts?.highlightCandlePatternContext?.(candles, history, {
+            rolling24Hours: isCrypto(tickerFromPreviewState()),
+        }) || candles)
+        : candles;
 
-    botChartPreviewCandleSeries.setData(candles);
+    botChartPreviewCandleSeries.setData(displayedCandles);
     if (botChartPreviewVolumeSeries) {
-        botChartPreviewVolumeSeries.setData(rawHistory.map(b => ({
-            time: b.time,
+        botChartPreviewVolumeSeries.setData(history.map(b => ({
+            time: Number(b.time),
             value: Number(b.volume || 0),
             color: (b.close >= b.open) ? 'rgba(16, 185, 129, 0.45)' : 'rgba(239, 68, 68, 0.45)',
         })));
@@ -5021,7 +5791,6 @@ function updateBotChartPreviewChart(priceHistory, settings) {
         });
     }
 
-    const enabled = new Set(getEffectivePreviewIndicators(botChartPreviewState.signals, settings));
     const toLineData = key => history
         .filter(bar => bar && isValidBotChartPreviewTime(bar.time) && isFiniteBotChartPreviewNumber(bar[key]))
         .map(bar => ({ time: Number(bar.time), value: Number(bar[key]) }));
@@ -5030,7 +5799,9 @@ function updateBotChartPreviewChart(priceHistory, settings) {
 
     if (enabled.has('EMA Cross')) {
         setBotChartPreviewLineSeries('ema_fast', toLineData('ema_fast'), { color: '#3b82f6', lineWidth: 1.5 });
-        setBotChartPreviewLineSeries('ema_slow', toLineData('ema_slow'), { color: '#ef4444', lineWidth: 1.5 });
+        if (getBotIndicatorParam(settings, 'EMA_USE_SECOND_LINE', 1) !== 0) {
+            setBotChartPreviewLineSeries('ema_slow', toLineData('ema_slow'), { color: '#ef4444', lineWidth: 1.5 });
+        }
     }
     if (enabled.has('VWAP')) {
         setBotChartPreviewLineSeries('vwap', toLineData('vwap'), { color: '#000000', lineWidth: 2 });
@@ -5059,6 +5830,13 @@ function updateBotChartPreviewChart(priceHistory, settings) {
     }
     if (enabled.has('SMA')) {
         setBotChartPreviewLineSeries('sma', toLineData('sma'), { color: '#8b5cf6', lineWidth: 2.5 });
+        if (getBotIndicatorParam(settings, 'SMA_USE_SECOND_LINE', 1) !== 0) {
+            setBotChartPreviewLineSeries('sma_secondary', toLineData('sma_secondary'), {
+                color: '#64748b',
+                lineWidth: 2,
+                lineStyle: 2,
+            });
+        }
     }
     if (enabled.has('Supertrend')) {
         const stData = history
@@ -5232,24 +6010,28 @@ function updateBotChartPreviewChart(priceHistory, settings) {
     }
 
     if (enabled.has('Candle Patterns')) {
-        const b = history[history.length - 1];
-        if (b?.cdl_name && b.cdl_name !== 'Neutral' && isValidBotChartPreviewTime(b.time)) {
-            if (b.cdl_bullish) {
-                activeMarkers.push({ time: Number(b.time), position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: b.cdl_name, size: 1.1 });
-            } else if (b.cdl_bearish) {
-                activeMarkers.push({ time: Number(b.time), position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: b.cdl_name, size: 1.1 });
-            } else {
-                activeMarkers.push({ time: Number(b.time), position: 'aboveBar', color: '#f59e0b', shape: 'circle', text: b.cdl_name, size: 1.1 });
-            }
-        }
+        const candlePatternMarkers = window.StandardIndicatorSubcharts?.buildCandlePatternMarkers?.(history, {
+            rolling24Hours: isCrypto(tickerFromPreviewState()),
+        }) || [];
+        activeMarkers.push(...candlePatternMarkers.filter(marker => isValidBotChartPreviewTime(marker.time)));
     }
 
     botChartPreviewCandleSeries.setMarkers(sanitizeBotChartPreviewMarkers(activeMarkers));
+
+    botChartPreviewVolumeProfileOverlay?.setCandles(history);
+    botChartPreviewVolumeProfileOverlay?.setProfile(
+        botChartPreviewState.volumeProfile,
+        enabled.has('Volume Profile'),
+    );
 
     refreshBotChartPreviewOscillators(history, enabled, settings);
 
     try {
         chart.timeScale().fitContent();
+        const visibleRange = chart.timeScale().getVisibleLogicalRange();
+        if (visibleRange) {
+            syncBotChartPreviewOscillatorRanges(visibleRange);
+        }
     } catch (err) {
         console.warn('[bot-chart] Failed fitting content:', err);
     }
@@ -5328,8 +6110,10 @@ function refreshBotChartPreviewOscillators(bars = [], enabledSet = new Set(), se
         const ob = _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'rsi_ob', oscRsi, { color: 'rgba(239,68,68,0.4)', lineWidth: 1, lineStyle: 2 });
         const os = _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'rsi_os', oscRsi, { color: 'rgba(16,185,129,0.4)', lineWidth: 1, lineStyle: 2 });
         const rsiPeriod = getBotIndicatorParam(settings, 'RSI_PERIOD', 14);
-        const obVal = getBotIndicatorParam(settings, 'RSI_OVERBOUGHT', 70);
-        const osVal = getBotIndicatorParam(settings, 'RSI_OVERSOLD', 30);
+        const rsiFirstThreshold = getBotIndicatorParam(settings, 'RSI_OVERBOUGHT', 70);
+        const rsiSecondThreshold = getBotIndicatorParam(settings, 'RSI_OVERSOLD', 30);
+        const obVal = Math.max(rsiFirstThreshold, rsiSecondThreshold);
+        const osVal = Math.min(rsiFirstThreshold, rsiSecondThreshold);
         if (rsiLabel) {
             rsiLabel.textContent = `RSI (${rsiPeriod})  •  OB: ${obVal} / OS: ${osVal}`;
         }
@@ -5337,7 +6121,7 @@ function refreshBotChartPreviewOscillators(bars = [], enabledSet = new Set(), se
             ob.setData(clean([{ time: bars[0].time, value: obVal }, { time: bars[bars.length - 1].time, value: obVal }]));
             os.setData(clean([{ time: bars[0].time, value: osVal }, { time: bars[bars.length - 1].time, value: osVal }]));
         }
-        try { oscRsi.timeScale().fitContent(); } catch (e) {}
+        try { oscRsi.timeScale().fitContent(); } catch (e) { }
     }
 
     // MACD
@@ -5348,8 +6132,10 @@ function refreshBotChartPreviewOscillators(bars = [], enabledSet = new Set(), se
     if (macdLabel) macdLabel.style.display = hasMacd ? 'block' : 'none';
     const oscMacd = botChartPreviewOscCharts['macd'];
     if (hasMacd && oscMacd) {
-        const macdFast = getBotIndicatorParam(settings, 'MACD_FAST', 12);
-        const macdSlow = getBotIndicatorParam(settings, 'MACD_SLOW', 26);
+        const macdFirst = getBotIndicatorParam(settings, 'MACD_FAST', 12);
+        const macdSecond = getBotIndicatorParam(settings, 'MACD_SLOW', 26);
+        const macdFast = Math.min(macdFirst, macdSecond);
+        const macdSlow = Math.max(macdFirst, macdSecond);
         const macdSig = getBotIndicatorParam(settings, 'MACD_SIGNAL', 9);
         if (macdLabel) {
             macdLabel.textContent = `MACD (${macdFast}, ${macdSlow}, ${macdSig})`;
@@ -5372,7 +6158,7 @@ function refreshBotChartPreviewOscillators(bars = [], enabledSet = new Set(), se
             lineWidth: 1,
             priceFormat: { type: 'price', precision: 2, minMove: 0.01 }
         }).setData(clean(bars.filter(b => b.macd_signal != null).map(b => ({ time: b.time, value: b.macd_signal }))));
-        try { oscMacd.timeScale().fitContent(); } catch (e) {}
+        try { oscMacd.timeScale().fitContent(); } catch (e) { }
     }
 
     // Mystic Pulse
@@ -5400,7 +6186,7 @@ function refreshBotChartPreviewOscillators(bars = [], enabledSet = new Set(), se
             ob.setData(clean([{ time: bars[0].time, value: mysticThresh }, { time: bars[bars.length - 1].time, value: mysticThresh }]));
             os.setData(clean([{ time: bars[0].time, value: -mysticThresh }, { time: bars[bars.length - 1].time, value: -mysticThresh }]));
         }
-        try { oscMystic.timeScale().fitContent(); } catch (e) {}
+        try { oscMystic.timeScale().fitContent(); } catch (e) { }
     }
 
     // ADX
@@ -5420,11 +6206,11 @@ function refreshBotChartPreviewOscillators(bars = [], enabledSet = new Set(), se
         const adxPeriod = getBotIndicatorParam(settings, 'ADX_PERIOD', 14);
         const adxThreshVal = getBotIndicatorParam(settings, 'ADX_TRENDING_THRESHOLD', 25);
         if (adxLabel) {
-            adxLabel.textContent = `ADX (${adxPeriod})  •  Trend Thresh: ${adxThreshVal}`;
+            adxLabel.textContent = `ADX (${adxPeriod}) · strong ≥ ${adxThreshVal} · +DI green · −DI red`;
         }
         _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'adx_threshold', oscAdx, { color: 'rgba(99,102,241,0.25)', lineWidth: 1, lineStyle: 2 })
             .setData(clean(bars.map(b => ({ time: b.time, value: adxThreshVal }))));
-        try { oscAdx.timeScale().fitContent(); } catch (e) {}
+        try { oscAdx.timeScale().fitContent(); } catch (e) { }
     }
 
     // BotBulls1
@@ -5446,7 +6232,7 @@ function refreshBotChartPreviewOscillators(bars = [], enabledSet = new Set(), se
             .setData(clean(bars.filter(b => b.wt1 != null).map(b => ({ time: b.time, value: b.wt1 }))));
         _getOrCreateBotPreviewSeries(botChartPreviewOscSeries, 'wt2', oscBb1, { color: '#f43f5e', lineWidth: 1, lineStyle: 2 })
             .setData(clean(bars.filter(b => b.wt2 != null).map(b => ({ time: b.time, value: b.wt2 }))));
-        try { oscBb1.timeScale().fitContent(); } catch (e) {}
+        try { oscBb1.timeScale().fitContent(); } catch (e) { }
     }
 
     const botSubchartParameters = Object.fromEntries(
@@ -5456,7 +6242,7 @@ function refreshBotChartPreviewOscillators(bars = [], enabledSet = new Set(), se
         ])
     );
     let botVisibleRange = null;
-    try { botVisibleRange = botChartPreviewChart?.timeScale().getVisibleLogicalRange() || null; } catch (e) {}
+    try { botVisibleRange = botChartPreviewChart?.timeScale().getVisibleLogicalRange() || null; } catch (e) { }
     window.StandardIndicatorSubcharts?.render({
         context: 'bots',
         hostId: 'botChartPreviewDynamicOscillators',
@@ -5483,18 +6269,24 @@ function renderBotChartPreviewSignals(signals = {}, settings = {}) {
     const activeIndicators = getEffectivePreviewIndicators(signals, settings);
     const activeSet = new Set(activeIndicators);
     const premiumNames = new Set(['Botbulls4 News AI', 'BotBulls1', 'BotBulls2', 'BotBulls3', 'BotBulls5']);
-    const rawEntries = Array.isArray(settings.indicators)
-        ? activeIndicators.map(name => [
-            name,
-            signals?.[name] || {
-                signal: 'NEUTRAL',
-                reason: 'Awaiting sufficient market data',
-                weight: 1,
-                enabled: true,
-                premium: premiumNames.has(name),
-            },
-        ])
-        : Object.entries(signals || {});
+    const allPreviewIndicators = [
+        ...BOT_DEFAULT_STRATEGY_INDICATORS,
+        'BotBulls1',
+        'BotBulls2',
+        'BotBulls3',
+        'Botbulls4 News AI',
+        'BotBulls5',
+    ];
+    const rawEntries = allPreviewIndicators.map(name => [
+        name,
+        signals?.[name] || {
+            signal: 'NEUTRAL',
+            reason: activeSet.has(name) ? 'Awaiting sufficient market data' : 'Indicator disabled',
+            weight: 1,
+            enabled: activeSet.has(name),
+            premium: premiumNames.has(name),
+        },
+    ]);
     const previewOrder = new Map(BOT_CHART_PREVIEW_INDICATORS.map((name, index) => [name, index]));
     const signalEntries = rawEntries.sort(([nameA], [nameB]) => {
         const rankA = previewOrder.has(nameA) ? previewOrder.get(nameA) : Number.MAX_SAFE_INTEGER;
@@ -5537,7 +6329,7 @@ function renderBotChartPreviewSignals(signals = {}, settings = {}) {
         const icon = signalType === 'BULLISH' ? '▲' : signalType === 'BEARISH' ? '▼' : '●';
         const iconColor = signalType === 'BULLISH' ? 'text-emerald-600' : signalType === 'BEARISH' ? 'text-red-500' : 'text-purple-400';
         const escapedName = name.replace(/'/g, "\\'");
-        const displayName = name === 'VWAP' ? 'AVWAP' : name;
+        const displayName = name === 'VWAP' ? 'Session VWAP' : name;
         const displayLabelClass = name === 'VWAP' ? 'vwap-indicator-label' : (isPremium ? 'text-amber-800' : 'text-indigo-900');
         const settingAction = `openBotChartPreviewIndicatorSettings('${escapedName}')`;
         const cardClick = `onclick="toggleBotChartPreviewIndicator('${escapedName}')"`;
@@ -5628,15 +6420,10 @@ function renderBotChartPreviewSignals(signals = {}, settings = {}) {
         else standardCards.push(card);
     });
 
-    const isMobileView = typeof window !== 'undefined' && window.innerWidth <= 640;
+    const isMobileView = typeof window !== 'undefined' && window.innerWidth <= 768;
 
     if (standardCards.length > 0) {
-        if (isMobileView) {
-            grid.style.gridTemplateColumns = 'repeat(2, minmax(0, 1fr))';
-        } else {
-            const cols = Math.max(Math.ceil(standardCards.length / 3), 2);
-            grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
-        }
+        grid.style.gridTemplateColumns = isMobileView ? 'repeat(3, minmax(0, 1fr))' : 'repeat(4, minmax(0, 1fr))';
         grid.innerHTML = standardCards.join('');
     } else if (premiumCards.length > 0) {
         grid.style.gridTemplateColumns = '';
@@ -5652,12 +6439,7 @@ function renderBotChartPreviewSignals(signals = {}, settings = {}) {
 
     if (premiumGrid) {
         if (premiumCards.length > 0) {
-            if (isMobileView) {
-                premiumGrid.style.gridTemplateColumns = 'repeat(2, minmax(0, 1fr))';
-            } else {
-                const cols = Math.max(premiumCards.length, 1);
-                premiumGrid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
-            }
+            premiumGrid.style.gridTemplateColumns = 'repeat(3, minmax(0, 1fr))';
             premiumGrid.innerHTML = premiumCards.join('');
         } else {
             premiumGrid.style.gridTemplateColumns = '';
@@ -5698,17 +6480,15 @@ function renderBotChartPreview(payload) {
         document.getElementById('botChartPreviewBearCount').textContent = `${bearCount} Bearish`;
     }
     const selectedCount = previewCounts.selectedCount;
-    const entryThreshold = normalizeSignalThreshold(settings.min_buy_signals, selectedCount, 'buy');
-    const exitThreshold = normalizeSignalThreshold(settings.min_sell_signals, selectedCount, 'sell');
     const entryThresholdEl = document.getElementById('botChartPreviewEntryThreshold');
     const exitThresholdEl = document.getElementById('botChartPreviewExitThreshold');
     if (entryThresholdEl) {
+        const entryThreshold = normalizeSignalThreshold(settings.min_buy_signals, selectedCount, 'buy');
         entryThresholdEl.textContent = `Entry ${entryThreshold}/${selectedCount}`;
-        entryThresholdEl.title = `${selectedCount} selected indicators`;
     }
     if (exitThresholdEl) {
+        const exitThreshold = normalizeSignalThreshold(settings.min_sell_signals, selectedCount, 'sell');
         exitThresholdEl.textContent = `Exit ${exitThreshold}/${selectedCount}`;
-        exitThresholdEl.title = `${selectedCount} selected indicators`;
     }
 
     if (aiBadge) {
@@ -5736,39 +6516,54 @@ function renderBotChartPreview(payload) {
     updateBotChartPreviewChart(payload?.priceHistory || payload?.price_history || [], settings);
 }
 
-async function requestBotChartPreviewPayload(ticker, settings, force = true) {
-    const headers = await getAuthHeaders();
+async function requestBotChartPreviewPayload(ticker, settings, force = false) {
     const requestSettings = clonePlainObject(settings || {});
     if (isCrypto((ticker || '').toUpperCase())) {
         requestSettings.market_session = '24h';
     }
-    const response = await fetchWithTimeout(`${API_BASE}/api/bots/chart-preview`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-            ticker,
-            timeframe: requestSettings.timeframe,
-            settings: requestSettings,
-            force,
-        }),
-    }, 15000);
+    const requestKey = `${getBotChartPreviewCacheKey(ticker, requestSettings)}|force=${force ? '1' : '0'}`;
+    const existingRequest = botChartPreviewRequests.get(requestKey);
+    if (existingRequest) return existingRequest;
 
-    if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(err.detail || err.message || `Chart preview failed (${response.status})`);
-    }
+    const requestPromise = (async () => {
+        const headers = await getAuthHeaders();
+        const response = await fetchWithTimeout(`${API_BASE}/api/bots/chart-preview`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+                ticker,
+                timeframe: requestSettings.timeframe,
+                settings: requestSettings,
+                force,
+            }),
+        }, BOT_CHART_PREVIEW_FETCH_TIMEOUT_MS);
 
-    const payload = await response.json();
-    if (payload?.error) {
-        throw new Error(payload.error);
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || err.message || `Chart preview failed (${response.status})`);
+        }
+
+        const payload = await response.json();
+        if (payload?.error) {
+            throw new Error(payload.error);
+        }
+        return payload;
+    })();
+    botChartPreviewRequests.set(requestKey, requestPromise);
+    try {
+        return await requestPromise;
+    } finally {
+        if (botChartPreviewRequests.get(requestKey) === requestPromise) {
+            botChartPreviewRequests.delete(requestKey);
+        }
     }
-    return payload;
 }
 
 function applyBotChartPreviewPayload(payload) {
     const settings = botChartPreviewState.settings || {};
     botChartPreviewState.signals = resolveBotChartPreviewPayloadSignals(payload);
     botChartPreviewState.priceHistory = payload?.priceHistory || payload?.price_history || [];
+    botChartPreviewState.volumeProfile = payload?.volumeProfile || payload?.volume_profile || {};
     botChartPreviewState.previewMeta = payload?.preview_meta || {};
     const effectiveIndicators = getEffectivePreviewIndicators(botChartPreviewState.signals, settings);
     if (!Array.isArray(botChartPreviewState.settings.indicators)) {
@@ -5809,8 +6604,12 @@ async function refreshOpenBotChartPreview(force = false, options = {}) {
 
     if (allowCachedRender) {
         const cached = await readBotChartPreviewCache(cacheKey);
-        const isFresh = cached?.fetchedAt && (Date.now() - cached.fetchedAt) <= BOT_CHART_CACHE_TTL_MS;
-        if (cached?.payload && isFresh && botChartPreviewState.open && botChartPreviewState.ticker === ticker) {
+        // Render the last successful preview immediately, even if it is older
+        // than the freshness window. The network request below still runs,
+        // but a slow provider cannot leave the user staring at an empty chart.
+        // Freshness controls whether this is considered current, not whether
+        // it is useful to display while refreshing.
+        if (cached?.payload && botChartPreviewState.open && botChartPreviewState.ticker === ticker) {
             applyBotChartPreviewPayload(cached.payload);
             renderedCached = true;
         }
@@ -5820,7 +6619,11 @@ async function refreshOpenBotChartPreview(force = false, options = {}) {
         setBotChartPreviewLoading(force ? 'Refreshing bot chart preview...' : 'Loading bot chart preview...');
     }
     try {
-        const payload = await requestBotChartPreviewPayload(ticker, settings, forceNetwork);
+        // The draft settings are part of the server cache key, so a changed
+        // setting/timeframe still gets a fresh calculation. Let the backend's
+        // short timeframe TTL coalesce repeated preview refreshes instead of
+        // forcing another provider fetch every time the control is clicked.
+        const payload = await requestBotChartPreviewPayload(ticker, settings, false);
         const currentKey = getBotChartPreviewCacheKey(botChartPreviewState.ticker, botChartPreviewState.settings || {});
         if (!botChartPreviewState.open || botChartPreviewState.ticker !== ticker || currentKey !== cacheKey) return;
         applyBotChartPreviewPayload(payload);
@@ -5831,6 +6634,8 @@ async function refreshOpenBotChartPreview(force = false, options = {}) {
     } catch (err) {
         console.error('[bot-chart] Preview refresh failed:', err);
         scheduleBotChartPreviewLiveRefresh();
+        const hasExistingPreview = Array.isArray(botChartPreviewState.priceHistory)
+            && botChartPreviewState.priceHistory.length > 0;
         const loading = document.getElementById('botChartPreviewGridLoading');
         const boxLoading = document.getElementById('botChartPreviewBoxLoading');
         const signalsEl = document.getElementById('botChartPreviewSignalGrid');
@@ -5838,9 +6643,11 @@ async function refreshOpenBotChartPreview(force = false, options = {}) {
         const reasonEl = document.getElementById('botChartPreviewReason');
         if (loading) loading.classList.add('hidden');
         if (boxLoading) boxLoading.classList.add('hidden');
-        if (reasonEl) reasonEl.textContent = err.message || 'Could not load chart preview.';
-        if (premiumSignalsEl) premiumSignalsEl.innerHTML = '';
-        if (signalsEl) {
+        if (reasonEl) reasonEl.textContent = hasExistingPreview
+            ? `Showing the last preview while ${ticker} refreshes.`
+            : (err.message || 'Could not load chart preview.');
+        if (!hasExistingPreview && premiumSignalsEl) premiumSignalsEl.innerHTML = '';
+        if (!hasExistingPreview && signalsEl) {
             signalsEl.innerHTML = `
                 <div class="col-span-full rounded-2xl border border-rose-200 bg-rose-50 px-4 py-6 text-center text-sm text-rose-600">
                     ${err.message || 'Could not load chart preview.'}
@@ -5898,6 +6705,7 @@ window.openBotCardChartPreview = async function (ticker) {
         settings,
         signals: {},
         priceHistory: [],
+        volumeProfile: {},
         previewMeta: {},
     });
 };
@@ -5912,6 +6720,7 @@ window.openStrategyChartPreview = function (mode = window.activeTradingMode || '
         settings: collectStrategyPreviewSettings(mode),
         signals: {},
         priceHistory: [],
+        volumeProfile: {},
         previewMeta: {},
     });
 };
@@ -5938,18 +6747,10 @@ window.resetBotChartPreviewIndicatorsToDefaults = function () {
     settings.indicator_toggle_overrides = {};
     settings.indicator_parameters = typeof INDICATOR_DEFAULTS !== 'undefined' ? { ...INDICATOR_DEFAULTS } : {};
 
-    settings.indicators = [...BOT_DEFAULT_STRATEGY_INDICATORS];
-    settings.enabled_indicators = [...BOT_DEFAULT_STRATEGY_INDICATORS];
-    settings.min_buy_signals = normalizeSignalThreshold(
-        getDefaultSignalThreshold('buy'),
-        settings.indicators.length,
-        'buy'
-    );
-    settings.min_sell_signals = normalizeSignalThreshold(
-        getDefaultSignalThreshold('sell'),
-        settings.indicators.length,
-        'sell'
-    );
+    settings.indicators = [];
+    settings.enabled_indicators = [];
+    settings.min_buy_signals = 0;
+    settings.min_sell_signals = 0;
     botChartPreviewState.settings = settings;
 
     if (typeof setStrategyDraftIndicatorOverrides === 'function') {
@@ -6121,7 +6922,7 @@ window.confirmAndDeployBot = async function () {
     const activeBots = window.lastBotsData?.tradelist || [];
     if (activeBots.includes(currentStrategySymbol)) {
         const existingSettings = (window.lastBotsData?.ticker_settings || {})[currentStrategySymbol] || {};
-        const modeLabel = existingSettings.options_trading ? 'Options' : 'Stock';
+        const modeLabel = existingSettings.options_trading ? 'Options' : (isCrypto(currentStrategySymbol) ? 'Crypto' : 'Stock');
         alert(
             `⚠️ Active Bot Already Deployed for ${currentStrategySymbol}\n\n` +
             `An active ${modeLabel} bot is already running for ${currentStrategySymbol}.\n\n` +
@@ -6150,6 +6951,7 @@ window.confirmAndDeployBot = async function () {
     const indicators = getSelectedStrategyIndicators(mode);
     const normalizedBuyThreshold = normalizeSignalThreshold(threshold, indicators.length, 'buy');
     const normalizedSellThreshold = normalizeSignalThreshold(sellThreshold, indicators.length, 'sell');
+    const draftOverrides = getStrategyDraftIndicatorOverrides();
 
     const addWatchlistEl = document.getElementById('strategyAddWatchlist');
     const addToWatchlist = addWatchlistEl ? addWatchlistEl.checked : false;
@@ -6197,19 +6999,20 @@ window.confirmAndDeployBot = async function () {
             max_trades: Math.min(100, Math.max(0, parseInt(document.getElementById('strategyMaxTrades')?.value || 0, 10) || 0)),
             sell_mode: sellMode,
             indicators: mode === 'ai_autopilot' ? [] : indicators,
-            indicator_overrides: mode === 'ai_autopilot' ? {} : getStrategyDraftIndicatorOverrides(),
+            indicator_overrides: mode === 'ai_autopilot' ? {} : draftOverrides,
             timeframe: timeframe,
             paused: window._strategyPaused || false,
             ai_autopilot: mode === 'ai_autopilot',
             ai_model: normalizeBotAIModel(document.getElementById('strategyAiModel')?.value || 'llama-3.3-70b-versatile'),
             risk_per_trade: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyRiskPerTrade' : 'strategyOptionsRiskPerTrade')?.value || 2.0) / 100.0 : null,
-            max_daily_drawdown: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxDailyDrawdown' : 'strategyOptionsMaxDailyDrawdown')?.value || (mode === 'regular' ? 5.0 : 50.0)) / 100.0 : null,
+            max_daily_drawdown: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxDailyDrawdown' : 'strategyOptionsMaxDailyDrawdown')?.value || (mode === 'regular' ? 50.0 : 60.0)) / 100.0 : null,
             max_position_pct: (document.getElementById(mode === 'regular' ? 'strategyEnableRisk_regular' : 'strategyEnableRisk_options')?.checked) ? parseFloat(document.getElementById(mode === 'regular' ? 'strategyMaxPositionPct' : 'strategyOptionsMaxPositionPct')?.value || 100.0) / 100.0 : null,
             atr_stop_multiplier: getStrategyExitNumber(mode, 'strategyAtrStopMult', 'strategyAtrStopMult_options', 2.0),
             atr_trail_multiplier: getStrategyExitNumber(mode, 'strategyAtrTrailMult', 'strategyAtrTrailMult_options', 3.0),
             take_profit_multiplier: getStrategyExitNumber(mode, 'strategyAtrTpMult', 'strategyAtrTpMult_options', 4.0),
             enable_cooldown: document.getElementById(`strategyEnableCooldown_${mode}`)?.checked || false,
             cooldown_minutes: getCooldownMinutesValue(mode),
+            ...getCoreTradeGuardSettings(mode),
             options_trading: mode === 'options',
             options_type: document.getElementById('strategyOptionsType')?.value || 'calls_only',
             options_trade_amount: parseFloat(document.getElementById('strategyOptionsTradeAmount')?.value || 100),
@@ -6405,7 +7208,8 @@ const INDICATOR_TOOLTIPS = {
     "Mystic Pulse": "Mystic Pulse is a custom proprietary oscillator. Purpose: Combines multi-timeframe momentum, volatility, and volume flow to detect early trend reversals.",
     "Candle patterns": "Candlestick Patterns identify specific OHLC price formations. Purpose: Provides visual clues about market psychology and potential reversals.",
     "ADX Trend": "Average Directional Index (ADX) quantifies trend strength. Purpose: Determines if the market is trending strongly (ADX > 25) or ranging.",
-    "VWAP": "Anchored Volume Weighted Average Price (AVWAP) tracks the volume-weighted average from the most recent major volume spike. Purpose: Shows institutional-style anchored cost basis and acceptance/rejection.",
+    "VWAP": "Session VWAP is the cumulative typical-price and volume average for the exchange-local trading day, matching the standard Webull-style VWAP calculation.",
+    "Auto-AVWAP": "Auto-AVWAP anchors the volume-weighted average at the latest volume spike. It is intentionally separate from Session VWAP and may not match Webull VWAP.",
     "Volume Profile": "Prior-session volume-at-price profile using POC, VAH, and VAL. Purpose: Finds institutional acceptance/rejection zones where the most volume traded.",
     "Swing Points": "Rolling swing support/resistance clusters from recent local highs/lows. Purpose: Finds structural bounce, rejection, reclaim, and breakdown zones.",
     "Strategy Confidence": "Strategy Confidence combines multiple indicator signals into a single probability score. Purpose: Measures the overall conviction of a bullish or bearish trend.",
@@ -6421,12 +7225,12 @@ const INDICATOR_TOOLTIPS = {
 const INDICATOR_CONFIG_MAP = {
     'RSI': ['RSI_PERIOD', 'RSI_OVERBOUGHT', 'RSI_OVERSOLD'],
     'MACD': ['MACD_FAST', 'MACD_SLOW', 'MACD_SIGNAL'],
-    'EMA Cross': ['EMA_FAST', 'EMA_SLOW'],
+    'EMA Cross': ['EMA_USE_SECOND_LINE', 'EMA_FAST', 'EMA_SLOW'],
     'Supertrend': ['SUPERTREND_PERIOD', 'SUPERTREND_MULTIPLIER'],
     'Bollinger': ['BOLL_PERIOD', 'BOLL_STD_DEV'],
     'Mystic Pulse': ['MYSTIC_PULSE_THRESHOLD'],
     'ADX Trend': ['ADX_PERIOD', 'ADX_TRENDING_THRESHOLD'],
-    'SMA': ['SMA_PERIOD'],
+    'SMA': ['SMA_USE_SECOND_LINE', 'SMA_PERIOD', 'SMA_SECOND_PERIOD'],
     'Volume Profile': ['VOLUME_PROFILE_ROWS', 'VOLUME_PROFILE_VALUE_AREA_PCT', 'VOLUME_PROFILE_TOLERANCE_PCT', 'VOLUME_PROFILE_CONFIRMATION_CANDLES'],
     'Swing Points': ['SWING_POINTS_LOOKBACK_DAYS', 'SWING_POINTS_ENTRY_MODE', 'SWING_POINTS_LEVEL_COUNT'],
     'Prior Day High/Low': ['DAILY_HIGH_LOW_BUFFER_PCT'],
@@ -6468,6 +7272,7 @@ const INDICATOR_DEFAULTS = {
     'RSI_PERIOD': 14,
     'RSI_OVERBOUGHT': 70,
     'RSI_OVERSOLD': 30,
+    'EMA_USE_SECOND_LINE': 1,
     'EMA_FAST': 9,
     'EMA_SLOW': 21,
     'MACD_FAST': 12,
@@ -6480,7 +7285,9 @@ const INDICATOR_DEFAULTS = {
     'MYSTIC_PULSE_THRESHOLD': 5,
     'ADX_PERIOD': 14,
     'ADX_TRENDING_THRESHOLD': 25,
+    'SMA_USE_SECOND_LINE': 1,
     'SMA_PERIOD': 200,
+    'SMA_SECOND_PERIOD': 50,
     'VOLUME_PROFILE_ROWS': 48,
     'VOLUME_PROFILE_VALUE_AREA_PCT': 70.0,
     'VOLUME_PROFILE_TOLERANCE_PCT': 0.15,
@@ -6549,6 +7356,12 @@ function openIndicatorSettings(indicatorName) {
     }
     const paramLabels = {
         ...(window.STANDARD_INDICATOR_PARAM_LABELS || {}),
+        EMA_USE_SECOND_LINE: 'Use Two EMA Lines',
+        EMA_FAST: 'Primary EMA Period',
+        EMA_SLOW: 'Secondary EMA Period',
+        SMA_USE_SECOND_LINE: 'Use Two SMA Lines',
+        SMA_PERIOD: 'Primary SMA Period',
+        SMA_SECOND_PERIOD: 'Secondary SMA Period',
         DAILY_HIGH_LOW_BUFFER_PCT: 'Breakout Buffer (%)',
         PIVOT_LEVEL_COUNT: 'S/R Levels To Draw (1-5)',
         PIVOT_TOLERANCE_PCT: 'Reclaim/Rejection Tolerance (%)',
@@ -6588,6 +7401,8 @@ function openIndicatorSettings(indicatorName) {
     configKeys.forEach(key => {
         const hasOverride = overrides[key] !== undefined && overrides[key] !== null && overrides[key] !== '';
         const val = currentParams[key] !== undefined ? currentParams[key] : (INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : '');
+        const isLineToggle = key === 'EMA_USE_SECOND_LINE' || key === 'SMA_USE_SECOND_LINE';
+        const toggleChecked = val === true || val === 1 || String(val).toLowerCase() === 'true' || String(val) === '1';
         const label = paramLabels[key] || key.replace(/_/g, ' ').toLowerCase();
         const isPercent = key.endsWith('_PCT') || key.endsWith('_PERCENTAGE');
         const inputAttrs = botbulls5InputAttrs[key] || (key === 'PIVOT_LEVEL_COUNT'
@@ -6602,19 +7417,25 @@ function openIndicatorSettings(indicatorName) {
                             ? 'min="0" max="1" step="1"'
                             : key === 'BOTBULLS1_PRICE_CONFIRM_EMA'
                                 ? 'min="5" max="50" step="1"'
-                            : key === 'BOTBULLS1_PRICE_CONFIRM_LOOKBACK'
-                                ? 'min="0" max="10" step="1"'
-                            : key === 'BOTBULLS1_MFI_BUY_RECLAIM' || key === 'BOTBULLS1_MFI_SELL_REJECT'
-                                ? 'min="0" max="100" step="1"'
-            : key === 'VOLUME_PROFILE_ROWS'
-                ? 'min="12" max="120" step="1"'
-                : key === 'VOLUME_PROFILE_CONFIRMATION_CANDLES'
-                    ? 'min="1" max="5" step="1"'
-                    : (window.STANDARD_INDICATOR_INPUT_ATTRS?.[key] || 'step="any"'));
+                                : key === 'BOTBULLS1_PRICE_CONFIRM_LOOKBACK'
+                                    ? 'min="0" max="10" step="1"'
+                                    : key === 'BOTBULLS1_MFI_BUY_RECLAIM' || key === 'BOTBULLS1_MFI_SELL_REJECT'
+                                        ? 'min="0" max="100" step="1"'
+                                        : key === 'VOLUME_PROFILE_ROWS'
+                                            ? 'min="12" max="120" step="1"'
+                                            : key === 'VOLUME_PROFILE_CONFIRMATION_CANDLES'
+                                                ? 'min="1" max="5" step="1"'
+                                                : (window.STANDARD_INDICATOR_INPUT_ATTRS?.[key] || 'step="any"'));
 
         const div = document.createElement('div');
         div.className = 'flex flex-col gap-1.5';
-        const controlHtml = key === 'SWING_POINTS_ENTRY_MODE'
+        const controlHtml = isLineToggle
+            ? `<label class="flex items-center justify-between gap-3 w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 cursor-pointer">
+                    <span class="text-xs font-bold text-indigo-900">Checked: two-line crossover · Unchecked: price vs primary line</span>
+                    <input type="checkbox" data-key="${key}" data-default="${INDICATOR_DEFAULTS[key] ? 1 : 0}" ${toggleChecked ? 'checked' : ''}
+                        class="w-5 h-5 accent-indigo-600 rounded">
+                </label>`
+            : key === 'SWING_POINTS_ENTRY_MODE'
             ? `<select data-key="${key}" data-default="${INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : ''}"
                     class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-bold text-indigo-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all">
                     <option value="bounce_retest" ${val === 'bounce_retest' ? 'selected' : ''}>Bounce / Retest</option>
@@ -6635,6 +7456,8 @@ function openIndicatorSettings(indicatorName) {
         container.appendChild(div);
     });
 
+    window.wireMovingAverageLineToggles?.(container);
+
     document.getElementById('indicatorSettingsModal').classList.remove('hidden');
 }
 
@@ -6652,7 +7475,12 @@ function resetIndicatorSettingsToDefaults() {
     if (!currentEditingIndicator) return;
     const inputs = document.querySelectorAll('#indicatorModalContent input, #indicatorModalContent select');
     inputs.forEach(input => {
-        input.value = input.tagName === 'SELECT' ? (input.dataset.default || '') : input.placeholder; // Revert to system default
+        if (input.type === 'checkbox') {
+            input.checked = String(input.dataset.default) === '1';
+            input.dispatchEvent(new Event('change'));
+        } else {
+            input.value = input.tagName === 'SELECT' ? (input.dataset.default || '') : input.placeholder; // Revert to system default
+        }
         const container = input.closest('.flex-col');
         if (container) {
             const header = container.querySelector('.flex.justify-between.items-center');
@@ -6668,8 +7496,19 @@ function resetIndicatorSettingsToDefaults() {
 
 async function saveIndicatorSettings() {
     const inputs = document.querySelectorAll('#indicatorModalContent input, #indicatorModalContent select');
+    const invalidInput = Array.from(inputs).find(input => input.tagName === 'INPUT' && !input.checkValidity());
+    if (invalidInput) {
+        invalidInput.reportValidity();
+        return;
+    }
     const updates = {};
     inputs.forEach(input => {
+        if (input.type === 'checkbox') {
+            const value = input.checked ? 1 : 0;
+            const defaultValue = String(input.dataset.default) === '1' ? 1 : 0;
+            updates[input.dataset.key] = value === defaultValue ? "" : value;
+            return;
+        }
         const defaultValue = input.tagName === 'SELECT' ? input.dataset.default : input.placeholder;
         if (input.value === defaultValue || input.value === "") {
             updates[input.dataset.key] = "";
@@ -6751,6 +7590,12 @@ async function saveIndicatorSettings() {
 
             closeIndicatorSettings();
             const chartPreviewSettingKeys = [
+                'EMA_USE_SECOND_LINE',
+                'EMA_FAST',
+                'EMA_SLOW',
+                'SMA_USE_SECOND_LINE',
+                'SMA_PERIOD',
+                'SMA_SECOND_PERIOD',
                 'DAILY_HIGH_LOW_BUFFER_PCT',
                 'PIVOT_LEVEL_COUNT',
                 'PIVOT_TOLERANCE_PCT',
@@ -7171,7 +8016,7 @@ window.toggleModeActive = function (mode) {
     const btnReg = document.getElementById('btnRegularMode');
     const btnOpt = document.getElementById('btnOptionsMode');
     const btnAi = document.getElementById('btnAiAutopilotMode');
-    
+
     // Prevent options if disabled
     if (mode === 'options' && btnOpt && btnOpt.disabled) {
         return;
@@ -7213,7 +8058,7 @@ window.toggleModeActive = function (mode) {
     }
 
     window.toggleDeployButton();
-    
+
     if (window.fetchLiveAtrForPreview && window.currentStrategySymbol && window.activeTradingMode) {
         window.fetchLiveAtrForPreview(window.currentStrategySymbol);
     }
@@ -7282,7 +8127,7 @@ const STRATEGY_HELPER_TEXTS = {
     }
 };
 
-window.updateStrategyHelperText = function(targetId, category, mode) {
+window.updateStrategyHelperText = function (targetId, category, mode) {
     const el = document.getElementById(targetId);
     if (!el) return;
     const text = (STRATEGY_HELPER_TEXTS[category] && STRATEGY_HELPER_TEXTS[category][mode]) || "";
@@ -7290,74 +8135,74 @@ window.updateStrategyHelperText = function(targetId, category, mode) {
     el.classList.toggle('hidden', !text);
 };
 
-window.updateRegularExitFields = function() {
+window.updateRegularExitFields = function () {
     const mode = document.getElementById('strategySellMode_regular')?.value || 'indicator';
     const showIndicator = ['indicator', 'hybrid', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'].includes(mode);
-    const showCustom    = mode === 'custom_sltp';
-    const showATR       = ['sltp', 'hybrid'].includes(mode);
-    const showPct       = ['percentage', 'hybrid_pct'].includes(mode);
-    
-    if(document.getElementById('exitFieldsIndicator')) document.getElementById('exitFieldsIndicator').classList.toggle('hidden', !showIndicator);
-    if(document.getElementById('exitFieldsCustom_regular')) document.getElementById('exitFieldsCustom_regular').classList.toggle('hidden', !showCustom);
-    if(document.getElementById('exitFieldsATR')) document.getElementById('exitFieldsATR').classList.toggle('hidden', !showATR);
-    if(document.getElementById('exitFieldsPct')) document.getElementById('exitFieldsPct').classList.toggle('hidden', !showPct);
+    const showCustom = mode === 'custom_sltp';
+    const showATR = ['sltp', 'hybrid'].includes(mode);
+    const showPct = ['percentage', 'hybrid_pct'].includes(mode);
+
+    if (document.getElementById('exitFieldsIndicator')) document.getElementById('exitFieldsIndicator').classList.toggle('hidden', !showIndicator);
+    if (document.getElementById('exitFieldsCustom_regular')) document.getElementById('exitFieldsCustom_regular').classList.toggle('hidden', !showCustom);
+    if (document.getElementById('exitFieldsATR')) document.getElementById('exitFieldsATR').classList.toggle('hidden', !showATR);
+    if (document.getElementById('exitFieldsPct')) document.getElementById('exitFieldsPct').classList.toggle('hidden', !showPct);
     updateSwingSettingsVisibility('regular');
     if (window.updateStrategyHelperText) window.updateStrategyHelperText('strategySellHelper_regular', 'exit', mode);
     window.updateStrategySignalLabels('regular');
     if (window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'exit');
 };
 
-window.updateRegularEntryFields = function() {
+window.updateRegularEntryFields = function () {
     const mode = document.getElementById('strategyBuyMode_regular')?.value || 'indicator';
     const showIndicator = ['indicator', 'hybrid_atr', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'].includes(mode);
-    const showCustom    = mode === 'custom_price';
-    const showATR       = ['atr', 'hybrid_atr'].includes(mode);
-    const showPct       = ['percentage', 'hybrid_pct'].includes(mode);
-    const showPivot     = ['pivot_points', 'hybrid_pivot'].includes(mode);
-    const showHL        = ['high_low', 'hybrid_high_low'].includes(mode);
-    const showSwing     = ['swing_points', 'hybrid_swing'].includes(mode);
-    if(document.getElementById('strategyBuyFields_regular')) document.getElementById('strategyBuyFields_regular').classList.toggle('hidden', !showIndicator);
-    if(document.getElementById('strategyCustomBuyFields_regular')) document.getElementById('strategyCustomBuyFields_regular').classList.toggle('hidden', !showCustom);
-    if(document.getElementById('strategyEntryAtrFields_regular')) document.getElementById('strategyEntryAtrFields_regular').classList.toggle('hidden', !showATR);
-    if(document.getElementById('strategyEntryPctFields_regular')) document.getElementById('strategyEntryPctFields_regular').classList.toggle('hidden', !showPct);
-    if(document.getElementById('strategyEntryPivotFields_regular')) document.getElementById('strategyEntryPivotFields_regular').classList.toggle('hidden', !showPivot);
-    if(document.getElementById('strategyEntryHighLowFields_regular')) document.getElementById('strategyEntryHighLowFields_regular').classList.toggle('hidden', !showHL);
-    if(document.getElementById('strategySwingEntrySettings_regular')) document.getElementById('strategySwingEntrySettings_regular').classList.toggle('hidden', !showSwing);
+    const showCustom = mode === 'custom_price';
+    const showATR = ['atr', 'hybrid_atr'].includes(mode);
+    const showPct = ['percentage', 'hybrid_pct'].includes(mode);
+    const showPivot = ['pivot_points', 'hybrid_pivot'].includes(mode);
+    const showHL = ['high_low', 'hybrid_high_low'].includes(mode);
+    const showSwing = ['swing_points', 'hybrid_swing'].includes(mode);
+    if (document.getElementById('strategyBuyFields_regular')) document.getElementById('strategyBuyFields_regular').classList.toggle('hidden', !showIndicator);
+    if (document.getElementById('strategyCustomBuyFields_regular')) document.getElementById('strategyCustomBuyFields_regular').classList.toggle('hidden', !showCustom);
+    if (document.getElementById('strategyEntryAtrFields_regular')) document.getElementById('strategyEntryAtrFields_regular').classList.toggle('hidden', !showATR);
+    if (document.getElementById('strategyEntryPctFields_regular')) document.getElementById('strategyEntryPctFields_regular').classList.toggle('hidden', !showPct);
+    if (document.getElementById('strategyEntryPivotFields_regular')) document.getElementById('strategyEntryPivotFields_regular').classList.toggle('hidden', !showPivot);
+    if (document.getElementById('strategyEntryHighLowFields_regular')) document.getElementById('strategyEntryHighLowFields_regular').classList.toggle('hidden', !showHL);
+    if (document.getElementById('strategySwingEntrySettings_regular')) document.getElementById('strategySwingEntrySettings_regular').classList.toggle('hidden', !showSwing);
     updateSwingSettingsVisibility('regular');
     if (window.updateStrategyHelperText) window.updateStrategyHelperText('strategyBuyHelper_regular', 'entry', mode);
     window.updateStrategySignalLabels('regular');
     if (window.updateLivePreview_bots) window.updateLivePreview_bots('regular', 'entry');
 };
 
-window.updateOptionsEntryFields = function() {
+window.updateOptionsEntryFields = function () {
     const mode = document.getElementById('strategyBuyMode_options')?.value || 'indicator';
     const direction = document.getElementById('strategyOptionsType')?.value || 'calls_only';
     const showIndicator = ['indicator', 'hybrid_atr', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'].includes(mode);
-    const showCustom    = mode === 'custom_price';
-    const showATR       = ['atr', 'hybrid_atr'].includes(mode);
-    const showPct       = ['percentage', 'hybrid_pct'].includes(mode);
-    const showPivot     = ['pivot_points', 'hybrid_pivot'].includes(mode);
-    const showHL        = ['high_low', 'hybrid_high_low'].includes(mode);
-    const showSwing     = ['swing_points', 'hybrid_swing'].includes(mode);
-    if(document.getElementById('strategyBuyFields_options')) document.getElementById('strategyBuyFields_options').classList.toggle('hidden', !showIndicator);
-    if(document.getElementById('strategyCallEntryThresholdPanel_options')) document.getElementById('strategyCallEntryThresholdPanel_options').classList.toggle('hidden', direction === 'puts_only');
-    if(document.getElementById('strategyPutEntryThresholdPanel_options')) document.getElementById('strategyPutEntryThresholdPanel_options').classList.toggle('hidden', direction !== 'puts_only');
-    if(document.getElementById('strategyCustomBuyFields_options')) document.getElementById('strategyCustomBuyFields_options').classList.toggle('hidden', !showCustom);
-    if(document.getElementById('strategyEntryAtrFields_options')) document.getElementById('strategyEntryAtrFields_options').classList.toggle('hidden', !showATR);
-    if(document.getElementById('strategyEntryPctFields_options')) document.getElementById('strategyEntryPctFields_options').classList.toggle('hidden', !showPct);
-    if(document.getElementById('strategyEntryPivotFields_options')) document.getElementById('strategyEntryPivotFields_options').classList.toggle('hidden', !showPivot);
-    if(document.getElementById('strategyEntryHighLowFields_options')) document.getElementById('strategyEntryHighLowFields_options').classList.toggle('hidden', !showHL);
-    if(document.getElementById('strategySwingEntrySettings_options')) document.getElementById('strategySwingEntrySettings_options').classList.toggle('hidden', !showSwing);
+    const showCustom = mode === 'custom_price';
+    const showATR = ['atr', 'hybrid_atr'].includes(mode);
+    const showPct = ['percentage', 'hybrid_pct'].includes(mode);
+    const showPivot = ['pivot_points', 'hybrid_pivot'].includes(mode);
+    const showHL = ['high_low', 'hybrid_high_low'].includes(mode);
+    const showSwing = ['swing_points', 'hybrid_swing'].includes(mode);
+    if (document.getElementById('strategyBuyFields_options')) document.getElementById('strategyBuyFields_options').classList.toggle('hidden', !showIndicator);
+    if (document.getElementById('strategyCallEntryThresholdPanel_options')) document.getElementById('strategyCallEntryThresholdPanel_options').classList.toggle('hidden', direction === 'puts_only');
+    if (document.getElementById('strategyPutEntryThresholdPanel_options')) document.getElementById('strategyPutEntryThresholdPanel_options').classList.toggle('hidden', direction !== 'puts_only');
+    if (document.getElementById('strategyCustomBuyFields_options')) document.getElementById('strategyCustomBuyFields_options').classList.toggle('hidden', !showCustom);
+    if (document.getElementById('strategyEntryAtrFields_options')) document.getElementById('strategyEntryAtrFields_options').classList.toggle('hidden', !showATR);
+    if (document.getElementById('strategyEntryPctFields_options')) document.getElementById('strategyEntryPctFields_options').classList.toggle('hidden', !showPct);
+    if (document.getElementById('strategyEntryPivotFields_options')) document.getElementById('strategyEntryPivotFields_options').classList.toggle('hidden', !showPivot);
+    if (document.getElementById('strategyEntryHighLowFields_options')) document.getElementById('strategyEntryHighLowFields_options').classList.toggle('hidden', !showHL);
+    if (document.getElementById('strategySwingEntrySettings_options')) document.getElementById('strategySwingEntrySettings_options').classList.toggle('hidden', !showSwing);
     const directionHint = document.getElementById('strategyOptionsDirectionHint');
     if (directionHint) {
         const isLegacyBoth = document.getElementById('strategyOptionsType')?.dataset.legacyBoth === 'true';
         directionHint.textContent = isLegacyBoth
             ? 'Legacy Both direction is disabled. Choose CALL or PUT before saving this bot.'
             : direction === 'calls_only'
-            ? '⚡ Calls Only: Bot will ONLY open bullish CALL option contracts when bullish entry signals confirm. All bearish signals are ignored.'
-            : direction === 'puts_only'
-                ? '⚡ Puts Only: Bot will ONLY open bearish PUT option contracts when bearish entry signals confirm. All bullish signals are ignored.'
-                : '⚡ Legacy Both direction is disabled. Choose CALL or PUT.';
+                ? '⚡ Calls Only: Bot will ONLY open bullish CALL option contracts when bullish entry signals confirm. All bearish signals are ignored.'
+                : direction === 'puts_only'
+                    ? '⚡ Puts Only: Bot will ONLY open bearish PUT option contracts when bearish entry signals confirm. All bullish signals are ignored.'
+                    : '⚡ Legacy Both direction is disabled. Choose CALL or PUT.';
     }
     updateSwingSettingsVisibility('options');
     if (window.updateStrategyHelperText) window.updateStrategyHelperText('strategyBuyHelper_options', 'entry_options', mode);
@@ -7378,7 +8223,7 @@ window.updateOptionsEntryFields = function() {
     if (window.updateLivePreview_bots) window.updateLivePreview_bots('options', 'entry');
 };
 
-window.clearLegacyOptionsDirectionWarning = function() {
+window.clearLegacyOptionsDirectionWarning = function () {
     const directionEl = document.getElementById('strategyOptionsType');
     if (directionEl) delete directionEl.dataset.legacyBoth;
 };
@@ -7398,22 +8243,22 @@ function requireValidOptionsDirectionForSave(mode) {
     return true;
 }
 
-window.updateOptionsExitFields = function() {
+window.updateOptionsExitFields = function () {
     const mode = document.getElementById('strategySellMode_options')?.value || 'hybrid';
     const optionsType = document.getElementById('strategyOptionsType')?.value || 'calls_only';
     const isPut = optionsType === 'puts_only';
-    
+
     const showIndicator = ['indicator', 'hybrid', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'].includes(mode);
-    const showCustom    = mode === 'custom_sltp';
+    const showCustom = mode === 'custom_sltp';
     const showCustomUnderlying = mode === 'custom_underlying_sltp';
-    const showATR       = ['sltp', 'hybrid'].includes(mode);
-    const showPct       = ['percentage', 'hybrid_pct'].includes(mode);
-    
-    if(document.getElementById('exitFieldsIndicator_options')) document.getElementById('exitFieldsIndicator_options').classList.toggle('hidden', !showIndicator);
-    if(document.getElementById('exitFieldsCustom_options')) document.getElementById('exitFieldsCustom_options').classList.toggle('hidden', !showCustom);
-    if(document.getElementById('exitFieldsCustomUnderlying_options')) document.getElementById('exitFieldsCustomUnderlying_options').classList.toggle('hidden', !showCustomUnderlying);
-    if(document.getElementById('exitFieldsATR_options')) document.getElementById('exitFieldsATR_options').classList.toggle('hidden', !showATR);
-    if(document.getElementById('exitFieldsPct_options')) document.getElementById('exitFieldsPct_options').classList.toggle('hidden', !showPct);
+    const showATR = ['sltp', 'hybrid'].includes(mode);
+    const showPct = ['percentage', 'hybrid_pct'].includes(mode);
+
+    if (document.getElementById('exitFieldsIndicator_options')) document.getElementById('exitFieldsIndicator_options').classList.toggle('hidden', !showIndicator);
+    if (document.getElementById('exitFieldsCustom_options')) document.getElementById('exitFieldsCustom_options').classList.toggle('hidden', !showCustom);
+    if (document.getElementById('exitFieldsCustomUnderlying_options')) document.getElementById('exitFieldsCustomUnderlying_options').classList.toggle('hidden', !showCustomUnderlying);
+    if (document.getElementById('exitFieldsATR_options')) document.getElementById('exitFieldsATR_options').classList.toggle('hidden', !showATR);
+    if (document.getElementById('exitFieldsPct_options')) document.getElementById('exitFieldsPct_options').classList.toggle('hidden', !showPct);
     updateSwingSettingsVisibility('options');
     if (window.updateStrategyHelperText) window.updateStrategyHelperText('strategySellHelper_options', 'exit_options', mode);
 
@@ -7510,7 +8355,7 @@ window.updateOptionsExitFields = function() {
 window.updateStrategySmartReentryFields = function (mode) {
     if (!mode) mode = window.activeTradingMode || 'regular';
     const capMode = mode === 'regular' ? 'Regular' : 'Options';
-    
+
     const isEnabled = document.getElementById(`strategy${capMode}SmartReentry`)?.checked;
     const fieldsContainer = document.getElementById(`strategySmartReentryFields_${mode}`);
     if (!fieldsContainer) return;
@@ -7818,8 +8663,7 @@ function formatSwingLevel(value) {
 }
 
 function isPreviewCryptoSymbol(symbol) {
-    const sym = String(symbol || '').toUpperCase();
-    return sym.includes('USD') || sym.includes('USDT') || sym.includes('USDC') || ['BTC', 'ETH', 'XRP', 'DOGE', 'LTC', 'ADA', 'SOL'].includes(sym);
+    return isCrypto(symbol);
 }
 
 function getStrategyMarketSession(mode = 'regular') {
@@ -7920,13 +8764,13 @@ function buildSwingExitPreviewHtml(mode, isOptions, symbol, simPrice) {
     return parts.join(' | ');
 }
 
-window.fetchLiveAtrForPreview = async function(ticker, overrideTf) {
+window.fetchLiveAtrForPreview = async function (ticker, overrideTf) {
     if (!ticker || !botChartPreviewState.open) return;
     try {
         const headers = await getAuthHeaders();
         const activeMode = window.activeTradingMode || 'regular';
         const tf = overrideTf || document.getElementById(`strategyTimeframe_${activeMode}`)?.value || '5Min';
-        
+
         if (window.currentAtrPreviewData && window.currentAtrPreviewData.symbol === ticker && window.currentAtrPreviewData.timeframe === tf && window.currentAtrPreviewData.isLive) {
             if (window.updateLivePreview_bots) {
                 window.updateLivePreview_bots('regular', 'both');
@@ -7944,7 +8788,7 @@ window.fetchLiveAtrForPreview = async function(ticker, overrideTf) {
         if (exitBoxRegular && !exitBoxRegular.classList.contains('hidden')) exitBoxRegular.innerHTML = loadingHtml;
         if (entryBoxOptions && !entryBoxOptions.classList.contains('hidden')) entryBoxOptions.innerHTML = loadingHtml;
         if (exitBoxOptions && !exitBoxOptions.classList.contains('hidden')) exitBoxOptions.innerHTML = loadingHtml;
-        
+
         const res = await fetchWithTimeout(`${API_BASE}/api/chart/${ticker}?timeframe=${tf}&source=bots`, { headers }, 10000);
         if (res.ok) {
             const data = await res.json();
@@ -7978,10 +8822,183 @@ window.fetchLiveAtrForPreview = async function(ticker, overrideTf) {
     }
 };
 
+function getAdaptiveGridPreviewAnchor(type, fallbackPrice, isLive) {
+    if (!isLive || typeof getSavedBotSettings !== 'function') return fallbackPrice;
+    const settings = getSavedBotSettings(window.currentStrategySymbol || window.currentAtrPreviewData?.symbol || '');
+    const key = type === 'entry' ? 'entry_grid_anchor_price' : 'exit_grid_anchor_price';
+    const savedAnchor = parseFloat(settings?.[key]);
+    return Number.isFinite(savedAnchor) && savedAnchor > 0 ? savedAnchor : fallbackPrice;
+}
+
+function getAdaptiveGridPreviewCapital() {
+    const configured = parseFloat(document.getElementById('strategyCapital')?.value || 0);
+    const settings = typeof getSavedBotSettings === 'function'
+        ? getSavedBotSettings(window.currentStrategySymbol || window.currentAtrPreviewData?.symbol || '')
+        : {};
+    const compound = parseFloat(settings?.compound_amount);
+    if (getAllocationMode('regular') === 'compound' && Number.isFinite(compound) && compound > 0) {
+        return compound;
+    }
+    return Number.isFinite(configured) && configured > 0 ? configured : 0;
+}
+
+function getSmartGridPreviewPlan(type, kind, levels, anchor, currentAtr, configuredDistances, configuredAllocations) {
+    const smart = getSmartDynamicGridSettings();
+    if (!smart.continuous_grid_adaptive_mode || !levels.length) {
+        return { distances: configuredDistances, allocations: configuredAllocations, label: '', trailing: false, peakPrice: anchor };
+    }
+    const saved = typeof getSavedBotSettings === 'function'
+        ? getSavedBotSettings(window.currentStrategySymbol || window.currentAtrPreviewData?.symbol || '')
+        : {};
+    const history = (window.currentAtrPreviewData?.price_history || []).slice(-80).map(row => ({
+        close: Number(row.close ?? row.Close),
+        high: Number(row.high ?? row.High),
+        low: Number(row.low ?? row.Low),
+    })).filter(row => row.close > 0 && row.high > 0 && row.low > 0);
+    let trend = Number(saved?.[`${type}_grid_trend_score`]);
+    let volatility = Number(saved?.[`${type}_grid_volatility_ratio`]);
+    if (!Number.isFinite(trend) || !Number.isFinite(volatility)) {
+        const closes = history.map(row => row.close);
+        const ema = (period) => {
+            if (!closes.length) return 0;
+            const alpha = 2 / (period + 1);
+            return closes.slice(-60).reduce((value, close, index) => index ? value + alpha * (close - value) : close, 0);
+        };
+        const ranges = history.map((row, index) => {
+            const previous = index ? history[index - 1].close : row.close;
+            return Math.max(row.high - row.low, Math.abs(row.high - previous), Math.abs(row.low - previous));
+        }).filter(value => value > 0);
+        const sorted = ranges.slice(-40).sort((a, b) => a - b);
+        const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
+        const atr = Math.max(0, Number(currentAtr) || (ranges.slice(-14).reduce((sum, value) => sum + value, 0) / Math.max(1, Math.min(14, ranges.length))));
+        trend = closes.length >= 22 ? Math.max(-1, Math.min(1, (ema(8) - ema(21)) / Math.max(atr, median, closes.at(-1) * 0.001, 0.000001))) : 0;
+        volatility = atr > 0 && median > 0 ? Math.max(0.65, Math.min(1.75, atr / median)) : 1;
+    }
+    trend = Math.max(-1, Math.min(1, Number(trend) || 0));
+    volatility = Math.max(0.65, Math.min(1.75, Number(volatility) || 1));
+    const strength = Math.max(0, Math.min(1, Number(smart.continuous_grid_adaptation_strength) / 100));
+    const trendFactor = type === 'entry'
+        ? 1 - 0.25 * strength * Math.max(trend, 0) + 0.55 * strength * Math.max(-trend, 0)
+        : 1 + 0.55 * strength * Math.max(trend, 0) - 0.35 * strength * Math.max(-trend, 0);
+    const distanceFactor = Math.max(0.5, Math.min(2, trendFactor * (kind === 'pct' ? Math.pow(volatility, 0.75 * strength) : 1)));
+    const minEdge = Math.max(0, Math.min(10, Number(smart.continuous_grid_min_edge_pct) || 0));
+    const distances = configuredDistances.map((base, index) => {
+        let effective = base * distanceFactor;
+        if (kind === 'atr' && anchor > 0 && currentAtr > 0) effective = Math.max(effective, anchor * minEdge / 100 * (index + 1) / currentAtr);
+        if (kind === 'pct') effective = Math.max(effective, minEdge * (index + 1));
+        return effective;
+    });
+    const center = (levels.length - 1) / 2;
+    const weighted = configuredAllocations.map((allocation, index) => {
+        const position = (index - center) / Math.max(1, center);
+        const exponent = (type === 'entry' ? -trend * position : trend * position) * strength * 0.70;
+        return allocation * Math.exp(exponent);
+    });
+    const configuredTotal = configuredAllocations.reduce((sum, value) => sum + value, 0);
+    const weightedTotal = weighted.reduce((sum, value) => sum + value, 0) || 1;
+    const allocations = weighted.map(value => value * configuredTotal / weightedTotal);
+    const regime = trend > 0.15 ? 'uptrend' : (trend < -0.15 ? 'downtrend' : 'balanced');
+    const peakPrice = Math.max(anchor, Number(saved?.[`${type}_grid_high_water_price`]) || 0, ...history.map(row => row.high));
+    return { distances, allocations, label: `Smart Dynamic: ${regime} ${trend >= 0 ? '+' : ''}${trend.toFixed(2)} • volatility ${volatility.toFixed(2)}x • ${smart.continuous_grid_trailing_mode ? 'levels ratchet from high-water' : 'targets fixed at anchor'}`, trailing: !!smart.continuous_grid_trailing_mode, peakPrice };
+}
+
+function buildAdaptiveGridPreviewHtml(type, symbol, referencePrice, isLive, tf) {
+    const isEntry = type === 'entry';
+    const levels = getEnabledGridLevels('regular', type);
+    const anchor = getAdaptiveGridPreviewAnchor(type, referencePrice, isLive);
+    const capital = getAdaptiveGridPreviewCapital();
+    const title = isLive
+        ? `&#128302; Live Preview: ${symbol}${tf ? ` (${tf} Timeframe)` : ''}`
+        : `&#128302; Example Preview: ${symbol}`;
+    const anchorName = isEntry ? 'Buy reference anchor' : 'Average-cost sell anchor';
+
+    if (!levels.length) {
+        return `${title} (${isEntry ? 'Adaptive Buy Ladder' : 'Adaptive Sell Ladder'})<br/>${anchorName}: $${anchor.toFixed(2)}<br/><span class="text-red-600">Enable at least one ladder level.</span>`;
+    }
+
+    const configuredDistances = levels.map(level => Math.max(0, parseFloat(document.getElementById(`strategyGrid${isEntry ? 'Entry' : 'Exit'}L${level}_regular`)?.value || 0)));
+    const configuredAllocations = levels.map(level => Math.max(0, parseFloat(document.getElementById(isEntry ? `strategyGridEntryL${level}BuyPct_regular` : `strategyGridExitL${level}SellPct_regular`)?.value || 0)));
+    const smart = getSmartDynamicGridSettings();
+    const plan = getSmartGridPreviewPlan(type, 'pct', levels, anchor, Number(window.currentAtrPreviewData?.atr || 0), configuredDistances, configuredAllocations);
+    let allocationTotal = 0;
+    const rows = levels.map((level, index) => {
+        const basePct = configuredDistances[index];
+        const triggerPct = plan.distances[index];
+        const allocationPct = plan.allocations[index];
+        allocationTotal += allocationPct;
+        const activationPrice = anchor * (1 + (isEntry ? -1 : 1) * triggerPct / 100);
+        const previewAtr = Number(window.currentAtrPreviewData?.atr || 0);
+        const trailGapPct = Math.max(Number(smart.continuous_grid_min_edge_pct) || 0, triggerPct * 0.5, previewAtr > 0 && anchor > 0 ? previewAtr / anchor * 100 * 0.75 : 0);
+        const trailingArmed = plan.trailing && (!isEntry ? plan.peakPrice >= activationPrice : plan.peakPrice > anchor);
+        const triggerPrice = trailingArmed && !isEntry
+            ? plan.peakPrice * (1 - trailGapPct / 100)
+            : (isEntry && trailingArmed ? plan.peakPrice * (1 - triggerPct / 100) : activationPrice);
+        const actionText = isEntry ? 'Buy at/below' : 'Sell at/above';
+        const moveText = trailingArmed
+            ? (isEntry ? `ratchet -${triggerPct.toFixed(2)}% from high-water $${plan.peakPrice.toFixed(2)}` : `activation +${triggerPct.toFixed(2)}% → trail -${trailGapPct.toFixed(2)}% from $${plan.peakPrice.toFixed(2)}`)
+            : `${isEntry ? '-' : '+'}${triggerPct.toFixed(2)}%${Math.abs(basePct - triggerPct) > 0.0001 ? `; base ${basePct.toFixed(2)}%` : ''}`;
+        const allocationText = isEntry
+            ? `Buy ${allocationPct.toFixed(1)}%${capital > 0 ? ` ($${(capital * allocationPct / 100).toFixed(2)})` : ''}`
+            : `Sell ${allocationPct.toFixed(1)}% of ladder-start position`;
+        return `<span class="font-black">L${level}</span> • ${isEntry ? 'Buy at/below' : (trailingArmed ? 'Sell at/below' : actionText)} $${triggerPrice.toFixed(2)} (${moveText}) • ${allocationText}`;
+    });
+    const totalClass = allocationTotal > 100.0001 ? 'text-red-600' : 'text-slate-600';
+    const totalBasis = isEntry
+        ? `${allocationTotal.toFixed(1)}%${capital > 0 ? ` of $${capital.toFixed(2)} capital` : ''}`
+        : `${allocationTotal.toFixed(1)}% of the ladder-start position`;
+    const disabledText = isEntry
+        ? 'Fixed Pullback % and Entry Style are bypassed.'
+        : 'Fixed Stop Loss, Take Profit and Trail are bypassed.';
+
+    return `${title} (${isEntry ? 'Adaptive Buy Ladder' : 'Adaptive Sell Ladder'}) | ${anchorName}: $${anchor.toFixed(2)}<br/>${plan.label ? `<span class="text-sky-700 font-bold">${plan.label}</span><br/>` : ''}${rows.join('<br/>')}<br/><span class="${totalClass}">Enabled allocation: ${totalBasis}</span><br/><span class="text-slate-500">${disabledText} Fast gaps combine crossed enabled levels into one order.</span>`;
+}
+
+function buildAdaptiveAtrGridPreviewHtml(type, symbol, referencePrice, currentAtr, isLive, tf) {
+    const isEntry = type === 'entry';
+    const levels = getEnabledAtrGridLevels(type);
+    const anchor = getAdaptiveGridPreviewAnchor(type, referencePrice, isLive);
+    const saved = typeof getSavedBotSettings === 'function' ? getSavedBotSettings(window.currentStrategySymbol || symbol) : {};
+    const savedAtr = Number(saved?.[`${type}_grid_anchor_atr`]);
+    const anchorAtr = isLive && Number.isFinite(savedAtr) && savedAtr > 0 ? savedAtr : Math.max(0, Number(currentAtr) || 0);
+    const capital = getAdaptiveGridPreviewCapital();
+    const title = isLive ? `&#128302; Live Preview: ${symbol}${tf ? ` (${tf} Timeframe)` : ''}` : `&#128302; Example Preview: ${symbol}`;
+    if (!levels.length || anchorAtr <= 0) return `${title} (Adaptive ATR ${isEntry ? 'Buy' : 'Sell'} Ladder)<br/>${!levels.length ? 'Enable at least one ladder level.' : 'Waiting for a valid ATR value.'}`;
+    const prefix = isEntry ? 'strategyAtrGridEntry' : 'strategyAtrGridExit';
+    const configuredDistances = levels.map(level => Math.max(0, Number(document.getElementById(`${prefix}L${level}Mult_regular`)?.value || 0)));
+    const configuredAllocations = levels.map(level => Math.max(0, Number(document.getElementById(`${prefix}L${level}${isEntry ? 'Buy' : 'Sell'}Pct_regular`)?.value || 0)));
+    const smart = getSmartDynamicGridSettings();
+    const liveAtr = Math.max(0, Number(currentAtr) || anchorAtr);
+    const runtimeAtr = smart.continuous_grid_adaptive_mode && smart.continuous_grid_trailing_mode && anchorAtr > 0
+        ? anchorAtr * Math.min(1.5, Math.max(0.75, liveAtr / anchorAtr))
+        : anchorAtr;
+    const plan = getSmartGridPreviewPlan(type, 'atr', levels, anchor, runtimeAtr, configuredDistances, configuredAllocations);
+    const total = plan.allocations.reduce((sum, value) => sum + value, 0);
+    const rows = levels.map((level, index) => {
+        const mult = plan.distances[index];
+        const base = configuredDistances[index];
+        const allocation = plan.allocations[index];
+        const activation = anchor + (isEntry ? -1 : 1) * mult * runtimeAtr;
+        const edgeAtr = anchor > 0 && runtimeAtr > 0 ? anchor * (Number(getSmartDynamicGridSettings().continuous_grid_min_edge_pct) || 0) / 100 / runtimeAtr : 0;
+        const trailGapAtr = Math.max(edgeAtr, mult * 0.5);
+        const trailingArmed = plan.trailing && (!isEntry ? plan.peakPrice >= activation : plan.peakPrice > anchor);
+        const trigger = trailingArmed
+            ? (isEntry ? plan.peakPrice - mult * runtimeAtr : plan.peakPrice - trailGapAtr * runtimeAtr)
+            : activation;
+        const move = trailingArmed
+            ? (isEntry ? `ratchet -${mult.toFixed(2)}x from high-water $${plan.peakPrice.toFixed(2)}` : `activation +${mult.toFixed(2)}x → trail -${trailGapAtr.toFixed(2)}x from $${plan.peakPrice.toFixed(2)}`)
+            : `${isEntry ? '-' : '+'}${mult.toFixed(2)}x ATR${Math.abs(base - mult) > 0.0001 ? `; base ${base.toFixed(2)}x` : ''}`;
+        const action = !isEntry && trailingArmed ? 'Sell at/below' : (isEntry ? 'Buy at/below' : 'Sell at/above');
+        return `<span class="font-black">L${level}</span> • ${action} $${trigger.toFixed(2)} (${move}) • ${isEntry ? `Buy ${allocation.toFixed(1)}%${capital > 0 ? ` ($${(capital * allocation / 100).toFixed(2)})` : ''}` : `Sell ${allocation.toFixed(1)}%`}`;
+    }).join('<br/>');
+    return `${title} (Adaptive ATR ${isEntry ? 'Buy' : 'Sell'} Ladder) | Anchor: $${anchor.toFixed(2)} | Runtime ATR: $${runtimeAtr.toFixed(2)} (anchor $${anchorAtr.toFixed(2)})<br/>${plan.label ? `<span class="text-sky-700 font-bold">${plan.label}</span><br/>` : ''}${rows}<br/>Enabled allocation: ${total.toFixed(1)}%<br/><span class="text-slate-500">ATR levels recalculate from bounded live volatility; fixed stop, target and trail controls are bypassed. Fast gaps combine crossed levels.</span>`;
+}
+
 function buildEntryPreviewHtml(mode, isOptions, symbol, simPrice, simAtr, priorDay, tf, suffix) {
     const buyMode = document.getElementById(isOptions ? 'strategyBuyMode_options' : 'strategyBuyMode_regular')?.value || 'indicator';
     const modeLabel = buyMode.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase());
-    const basePrefix = `🔮 Live Preview: ${symbol} (Entry: ${modeLabel}) | Price: $${simPrice.toFixed(2)}`;
+    const isLive = !!window.currentAtrPreviewData?.isLive;
+    const previewLabel = isLive ? 'Live Preview' : 'Example Preview';
+    const basePrefix = `🔮 ${previewLabel}: ${symbol} (Entry: ${modeLabel}) | Price: $${simPrice.toFixed(2)}`;
     const entryForecast = window.currentAtrPreviewData?.entry_forecast || '';
     const swingEntryForecast = window.currentAtrPreviewData?.swing_entry_forecast || '';
 
@@ -7999,6 +9016,9 @@ function buildEntryPreviewHtml(mode, isOptions, symbol, simPrice, simAtr, priorD
     }
 
     if (['atr', 'hybrid_atr'].includes(buyMode)) {
+        if (!isOptions && document.getElementById('strategyAtrGridContinuous_regular')?.checked) {
+            return buildAdaptiveAtrGridPreviewHtml('entry', symbol, simPrice, simAtr, isLive, tf);
+        }
         const multEl = document.getElementById(`strategyEntryAtrMult_${isOptions ? 'options' : 'regular'}`);
         const mult = parseFloat(multEl?.value || 2);
         const style = document.getElementById(`strategyEntryAtrStyle_${isOptions ? 'options' : 'regular'}`)?.value || 'pullback_reclaim';
@@ -8019,6 +9039,10 @@ function buildEntryPreviewHtml(mode, isOptions, symbol, simPrice, simAtr, priorD
     }
 
     if (['percentage', 'hybrid_pct'].includes(buyMode)) {
+        const adaptiveGridEnabled = !isOptions && !!document.getElementById('strategyGridContinuous_regular')?.checked;
+        if (adaptiveGridEnabled) {
+            return buildAdaptiveGridPreviewHtml('entry', symbol, simPrice, isLive, tf);
+        }
         const pctEl = document.getElementById(`strategyEntryPctMove_${isOptions ? 'options' : 'regular'}`);
         const pct = parseFloat(pctEl?.value || 5);
         const style = document.getElementById(`strategyEntryPctStyle_${isOptions ? 'options' : 'regular'}`)?.value || 'dip_reclaim';
@@ -8129,6 +9153,23 @@ window.updateLivePreview_bots = function (mode, scope = 'both') {
 
     if (!exitBox || scope === 'entry') return;
 
+    const adaptiveExitGridEnabled = !isOptions
+        && showPct
+        && !!document.getElementById('strategyExitGridContinuous_regular')?.checked;
+    if (adaptiveExitGridEnabled) {
+        exitBox.innerHTML = buildAdaptiveGridPreviewHtml('exit', symbol, simPrice, isLive, tf);
+        exitBox.classList.remove('hidden');
+        return;
+    }
+    const adaptiveAtrExitEnabled = !isOptions
+        && showATR
+        && !!document.getElementById('strategyExitAtrGridContinuous_regular')?.checked;
+    if (adaptiveAtrExitEnabled) {
+        exitBox.innerHTML = buildAdaptiveAtrGridPreviewHtml('exit', symbol, simPrice, simAtr, isLive, tf);
+        exitBox.classList.remove('hidden');
+        return;
+    }
+
     if (showCustom) {
         if (isOptions) {
             simPrice = 5.00;
@@ -8218,16 +9259,16 @@ window.updateLivePreview_bots = function (mode, scope = 'both') {
             const tpEl = document.getElementById('strategyAtrTpMult' + suffix);
             const trailEnableEl = document.getElementById('strategyEnableAtrTrail' + suffix);
             const trailMultEl = document.getElementById('strategyAtrTrailMult' + suffix);
-            
+
             const stopMult = stopEl ? parseFloat(stopEl.value) || 0 : 0;
             const tpMult = tpEl ? parseFloat(tpEl.value) || 0 : 0;
             hasTrail = trailEnableEl ? trailEnableEl.checked : false;
             const trailMult = trailMultEl ? parseFloat(trailMultEl.value) || 0 : 0;
-            
+
             slDist = stopMult * simAtr;
             tpDist = tpMult * simAtr;
             if (hasTrail) trailDist = trailMult * simAtr;
-            
+
         } else if (showPct) {
             if (isOptions) {
                 simPrice = 5.00; // Mock option premium
@@ -8237,17 +9278,17 @@ window.updateLivePreview_bots = function (mode, scope = 'both') {
             let tpId = isOptions ? 'strategyOptionsTpPct' : 'strategyRegularTpPct';
             let enableTrailId = isOptions ? 'strategyEnablePctTrail_options' : 'strategyEnablePctTrail';
             let trailPctId = isOptions ? 'strategyOptionsTrailPct' : 'strategyRegularTrailPct';
-            
+
             const stopEl = document.getElementById(slId);
             const tpEl = document.getElementById(tpId);
             const trailEnableEl = document.getElementById(enableTrailId);
             const trailPctEl = document.getElementById(trailPctId);
-            
+
             const stopPct = stopEl ? parseFloat(stopEl.value) || 0 : 0;
             const tpPct = tpEl ? parseFloat(tpEl.value) || 0 : 0;
             hasTrail = trailEnableEl ? trailEnableEl.checked : false;
             const trailPct = trailPctEl ? parseFloat(trailPctEl.value) || 0 : 0;
-            
+
             slDist = simPrice * (stopPct / 100);
             tpDist = simPrice * (tpPct / 100);
             if (hasTrail) trailDist = simPrice * (trailPct / 100);
@@ -8257,23 +9298,23 @@ window.updateLivePreview_bots = function (mode, scope = 'both') {
         const isPutUnderlyingAtr = isOptions && showATR && optionsType === 'puts_only';
         const slPrice = isPutUnderlyingAtr ? simPrice + slDist : simPrice - slDist;
         const tpPrice = isPutUnderlyingAtr ? simPrice - tpDist : simPrice + tpDist;
-        
+
         const slPctCalc = simPrice > 0 ? ((slDist / simPrice) * 100).toFixed(2) : '0.00';
         const tpPctCalc = simPrice > 0 ? ((tpDist / simPrice) * 100).toFixed(2) : '0.00';
-        
-        let label = isLive 
-            ? `&#128302; Live Preview: ${symbol} (${tf} Timeframe) &nbsp;|&nbsp; Price: $${simPrice.toFixed(2)}${showATR ? ` &nbsp;|&nbsp; ATR: $${simAtr.toFixed(2)}` : ''}` 
+
+        let label = isLive
+            ? `&#128302; Live Preview: ${symbol} (${tf} Timeframe) &nbsp;|&nbsp; Price: $${simPrice.toFixed(2)}${showATR ? ` &nbsp;|&nbsp; ATR: $${simAtr.toFixed(2)}` : ''}`
             : `&#128302; Example Preview (Assuming $100 Entry${showATR ? ' & $2 ATR' : ''})`;
-            
+
         const directionLabel = isPutUnderlyingAtr ? 'PUT ATR Exit: stop/trail above, target below' : isOptions && showATR ? 'CALL ATR Exit: stop/trail below, target above' : '';
         const slSign = isPutUnderlyingAtr ? '+' : '-';
         const tpSign = isPutUnderlyingAtr ? '-' : '+';
         html = `${label}${directionLabel ? `<br/>${directionLabel}` : ''} <br/> Stop Loss: $${slPrice.toFixed(2)} (${slSign}${slPctCalc}%) &nbsp;|&nbsp; Take Profit: $${tpPrice.toFixed(2)} (${tpSign}${tpPctCalc}%)`;
-        
+
         if (hasTrail) {
             if (showATR) {
                 const trailNote = isPutUnderlyingAtr ? 'PUT trail follows downward move from above' : 'Trail follows favorable move from below';
-                html += `<br/>Trail Distance: $${trailDist.toFixed(2)} (ATR * ${document.getElementById('strategyAtrTrailMult'+suffix)?.value || '0'}) | ${trailNote}`;
+                html += `<br/>Trail Distance: $${trailDist.toFixed(2)} (ATR * ${document.getElementById('strategyAtrTrailMult' + suffix)?.value || '0'}) | ${trailNote}`;
             } else {
                 html += `<br/>Trail Distance: $${trailDist.toFixed(2)} (${document.getElementById(isOptions ? 'strategyOptionsTrailPct' : 'strategyRegularTrailPct')?.value || '0'}%)`;
             }
@@ -8285,13 +9326,13 @@ window.updateLivePreview_bots = function (mode, scope = 'both') {
 };
 
 const oldOpenStrategyModalUnified = window.openStrategyModal;
-if(oldOpenStrategyModalUnified && !window._livePreviewPatchedUnified) {
+if (oldOpenStrategyModalUnified && !window._livePreviewPatchedUnified) {
     window._livePreviewPatchedUnified = true;
-    window.openStrategyModal = async function(symbol, ...args) {
+    window.openStrategyModal = async function (symbol, ...args) {
         window.currentAtrPreviewData = { price: 100, atr: 2.0, symbol: symbol, isLive: false };
         await oldOpenStrategyModalUnified(symbol, ...args);
         if (symbol) window.fetchLiveAtrForPreview(symbol);
-        
+
         if (window.updateLivePreview_bots) {
             window.updateLivePreview_bots('regular', 'both');
             window.updateLivePreview_bots('options', 'both');
@@ -8300,7 +9341,7 @@ if(oldOpenStrategyModalUnified && !window._livePreviewPatchedUnified) {
 }
 
 
-window.toggleRiskControls = function(enabled, mode) {
+window.toggleRiskControls = function (enabled, mode) {
     const wrapperId = mode === 'regular' ? 'riskControlsContentWrapper_regular' : 'riskControlsContentWrapper_options';
     const wrapper = document.getElementById(wrapperId);
     if (wrapper) {
@@ -8310,7 +9351,7 @@ window.toggleRiskControls = function(enabled, mode) {
             wrapper.style.display = 'none';
         }
     }
-    
+
     // Disable inputs
     const contentId = mode === 'regular' ? 'riskControlsContent' : 'riskControlsContent_options';
     const content = document.getElementById(contentId);
@@ -8326,17 +9367,162 @@ window.toggleRiskControls = function(enabled, mode) {
 // ──────────────────────────────────────────────
 // Global Risk Settings Auto-Save
 // ──────────────────────────────────────────────
+function formatGlobalRiskMoney(value) {
+    const number = Number(value || 0);
+    return Number.isFinite(number)
+        ? number.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
+        : '—';
+}
+
+function renderGlobalRiskCard(status = {}) {
+    const card = document.getElementById('globalRiskCard');
+    const badge = document.getElementById('globalRiskStatusBadge');
+    const summary = document.getElementById('globalRiskSummary');
+    if (!card || !badge || !summary) return;
+
+    const halted = Boolean(status.halted);
+    card.classList.toggle('ring-2', halted);
+    card.classList.toggle('ring-rose-400/70', halted);
+    card.classList.toggle('bg-rose-50/40', halted);
+    badge.textContent = halted ? 'All Halted' : 'Active';
+    badge.className = halted
+        ? 'rounded-md border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[0.48rem] font-black uppercase tracking-wider text-rose-700'
+        : 'rounded-md border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[0.48rem] font-black uppercase tracking-wider text-emerald-700';
+    summary.textContent = halted
+        ? (status.halt_reason || 'All new bot entries are halted. Click to review and reactivate.')
+        : `Daily ${Number(status.daily_drawdown_pct || 0).toFixed(2)}% • Equity ${Number(status.equity_drawdown_pct || 0).toFixed(2)}%`;
+    summary.className = halted
+        ? 'truncate text-[0.5rem] font-black text-rose-600'
+        : 'truncate text-[0.5rem] font-bold text-emerald-600';
+    card.setAttribute('aria-label', halted
+        ? `Global risk halted. ${status.halt_reason || ''} Open details.`
+        : 'Global risk active. Open details.');
+}
+
+function closeGlobalRiskModal() {
+    document.getElementById('globalRiskModal')?.remove();
+}
+
+window.openGlobalRiskModal = function () {
+    closeGlobalRiskModal();
+    const status = window.lastBotsData?.global_risk_status || {};
+    const halted = Boolean(status.halted);
+    const modal = document.createElement('div');
+    modal.id = 'globalRiskModal';
+    modal.className = 'fixed inset-0 z-[10000] flex items-center justify-center bg-slate-950/55 p-2.5 backdrop-blur-sm sm:p-4';
+    modal.innerHTML = `
+        <div role="dialog" aria-modal="true" aria-labelledby="globalRiskModalTitle"
+            class="max-h-[86dvh] w-[90vw] max-w-xl overflow-y-auto rounded-2xl border border-white/60 bg-white/95 p-3.5 shadow-2xl sm:w-full sm:rounded-3xl sm:p-6">
+            <div class="flex items-start justify-between gap-2.5 sm:gap-4">
+                <div class="flex items-start gap-2.5 sm:gap-3">
+                    <div data-role="icon" class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-base sm:h-11 sm:w-11 sm:rounded-2xl sm:text-xl"></div>
+                    <div>
+                        <h2 id="globalRiskModalTitle" class="text-sm font-black leading-tight text-slate-900 sm:text-lg"></h2>
+                        <p data-role="reason" class="mt-1 text-[0.7rem] font-semibold leading-snug text-slate-600 sm:mt-1.5 sm:text-sm sm:leading-relaxed"></p>
+                        <p data-role="current" class="mt-0.5 text-[0.6rem] font-bold text-slate-400 sm:mt-1 sm:text-[0.68rem]"></p>
+                    </div>
+                </div>
+                <button type="button" data-action="close" aria-label="Close global risk details"
+                    class="rounded-lg border border-slate-200 px-2 py-1 text-xs font-black text-slate-500 hover:bg-slate-50 sm:rounded-xl sm:px-2.5 sm:py-1.5 sm:text-sm">✕</button>
+            </div>
+            <div class="mt-3 grid grid-cols-2 gap-2 sm:mt-5 sm:gap-3">
+                <div class="rounded-xl border border-indigo-100 bg-indigo-50/60 p-2 sm:rounded-2xl sm:p-3">
+                    <p class="text-[0.5rem] font-black uppercase tracking-wider text-indigo-500 sm:text-[0.62rem] sm:tracking-widest">Daily Drawdown</p>
+                    <p data-role="daily" class="mt-0.5 text-sm font-black text-indigo-950 sm:mt-1 sm:text-base"></p>
+                    <p data-role="dailyBase" class="mt-0.5 text-[0.56rem] font-semibold leading-tight text-indigo-500 sm:text-[0.68rem]"></p>
+                </div>
+                <div class="rounded-xl border border-purple-100 bg-purple-50/60 p-2 sm:rounded-2xl sm:p-3">
+                    <p class="text-[0.5rem] font-black uppercase tracking-wider text-purple-500 sm:text-[0.62rem] sm:tracking-widest">Loss From Equity High</p>
+                    <p data-role="equity" class="mt-0.5 text-sm font-black text-purple-950 sm:mt-1 sm:text-base"></p>
+                    <p data-role="equityBase" class="mt-0.5 text-[0.56rem] font-semibold leading-tight text-purple-500 sm:text-[0.68rem]"></p>
+                </div>
+            </div>
+            <div class="mt-2.5 rounded-xl border border-amber-200 bg-amber-50/70 p-2 text-[0.65rem] font-semibold leading-snug text-amber-900 sm:mt-4 sm:rounded-2xl sm:p-3 sm:text-xs sm:leading-relaxed">
+                <strong>Safety behavior:</strong> A global halt blocks all new stock, crypto, and options entries and cancels pending entry orders. Existing positions and protective exits continue to be managed. Open positions are not automatically liquidated.
+            </div>
+            <div data-role="haltNotice" class="mt-2 hidden rounded-xl border border-rose-200 bg-rose-50/80 p-2 text-[0.65rem] font-bold leading-snug text-rose-800 sm:mt-3 sm:rounded-2xl sm:p-3 sm:text-xs sm:leading-relaxed">
+                Review every bot’s strategy, recent losses, allocation, thresholds, and exit protection before reactivating. Reactivation establishes new daily and equity high-water baselines.
+            </div>
+            <div class="mt-3 flex gap-2 sm:mt-5 sm:justify-end">
+                <button type="button" data-action="review"
+                    class="flex-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-2 text-[0.62rem] font-black uppercase tracking-wide text-indigo-700 hover:bg-indigo-100 sm:flex-none sm:rounded-xl sm:px-4 sm:py-2.5 sm:text-xs sm:tracking-wider">Review Bots</button>
+                <button type="button" data-action="reactivate"
+                    class="hidden flex-1 rounded-lg bg-rose-600 px-2.5 py-2 text-[0.62rem] font-black uppercase tracking-wide text-white shadow-lg shadow-rose-500/20 hover:bg-rose-700 sm:flex-none sm:rounded-xl sm:px-4 sm:py-2.5 sm:text-xs sm:tracking-wider">Reactivate All Eligible Bots</button>
+            </div>
+        </div>`;
+
+    modal.querySelector('[data-role="icon"]').textContent = halted ? '🛑' : '🛡️';
+    modal.querySelector('[data-role="icon"]').classList.add(halted ? 'bg-rose-100' : 'bg-emerald-100');
+    modal.querySelector('#globalRiskModalTitle').textContent = halted ? 'All bots halted by global risk' : 'Global risk is active';
+    modal.querySelector('[data-role="reason"]').textContent = halted
+        ? (status.halt_reason || 'A global risk threshold was reached. Manual review and reactivation are required.')
+        : 'All eligible bots may evaluate new entries. The account-level limits below are monitored continuously.';
+    const haltedTime = status.halted_at ? new Date(status.halted_at).toLocaleString() : '';
+    modal.querySelector('[data-role="current"]').textContent = halted
+        ? `Equity at review: ${formatGlobalRiskMoney(status.current_equity)}${haltedTime ? ` • Halted ${haltedTime}` : ''}`
+        : `Current equity: ${formatGlobalRiskMoney(status.current_equity)}`;
+    modal.querySelector('[data-role="daily"]').textContent = `${Number(status.daily_drawdown_pct || 0).toFixed(2)}% / ${status.max_daily_drawdown_pct == null ? 'Off' : `${Number(status.max_daily_drawdown_pct).toFixed(2)}%`}`;
+    modal.querySelector('[data-role="dailyBase"]').textContent = `Start-of-day equity: ${formatGlobalRiskMoney(status.daily_starting_equity)}`;
+    modal.querySelector('[data-role="equity"]').textContent = `${Number(status.equity_drawdown_pct || 0).toFixed(2)}% / ${status.max_loss_to_equity_pct == null ? 'Off' : `${Number(status.max_loss_to_equity_pct).toFixed(2)}%`}`;
+    modal.querySelector('[data-role="equityBase"]').textContent = `High-water equity: ${formatGlobalRiskMoney(status.equity_high_watermark)}`;
+    modal.querySelector('[data-role="haltNotice"]').classList.toggle('hidden', !halted);
+    modal.querySelector('[data-action="reactivate"]').classList.toggle('hidden', !halted);
+
+    modal.querySelector('[data-action="close"]').addEventListener('click', closeGlobalRiskModal);
+    modal.querySelector('[data-action="review"]').addEventListener('click', () => {
+        closeGlobalRiskModal();
+        setBotTab('all');
+        document.getElementById('tradelistContainer')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    modal.querySelector('[data-action="reactivate"]').addEventListener('click', reactivateGlobalRisk);
+    modal.addEventListener('click', event => {
+        if (event.target === modal) closeGlobalRiskModal();
+    });
+    document.body.appendChild(modal);
+    modal.querySelector(halted ? '[data-action="reactivate"]' : '[data-action="close"]')?.focus();
+};
+
+async function reactivateGlobalRisk(event) {
+    const button = event?.currentTarget;
+    if (!confirm('Reactivate all eligible bots?\n\nReview each bot first. This clears the global halt and starts new daily and equity high-water risk baselines. Individually paused bots will remain paused.')) return;
+    if (button) {
+        button.disabled = true;
+        button.textContent = 'Reactivating...';
+    }
+    try {
+        const headers = await getAuthHeaders();
+        const response = await fetch(`${API_BASE}/api/settings/risk/reactivate`, {
+            method: 'POST',
+            headers
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.status !== 'success') throw new Error(data.detail || data.message || 'Global risk reactivation failed');
+        closeGlobalRiskModal();
+        await fetchBotsData({ force: true });
+        const remaining = Number(data.individually_paused_bots || 0);
+        alert(remaining > 0
+            ? `Global risk halt cleared. ${remaining} bot${remaining === 1 ? '' : 's'} remain individually paused and must be reviewed separately.`
+            : 'Global risk halt cleared. All eligible bots can evaluate new entries again.');
+    } catch (error) {
+        alert(`Could not reactivate global risk: ${error.message}`);
+        if (button) {
+            button.disabled = false;
+            button.textContent = 'Reactivate All Eligible Bots';
+        }
+    }
+}
+
 async function saveGlobalRiskSettings() {
     const maxDrawdownEl = document.getElementById('globalMaxDrawdown');
     const hardStopEl = document.getElementById('globalHardStop');
-    
+
     if (!maxDrawdownEl || !hardStopEl) return;
-    
+
     const payload = {
-        MAX_DAILY_DRAWDOWN: maxDrawdownEl.value ? parseInt(maxDrawdownEl.value, 10) : null,
-        GLOBAL_HARD_STOP_PCT: hardStopEl.value ? parseInt(hardStopEl.value, 10) : null
+        MAX_DAILY_DRAWDOWN: maxDrawdownEl.value === '' ? null : parseFloat(maxDrawdownEl.value) / 100,
+        GLOBAL_HARD_STOP_PCT: hardStopEl.value === '' ? null : parseFloat(hardStopEl.value) / 100
     };
-    
+
     try {
         const headers = await getAuthHeaders();
         const response = await fetch(`${API_BASE}/api/settings/risk?context=bots`, {
@@ -8346,6 +9532,7 @@ async function saveGlobalRiskSettings() {
         });
         if (!response.ok) throw new Error('Failed to save risk settings');
         console.log('[bots] Global Risk Settings Auto-saved');
+        await fetchBotsData({ force: true });
     } catch (e) {
         console.error('[bots] Error saving global risk settings:', e);
     }

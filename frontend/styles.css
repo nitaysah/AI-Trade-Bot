@@ -20,7 +20,7 @@
 
     #globalMaxDrawdown,
     #globalHardStop {
-        font-size: 0.6rem !important;
+        font-size: 0.48rem !important;
         height: auto !important;
         padding: 0 !important;
         line-height: 1 !important;
@@ -51,7 +51,7 @@
     .global-risk-percent-symbol {
         display: flex !important;
         align-items: center !important;
-        font-size: 0.6rem !important;
+        font-size: 0.48rem !important;
         flex: 0 0 auto !important;
         line-height: 1 !important;
     }
@@ -62,6 +62,15 @@
     #globalHardStop::-webkit-inner-spin-button {
         -webkit-appearance: none;
         margin: 0;
+    }
+}
+
+/* Keep regular indicator cards at four columns on desktop in Dashboard and Bots. */
+@media (min-width: 769px) {
+    html body #signalGrid,
+    html body #indicatorChecksContainer_regular,
+    html body #botChartPreviewSignalGrid {
+        grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
     }
 }
 
@@ -625,7 +634,7 @@
     }
 
     .dashboard-context-card .card-label {
-        font-size: 0.5rem !important;
+        font-size: 0.48rem !important;
     }
 
     .dashboard-fng-gauge {
@@ -853,12 +862,22 @@
     border: 1px solid rgba(226, 232, 240, 0.65);
     border-bottom: none;
     overflow: hidden;
-    background: #fff;
+    background: var(--dashboard-chart-bg, #fff);
 }
 
 .webull-main-chart {
     height: clamp(460px, 50vh, 660px);
     min-height: 460px;
+    background: var(--dashboard-chart-bg, #fff);
+}
+
+.chart-stage.chart-extended-session-bg,
+.webull-main-chart.chart-extended-session-bg,
+.webull-main-chart.chart-extended-session-bg table,
+.webull-main-chart.chart-extended-session-bg tr,
+.webull-main-chart.chart-extended-session-bg td {
+    background: var(--dashboard-chart-bg, #ffffff) !important;
+    background-color: var(--dashboard-chart-bg, #ffffff) !important;
 }
 
 .chart-meta-strip {
@@ -918,18 +937,82 @@
     .chart-osc-label {
         top: 3px;
         left: 4px;
-        font-size: 0.65rem;
-        padding: 2px 6px;
+        font-size: 0.55rem;
+        line-height: 0.75rem;
+        padding: 1px 4px;
         background: rgba(255, 255, 255, 0.96);
         border-color: rgba(100, 116, 139, 0.5);
         color: #0f172a;
         z-index: 100 !important;
     }
+
+    .chart-osc-label svg {
+        width: 10px;
+        height: 10px;
+    }
     #botChartPreviewSignalGrid,
-    #botChartPreviewPremiumSignalGrid,
-    #signalGrid,
+    #botChartPreviewPremiumSignalGrid {
+        grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    }
+
     #premiumSignalGrid {
         grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    }
+}
+
+/* Compact mobile confluence grids: three cards per row. */
+@media (max-width: 768px) {
+    #signalGrid {
+        grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+        gap: 0.3rem !important;
+    }
+
+    #signalGrid .signal-card,
+    #premiumSignalGrid .signal-card {
+        padding: 0.25rem 0.18rem;
+        min-height: 2.9rem;
+        border-radius: 0.45rem;
+    }
+
+    #premiumSignalGrid {
+        grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+        gap: 0.22rem !important;
+    }
+
+    #signalGrid .signal-card > div:first-child,
+    #premiumSignalGrid .signal-card > div:first-child {
+        gap: 0.1rem;
+        margin-bottom: 0.1rem !important;
+    }
+
+    #signalGrid .signal-card span.font-bold,
+    #premiumSignalGrid .signal-card span.font-bold {
+        font-size: 0.48rem;
+        line-height: 1.02;
+    }
+
+    #signalGrid .signal-card p,
+    #premiumSignalGrid .signal-card p {
+        font-size: 0.41rem;
+        line-height: 1.04;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+    }
+
+    #signalGrid .signal-card svg,
+    #premiumSignalGrid .signal-card svg {
+        width: 0.5rem;
+        height: 0.5rem;
+    }
+
+    #signalGrid .signal-card button,
+    #premiumSignalGrid .signal-card button {
+        padding: 0.08rem;
+    }
+
+    #signalGrid .signal-card .text-sm,
+    #premiumSignalGrid .signal-card .text-sm {
+        font-size: 0.52rem;
     }
 }
 
@@ -978,6 +1061,42 @@
     .webull-main-chart {
         height: clamp(330px, 48vh, 450px);
         min-height: 330px;
+    }
+
+    .chart-ohlcv-bar {
+        top: 0.2rem;
+        left: 0.25rem;
+        right: 0.25rem;
+        max-width: calc(100% - 0.5rem);
+        min-height: 0;
+        padding: 1px 4px;
+        gap: 0.35rem !important;
+        font-size: 0.47rem !important;
+        line-height: 0.72rem;
+        letter-spacing: 0;
+        white-space: normal;
+    }
+
+    .chart-ohlcv-bar span {
+        min-width: 0;
+        white-space: nowrap;
+    }
+
+    .chart-meta-strip {
+        top: 1.1rem;
+        left: 0.25rem;
+        max-width: calc(100% - 0.5rem);
+        gap: 0.28rem;
+        font-size: 0.46rem;
+        line-height: 0.68rem;
+        font-weight: 700;
+        letter-spacing: 0;
+    }
+
+    .chart-meta-strip span {
+        min-width: 0;
+        max-width: 100%;
+        white-space: normal;
     }
 
     .chart-bottom-bar {
@@ -1341,133 +1460,61 @@
 }
 
 
-/* ── Premium Options Trading Glassmorphic Card (Golden) ── */
-.watchlist-item.options-premium-card {
-    background: linear-gradient(
-        135deg,
-        rgba(255, 252, 240, 0.72) 0%,
-        rgba(253, 244, 215, 0.65) 50%,
-        rgba(251, 235, 180, 0.55) 100%
-    );
-    border: 1px solid rgba(245, 158, 11, 0.35);
-    box-shadow: 
-        0 8px 32px rgba(245, 158, 11, 0.05),
-        0 2px 8px rgba(245, 158, 11, 0.03),
-        inset 0 1px 0 rgba(255, 255, 255, 0.75);
+/* ── Premium Options Trading Card (stable light gold glass) ── */
+.watchlist-item.options-premium-card,
+.watchlist-item.options-premium-card:hover,
+.watchlist-item.options-premium-card.active {
+    background: rgba(245, 158, 11, 0.065);
+    border: 1px solid rgba(217, 119, 6, 0.16);
+    box-shadow:
+        0 6px 20px rgba(202, 138, 4, 0.035),
+        inset 0 1px 0 rgba(255, 255, 255, 0.52);
+    backdrop-filter: blur(14px) saturate(120%);
+    -webkit-backdrop-filter: blur(14px) saturate(120%);
     position: relative;
     overflow: hidden;
 }
 
 .watchlist-item.options-premium-card:hover {
-    background: linear-gradient(
-        135deg,
-        rgba(255, 253, 245, 0.82) 0%,
-        rgba(254, 247, 225, 0.75) 50%,
-        rgba(252, 239, 195, 0.65) 100%
-    );
-    border-color: rgba(245, 158, 11, 0.55);
-    box-shadow: 
-        0 12px 40px rgba(245, 158, 11, 0.12),
-        0 4px 12px rgba(245, 158, 11, 0.06),
-        inset 0 1px 0 rgba(255, 255, 255, 0.85);
-    transform: translateY(-2px) translateX(2px);
+    transform: translateY(-1px);
 }
 
 .watchlist-item.options-premium-card.active {
-    background: linear-gradient(
-        135deg,
-        rgba(254, 243, 199, 0.85) 0%,
-        rgba(253, 230, 138, 0.75) 100%
-    );
-    border-color: rgba(245, 158, 11, 0.9);
-    box-shadow: 
-        0 4px 14px rgba(245, 158, 11, 0.2),
-        inset 0 0 0 1px rgba(245, 158, 11, 0.4);
     transform: none;
     z-index: 5;
 }
 
-/* Glowing golden accent bar for options */
+/* The shared glass gradient remains unchanged after selection/network refresh. */
 .watchlist-item.options-premium-card::after {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 3px;
-    border-radius: 0.625rem 0.625rem 0 0;
-    background: linear-gradient(
-        90deg,
-        transparent 0%,
-        rgba(251, 191, 36, 0.4) 20%,
-        rgba(245, 158, 11, 0.85) 50%,
-        rgba(251, 191, 36, 0.4) 80%,
-        transparent 100%
-    );
-    z-index: 2;
+    display: none;
 }
 
 
-/* ── Premium Crypto Trading Glassmorphic Card (Pinkish Gold / Rose Gold) ── */
-.watchlist-item.crypto-premium-card {
-    background: linear-gradient(
-        135deg,
-        rgba(255, 240, 245, 0.72) 0%,
-        rgba(253, 225, 235, 0.65) 50%,
-        rgba(251, 205, 220, 0.55) 100%
-    );
-    border: 1px solid rgba(244, 114, 182, 0.35);
-    box-shadow: 
-        0 8px 32px rgba(244, 114, 182, 0.05),
-        0 2px 8px rgba(244, 114, 182, 0.03),
-        inset 0 1px 0 rgba(255, 255, 255, 0.75);
+/* ── Premium Crypto Trading Card (stable baby pink) ── */
+.watchlist-item.crypto-premium-card,
+.watchlist-item.crypto-premium-card:hover,
+.watchlist-item.crypto-premium-card.active {
+    background: #fff0f5;
+    border: 1px solid #fbcfe8;
+    box-shadow:
+        0 6px 20px rgba(244, 114, 182, 0.08),
+        inset 0 1px 0 rgba(255, 255, 255, 0.8);
     position: relative;
     overflow: hidden;
 }
 
 .watchlist-item.crypto-premium-card:hover {
-    background: linear-gradient(
-        135deg,
-        rgba(255, 245, 250, 0.82) 0%,
-        rgba(254, 230, 240, 0.75) 50%,
-        rgba(252, 215, 225, 0.65) 100%
-    );
-    border-color: rgba(244, 114, 182, 0.55);
-    box-shadow: 
-        0 12px 40px rgba(244, 114, 182, 0.12),
-        0 4px 12px rgba(244, 114, 182, 0.06),
-        inset 0 1px 0 rgba(255, 255, 255, 0.85);
-    transform: translateY(-2px) translateX(2px);
+    transform: translateY(-1px);
 }
 
 .watchlist-item.crypto-premium-card.active {
-    background: linear-gradient(
-        135deg,
-        rgba(254, 215, 225, 0.85) 0%,
-        rgba(253, 195, 210, 0.75) 100%
-    );
-    border-color: rgba(244, 114, 182, 0.9);
-    box-shadow: 
-        0 4px 14px rgba(244, 114, 182, 0.2),
-        inset 0 0 0 1px rgba(244, 114, 182, 0.4);
     transform: none;
     z-index: 5;
 }
 
-/* Glowing pinkish gold accent bar for crypto */
+/* Keep selection/cache re-renders from introducing a second card color. */
 .watchlist-item.crypto-premium-card::after {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 3px;
-    border-radius: 0.625rem 0.625rem 0 0;
-    background: linear-gradient(
-        90deg,
-        transparent 0%,
-        rgba(244, 114, 182, 0.4) 20%,
-        rgba(236, 72, 153, 0.85) 50%,
-        rgba(244, 114, 182, 0.4) 80%,
-        transparent 100%
-    );
-    z-index: 2;
+    display: none;
 }
 .indicator-workspace-hidden {
     display: none !important;
@@ -2197,6 +2244,106 @@
     }
 }
 
+/* ── Universal Compact Layouts for Active Bot Cards & Strategy Settings Modal (Desktop + Mobile) ── */
+#tradelistContainer .watchlist-item,
+.active-bot {
+    padding: 0.4rem 0.6rem !important;
+    margin-bottom: 0.35rem !important;
+    gap: 0.25rem !important;
+}
+
+#tradelistContainer .watchlist-item .mt-2.pt-2,
+#tradelistContainer .watchlist-item .mt-1\.5.pt-1\.5 {
+    margin-top: 0.25rem !important;
+    padding-top: 0.25rem !important;
+}
+
+#tradelistContainer .watchlist-item .mb-1 {
+    margin-bottom: 0.15rem !important;
+}
+
+/* Compact Bot Strategy Modal Across Desktop & Mobile */
+#botStrategyModal .p-8.pb-4 {
+    padding: 0.75rem 1.25rem 0.4rem 1.25rem !important;
+}
+
+#botStrategyModal #strategyModalTitle {
+    font-size: 1.15rem !important;
+    line-height: 1.2 !important;
+}
+
+#botStrategyModal #strategyModalSubtitle {
+    font-size: 0.6rem !important;
+    margin-top: 0.1rem !important;
+}
+
+#botStrategyModal button[onclick="closeStrategyModal()"] {
+    width: 2rem !important;
+    height: 2rem !important;
+    border-radius: 0.6rem !important;
+}
+
+#botStrategyModal .p-6.overflow-y-auto {
+    padding: 0.5rem 0.85rem !important;
+    gap: 0.4rem !important;
+}
+
+#botStrategyModal #strategyPreviewChart {
+    height: 4.5rem !important;
+    border-radius: 0.75rem !important;
+}
+
+#botStrategyModal #modeToggleContainer {
+    padding: 0.2rem !important;
+    border-radius: 0.75rem !important;
+}
+
+#botStrategyModal #modeToggleContainer button {
+    padding: 0.35rem 0.25rem !important;
+    font-size: 0.62rem !important;
+}
+
+#botStrategyModal .rounded-2xl {
+    border-radius: 0.75rem !important;
+    padding: 0.45rem 0.65rem !important;
+}
+
+#botStrategyModal label {
+    font-size: 0.6rem !important;
+    letter-spacing: 0.02em !important;
+    margin-bottom: 0.15rem !important;
+}
+
+#botStrategyModal p {
+    font-size: 0.58rem !important;
+    line-height: 1.2 !important;
+}
+
+#botStrategyModal input[type="number"],
+#botStrategyModal input[type="text"],
+#botStrategyModal select {
+    padding: 0.3rem 0.5rem !important;
+    font-size: 0.68rem !important;
+    border-radius: 0.45rem !important;
+    height: auto !important;
+}
+
+#botStrategyModal .indicator-card {
+    padding: 0.35rem 0.5rem !important;
+    border-radius: 0.75rem !important;
+}
+
+#botStrategyModal .p-8.pt-4 {
+    padding: 0.4rem 1.25rem 0.75rem 1.25rem !important;
+}
+
+#botStrategyModal #strategyActionButton {
+    padding-top: 0.5rem !important;
+    padding-bottom: 0.5rem !important;
+    font-size: 0.75rem !important;
+    border-radius: 0.75rem !important;
+}
+
 /* ── Mobile Bot Settings Modal Optimization ── */
 @media (max-width: 767px) {
     /* Outer Modal Overlay & Card Container */
@@ -2296,7 +2443,7 @@
     #indicatorChecksContainer_regular,
     #indicatorChecksContainer_options,
     #indicatorChecksContainer_ai_autopilot {
-        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
         gap: 0.3rem !important;
     }
 
@@ -2326,9 +2473,6 @@
     #botStrategyModal .col-span-full.mt-3.pt-3 {
         margin-top: 0.25rem !important;
         padding-top: 0.25rem !important;
-    }
-    #botStrategyModal .col-span-2.indicator-card {
-        grid-column: span 2 / span 2 !important;
     }
 
     /* Buy/Sell Signal Counters */
@@ -2433,10 +2577,105 @@
         padding: 0.35rem 0.5rem !important;
     }
     .global-risk-percent-input {
-        font-size: 0.6rem !important;
+        font-size: 0.48rem !important;
     }
     .global-risk-percent-symbol {
-        font-size: 0.5rem !important;
+        font-size: 0.48rem !important;
+    }
+
+    #globalRiskCard .global-risk-percent-input,
+    #globalRiskCard .global-risk-percent-symbol {
+        font-family: inherit !important;
+        font-size: 0.55rem !important;
+        font-weight: 400 !important;
+        line-height: 1 !important;
+    }
+
+    #globalRiskCard .card-sub {
+        font-size: 0.55rem !important;
+    }
+
+    /* Keep Bots settings labels, controls, and notices readable and aligned
+       on narrow screens across regular, options, and AI autopilot modes. */
+    #strategyAllocationMode_regular,
+    #strategyCapital,
+    #strategyTimeframe_regular,
+    #strategyMarketSession_regular,
+    #strategyAllocationMode_options,
+    #strategyOptionsTradeAmount,
+    #strategyTimeframe_options,
+    #strategyMarketSession_options,
+    #strategyAllocationMode_ai_autopilot,
+    #strategyCapital_ai_autopilot,
+    #strategyTimeframe_ai_autopilot,
+    #strategyMarketSession_ai_autopilot {
+        font-size: 0.55rem !important;
+        line-height: 1.15 !important;
+    }
+
+    #regularTradingBox label:has(+ .relative > #strategyAllocationMode_regular),
+    #regularTradingBox label:has(+ #strategyCapital),
+    #regularTradingBox label:has(+ .relative > #strategyTimeframe_regular),
+    #regularTradingBox label:has(+ .relative > #strategyMarketSession_regular),
+    #optionsTradingBox label:has(+ .relative > #strategyAllocationMode_options),
+    #optionsTradingBox label:has(+ #strategyOptionsTradeAmount),
+    #optionsTradingBox label:has(+ .relative > #strategyTimeframe_options),
+    #optionsTradingBox label:has(+ .relative > #strategyMarketSession_options),
+    #aiAutopilotTradingBox label:has(+ .relative > #strategyAllocationMode_ai_autopilot),
+    #aiAutopilotTradingBox label:has(+ #strategyCapital_ai_autopilot),
+    #aiAutopilotTradingBox label:has(+ .relative > #strategyTimeframe_ai_autopilot),
+    #aiAutopilotTradingBox label:has(+ .relative > #strategyMarketSession_ai_autopilot) {
+        font-size: 0.58rem !important;
+        line-height: 1.1 !important;
+    }
+
+    #strategyMarketSessionNotice_regular,
+    #strategyCompoundAmountHint_regular,
+    #strategyCompoundAmountHint_options,
+    #strategyMarketSessionNotice_ai_autopilot {
+        font-size: 0.55rem !important;
+        line-height: 1.2 !important;
+    }
+
+    /* Native mobile selects can retain a larger platform font unless the
+       control is targeted with higher specificity. Keep every displayed
+       setting value the same compact size as Amount Per Trade. */
+    html body #strategyAllocationMode_regular,
+    html body #strategyCapital,
+    html body #strategyTimeframe_regular,
+    html body #strategyMarketSession_regular,
+    html body #strategyAllocationMode_options,
+    html body #strategyOptionsTradeAmount,
+    html body #strategyTimeframe_options,
+    html body #strategyMarketSession_options,
+    html body #strategyAllocationMode_ai_autopilot,
+    html body #strategyCapital_ai_autopilot,
+    html body #strategyTimeframe_ai_autopilot,
+    html body #strategyMarketSession_ai_autopilot {
+        font-size: 0.55rem !important;
+        line-height: 1.1 !important;
+    }
+
+    html body #strategyAllocationMode_regular option,
+    html body #strategyTimeframe_regular option,
+    html body #strategyMarketSession_regular option,
+    html body #strategyAllocationMode_options option,
+    html body #strategyTimeframe_options option,
+    html body #strategyMarketSession_options option,
+    html body #strategyAllocationMode_ai_autopilot option,
+    html body #strategyTimeframe_ai_autopilot option,
+    html body #strategyMarketSession_ai_autopilot option {
+        font-size: 0.55rem !important;
+    }
+
+    html body #strategyAllocationMode_regular,
+    html body #strategyAllocationMode_options,
+    html body #strategyAllocationMode_ai_autopilot,
+    html body #strategyAllocationMode_regular option,
+    html body #strategyAllocationMode_options option,
+    html body #strategyAllocationMode_ai_autopilot option {
+        font-size: 0.48rem !important;
+        line-height: 1 !important;
     }
 
     /* 2. Equity Performance Graph Panel */
@@ -2562,6 +2801,93 @@
         line-height: 1.25 !important;
     }
 
+    /* Compact AI indicator metrics and supporting sections on mobile. */
+    #aiIndicatorCard .ai-analysis-actions {
+        gap: 0.2rem !important;
+    }
+    #aiIndicatorCard .ai-analysis-actions button {
+        width: 1.1rem !important;
+        height: 1.1rem !important;
+        font-size: 0.58rem !important;
+    }
+    #aiIndicatorCard .ai-hdr-scroll {
+        gap: 0.25rem !important;
+        padding-bottom: 0 !important;
+    }
+    #aiIndicatorCard .ai-hdr-scroll > div {
+        gap: 0.25rem !important;
+    }
+    #aiIndicatorCard .ai-summary-metrics {
+        gap: 0.3rem !important;
+        margin-bottom: 0.45rem !important;
+    }
+    #aiIndicatorCard .ai-summary-metrics > div {
+        padding: 0.35rem 0.4rem !important;
+        border-radius: 0.55rem !important;
+    }
+    #aiIndicatorCard .ai-summary-metrics > div > div:first-child {
+        font-size: 0.43rem !important;
+        line-height: 1 !important;
+        letter-spacing: 0.03em !important;
+    }
+    #aiIndicatorCard .ai-summary-metrics > div > div:nth-child(2) {
+        font-size: 0.6rem !important;
+        line-height: 1.05 !important;
+        margin-top: 0.15rem !important;
+    }
+    #aiIndicatorCard .ai-summary-metrics > div > div:nth-child(3) {
+        font-size: 0.43rem !important;
+        line-height: 1.05 !important;
+        margin-top: 0.15rem !important;
+    }
+    #aiIndicatorCard .ai-summary-metrics .h-1 {
+        height: 0.16rem !important;
+        margin-top: 0.25rem !important;
+    }
+    #aiIndicatorCard .ai-trade-plan,
+    #aiIndicatorCard .ai-evidence-grid {
+        gap: 0.3rem !important;
+        margin-bottom: 0.45rem !important;
+    }
+    #aiIndicatorCard .ai-trade-plan {
+        padding: 0.45rem !important;
+        border-radius: 0.6rem !important;
+    }
+    #aiIndicatorCard .ai-evidence-grid > div,
+    #aiIndicatorCard [data-ai-detailed-analysis] {
+        padding: 0.45rem !important;
+        border-radius: 0.6rem !important;
+    }
+    #aiIndicatorCard .ai-trade-plan .text-xs,
+    #aiIndicatorCard .ai-evidence-grid .text-\[9px\] {
+        font-size: 0.48rem !important;
+        line-height: 1.15 !important;
+    }
+    #aiIndicatorCard .ai-trade-plan .text-\[9px\],
+    #aiIndicatorCard .ai-evidence-grid .text-\[0\.54rem\] {
+        font-size: 0.43rem !important;
+    }
+    #aiIndicatorCard .ai-trade-plan .grid {
+        gap: 0.3rem !important;
+        margin-bottom: 0.35rem !important;
+    }
+    #aiIndicatorCard [data-ai-detailed-analysis] > div {
+        margin-top: 0.45rem !important;
+        gap: 0.45rem !important;
+    }
+    #aiIndicatorCard [data-ai-detailed-analysis] section {
+        padding: 0.45rem !important;
+        border-radius: 0.6rem !important;
+    }
+    #aiIndicatorCard [data-ai-detailed-analysis] .text-\[10px\] {
+        font-size: 0.48rem !important;
+        line-height: 1.15 !important;
+    }
+    #aiIndicatorCard [data-ai-detailed-analysis] .text-\[9px\] {
+        font-size: 0.43rem !important;
+        line-height: 1.12 !important;
+    }
+
     /* 6. Execution Log / Scan History Table */
     #tabLogAll, #tabLogTrades, #tabLogPositions, #tabLogPending {
         padding: 0.15rem 0.35rem !important;
@@ -2581,5 +2907,1028 @@
     #logPrevBtn, #logNextBtn {
         padding: 0.15rem 0.35rem !important;
         font-size: 0.52rem !important;
+    }
+
+    /* Compact Manual Testing / Bot Chart Preview modal without shrinking the chart. */
+    #botChartPreviewModal {
+        padding: 0.35rem !important;
+        align-items: flex-start !important;
+    }
+    #botChartPreviewModal > div {
+        max-height: 98vh !important;
+        border-radius: 1rem !important;
+    }
+    #botChartPreviewModal > div > div:first-child {
+        padding: 0.6rem 0.75rem !important;
+        gap: 0.45rem !important;
+    }
+    #botChartPreviewTitle {
+        font-size: 0.9rem !important;
+    }
+    #botChartPreviewSubtitle {
+        font-size: 0.52rem !important;
+        line-height: 1.15 !important;
+        margin-top: 0.15rem !important;
+    }
+    #botChartPreviewModeBadge,
+    #botChartPreviewAiBadge {
+        padding: 0.15rem 0.35rem !important;
+        font-size: 0.42rem !important;
+        letter-spacing: 0.08em !important;
+    }
+    #botChartPreviewModal > div > div:nth-child(2) {
+        padding: 0.5rem 0.6rem !important;
+    }
+    #botChartPreviewBanner {
+        margin-bottom: 0.45rem !important;
+        padding: 0.35rem 0.5rem !important;
+        font-size: 0.5rem !important;
+    }
+    #botChartPreviewModal .panel-glass {
+        padding: 0.45rem 0.55rem !important;
+        border-radius: 0.75rem !important;
+    }
+    #botChartPreviewModal .panel-glass > .flex.items-start {
+        margin-bottom: 0.2rem !important;
+    }
+    #botChartPreviewTickerLabel,
+    #botChartPreviewPrice {
+        font-size: 0.85rem !important;
+    }
+    #botChartPreviewPriceChange {
+        font-size: 0.48rem !important;
+    }
+    #botChartPreviewModal .chart-interval-row,
+    #botChartPreviewModal .chart-range-row,
+    #botChartPreviewModal .chart-session-controls {
+        gap: 0.08rem !important;
+    }
+    #botChartPreviewModal .chart-tf-btn,
+    #botChartPreviewModal .chart-range-btn,
+    #botChartPreviewModal .chart-session-btn {
+        padding: 0.06rem 0.16rem !important;
+        font-size: 0.5rem !important;
+        line-height: 0.9rem !important;
+    }
+    #botChartPreviewChart {
+        height: 260px !important;
+        min-height: 260px !important;
+    }
+    #botChartPreviewModal .chart-bottom-bar {
+        min-height: 1.55rem !important;
+        padding: 0.12rem 0.18rem !important;
+        gap: 0.15rem !important;
+    }
+    #botChartPreviewModal .chart-osc-label {
+        font-size: 0.5rem !important;
+        padding: 1px 3px !important;
+    }
+    #botChartPreviewModal .signal-card {
+        padding: 0.3rem 0.35rem !important;
+        min-height: 3rem !important;
+        border-radius: 0.5rem !important;
+    }
+    #botChartPreviewModal .signal-card span.font-bold {
+        font-size: 0.52rem !important;
+    }
+    #botChartPreviewModal .signal-card p {
+        font-size: 0.44rem !important;
+        line-height: 1.05 !important;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+    }
+    #botChartPreviewModal .signal-card svg {
+        width: 0.55rem !important;
+        height: 0.55rem !important;
+    }
+    #botChartPreviewModal > div > div:last-child {
+        padding: 0.45rem 0.6rem !important;
+        gap: 0.35rem !important;
+    }
+    #botChartPreviewModal > div > div:last-child button {
+        padding: 0.35rem 0.55rem !important;
+        border-radius: 0.65rem !important;
+        font-size: 0.52rem !important;
+        letter-spacing: 0.08em !important;
+    }
+
+    /* Compact Manual Backtest Chart modal on mobile; preserve chart height. */
+    #manualBtChartPreviewModal {
+        padding: 0.35rem !important;
+        align-items: flex-start !important;
+    }
+    #manualBtChartPreviewModal > div {
+        max-height: 98vh !important;
+        border-radius: 1rem !important;
+    }
+    #manualBtChartPreviewModal > div > div:first-child {
+        padding: 0.6rem 0.75rem !important;
+        gap: 0.45rem !important;
+    }
+    #manualBtChartPreviewTitle {
+        font-size: 0.9rem !important;
+    }
+    #manualBtChartPreviewSubtitle {
+        font-size: 0.52rem !important;
+        line-height: 1.15 !important;
+        margin-top: 0.15rem !important;
+    }
+    #manualBtChartPreviewModeBadge,
+    #manualBtChartPreviewPlayBadge {
+        padding: 0.15rem 0.35rem !important;
+        font-size: 0.42rem !important;
+        letter-spacing: 0.08em !important;
+    }
+    #manualBtChartPreviewModal > div > div:nth-child(2) {
+        padding: 0.5rem 0.6rem !important;
+    }
+    #manualBtChartPreviewBanner {
+        margin-bottom: 0.45rem !important;
+        padding: 0.35rem 0.5rem !important;
+        font-size: 0.5rem !important;
+    }
+    #manualBtChartPreviewModal .panel-glass {
+        padding: 0.45rem 0.55rem !important;
+        border-radius: 0.75rem !important;
+    }
+    #manualBtChartPreviewModal .panel-glass > .mb-3 {
+        margin-bottom: 0.4rem !important;
+    }
+    #manualBtTickerSearch {
+        padding: 0.35rem 0.5rem !important;
+        border-radius: 0.65rem !important;
+        letter-spacing: 0.06em !important;
+    }
+    #manualBtChartPreviewModal .panel-glass > .flex.items-start {
+        margin-bottom: 0.2rem !important;
+    }
+    #manualBtChartPreviewTickerLabel,
+    #manualBtChartPreviewPrice {
+        font-size: 0.85rem !important;
+    }
+    #manualBtChartPreviewPriceChange {
+        font-size: 0.48rem !important;
+    }
+    #manualBtChartPreviewModal .chart-interval-row,
+    #manualBtChartPreviewModal .chart-range-row,
+    #manualBtChartPreviewModal .chart-session-controls {
+        gap: 0.08rem !important;
+    }
+    #manualBtChartPreviewModal .chart-tf-btn,
+    #manualBtChartPreviewModal .chart-range-btn,
+    #manualBtChartPreviewModal .chart-session-btn {
+        padding: 0.06rem 0.16rem !important;
+        font-size: 0.5rem !important;
+        line-height: 0.9rem !important;
+    }
+    #manualBtChartPreviewModal #manualBtDataSourceSelect,
+    #manualBtChartPreviewModal #manualBtReplaySpeed,
+    #manualBtChartPreviewModal #manualBtReplayResolution {
+        padding: 0.18rem 0.28rem !important;
+        font-size: 0.5rem !important;
+        border-radius: 0.45rem !important;
+    }
+    #manualBtReplayToolbar {
+        margin-bottom: 0.45rem !important;
+        padding: 0.4rem 0.45rem !important;
+        border-radius: 0.65rem !important;
+    }
+    #manualBtReplayToolbar .flex {
+        gap: 0.22rem !important;
+    }
+    #manualBtReplayToolbar button {
+        padding: 0.22rem 0.35rem !important;
+        border-radius: 0.45rem !important;
+        font-size: 0.46rem !important;
+        letter-spacing: 0.05em !important;
+    }
+    #manualBtReplayToolbar label,
+    #manualBtReplayToolbar span {
+        font-size: 0.45rem !important;
+        line-height: 1.1 !important;
+    }
+    #manualBtReplayToolbar input[type="range"] {
+        min-width: 90px !important;
+    }
+    #manualBtReplayToolbar .min-w-\[132px\] {
+        min-width: 80px !important;
+    }
+    #manualBtChartPreviewChart {
+        height: 260px !important;
+        min-height: 260px !important;
+    }
+    #manualBtChartPreviewModal .chart-bottom-bar {
+        min-height: 1.55rem !important;
+        padding: 0.12rem 0.18rem !important;
+        gap: 0.15rem !important;
+    }
+    #manualBtChartPreviewModal .chart-osc-label {
+        font-size: 0.5rem !important;
+        padding: 1px 3px !important;
+    }
+    #manualBtChartPreviewModal .signal-card {
+        padding: 0.3rem 0.35rem !important;
+        min-height: 3rem !important;
+        border-radius: 0.5rem !important;
+    }
+    #manualBtChartPreviewModal .signal-card span.font-bold {
+        font-size: 0.52rem !important;
+    }
+    #manualBtChartPreviewModal .signal-card p {
+        font-size: 0.44rem !important;
+        line-height: 1.05 !important;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+    }
+    #manualBtChartPreviewModal .signal-card svg {
+        width: 0.55rem !important;
+        height: 0.55rem !important;
+    }
+    #manualBtChartPreviewModal > div > div:last-child {
+        padding: 0.45rem 0.6rem !important;
+    }
+    #manualBtChartPreviewModal > div > div:last-child button {
+        padding: 0.35rem 0.55rem !important;
+        border-radius: 0.65rem !important;
+        font-size: 0.52rem !important;
+        letter-spacing: 0.08em !important;
+    }
+}
+
+/* Mobile browsers, especially iOS Safari, zoom focused controls whose
+   computed text size is below 16px. Keep this final rule after all compact
+   modal styles so both static and dynamically inserted fields remain safe.
+   The unused ID branch raises specificity above modal-specific selectors. */
+@media (max-width: 768px) {
+    html body :is(
+        #mobileTextZoomGuard,
+        input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="file"]):not([type="color"]):not([type="image"]),
+        select,
+        textarea,
+        [contenteditable]:not([contenteditable="false"])
+    ) {
+        font-size: 16px !important;
+        touch-action: manipulation;
+    }
+}
+
+/* The global mobile zoom guard above is useful for ordinary form controls,
+   but these Bots settings controls intentionally use compact typography. The
+   modal-scoped selectors win over that generic rule. */
+@media (max-width: 768px) {
+    html body #botStrategyModal #strategyCapital,
+    html body #botStrategyModal #strategyTimeframe_regular,
+    html body #botStrategyModal #strategyMarketSession_regular,
+    html body #botStrategyModal #strategyOptionsTradeAmount,
+    html body #botStrategyModal #strategyTimeframe_options,
+    html body #botStrategyModal #strategyMarketSession_options,
+    html body #botStrategyModal #strategyCapital_ai_autopilot,
+    html body #botStrategyModal #strategyTimeframe_ai_autopilot,
+    html body #botStrategyModal #strategyMarketSession_ai_autopilot {
+        font-size: 0.55rem !important;
+        line-height: 1.1 !important;
+    }
+
+    html body #botStrategyModal #strategyAllocationMode_regular,
+    html body #botStrategyModal #strategyAllocationMode_options,
+    html body #botStrategyModal #strategyAllocationMode_ai_autopilot,
+    html body #botStrategyModal #strategyAllocationMode_regular option,
+    html body #botStrategyModal #strategyAllocationMode_options option,
+    html body #botStrategyModal #strategyAllocationMode_ai_autopilot option {
+        font-size: 0.48rem !important;
+        line-height: 1 !important;
+    }
+
+    html body #botStrategyModal #strategyCooldownMinutes_regular,
+    html body #botStrategyModal #strategyCooldownMinutes_options,
+    html body #botStrategyModal #strategyCooldownMinutes_regular option,
+    html body #botStrategyModal #strategyCooldownMinutes_options option {
+        font-size: 0.48rem !important;
+        line-height: 1 !important;
+    }
+
+    html body #botStrategyModal select:is(
+        [id^="strategyBuy"],
+        [id^="strategySell"],
+        [id^="strategyEntry"],
+        [id^="strategyExit"],
+        [id^="strategySwingEntry"],
+        [id^="strategySwingExit"],
+        [id^="strategyGridMaxLevels"],
+        [id^="strategyExitGridMaxLevels"],
+        [id^="strategyOptionsType"],
+        [id^="strategyOptionsStrikeType"],
+        [id^="strategyRegularSmartReentryType"],
+        [id^="strategyOptionsSmartReentryType"]
+    ),
+    html body #botStrategyModal select:is(
+        [id^="strategyBuy"],
+        [id^="strategySell"],
+        [id^="strategyEntry"],
+        [id^="strategyExit"],
+        [id^="strategySwingEntry"],
+        [id^="strategySwingExit"],
+        [id^="strategyGridMaxLevels"],
+        [id^="strategyExitGridMaxLevels"],
+        [id^="strategyOptionsType"],
+        [id^="strategyOptionsStrikeType"],
+        [id^="strategyRegularSmartReentryType"],
+        [id^="strategyOptionsSmartReentryType"]
+    ) option {
+        font-size: 0.48rem !important;
+        line-height: 1 !important;
+    }
+
+    /* Keep TP, SL, and Trail together on one mobile row. */
+    html body #botStrategyModal #exitFieldsATR,
+    html body #botStrategyModal #exitFieldsATR_options,
+    html body #botStrategyModal #exitFieldsPct > .grid,
+    html body #botStrategyModal #exitFieldsPct_options > .grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+        gap: 0.3rem !important;
+    }
+
+    html body #botStrategyModal #exitFieldsATR > div,
+    html body #botStrategyModal #exitFieldsATR_options > div,
+    html body #botStrategyModal #exitFieldsPct > .grid > div,
+    html body #botStrategyModal #exitFieldsPct_options > .grid > div {
+        min-width: 0;
+    }
+
+    html body #botStrategyModal #exitFieldsATR label,
+    html body #botStrategyModal #exitFieldsATR_options label,
+    html body #botStrategyModal #exitFieldsPct label,
+    html body #botStrategyModal #exitFieldsPct_options label {
+        font-size: 0.46rem !important;
+        line-height: 1.05 !important;
+        letter-spacing: 0.02em !important;
+    }
+
+    html body #botStrategyModal #exitFieldsATR input[type="number"],
+    html body #botStrategyModal #exitFieldsATR_options input[type="number"],
+    html body #botStrategyModal #exitFieldsPct input[type="number"],
+    html body #botStrategyModal #exitFieldsPct_options input[type="number"] {
+        font-size: 0.48rem !important;
+        line-height: 1 !important;
+        padding: 0.25rem 0.3rem !important;
+    }
+
+    html body #botStrategyModal #exitFieldsATR .flex.items-center.justify-between,
+    html body #botStrategyModal #exitFieldsATR_options .flex.items-center.justify-between,
+    html body #botStrategyModal #exitFieldsPct .flex.items-center.justify-between,
+    html body #botStrategyModal #exitFieldsPct_options .flex.items-center.justify-between {
+        gap: 0.1rem !important;
+        flex-wrap: nowrap !important;
+    }
+
+    html body #botStrategyModal #exitFieldsATR .flex.items-center.justify-between > label:first-child,
+    html body #botStrategyModal #exitFieldsATR_options .flex.items-center.justify-between > label:first-child,
+    html body #botStrategyModal #exitFieldsPct .flex.items-center.justify-between > label:first-child,
+    html body #botStrategyModal #exitFieldsPct_options .flex.items-center.justify-between > label:first-child {
+        min-width: 0;
+        white-space: nowrap !important;
+        font-size: 0.4rem !important;
+        letter-spacing: 0 !important;
+    }
+
+    html body #botStrategyModal #exitFieldsATR .flex.items-center.justify-between > label:last-child,
+    html body #botStrategyModal #exitFieldsATR_options .flex.items-center.justify-between > label:last-child,
+    html body #botStrategyModal #exitFieldsPct .flex.items-center.justify-between > label:last-child,
+    html body #botStrategyModal #exitFieldsPct_options .flex.items-center.justify-between > label:last-child {
+        flex: 0 0 auto;
+        gap: 0.1rem !important;
+        white-space: nowrap !important;
+    }
+
+    html body #botStrategyModal #exitFieldsATR .flex.items-center.justify-between > label:last-child input[type="checkbox"],
+    html body #botStrategyModal #exitFieldsATR_options .flex.items-center.justify-between > label:last-child input[type="checkbox"],
+    html body #botStrategyModal #exitFieldsPct .flex.items-center.justify-between > label:last-child input[type="checkbox"],
+    html body #botStrategyModal #exitFieldsPct_options .flex.items-center.justify-between > label:last-child input[type="checkbox"] {
+        width: 0.6rem !important;
+        height: 0.6rem !important;
+    }
+
+    html body #botStrategyModal #exitFieldsATR .flex.items-center.justify-between > label:last-child span,
+    html body #botStrategyModal #exitFieldsATR_options .flex.items-center.justify-between > label:last-child span,
+    html body #botStrategyModal #exitFieldsPct .flex.items-center.justify-between > label:last-child span,
+    html body #botStrategyModal #exitFieldsPct_options .flex.items-center.justify-between > label:last-child span {
+        font-size: 0.38rem !important;
+        letter-spacing: 0 !important;
+    }
+
+    /* Keep the allocation and schedule pairs side by side on phones. */
+    html body #regularTradingBox .grid.grid-cols-1.sm\:grid-cols-2:has(#strategyAllocationMode_regular),
+    html body #regularTradingBox .grid.grid-cols-1.sm\:grid-cols-2:has(#strategyTimeframe_regular),
+    html body #optionsTradingBox .grid.grid-cols-1.sm\:grid-cols-2:has(#strategyAllocationMode_options),
+    html body #optionsTradingBox .grid.grid-cols-1.sm\:grid-cols-2:has(#strategyTimeframe_options),
+    html body #aiAutopilotTradingBox .grid.grid-cols-1.sm\:grid-cols-2:has(#strategyAllocationMode_ai_autopilot),
+    html body #aiAutopilotTradingBox .grid.grid-cols-1.sm\:grid-cols-2:has(#strategyTimeframe_ai_autopilot) {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        gap: 0.45rem !important;
+    }
+
+    html body #regularTradingBox .grid.grid-cols-1.sm\:grid-cols-2:has(#strategyAllocationMode_regular) > div,
+    html body #regularTradingBox .grid.grid-cols-1.sm\:grid-cols-2:has(#strategyTimeframe_regular) > div,
+    html body #optionsTradingBox .grid.grid-cols-1.sm\:grid-cols-2:has(#strategyAllocationMode_options) > div,
+    html body #optionsTradingBox .grid.grid-cols-1.sm\:grid-cols-2:has(#strategyTimeframe_options) > div,
+    html body #aiAutopilotTradingBox .grid.grid-cols-1.sm\:grid-cols-2:has(#strategyAllocationMode_ai_autopilot) > div,
+    html body #aiAutopilotTradingBox .grid.grid-cols-1.sm\:grid-cols-2:has(#strategyTimeframe_ai_autopilot) > div {
+        min-width: 0;
+    }
+
+    /* Keep entry and supporting exit fields side by side on phones. This
+       covers ATR, percentage, swing, custom-price, and grid settings. */
+    html body #botStrategyModal #strategyEntryAtrFields_regular > .grid,
+    html body #botStrategyModal #strategyEntryAtrFields_options > .grid,
+    html body #botStrategyModal #strategyEntryPctFields_regular > .grid,
+    html body #botStrategyModal #strategyEntryPctFields_options > .grid,
+    html body #botStrategyModal #strategySwingEntrySettings_regular > .grid,
+    html body #botStrategyModal #strategySwingEntrySettings_options > .grid,
+    html body #botStrategyModal #strategyGridFields_regular > .grid,
+    html body #botStrategyModal #strategyGridFields_options > .grid,
+    html body #botStrategyModal #strategyExitGridFields_regular > .grid,
+    html body #botStrategyModal #strategyExitGridFields_options > .grid,
+    html body #botStrategyModal #exitFieldsCustom_regular,
+    html body #botStrategyModal #exitFieldsCustom_options,
+    html body #botStrategyModal #exitFieldsCustomUnderlying_options {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        gap: 0.3rem !important;
+    }
+
+    html body #botStrategyModal #strategyEntryAtrFields_regular > .grid > div,
+    html body #botStrategyModal #strategyEntryAtrFields_options > .grid > div,
+    html body #botStrategyModal #strategyEntryPctFields_regular > .grid > div,
+    html body #botStrategyModal #strategyEntryPctFields_options > .grid > div,
+    html body #botStrategyModal #strategySwingEntrySettings_regular > .grid > div,
+    html body #botStrategyModal #strategySwingEntrySettings_options > .grid > div,
+    html body #botStrategyModal #strategyGridFields_regular > .grid > div,
+    html body #botStrategyModal #strategyGridFields_options > .grid > div,
+    html body #botStrategyModal #strategyExitGridFields_regular > .grid > div,
+    html body #botStrategyModal #strategyExitGridFields_options > .grid > div,
+    html body #botStrategyModal #exitFieldsCustom_regular > div,
+    html body #botStrategyModal #exitFieldsCustom_options > div,
+    html body #botStrategyModal #exitFieldsCustomUnderlying_options > div {
+        min-width: 0;
+    }
+
+    /* Override the mobile browser zoom guard for every entry/exit control,
+       including numeric fields that were previously left at 16px. */
+    html body #botStrategyModal :is(
+        #strategyEntryAtrFields_regular,
+        #strategyEntryAtrFields_options,
+        #strategyEntryPctFields_regular,
+        #strategyEntryPctFields_options,
+        #strategySwingEntrySettings_regular,
+        #strategySwingEntrySettings_options,
+        #strategyGridFields_regular,
+        #strategyGridFields_options,
+        #strategyGridLevelPcts_regular,
+        #strategyGridLevelPcts_options,
+        #exitFieldsCustom_regular,
+        #exitFieldsCustom_options,
+        #exitFieldsCustomUnderlying_options,
+        #exitFieldsATR,
+        #exitFieldsATR_options,
+        #exitFieldsPct,
+        #exitFieldsPct_options,
+        #strategyExitGridFields_regular,
+        #strategyExitGridFields_options,
+        #strategyExitGridLevelPcts_regular,
+        #strategyExitGridLevelPcts_options,
+        #strategySwingExitSettings_regular,
+        #strategySwingExitSettings_options,
+        #strategySmartReentryFields_regular,
+        #strategySmartReentryFields_options
+    ) input[type="number"],
+    html body #botStrategyModal :is(
+        #strategyEntryAtrFields_regular,
+        #strategyEntryAtrFields_options,
+        #strategyEntryPctFields_regular,
+        #strategyEntryPctFields_options,
+        #strategySwingEntrySettings_regular,
+        #strategySwingEntrySettings_options,
+        #strategyGridFields_regular,
+        #strategyGridFields_options,
+        #strategyExitGridFields_regular,
+        #strategyExitGridFields_options,
+        #strategySwingExitSettings_regular,
+        #strategySwingExitSettings_options,
+        #strategySmartReentryFields_regular,
+        #strategySmartReentryFields_options
+    ) select {
+        min-width: 0;
+        font-size: 0.48rem !important;
+        line-height: 1 !important;
+        padding: 0.25rem 0.3rem !important;
+        white-space: normal !important;
+    }
+
+    html body #botStrategyModal :is(
+        #strategyEntryAtrFields_regular,
+        #strategyEntryAtrFields_options,
+        #strategyEntryPctFields_regular,
+        #strategyEntryPctFields_options,
+        #strategySwingEntrySettings_regular,
+        #strategySwingEntrySettings_options,
+        #strategyGridFields_regular,
+        #strategyGridFields_options,
+        #exitFieldsCustom_regular,
+        #exitFieldsCustom_options,
+        #exitFieldsCustomUnderlying_options,
+        #strategySwingExitSettings_regular,
+        #strategySwingExitSettings_options,
+        #strategySmartReentryFields_regular,
+        #strategySmartReentryFields_options
+    ) label {
+        min-width: 0;
+        font-size: 0.46rem !important;
+        line-height: 1.05 !important;
+        letter-spacing: 0.01em !important;
+        white-space: normal !important;
+        overflow-wrap: anywhere;
+    }
+
+    html body #botStrategyModal :is(
+        #strategyGridLevelPcts_regular,
+        #strategyGridLevelPcts_options,
+        #strategyExitGridLevelPcts_regular,
+        #strategyExitGridLevelPcts_options
+    ) input[type="number"] {
+        font-size: 0.44rem !important;
+        line-height: 1 !important;
+        padding: 0.2rem 0.25rem !important;
+    }
+
+    /* Keep all five custom percentage levels on one mobile row. */
+    html body #botStrategyModal #strategyGridLevelPcts_regular > .grid,
+    html body #botStrategyModal #strategyGridLevelPcts_options > .grid,
+    html body #botStrategyModal #strategyExitGridLevelPcts_regular > .grid,
+    html body #botStrategyModal #strategyExitGridLevelPcts_options > .grid {
+        grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+        gap: 0.2rem !important;
+    }
+
+    html body #botStrategyModal :is(
+        #strategyGridLevelPcts_regular,
+        #strategyGridLevelPcts_options,
+        #strategyExitGridLevelPcts_regular,
+        #strategyExitGridLevelPcts_options
+    ) label {
+        font-size: 0.38rem !important;
+        line-height: 1 !important;
+        letter-spacing: 0 !important;
+        white-space: nowrap !important;
+    }
+
+    /* Reserve room for the currency marker in custom entry price fields. */
+    html body #botStrategyModal #strategyCustomBuyPrice_regular,
+    html body #botStrategyModal #strategyCustomBuyPrice_options {
+        padding-left: 1.35rem !important;
+        padding-right: 0.35rem !important;
+        font-size: 0.55rem !important;
+        line-height: 1 !important;
+        text-align: left !important;
+    }
+
+    html body #botStrategyModal #strategyCustomBuyFields_regular .absolute,
+    html body #botStrategyModal #strategyCustomBuyFields_options .absolute {
+        left: 0.55rem !important;
+        font-size: 0.55rem !important;
+        line-height: 1 !important;
+    }
+}
+
+/* Compact mobile search controls. The general mobile input rule above keeps
+   ordinary form controls readable, while these search fields need a smaller
+   footprint in the three page headers and indicator picker. */
+@media (max-width: 768px) {
+    html body #tickerSearch,
+    html body #botSearchInput,
+    html body #btTicker,
+    html body #manualBtTickerSearch,
+    html body .iw-search-input {
+        font-size: 0.75rem !important;
+        line-height: 1rem !important;
+    }
+
+    html body #tickerSearch {
+        height: 1.35rem !important;
+        padding-top: 0.15rem !important;
+        padding-bottom: 0.15rem !important;
+    }
+
+    html body #botSearchInput,
+    html body #btTicker,
+    html body #manualBtTickerSearch {
+        min-height: 2.25rem !important;
+        padding-top: 0.45rem !important;
+        padding-bottom: 0.45rem !important;
+    }
+
+    html body #btTicker {
+        height: 2.25rem !important;
+    }
+
+    html body .iw-search {
+        padding-top: 0.4rem !important;
+        padding-bottom: 0.4rem !important;
+    }
+
+    html body #tickerSearchResults,
+    html body #botSearchResults,
+    html body #btTickerSearchResults,
+    html body #manualBtTickerSearchResults {
+        max-height: 12rem !important;
+        border-radius: 0.65rem !important;
+    }
+
+    html body #tickerSearchResults > div,
+    html body #botSearchResults > div,
+    html body #btTickerSearchResults > div,
+    html body #manualBtTickerSearchResults > div {
+        padding: 0.45rem 0.65rem !important;
+        min-height: 0 !important;
+        font-size: 0.7rem !important;
+        line-height: 0.95rem !important;
+    }
+
+    html body #tickerSearchResults > div span,
+    html body #botSearchResults > div span,
+    html body #btTickerSearchResults > div span,
+    html body #manualBtTickerSearchResults > div span {
+        font-size: 0.62rem !important;
+        line-height: 0.85rem !important;
+    }
+
+    html body #botSearchResults > div span.text-xs,
+    html body #btTickerSearchResults > div span.text-\[0\.65rem\],
+    html body #manualBtTickerSearchResults > div span.text-\[0\.65rem\] {
+        font-size: 0.55rem !important;
+    }
+
+    html body #botSearchResults > div span.text-\[0\.6rem\],
+    html body #btTickerSearchResults > div span.text-\[0\.6rem\],
+    html body #manualBtTickerSearchResults > div span.text-\[0\.6rem\] {
+        font-size: 0.52rem !important;
+        padding-left: 0.35rem !important;
+        padding-right: 0.35rem !important;
+    }
+}
+
+/* Compact Indicator Workspace for phone-sized screens. Keep the modal and
+   catalog rows short without shrinking the switch target below a usable
+   touch size. */
+@media (max-width: 768px) {
+    html body .iw-modal {
+        align-items: center;
+        padding: 0.35rem;
+    }
+
+    html body .iw-dialog {
+        width: min(100%, 27rem);
+        max-height: 84vh;
+        border-radius: 0.9rem;
+    }
+
+    html body .iw-dialog-header {
+        gap: 0.5rem;
+        padding: 0.7rem 0.75rem 0.55rem;
+    }
+
+    html body .iw-eyebrow {
+        margin-bottom: 0.15rem;
+        font-size: 0.5rem;
+    }
+
+    html body .iw-dialog-header h2 {
+        font-size: 0.95rem;
+    }
+
+    html body .iw-dialog-header p:last-child {
+        margin-top: 0.2rem;
+        font-size: 0.6rem;
+        line-height: 1.25;
+    }
+
+    html body .iw-close-button {
+        width: 1.85rem;
+        height: 1.85rem;
+        border-radius: 0.55rem;
+        font-size: 1.05rem;
+    }
+
+    html body .iw-selection-summary {
+        gap: 0.4rem;
+        padding: 0.45rem 0.75rem 0;
+    }
+
+    html body .iw-modal-count {
+        padding: 0.22rem 0.4rem;
+        font-size: 0.55rem;
+    }
+
+    html body .iw-limit-hint {
+        font-size: 0.56rem;
+        line-height: 1.2;
+    }
+
+    html body .iw-tabs {
+        gap: 0.2rem;
+        padding: 0.42rem 0.75rem 0.32rem;
+    }
+
+    html body .iw-tabs button {
+        padding: 0.32rem 0.5rem;
+        border-radius: 0.55rem;
+        font-size: 0.57rem;
+    }
+
+    html body .iw-tabs button span {
+        min-width: 0.95rem;
+        height: 0.95rem;
+        font-size: 0.48rem;
+    }
+
+    html body .iw-search {
+        margin: 0 0.75rem 0.4rem;
+        padding: 0.3rem 0.5rem !important;
+        border-radius: 0.6rem;
+    }
+
+    html body .iw-catalog {
+        min-height: 8rem;
+        padding: 0 0.75rem 0.45rem;
+    }
+
+    html body .iw-catalog-row {
+        grid-template-columns: 1.55rem minmax(0, 1fr) auto;
+        gap: 0.4rem;
+        min-height: 2.55rem;
+        padding: 0.32rem 0.4rem;
+        border-radius: 0.6rem;
+    }
+
+    html body .iw-catalog-row + .iw-catalog-row {
+        margin-top: 0.25rem;
+    }
+
+    html body .iw-favorite-button {
+        width: 1.55rem;
+        height: 1.55rem;
+        border-radius: 0.45rem;
+        font-size: 0.95rem;
+    }
+
+    html body .iw-indicator-copy strong {
+        font-size: 0.65rem;
+    }
+
+    html body .iw-indicator-copy span {
+        margin-top: 0.08rem;
+        font-size: 0.5rem;
+        letter-spacing: 0.03em;
+    }
+
+    html body .iw-toggle {
+        gap: 0.3rem;
+    }
+
+    html body .iw-toggle-label {
+        min-width: 2rem;
+        font-size: 0.5rem;
+    }
+
+    html body .iw-toggle-track {
+        width: 2rem;
+        height: 1.1rem;
+    }
+
+    html body .iw-toggle-track::after {
+        top: 0.13rem;
+        left: 0.13rem;
+        width: 0.84rem;
+        height: 0.84rem;
+    }
+
+    html body .iw-toggle input:checked + .iw-toggle-track::after {
+        transform: translateX(0.9rem);
+    }
+
+    html body .iw-dialog-footer {
+        gap: 0.5rem;
+        padding: 0.55rem 0.75rem 0.65rem;
+    }
+
+    html body .iw-dialog-footer p {
+        margin-top: 0.15rem;
+        font-size: 0.5rem;
+        line-height: 1.2;
+    }
+
+    html body .iw-reset-button {
+        font-size: 0.55rem;
+    }
+
+    html body .iw-done-button {
+        min-width: 4rem;
+        padding: 0.45rem 0.7rem;
+        border-radius: 0.6rem;
+        font-size: 0.6rem;
+    }
+}
+
+/* Backtest indicator grids: keep regular and premium cards aligned and use
+   one typography scale for both the static and dynamically-added cards. */
+html body #indicatorChecksContainer_bt_regular,
+html body #indicatorChecksContainer_bt_options {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+    gap: 0.5rem !important;
+}
+
+html body #indicatorChecksContainer_bt_regular .indicator-card,
+html body #indicatorChecksContainer_bt_options .indicator-card {
+    min-width: 0;
+    min-height: 3.25rem;
+    padding: 0.55rem 0.6rem !important;
+    border-radius: 0.75rem !important;
+}
+
+html body #indicatorChecksContainer_bt_regular .indicator-card > div:first-child > span:first-child,
+html body #indicatorChecksContainer_bt_options .indicator-card > div:first-child > span:first-child {
+    font-size: 0.68rem !important;
+    line-height: 1.15 !important;
+    letter-spacing: 0.02em !important;
+}
+
+html body #indicatorChecksContainer_bt_regular .indicator-card > div:first-child > span:nth-child(2),
+html body #indicatorChecksContainer_bt_options .indicator-card > div:first-child > span:nth-child(2) {
+    margin-top: 0.15rem;
+    font-size: 0.52rem !important;
+    line-height: 1.1 !important;
+    letter-spacing: 0.04em !important;
+}
+
+html body #indicatorChecksContainer_bt_regular .indicator-card button svg,
+html body #indicatorChecksContainer_bt_options .indicator-card button svg {
+    width: 0.8rem !important;
+    height: 0.8rem !important;
+}
+
+html body #indicatorChecksContainer_bt_regular .indicator-card input[type="checkbox"],
+html body #indicatorChecksContainer_bt_options .indicator-card input[type="checkbox"] {
+    width: 1rem !important;
+    height: 1rem !important;
+}
+
+html body #indicatorChecksContainer_bt_regular .indicator-card:has(input[value="Botbulls4 News AI"]),
+html body #indicatorChecksContainer_bt_options .indicator-card:has(input[value="Botbulls4 News AI"]) {
+    display: none !important;
+}
+
+@media (max-width: 768px) {
+    html body #indicatorChecksContainer_bt_regular,
+    html body #indicatorChecksContainer_bt_options {
+        grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+        gap: 0.35rem !important;
+    }
+
+    html body #indicatorChecksContainer_bt_regular .indicator-card,
+    html body #indicatorChecksContainer_bt_options .indicator-card {
+        min-height: 3rem;
+        padding: 0.38rem 0.35rem !important;
+        border-radius: 0.55rem !important;
+    }
+
+    html body #indicatorChecksContainer_bt_regular .indicator-card > div:first-child > span:first-child,
+    html body #indicatorChecksContainer_bt_options .indicator-card > div:first-child > span:first-child {
+        font-size: 0.58rem !important;
+        line-height: 1.1 !important;
+    }
+
+    html body #indicatorChecksContainer_bt_regular .indicator-card > div:first-child > span:nth-child(2),
+    html body #indicatorChecksContainer_bt_options .indicator-card > div:first-child > span:nth-child(2) {
+        margin-top: 0.08rem;
+        font-size: 0.45rem !important;
+        line-height: 1.05 !important;
+    }
+
+    html body #indicatorChecksContainer_bt_regular .indicator-card button svg,
+    html body #indicatorChecksContainer_bt_options .indicator-card button svg {
+        width: 0.65rem !important;
+        height: 0.65rem !important;
+    }
+
+    html body #indicatorChecksContainer_bt_regular .indicator-card input[type="checkbox"],
+    html body #indicatorChecksContainer_bt_options .indicator-card input[type="checkbox"] {
+        width: 0.8rem !important;
+        height: 0.8rem !important;
+    }
+}
+
+/* The manual replay signal grids use different card markup, so keep their
+   typography and responsive columns aligned with the strategy grids. */
+html body #manualBtChartPreviewSignalGrid,
+html body #manualBtChartPreviewPremiumSignalGrid {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+    gap: 0.5rem !important;
+}
+
+html body #manualBtChartPreviewSignalGrid .signal-card,
+html body #manualBtChartPreviewPremiumSignalGrid .signal-card {
+    min-width: 0;
+    min-height: 3.25rem;
+    padding: 0.55rem 0.6rem !important;
+}
+
+html body #manualBtChartPreviewSignalGrid .signal-card span.font-bold,
+html body #manualBtChartPreviewPremiumSignalGrid .signal-card span.font-bold {
+    font-size: 0.68rem !important;
+    line-height: 1.15 !important;
+}
+
+html body #manualBtChartPreviewSignalGrid .signal-card p,
+html body #manualBtChartPreviewPremiumSignalGrid .signal-card p {
+    font-size: 0.52rem !important;
+    line-height: 1.1 !important;
+}
+
+@media (max-width: 768px) {
+    html body #manualBtChartPreviewSignalGrid,
+    html body #manualBtChartPreviewPremiumSignalGrid {
+        grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+        gap: 0.35rem !important;
+    }
+
+    html body #manualBtChartPreviewSignalGrid .signal-card,
+    html body #manualBtChartPreviewPremiumSignalGrid .signal-card {
+        min-height: 3rem;
+        padding: 0.38rem 0.35rem !important;
+    }
+
+    html body #manualBtChartPreviewSignalGrid .signal-card span.font-bold,
+    html body #manualBtChartPreviewPremiumSignalGrid .signal-card span.font-bold {
+        font-size: 0.58rem !important;
+        line-height: 1.1 !important;
+    }
+
+    html body #manualBtChartPreviewSignalGrid .signal-card p,
+html body #manualBtChartPreviewPremiumSignalGrid .signal-card p {
+        font-size: 0.45rem !important;
+        line-height: 1.05 !important;
+    }
+}
+
+/* Bots settings premium indicators use three cards per row at every viewport.
+   Regular indicators remain four per row on desktop and three on mobile. */
+@media (min-width: 769px) {
+    html body #indicatorChecksContainer_regular,
+    html body #indicatorChecksContainer_options,
+    html body #indicatorChecksContainer_ai_autopilot {
+        grid-template-columns: repeat(12, minmax(0, 1fr)) !important;
+    }
+
+    html body #indicatorChecksContainer_regular > .indicator-card,
+    html body #indicatorChecksContainer_options > .indicator-card,
+    html body #indicatorChecksContainer_ai_autopilot > .indicator-card {
+        grid-column: span 3;
+    }
+
+    html body #indicatorChecksContainer_regular > .indicator-card[class*="border-amber-300/30"],
+    html body #indicatorChecksContainer_options > .indicator-card[class*="border-amber-300/30"],
+    html body #indicatorChecksContainer_ai_autopilot > .indicator-card[class*="border-amber-300/30"] {
+        grid-column: span 4;
+    }
+}
+
+@media (max-width: 768px) {
+    html body #indicatorChecksContainer_regular,
+    html body #indicatorChecksContainer_options,
+    html body #indicatorChecksContainer_ai_autopilot {
+        grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+    }
+
+    html body #indicatorChecksContainer_regular > .indicator-card,
+    html body #indicatorChecksContainer_options > .indicator-card,
+    html body #indicatorChecksContainer_ai_autopilot > .indicator-card {
+        grid-column: span 2;
+    }
+}
+
+/* Bots mobile indicator cards: three compact cards per row, including
+   medium-width mobile browsers where the utility breakpoint would otherwise
+   switch the preview back to four columns. */
+@media (max-width: 768px) {
+    html body #botChartPreviewSignalGrid,
+    html body #botChartPreviewPremiumSignalGrid {
+        grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    }
+
+    /* Compact the active-bot scan countdown on mobile without changing its
+       desktop size or the refresh behavior. */
+    html body .scan-countdown {
+        font-size: 0.38rem !important;
+        line-height: 1 !important;
+        letter-spacing: 0 !important;
+        white-space: nowrap !important;
     }
 }

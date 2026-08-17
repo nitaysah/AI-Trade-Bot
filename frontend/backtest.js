@@ -126,22 +126,8 @@ function disableBacktestBotBulls4Indicator() {
         if (!container) return;
         const checkbox = container.querySelector('input[value="Botbulls4 News AI"]');
         if (!checkbox) return;
-        checkbox.checked = false;
-        checkbox.disabled = true;
-        checkbox.setAttribute('aria-disabled', 'true');
-        checkbox.title = 'BotBulls4 News AI is live-news only and disabled for backtesting.';
         const card = checkbox.closest('.indicator-card');
-        if (card) {
-            card.classList.add('opacity-60', 'cursor-not-allowed', 'grayscale');
-            card.title = 'BotBulls4 News AI is live-news only and disabled for backtesting.';
-        }
-        const settingsButton = card?.querySelector('button[title="Botbulls4 News AI Settings"], button[title="BotBulls4 News AI Settings"]');
-        if (settingsButton) {
-            settingsButton.disabled = true;
-            settingsButton.classList.add('cursor-not-allowed', 'opacity-40');
-            settingsButton.title = 'Disabled for backtesting because BotBulls4 depends on live news.';
-        }
-        updateBacktestBotBulls4CachedBadge(mode);
+        card?.remove();
     });
 }
 
@@ -259,7 +245,219 @@ function getBtOptionsSwingLookbackDays(kind) {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 20;
 }
 
+function ensureBtContinuousGridUi() {
+    const defaultEntryBuyPcts = [40, 25, 15, 10, 10];
+    const defaultExitSellPcts = [10, 10, 15, 20, 20];
+    const buildRows = (side) => {
+        const entry = side === 'entry';
+        const panel = document.getElementById(entry ? 'strategyGridLevelPcts_regular' : 'strategyExitGridLevelPcts_regular');
+        if (!panel || panel.dataset.ladderVersion === '2') return;
+        const color = entry ? 'emerald' : 'purple';
+        const title = entry ? 'Adaptive Buy Ladder — Enable • Dip % • Buy %' : 'Adaptive Sell Ladder — Enable • Gain % • Sell %';
+        const rows = Array.from({ length: 5 }, (_, index) => {
+            const level = index + 1;
+            const triggerId = entry ? `strategyGridEntryL${level}_regular` : `strategyGridExitL${level}_regular`;
+            const sizeId = entry ? `strategyGridEntryL${level}BuyPct_regular` : `strategyGridExitL${level}SellPct_regular`;
+            const enabledId = entry ? `strategyGridEntryL${level}Enabled_regular` : `strategyGridExitL${level}Enabled_regular`;
+            return `<div class="grid grid-cols-2 gap-1.5 rounded-lg border border-${color}-100 bg-${color}-50/40 p-1.5" data-bt-grid-row="${side}-${level}">
+                <label class="col-span-2 flex items-center gap-2 cursor-pointer text-${color}-800">
+                    <input type="checkbox" id="${enabledId}" checked class="h-3.5 w-3.5 accent-${color}-500">
+                    <span class="text-[0.52rem] font-black uppercase tracking-wider">Enable Level ${level}</span>
+                </label>
+                <div class="space-y-0.5"><label class="block text-[0.5rem] font-black text-${color}-600 uppercase">L${level} ${entry ? 'Dip' : 'Gain'} %</label>
+                    <input type="number" step="0.1" min="0.1" max="${entry ? 50 : 100}" id="${triggerId}" value="${level}" class="w-full bg-white/60 border border-${color}-200 rounded-lg px-2 py-1 text-xs font-black text-indigo-950 outline-none"></div>
+                <div class="space-y-0.5"><label class="block text-[0.5rem] font-black text-${color}-600 uppercase">${entry ? 'Buy' : 'Sell'} %</label>
+                    <input type="number" step="1" min="1" max="100" id="${sizeId}" value="${entry ? defaultEntryBuyPcts[level - 1] : defaultExitSellPcts[level - 1]}" class="w-full bg-white/60 border border-${color}-200 rounded-lg px-2 py-1 text-xs font-black text-indigo-950 outline-none"></div>
+            </div>`;
+        }).join('');
+        panel.innerHTML = `<span class="block text-[0.55rem] font-black text-${color}-900 uppercase tracking-widest">${title}</span><div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5">${rows}</div>`;
+        panel.dataset.ladderVersion = '2';
+        panel.querySelectorAll('input').forEach(input => {
+            input.addEventListener(input.type === 'checkbox' ? 'change' : 'input', () => window.updateBtContinuousGridUi?.(side));
+        });
+    };
+    buildRows('entry');
+    buildRows('exit');
+    ['strategyGridBuyAllocation_regular', 'strategyGridSellPct_regular', 'strategyGridMaxLevels_regular'].forEach(id => {
+        document.getElementById(id)?.closest('.space-y-1')?.classList.add('hidden');
+    });
+    document.querySelector('#strategyExitGridFields_regular .bt-grid-legacy-controls')?.classList.add('hidden');
+    ensureBtSmartDynamicGridControls('pct', 'strategyGridFields_regular');
+}
+
+function ensureBtSmartDynamicGridControls(kind, parentId) {
+    const suffix = kind === 'atr' ? 'Atr' : 'Pct';
+    if (document.getElementById(`strategyBtSmartGridMode${suffix}`)) return;
+    const parent = document.getElementById(parentId); if (!parent) return;
+    const box = document.createElement('div');
+    box.className = 'rounded-xl border border-sky-200/70 bg-sky-50/50 p-2 space-y-2';
+    box.innerHTML = `<label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="strategyBtSmartGridMode${suffix}" checked class="h-3.5 w-3.5 accent-sky-500"><span class="text-[0.55rem] font-black uppercase tracking-widest text-sky-900">Smart Dynamic Ladder (Entry + Exit)</span></label><label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="strategyBtSmartGridTrail${suffix}" checked class="h-3.5 w-3.5 accent-sky-500"><span class="text-[0.52rem] font-black uppercase text-sky-800">Ratchet buy levels and sell levels from price peaks</span></label><p class="text-[0.52rem] text-slate-600 font-semibold">Shared trend and volatility controls: buys use a favorable high-water mark; sells activate at profit and trail the favorable peak.</p><div class="grid grid-cols-2 gap-2"><label class="text-[0.5rem] font-black uppercase text-sky-700">Adaptation Strength %<input id="strategyBtSmartGridStrength${suffix}" type="number" min="0" max="100" step="5" value="50" class="mt-0.5 w-full rounded-lg border border-sky-200 bg-white/70 px-2 py-1 text-xs font-black"></label><label class="text-[0.5rem] font-black uppercase text-sky-700">Minimum Cycle Edge %<input id="strategyBtSmartGridEdge${suffix}" type="number" min="0" max="10" step="0.05" value="0.35" class="mt-0.5 w-full rounded-lg border border-sky-200 bg-white/70 px-2 py-1 text-xs font-black"></label></div>${kind === 'pct' ? '<div class="grid grid-cols-2 gap-2 border-t border-sky-200/70 pt-2"><label class="text-[0.5rem] font-black uppercase text-sky-700">PCT Regime Profile<select id="strategyBtPctGridRegimeMode" class="mt-0.5 w-full rounded-lg border border-sky-200 bg-white/70 px-2 py-1 text-xs font-black"><option value="auto">Auto (recommended)</option><option value="balanced">Balanced</option><option value="runner">Always keep runner</option></select></label><label class="text-[0.5rem] font-black uppercase text-sky-700">Runner %<input id="strategyBtPctGridRunnerPct" type="number" min="0" max="60" step="1" value="25" class="mt-0.5 w-full rounded-lg border border-sky-200 bg-white/70 px-2 py-1 text-xs font-black"></label><label class="text-[0.5rem] font-black uppercase text-sky-700">Runner trail %<input id="strategyBtPctGridRunnerTrail" type="number" min="0.1" max="25" step="0.1" value="3" class="mt-0.5 w-full rounded-lg border border-sky-200 bg-white/70 px-2 py-1 text-xs font-black"></label><label class="text-[0.5rem] font-black uppercase text-sky-700">Bull trend threshold<input id="strategyBtPctGridBullishThreshold" type="number" min="0" max="0.95" step="0.05" value="0.35" class="mt-0.5 w-full rounded-lg border border-sky-200 bg-white/70 px-2 py-1 text-xs font-black"></label></div><p class="text-[0.52rem] text-sky-800 font-semibold">Exit profile: Auto sells about 75% through the ladder and retains the runner until its trailing exit.</p>' : ''}`;
+    parent.prepend(box);
+    if (kind === 'pct') {
+        const profileGrid = document.getElementById('strategyBtPctGridRegimeMode')?.closest('.grid');
+        const profileHint = profileGrid?.nextElementSibling;
+        const exitFields = document.getElementById('strategyExitGridFields_regular');
+        if (profileGrid && exitFields) {
+            const exitProfile = document.createElement('div');
+            exitProfile.className = 'rounded-xl border border-purple-200/70 bg-purple-50/50 p-2 space-y-2';
+            const heading = document.createElement('p');
+            heading.className = 'text-[0.55rem] font-black uppercase tracking-widest text-purple-900';
+            heading.textContent = 'PCT Exit Profile & Runner';
+            exitProfile.append(heading, profileGrid);
+            if (profileHint) exitProfile.append(profileHint);
+            exitFields.prepend(exitProfile);
+        }
+    }
+    box.querySelectorAll('input, select').forEach(input => input.addEventListener(input.type === 'checkbox' || input.tagName === 'SELECT' ? 'change' : 'input', () => {
+        const other = suffix === 'Atr' ? 'Pct' : 'Atr';
+        const target = document.getElementById(input.id.replace(suffix, other));
+        if (target) target[input.type === 'checkbox' ? 'checked' : 'value'] = input[input.type === 'checkbox' ? 'checked' : 'value'];
+    }));
+    // The PCT profile controls are moved into the Exit section above so they
+    // are visibly associated with sell behavior; bind them after the move.
+    if (kind === 'pct') {
+        ['strategyBtPctGridRegimeMode', 'strategyBtPctGridRunnerPct', 'strategyBtPctGridRunnerTrail', 'strategyBtPctGridBullishThreshold']
+            .map(id => document.getElementById(id))
+            .filter(Boolean)
+            .forEach(input => input.addEventListener(input.tagName === 'SELECT' ? 'change' : 'input', () => {
+                window.updateBtContinuousGridUi?.('exit');
+            }));
+    }
+}
+
+function getBtSmartDynamicGridSettings() {
+    const atrActive = !!document.getElementById('strategyAtrGridContinuous_regular')?.checked;
+    const suffix = atrActive ? 'Atr' : 'Pct';
+    const ticker = document.getElementById('btTicker')?.value || '';
+    return {
+        continuous_grid_adaptive_mode: !!document.getElementById(`strategyBtSmartGridMode${suffix}`)?.checked,
+        continuous_grid_trailing_mode: !!document.getElementById(`strategyBtSmartGridTrail${suffix}`)?.checked,
+        continuous_grid_adaptation_strength: Number(document.getElementById(`strategyBtSmartGridStrength${suffix}`)?.value || 50),
+        continuous_grid_min_edge_pct: Number(document.getElementById(`strategyBtSmartGridEdge${suffix}`)?.value || (isCrypto(ticker) ? 0.6 : 0.35)),
+        pct_grid_regime_mode: document.getElementById('strategyBtPctGridRegimeMode')?.value || 'auto',
+        pct_grid_runner_pct: Number(document.getElementById('strategyBtPctGridRunnerPct')?.value || 25),
+        pct_grid_runner_trail_pct: Number(document.getElementById('strategyBtPctGridRunnerTrail')?.value || 3),
+        pct_grid_bullish_trend_threshold: Number(document.getElementById('strategyBtPctGridBullishThreshold')?.value || 0.35),
+    };
+}
+
+function getBtEnabledGridLevels(side) {
+    const prefix = side === 'entry' ? 'Entry' : 'Exit';
+    return Array.from({ length: 5 }, (_, index) => index + 1).filter(level =>
+        document.getElementById(`strategyGrid${prefix}L${level}Enabled_regular`)?.checked
+    );
+}
+
+window.updateBtContinuousGridUi = function (side = 'entry') {
+    ensureBtContinuousGridUi();
+    const entryToggle = document.getElementById('strategyGridContinuous_regular');
+    const exitToggle = document.getElementById('strategyExitGridContinuous_regular');
+    const source = side === 'entry' ? entryToggle : exitToggle;
+    if (!window.__btGridSync && source) {
+        window.__btGridSync = true;
+        if (entryToggle) entryToggle.checked = source.checked;
+        if (exitToggle) exitToggle.checked = source.checked;
+        window.__btGridSync = false;
+    }
+    const enabled = !!entryToggle?.checked && !!exitToggle?.checked;
+    if (enabled) {
+        const atrEntry = document.getElementById('strategyAtrGridContinuous_regular'); const atrExit = document.getElementById('strategyExitAtrGridContinuous_regular');
+        if (atrEntry) atrEntry.checked = false; if (atrExit) atrExit.checked = false;
+        window.updateBtContinuousAtrGridUi?.('entry');
+    }
+    document.getElementById('strategyGridFields_regular')?.classList.toggle('hidden', !enabled);
+    document.getElementById('strategyExitGridFields_regular')?.classList.toggle('hidden', !enabled);
+    ['strategyEntryPctMove_regular', 'strategyEntryPctStyle_regular', 'strategyRegularSlPct', 'strategyRegularTpPct', 'strategyEnablePctTrail', 'strategyRegularTrailPct'].forEach(id => {
+        const control = document.getElementById(id);
+        if (!control) return;
+        control.disabled = enabled || (id === 'strategyRegularTrailPct' && !document.getElementById('strategyEnablePctTrail')?.checked);
+        control.closest('.space-y-1')?.classList.toggle('opacity-40', enabled);
+    });
+    for (const ladderSide of ['entry', 'exit']) {
+        const levels = getBtEnabledGridLevels(ladderSide);
+        for (let level = 1; level <= 5; level++) {
+            const active = levels.includes(level);
+            const row = document.querySelector(`[data-bt-grid-row="${ladderSide}-${level}"]`);
+            row?.classList.toggle('opacity-40', !active);
+            const trigger = document.getElementById(`strategyGrid${ladderSide === 'entry' ? 'Entry' : 'Exit'}L${level}_regular`);
+            const size = document.getElementById(`strategyGrid${ladderSide === 'entry' ? 'Entry' : 'Exit'}L${level}${ladderSide === 'entry' ? 'Buy' : 'Sell'}Pct_regular`);
+            if (trigger) trigger.disabled = !active;
+            if (size) size.disabled = !active;
+        }
+        const total = levels.reduce((sum, level) => sum + Math.max(0, parseFloat(document.getElementById(
+            `strategyGrid${ladderSide === 'entry' ? 'Entry' : 'Exit'}L${level}${ladderSide === 'entry' ? 'Buy' : 'Sell'}Pct_regular`
+        )?.value || 0)), 0);
+        const help = document.getElementById(ladderSide === 'entry' ? 'strategyGridEntryHelp_regular' : 'strategyExitGridHelp_regular');
+        if (help) {
+            help.textContent = `Enabled: ${levels.length ? levels.map(level => `L${level}`).join(', ') : 'none'} • ${ladderSide === 'entry' ? 'Buy' : 'Sell'} allocation: ${total.toFixed(1)}% (maximum 100%).`;
+            help.classList.toggle('text-red-600', !levels.length || total > 100.0001);
+        }
+    }
+};
+
+function ensureBtContinuousAtrGridUi() {
+    if (document.getElementById('strategyAtrGridContinuous_regular')) return;
+    const defaults = [2, 4, 6, 8, 10];
+    const build = (side, parentId) => {
+        const entry = side === 'entry';
+        const parent = document.getElementById(parentId); if (!parent) return;
+        const wrapper = document.createElement('div');
+        wrapper.className = entry ? 'col-span-1 sm:col-span-2 pt-2 border-t border-cyan-500/20' : 'col-span-1 sm:col-span-3 pt-3 border-t border-cyan-500/20';
+        const toggleId = entry ? 'strategyAtrGridContinuous_regular' : 'strategyExitAtrGridContinuous_regular';
+        const fieldsId = entry ? 'strategyAtrGridFields_regular' : 'strategyExitAtrGridFields_regular';
+        const rows = defaults.map((mult, index) => { const level = index + 1; const prefix = entry ? 'strategyAtrGridEntry' : 'strategyAtrGridExit'; return `<div class="grid grid-cols-2 gap-1.5 rounded-lg border border-cyan-100 bg-cyan-50/40 p-1.5" data-bt-atr-grid-row="${side}-${level}"><label class="col-span-2 flex items-center gap-2 cursor-pointer text-cyan-800"><input type="checkbox" id="${prefix}L${level}Enabled_regular" checked class="h-3.5 w-3.5 accent-cyan-500"><span class="text-[0.52rem] font-black uppercase">Enable Level ${level}</span></label><div><label class="block text-[0.5rem] font-black text-cyan-600 uppercase">L${level} ATR Multiple</label><input type="number" step="0.1" min="0.1" max="100" id="${prefix}L${level}Mult_regular" value="${mult}" class="w-full bg-white/60 border border-cyan-200 rounded-lg px-2 py-1 text-xs font-black"></div><div><label class="block text-[0.5rem] font-black text-cyan-600 uppercase">${entry ? 'Buy' : 'Sell'} %</label><input type="number" step="1" min="1" max="100" id="${prefix}L${level}${entry ? 'Buy' : 'Sell'}Pct_regular" value="20" class="w-full bg-white/60 border border-cyan-200 rounded-lg px-2 py-1 text-xs font-black"></div></div>`; }).join('');
+        wrapper.innerHTML = `<label class="flex items-center gap-2 mb-2 cursor-pointer"><input type="checkbox" id="${toggleId}" class="accent-cyan-500"><span class="text-[0.6rem] font-black text-indigo-900 uppercase tracking-widest">Enable Adaptive Continuous ATR ${entry ? 'Buy' : 'Sell'} Grid</span></label><div id="${fieldsId}" class="hidden space-y-2"><div class="text-[0.55rem] font-black text-cyan-900 uppercase">ATR Ladder — Enable • ATR Multiple • ${entry ? 'Buy' : 'Sell'} %</div><div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5">${rows}</div><p id="${fieldsId}Help" class="text-[0.55rem] text-cyan-800 font-bold"></p><p class="text-[0.52rem] text-slate-500 font-semibold">Anchor ATR is kept for cycle context; active trigger prices recalculate from bounded live ATR as volatility changes.</p></div>`;
+        parent.appendChild(wrapper);
+        wrapper.querySelectorAll('input').forEach(input => input.addEventListener(input.type === 'checkbox' ? 'change' : 'input', () => window.updateBtContinuousAtrGridUi?.(side)));
+    };
+    build('entry', 'strategyEntryAtrFields_regular'); build('exit', 'exitFieldsATR');
+    ensureBtSmartDynamicGridControls('atr', 'strategyAtrGridFields_regular');
+}
+
+function getBtEnabledAtrGridLevels(side) { const prefix = side === 'entry' ? 'strategyAtrGridEntry' : 'strategyAtrGridExit'; return Array.from({ length: 5 }, (_, i) => i + 1).filter(level => document.getElementById(`${prefix}L${level}Enabled_regular`)?.checked); }
+
+window.updateBtContinuousAtrGridUi = function (side = 'entry') {
+    ensureBtContinuousAtrGridUi();
+    const entryToggle = document.getElementById('strategyAtrGridContinuous_regular'); const exitToggle = document.getElementById('strategyExitAtrGridContinuous_regular'); const source = side === 'entry' ? entryToggle : exitToggle;
+    if (!window.__btAtrGridSync && source) { window.__btAtrGridSync = true; if (entryToggle) entryToggle.checked = source.checked; if (exitToggle) exitToggle.checked = source.checked; window.__btAtrGridSync = false; }
+    const enabled = !!entryToggle?.checked && !!exitToggle?.checked;
+    if (enabled) {
+        const pctEntry = document.getElementById('strategyGridContinuous_regular'); const pctExit = document.getElementById('strategyExitGridContinuous_regular');
+        if (pctEntry) pctEntry.checked = false; if (pctExit) pctExit.checked = false;
+        window.updateBtContinuousGridUi?.('entry');
+    }
+    document.getElementById('strategyAtrGridFields_regular')?.classList.toggle('hidden', !enabled); document.getElementById('strategyExitAtrGridFields_regular')?.classList.toggle('hidden', !enabled);
+    ['strategyEntryAtrMult_regular', 'strategyEntryAtrStyle_regular', 'strategyAtrStopMult', 'strategyAtrTpMult', 'strategyEnableAtrTrail', 'strategyAtrTrailMult'].forEach(id => { const el = document.getElementById(id); if (!el) return; el.disabled = enabled || (id === 'strategyAtrTrailMult' && !document.getElementById('strategyEnableAtrTrail')?.checked); el.closest('.space-y-1')?.classList.toggle('opacity-40', enabled); });
+    for (const ladderSide of ['entry', 'exit']) { const levels = getBtEnabledAtrGridLevels(ladderSide); const prefix = ladderSide === 'entry' ? 'strategyAtrGridEntry' : 'strategyAtrGridExit'; for (let level = 1; level <= 5; level++) { const active = levels.includes(level); document.querySelector(`[data-bt-atr-grid-row="${ladderSide}-${level}"]`)?.classList.toggle('opacity-40', !active); const mult = document.getElementById(`${prefix}L${level}Mult_regular`); const size = document.getElementById(`${prefix}L${level}${ladderSide === 'entry' ? 'Buy' : 'Sell'}Pct_regular`); if (mult) mult.disabled = !active; if (size) size.disabled = !active; } const total = levels.reduce((sum, level) => sum + Number(document.getElementById(`${prefix}L${level}${ladderSide === 'entry' ? 'Buy' : 'Sell'}Pct_regular`)?.value || 0), 0); const help = document.getElementById(`${ladderSide === 'entry' ? 'strategyAtrGridFields_regular' : 'strategyExitAtrGridFields_regular'}Help`); if (help) { help.textContent = `Enabled: ${levels.length ? levels.map(level => `L${level}`).join(', ') : 'none'} • Allocation: ${total.toFixed(1)}% (maximum 100%).`; help.classList.toggle('text-red-600', !levels.length || total > 100.0001); } }
+};
+
+function validateBtContinuousGridSettings(payload, buyMode, sellMode) {
+    const atrEnabled = payload.atr_grid_continuous_mode || payload.exit_atr_grid_continuous_mode;
+    if (!payload.grid_continuous_mode && !payload.exit_grid_continuous_mode && !atrEnabled) return null;
+    if (atrEnabled && (payload.grid_continuous_mode || payload.exit_grid_continuous_mode)) return 'Choose either the Percentage ladder or the ATR ladder, not both.';
+    if (atrEnabled) {
+        if (!payload.atr_grid_continuous_mode || !payload.exit_atr_grid_continuous_mode) return 'Enable both adaptive ATR Buy and Sell ladders.';
+        if (!['atr', 'hybrid_atr'].includes(buyMode) || !['sltp', 'hybrid', 'atr', 'hybrid_atr'].includes(sellMode)) return 'ATR grid requires ATR or Hybrid ATR Entry and ATR / Volatility or Hybrid ATR Exit.';
+        for (const side of ['entry', 'exit']) { const levels = getBtEnabledAtrGridLevels(side); if (!levels.length) return `Enable at least one ATR ${side} level.`; const values = levels.map(level => Number(payload[`grid_atr_${side}_l${level}_mult`])); if (values.some((value, index) => !Number.isFinite(value) || value < 0.1 || (index > 0 && value <= values[index - 1]))) return 'ATR multiples must be valid and increase across enabled levels.'; const suffix = side === 'entry' ? 'buy_pct' : 'sell_pct'; const total = levels.reduce((sum, level) => sum + Number(payload[`grid_atr_${side}_l${level}_${suffix}`] || 0), 0); if (total <= 0 || total > 100.0001) return `ATR ${side} allocation must total between 1% and 100%.`; }
+        return null;
+    }
+    if (!payload.grid_continuous_mode || !payload.exit_grid_continuous_mode) return 'Enable both adaptive Buy and Sell ladders.';
+    if (!['percentage', 'hybrid_pct'].includes(buyMode) || !['percentage', 'hybrid_pct'].includes(sellMode)) return 'Adaptive grid requires Percentage or Hybrid Percentage for both Entry and Exit.';
+    for (const side of ['entry', 'exit']) {
+        const levels = getBtEnabledGridLevels(side);
+        if (!levels.length) return `Enable at least one ${side === 'entry' ? 'buy' : 'sell'} ladder level.`;
+        const triggers = levels.map(level => Number(payload[`grid_${side}_l${level}_pct`]));
+        if (triggers.some((value, index) => !Number.isFinite(value) || value < 0.1 || (index > 0 && value <= triggers[index - 1]))) return `${side === 'entry' ? 'Buy' : 'Sell'} ladder percentages must be valid and increase across enabled levels.`;
+        const sizeKey = side === 'entry' ? 'buy_pct' : 'sell_pct';
+        const total = levels.reduce((sum, level) => sum + Number(payload[`grid_${side}_l${level}_${sizeKey}`] || 0), 0);
+        if (total <= 0 || total > 100.0001) return `${side === 'entry' ? 'Buy' : 'Sell'} ladder allocation must total between 1% and 100%.`;
+    }
+    return null;
+}
+
 function getBtRegularStrategyPayload() {
+    ensureBtContinuousGridUi();
+    ensureBtContinuousAtrGridUi();
     const market = getBtRegularMarketSessionPayload();
     const smartType = document.getElementById('strategyRegularSmartReentryType')?.value || 'RSI';
     return {
@@ -272,12 +470,38 @@ function getBtRegularStrategyPayload() {
         entry_pct_move: parseFloat(document.getElementById('strategyEntryPctMove_regular')?.value || '2'),
         entry_pct_style: document.getElementById('strategyEntryPctStyle_regular')?.value || 'dip_reclaim',
         grid_continuous_mode: document.getElementById('strategyGridContinuous_regular')?.checked || false,
-        grid_buy_allocation: parseFloat(document.getElementById('strategyGridBuyAllocation_regular')?.value || '1000'),
-        grid_sell_pct: parseFloat(document.getElementById('strategyGridSellPct_regular')?.value || '50'),
-        grid_max_levels: parseInt(document.getElementById('strategyGridMaxLevels_regular')?.value || '5'),
+        continuous_grid_ladder_version: 3,
+        ...getBtSmartDynamicGridSettings(),
+        grid_max_levels: 5,
+        ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => {
+            const level = index + 1;
+            return [
+                [`grid_entry_l${level}_pct`, parseFloat(document.getElementById(`strategyGridEntryL${level}_regular`)?.value || level)],
+                [`grid_entry_l${level}_buy_pct`, parseFloat(document.getElementById(`strategyGridEntryL${level}BuyPct_regular`)?.value || [40, 25, 15, 10, 10][level - 1])],
+                [`grid_entry_l${level}_enabled`, document.getElementById(`strategyGridEntryL${level}Enabled_regular`)?.checked ?? true]
+            ];
+        }).flat()),
         exit_grid_continuous_mode: document.getElementById('strategyExitGridContinuous_regular')?.checked || false,
-        exit_grid_sell_pct: parseFloat(document.getElementById('strategyExitGridSellPct_regular')?.value || '50'),
-        exit_grid_max_levels: parseInt(document.getElementById('strategyExitGridMaxLevels_regular')?.value || '5'),
+        exit_grid_sell_pct: 20,
+        exit_grid_max_levels: 5,
+        ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => {
+            const level = index + 1;
+            return [
+                [`grid_exit_l${level}_pct`, parseFloat(document.getElementById(`strategyGridExitL${level}_regular`)?.value || level)],
+                [`grid_exit_l${level}_sell_pct`, parseFloat(document.getElementById(`strategyGridExitL${level}SellPct_regular`)?.value || [10, 10, 15, 20, 20][level - 1])],
+                [`grid_exit_l${level}_enabled`, document.getElementById(`strategyGridExitL${level}Enabled_regular`)?.checked ?? true]
+            ];
+        }).flat()),
+        atr_grid_continuous_mode: document.getElementById('strategyAtrGridContinuous_regular')?.checked || false,
+        exit_atr_grid_continuous_mode: document.getElementById('strategyExitAtrGridContinuous_regular')?.checked || false,
+        ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => { const level = index + 1; return [
+            [`grid_atr_entry_l${level}_mult`, parseFloat(document.getElementById(`strategyAtrGridEntryL${level}Mult_regular`)?.value || level * 2)],
+            [`grid_atr_entry_l${level}_buy_pct`, parseFloat(document.getElementById(`strategyAtrGridEntryL${level}BuyPct_regular`)?.value || 20)],
+            [`grid_atr_entry_l${level}_enabled`, document.getElementById(`strategyAtrGridEntryL${level}Enabled_regular`)?.checked ?? true],
+            [`grid_atr_exit_l${level}_mult`, parseFloat(document.getElementById(`strategyAtrGridExitL${level}Mult_regular`)?.value || level * 2)],
+            [`grid_atr_exit_l${level}_sell_pct`, parseFloat(document.getElementById(`strategyAtrGridExitL${level}SellPct_regular`)?.value || 20)],
+            [`grid_atr_exit_l${level}_enabled`, document.getElementById(`strategyAtrGridExitL${level}Enabled_regular`)?.checked ?? true],
+        ]; }).flat()),
         swing_entry_mode: document.getElementById('strategySwingEntryMode_regular')?.value || 'bounce_retest',
         swing_entry_lookback_days: getBtSwingLookbackDays('entry'),
         swing_entry_lookback_mode: document.getElementById('strategySwingEntryLookback_regular')?.value || '20',
@@ -286,6 +510,10 @@ function getBtRegularStrategyPayload() {
         custom_stop_loss_price: parseFloat(document.getElementById('strategyCustomStopLossPrice_regular')?.value || '0'),
         custom_take_profit_price: parseFloat(document.getElementById('strategyCustomTakeProfitPrice_regular')?.value || '0'),
         enable_signal_reset: document.getElementById('strategyRegularSignalReset')?.checked || false,
+        post_stop_stabilization_bars: Math.max(0, parseInt(document.getElementById('strategyPostStopBars_regular')?.value || '3', 10)),
+        max_consecutive_losses: Math.max(0, parseInt(document.getElementById('strategyMaxConsecutiveLosses_regular')?.value || '2', 10)),
+        enable_liquidity_filter: true,
+        min_relative_volume: 0.10,
         enable_smart_reentry: document.getElementById('strategyRegularSmartReentry')?.checked || false,
         smart_reentry_type: smartType,
         smart_reentry_rsi_call_max: parseFloat(document.getElementById('strategyRegularRsiCallMax')?.value || '70'),
@@ -294,6 +522,13 @@ function getBtRegularStrategyPayload() {
         smart_reentry_vwap_put_max_dist_pct: parseFloat(document.getElementById('strategyRegularVwapPutMaxPct')?.value || '0.5')
     };
 }
+
+document.addEventListener('DOMContentLoaded', () => {
+    ensureBtContinuousGridUi();
+    ensureBtContinuousAtrGridUi();
+    window.updateBtContinuousGridUi('entry');
+    window.updateBtContinuousAtrGridUi('entry');
+});
 // ──────────────────────────────────────────────
 // BACKTEST CENTER LOGIC v2.0
 // ──────────────────────────────────────────────
@@ -315,7 +550,7 @@ function getBacktestWorkspaceShownSet(mode = 'regular', ticker = '') {
         || (typeof manualBtTicker !== 'undefined' ? manualBtTicker : '')
         || document.getElementById('btTicker')?.value
         || '';
-    const fallback = (window.STANDARD_INDICATOR_NAMES || []).slice(0, 10);
+    const fallback = (window.STANDARD_INDICATOR_NAMES || []).slice(0, 12);
     const shown = window.IndicatorWorkspace?.getShownForScope?.(contextLabel, activeTicker)
         || window.IndicatorWorkspace?.getShown?.(contextLabel)
         || fallback;
@@ -351,6 +586,9 @@ function getBtSignalThreshold(mode, type, indicatorCount = null) {
 
 // ── Backtest Chart State ─────────────────────────────────────────────────
 var btChart = null;            // LightweightCharts chart instance
+var btVolumeProfileOverlay = null;
+var btVolumeProfile = {};
+var btVolumeProfileVisualSeries = {};
 var btCandleSeries = null;     // Candlestick series
 var btEqSeries = null;         // Equity curve line series
 var btVolumeSeries = null;     // Volume histogram series
@@ -422,10 +660,12 @@ var manualBtCandleSeries = null;
 var manualBtVolumeSeries = null;
 var manualBtExtHoursSeries = null;
 var manualBtOverlaySeries = {};
+var manualBtVolumeProfileOverlay = null;
 var manualBtOscCharts = {};
 var manualBtOscSeries = {};
 var manualBtResizeObserver = null;
 var manualBtHistory = [];
+var manualBtVolumeProfile = {};
 var manualBtDisplayHistory = [];
 var manualBtSignals = {};
 var manualBtRange = '1M';
@@ -449,11 +689,11 @@ var manualBtClickHandler = null;
 var manualBtOverlayPriceLines = {};
 var manualBtOverlayLabelMeta = {};
 var manualBtVisibleHistory = [];
-var manualBtDataSource = 'Webull';
+var manualBtDataSource = 'Alpaca';
 var manualBtTimeframe = null;
 var manualBtTicker = '';
 var manualBtDays = 90;
-var manualBtSourcePreference = 'webull';
+var manualBtSourcePreference = 'alpaca';
 var manualBtReplayDataCache = new Map();
 const MANUAL_BT_CHART_PREVIEW_INDICATORS = [
     ...(window.STANDARD_INDICATOR_NAMES || [
@@ -461,7 +701,6 @@ const MANUAL_BT_CHART_PREVIEW_INDICATORS = [
         'VWAP', 'Volume Profile', 'SMA', 'Prior Day High/Low',
         'Pivot Points (S/R)', 'Swing Points', 'Mystic Pulse', 'Candle Patterns',
     ]),
-    'Botbulls4 News AI',
     'BotBulls1',
     'BotBulls2',
     'BotBulls3',
@@ -626,6 +865,35 @@ document.addEventListener('DOMContentLoaded', () => {
     ensureDailyHighLowBacktestIndicatorCards();
     disableBacktestBotBulls4Indicator();
 
+window.syncBtDaysPreset = function(presetVal) {
+    const input = document.getElementById('btDays');
+    const customWrap = document.getElementById('btDaysCustomWrap');
+    if (!input) return;
+    if (presetVal === 'custom') {
+        customWrap?.classList.remove('hidden');
+        input.value = '';
+        input.focus();
+    } else {
+        customWrap?.classList.add('hidden');
+        input.value = presetVal;
+    }
+};
+
+window.syncBtDaysInput = function(rawVal) {
+    const select = document.getElementById('btDaysPreset');
+    const customWrap = document.getElementById('btDaysCustomWrap');
+    if (!select) return;
+    const val = String(rawVal).trim();
+    const matchingOption = Array.from(select.options).find(opt => opt.value === val && opt.value !== 'custom');
+    if (matchingOption) {
+        select.value = val;
+        customWrap?.classList.add('hidden');
+    } else {
+        select.value = 'custom';
+        customWrap?.classList.remove('hidden');
+    }
+};
+
     // Attach listeners to indicator checkboxes for dynamic slider
     document.querySelectorAll('.strategy-indicator-check').forEach(cb => {
         cb.addEventListener('change', syncBacktestSliderRange);
@@ -638,11 +906,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const updateDaysVal = (e) => {
             const tf = e ? e.target.value : btTfRegular?.value;
             if (!tf) return;
-            if (tf === '1Min') btDaysInput.value = 7;
-            else if (['5Min', '10Min', '15Min', '30Min'].includes(tf)) btDaysInput.value = 60;
-            else if (tf === '1Hour') btDaysInput.value = 365;
-            else if (tf === '4Hour') btDaysInput.value = 730;
-            else if (tf === '1Day') btDaysInput.value = 1825;
+            let targetDays = 90;
+            if (tf === '1Min') targetDays = 7;
+            else if (['5Min', '10Min', '15Min', '30Min'].includes(tf)) targetDays = 60;
+            else if (tf === '1Hour') targetDays = 365;
+            else if (tf === '4Hour') targetDays = 730;
+            else if (tf === '1Day') targetDays = 1825;
+            btDaysInput.value = targetDays;
+            window.syncBtDaysInput(targetDays);
         };
         btTfRegular?.addEventListener('change', updateDaysVal);
         btTfRegular?.addEventListener('change', () => window.updateBtDefaultCooldownLabel?.());
@@ -1415,8 +1686,8 @@ function manualBtSaveIndicatorPrefs(prefs) {
 }
 
 function manualBtSourcePref() {
-    const raw = (document.getElementById('manualBtDataSourceSelect')?.value || manualBtSourcePreference || 'webull').toLowerCase();
-    return raw === 'yahoo' ? 'yahoo' : 'webull';
+    const raw = (document.getElementById('manualBtDataSourceSelect')?.value || manualBtSourcePreference || 'alpaca').toLowerCase();
+    return raw === 'yahoo' ? 'yahoo' : 'alpaca';
 }
 
 function manualBtStableJson(value) {
@@ -1430,7 +1701,7 @@ function manualBtReplayCacheKey({ ticker, timeframe, days, source, marketSession
         String(ticker || '').toUpperCase(),
         String(timeframe || ''),
         String(days || ''),
-        String(source || 'webull').toLowerCase(),
+        String(source || 'alpaca').toLowerCase(),
         String(marketSession || 'Regular'),
         manualBtStableJson([...(indicators || [])].sort()),
         manualBtStableJson(overrides || {}),
@@ -1506,6 +1777,19 @@ function manualBtCleanLineData(data = []) {
     return Array.from(byTime.values()).sort((a, b) => Number(a.time) - Number(b.time));
 }
 
+function manualBtCleanSeriesData(data = []) {
+    const byTime = new Map();
+    (Array.isArray(data) ? data : []).forEach(point => {
+        if (!point || !Number.isFinite(Number(point.time))) return;
+        const time = Number(point.time);
+        const value = Number(point.value);
+        byTime.set(time, Number.isFinite(value)
+            ? { ...point, time, value }
+            : { time });
+    });
+    return Array.from(byTime.values()).sort((a, b) => a.time - b.time);
+}
+
 function manualBtCleanCandles(data = []) {
     const byTime = new Map();
     (Array.isArray(data) ? data : []).forEach(bar => {
@@ -1522,6 +1806,14 @@ function manualBtCleanCandles(data = []) {
         });
     });
     return Array.from(byTime.values()).sort((a, b) => Number(a.time) - Number(b.time));
+}
+
+function manualBtDisplayCandles(data = []) {
+    const candles = manualBtCleanCandles(data);
+    if (!manualBtSelectedIndicators().includes('Candle Patterns')) return candles;
+    return window.StandardIndicatorSubcharts?.highlightCandlePatternContext?.(candles, candles, {
+        rolling24Hours: isCrypto(manualBtTicker || ''),
+    }) || candles;
 }
 
 function manualBtRangeStart(history) {
@@ -1546,16 +1838,14 @@ function manualBtRangeStart(history) {
 }
 
 function manualBtMaxDaysForTimeframe(tf = manualBtTimeframe || '1Hour', source = manualBtSourcePref()) {
-    const src = String(source || 'webull').toLowerCase();
-    if (src === 'webull') {
-        if (tf === '1Min') return 1;
-        if (['5Min', '10Min', '15Min', '30Min'].includes(tf)) return 5;
-        if (tf === '1Hour') return 31;
-        if (tf === '4Hour') return 93;
+    const src = String(source || 'alpaca').toLowerCase();
+    if (src === 'yahoo') {
+        if (tf === '1Min') return 7;
+        if (['5Min', '10Min', '15Min', '30Min'].includes(tf)) return 60;
+        if (['1Hour', '4Hour'].includes(tf)) return 730;
+        return 1825;
     }
-    if (tf === '1Min') return 7;
-    if (['5Min', '10Min', '15Min', '30Min'].includes(tf)) return 60;
-    if (['1Hour', '4Hour'].includes(tf)) return 730;
+    if (['1Min', '2Min', '3Min', '5Min', '10Min', '15Min', '30Min', '1Hour', '2Hour', '4Hour'].includes(tf)) return 366;
     return 1825;
 }
 
@@ -1579,21 +1869,13 @@ function manualBtRangeDays(range = manualBtRange, maxDays = manualBtMaxDaysForTi
     return 31;
 }
 
-function manualBtWebullFastRange(tf = manualBtTimeframe || '1Hour') {
-    if (tf === '1Min') return '1D';
-    if (['5Min', '10Min', '15Min', '30Min'].includes(tf)) return '5D';
-    if (tf === '1Hour') return '1M';
-    if (tf === '4Hour') return '3M';
-    return '5Y';
-}
-
 function manualBtCompatibleRange(range = manualBtRange, tf = manualBtTimeframe || '1Hour', source = manualBtSourcePref()) {
     const maxDays = manualBtMaxDaysForTimeframe(tf, source);
     const days = manualBtRangeDays(range, maxDays);
     if (days <= maxDays) return range;
-    if (String(source || 'webull').toLowerCase() === 'webull') return manualBtWebullFastRange(tf);
     if (maxDays <= 7) return '5D';
     if (maxDays <= 60) return '1M';
+    if (maxDays <= 366) return '1Y';
     if (maxDays <= 730) return '1Y';
     return range === 'MAX' ? '5Y' : range;
 }
@@ -1621,9 +1903,7 @@ function manualBtLoadOrRenderAfterViewChange() {
 
 function manualBtDisplayTime(time, timeframe = manualBtTimeframe || '1Hour') {
     const sourceTime = Number(time);
-    if (!Number.isFinite(sourceTime)) return time;
-    const seconds = getBtChartTimeframeSeconds(timeframe);
-    return sourceTime + (seconds > 0 && seconds < 86400 ? seconds : 0);
+    return Number.isFinite(sourceTime) ? sourceTime : time;
 }
 
 function manualBtDisplayCandle(candle, timeframe = manualBtTimeframe || '1Hour') {
@@ -1637,8 +1917,9 @@ function manualBtDisplayCandle(candle, timeframe = manualBtTimeframe || '1Hour')
 }
 
 function manualBtMarketSessionKind(bar) {
-    const sourceTime = Number(bar?.source_time);
-    const d = new Date((Number.isFinite(sourceTime) ? sourceTime : Number(bar?.time)) * 1000);
+    const rawTime = bar?.source_time != null ? Number(bar.source_time) : Number(bar?.time);
+    if (!Number.isFinite(rawTime)) return 'regular';
+    const d = new Date(rawTime * 1000);
     const parts = new Intl.DateTimeFormat('en-US', {
         timeZone: 'America/New_York',
         weekday: 'short',
@@ -1651,7 +1932,7 @@ function manualBtMarketSessionKind(bar) {
     const mins = (Number(values.hour) % 24) * 60 + Number(values.minute);
     if (mins >= 4 * 60 && mins < 9 * 60 + 30) return 'pre';
     if (mins >= 9 * 60 + 30 && mins < 16 * 60) return 'regular';
-    if (mins >= 16 * 60 && mins < 20 * 60) return 'after';
+    if (mins >= 16 * 60 && mins <= 20 * 60) return 'after';
     return 'closed';
 }
 
@@ -1670,7 +1951,7 @@ function manualBtExtendedHoursBackground(history = []) {
         return {
             time: Number(bar.time),
             value: isExtended ? 100 : 0,
-            color: isExtended ? 'rgba(100, 116, 139, 0.12)' : 'rgba(0,0,0,0)',
+            color: isExtended ? 'rgba(99, 102, 241, 0.10)' : 'rgba(0,0,0,0)',
         };
     });
 }
@@ -1683,7 +1964,10 @@ function manualBtFilteredHistory(source = manualBtHistory) {
     const tf = manualBtTimeframe || '1Hour';
     if (isCrypto(ticker) || manualBtSession === 'crypto24' || String(tf).includes('Day')) return history;
     if (manualBtSession === 'extended') {
-        return history.filter(bar => manualBtMarketSessionKind(bar) !== 'closed');
+        return history.filter(bar => {
+            const kind = manualBtMarketSessionKind(bar);
+            return kind === 'pre' || kind === 'regular' || kind === 'after';
+        });
     }
     return history.filter(manualBtIsRegularBar);
 }
@@ -1864,6 +2148,10 @@ function manualBtDestroyChart(preserveReplay = false) {
     manualBtOscCharts = {};
     manualBtOscSeries = {};
     window.StandardIndicatorSubcharts?.destroy('backtest');
+    if (manualBtVolumeProfileOverlay) {
+        try { manualBtVolumeProfileOverlay.destroy(); } catch (e) {}
+        manualBtVolumeProfileOverlay = null;
+    }
     if (manualBtChart) {
         try { manualBtChart.remove(); } catch (e) {}
     }
@@ -1891,6 +2179,10 @@ function manualBtAddLine(key, data, options = {}) {
     });
     const clean = Array.from(byTime.values()).sort((left, right) => left.time - right.time);
     if (clean.filter(point => Number.isFinite(Number(point?.value))).length < 2) return null;
+    if (manualBtOverlaySeries[key]) {
+        manualBtOverlaySeries[key].setData(clean);
+        return manualBtOverlaySeries[key];
+    }
     const series = manualBtChart.addLineSeries({
         priceLineVisible: false,
         lastValueVisible: false,
@@ -1915,6 +2207,7 @@ function manualBtIndicatorParamValue(key, fallback) {
 
 function manualBtRightVisiblePoint(data) {
     if (!Array.isArray(data) || !data.length) return null;
+    const isValuePoint = point => Number.isFinite(Number(point?.value));
     let from = NaN;
     let to = NaN;
     try {
@@ -1925,13 +2218,16 @@ function manualBtRightVisiblePoint(data) {
     if (Number.isFinite(to)) {
         for (let index = data.length - 1; index >= 0; index -= 1) {
             const pointTime = Number(data[index]?.time);
-            if (pointTime <= to && (!Number.isFinite(from) || pointTime >= from)) return data[index];
+            if (isValuePoint(data[index]) && pointTime <= to && (!Number.isFinite(from) || pointTime >= from)) return data[index];
         }
         for (let index = data.length - 1; index >= 0; index -= 1) {
-            if (Number(data[index]?.time) <= to) return data[index];
+            if (isValuePoint(data[index]) && Number(data[index]?.time) <= to) return data[index];
         }
     }
-    return data[data.length - 1];
+    for (let index = data.length - 1; index >= 0; index -= 1) {
+        if (isValuePoint(data[index])) return data[index];
+    }
+    return null;
 }
 
 function manualBtRefreshOverlayPriceLineLabel(key) {
@@ -1960,7 +2256,7 @@ function manualBtRefreshOverlayPriceLineLabels() {
 }
 
 function manualBtAddLabeledLine(key, data, options, labelTitle) {
-    const clean = manualBtCleanLineData(data);
+    const clean = manualBtCleanSeriesData(data);
     const series = manualBtAddLine(key, clean, options);
     if (!series) return null;
     manualBtOverlayLabelMeta[key] = { data: clean, options, labelTitle };
@@ -1986,6 +2282,23 @@ function manualBtLineData(history, key) {
         .map(bar => ({ time: Number(bar.time), value: Number(bar[key]) }));
 }
 
+function manualBtSegmentedLineData(history, key) {
+    const points = manualBtLineData(history, key);
+    if (points.length < 2) return points;
+    const segmented = [points[0]];
+    let previous = points[0];
+    for (let i = 1; i < points.length; i += 1) {
+        const point = points[i];
+        if (Math.abs(point.value - previous.value) > 1e-9) {
+            const breakTime = point.time - 1;
+            if (breakTime > previous.time) segmented.push({ time: breakTime });
+        }
+        segmented.push(point);
+        previous = point;
+    }
+    return segmented;
+}
+
 function manualBtRenderOverlays(history) {
     manualBtOverlaySeries = {};
     manualBtOverlayPriceLines = {};
@@ -1993,10 +2306,21 @@ function manualBtRenderOverlays(history) {
     const enabled = new Set(manualBtSelectedIndicators());
     if (enabled.has('EMA Cross')) {
         manualBtAddLine('ema_fast', manualBtLineData(history, 'ema_fast'), { color: '#3b82f6', lineWidth: 1.5 });
-        manualBtAddLine('ema_slow', manualBtLineData(history, 'ema_slow'), { color: '#ef4444', lineWidth: 1.5 });
+        if (manualBtIndicatorParamValue('EMA_USE_SECOND_LINE', 1) !== 0) {
+            manualBtAddLine('ema_slow', manualBtLineData(history, 'ema_slow'), { color: '#ef4444', lineWidth: 1.5 });
+        }
     }
     if (enabled.has('VWAP')) manualBtAddLine('vwap', manualBtLineData(history, 'vwap'), { color: '#000000', lineWidth: 2 });
-    if (enabled.has('SMA')) manualBtAddLine('sma', manualBtLineData(history, 'sma'), { color: '#8b5cf6', lineWidth: 2.5 });
+    if (enabled.has('SMA')) {
+        manualBtAddLine('sma', manualBtLineData(history, 'sma'), { color: '#8b5cf6', lineWidth: 2.5 });
+        if (manualBtIndicatorParamValue('SMA_USE_SECOND_LINE', 1) !== 0) {
+            manualBtAddLine('sma_secondary', manualBtLineData(history, 'sma_secondary'), {
+                color: '#64748b',
+                lineWidth: 2,
+                lineStyle: 2,
+            });
+        }
+    }
     if (enabled.has('Supertrend')) {
         manualBtAddLine('supertrend', (history || [])
             .filter(bar => bar && Number.isFinite(Number(bar.supertrend)))
@@ -2029,8 +2353,8 @@ function manualBtRenderOverlays(history) {
     if (enabled.has('Swing Points')) {
         const levelCount = Math.min(5, Math.max(1, Math.round(manualBtIndicatorParamValue('SWING_POINTS_LEVEL_COUNT', 1))));
         [1, 2, 3, 4, 5].slice(0, levelCount).forEach(level => {
-            manualBtAddLabeledLine(`swing_support_${level}`, manualBtLineData(history, `swing_support_${level}`), { color: level === 1 ? '#16a34a' : 'rgba(22,163,74,0.72)', lineWidth: level === 1 ? 3 : 2, lineStyle: level === 1 ? 1 : 2 }, `SW S${level}`);
-            manualBtAddLabeledLine(`swing_resistance_${level}`, manualBtLineData(history, `swing_resistance_${level}`), { color: level === 1 ? '#dc2626' : 'rgba(220,38,38,0.72)', lineWidth: level === 1 ? 3 : 2, lineStyle: level === 1 ? 1 : 2 }, `SW R${level}`);
+            manualBtAddLabeledLine(`swing_support_${level}`, manualBtSegmentedLineData(history, `swing_support_${level}`), { color: level === 1 ? '#16a34a' : 'rgba(22,163,74,0.72)', lineWidth: level === 1 ? 3 : 2, lineStyle: level === 1 ? 1 : 2 }, `SW S${level}`);
+            manualBtAddLabeledLine(`swing_resistance_${level}`, manualBtSegmentedLineData(history, `swing_resistance_${level}`), { color: level === 1 ? '#dc2626' : 'rgba(220,38,38,0.72)', lineWidth: level === 1 ? 3 : 2, lineStyle: level === 1 ? 1 : 2 }, `SW R${level}`);
         });
     }
     if (enabled.has('BotBulls2')) {
@@ -2088,6 +2412,11 @@ function manualBtRenderOverlays(history) {
             });
         });
     }
+    manualBtVolumeProfileOverlay?.setCandles(history);
+    manualBtVolumeProfileOverlay?.setProfile(
+        manualBtVolumeProfile,
+        enabled.has('Volume Profile'),
+    );
 }
 
 function manualBtMarkers(history) {
@@ -2146,9 +2475,11 @@ function manualBtMarkers(history) {
             });
         }
     }
-    const last = history[history.length - 1];
-    if (enabled.has('Candle Patterns') && last?.cdl_name && last.cdl_name !== 'Neutral') {
-        markers.push({ time: Number(last.time), position: last.cdl_bullish ? 'belowBar' : 'aboveBar', color: last.cdl_bullish ? '#10b981' : '#ef4444', shape: last.cdl_bullish ? 'arrowUp' : 'arrowDown', text: last.cdl_name, size: 1.1 });
+    if (enabled.has('Candle Patterns')) {
+        const candlePatternMarkers = window.StandardIndicatorSubcharts?.buildCandlePatternMarkers?.(history, {
+            rolling24Hours: isCrypto(manualBtTicker || ''),
+        }) || [];
+        markers.push(...candlePatternMarkers);
     }
     if (manualBtTrade.entry) {
         markers.push({ time: Number(manualBtTrade.entry.time), position: 'belowBar', color: '#111827', shape: 'arrowUp', text: `Entry $${manualBtFormatPrice(manualBtTrade.entry.price)}`, size: 2 });
@@ -2176,12 +2507,73 @@ function manualBtStatusFor(indicator, bar) {
         const bear = Number.isFinite(line) && Number.isFinite(sig) ? line < sig : hist < 0;
         return bull ? { signal: 'BULLISH', reason: 'MACD above signal' } : bear ? { signal: 'BEARISH', reason: 'MACD below signal' } : { signal: 'NEUTRAL', reason: 'Flat MACD' };
     }
-    if (indicator === 'EMA Cross') return Number(bar.ema_fast) > Number(bar.ema_slow) ? { signal: 'BULLISH', reason: 'Fast EMA above slow' } : { signal: 'BEARISH', reason: 'Fast EMA below slow' };
-    if (indicator === 'ADX Trend') return Number(bar.di_plus) > Number(bar.di_minus) ? { signal: 'BULLISH', reason: `DI+ > DI- · ADX ${manualBtFormatPrice(bar.adx)}` } : { signal: 'BEARISH', reason: `DI- > DI+ · ADX ${manualBtFormatPrice(bar.adx)}` };
+    if (indicator === 'EMA Cross') {
+        const primary = Number(bar.ema_fast);
+        const primaryPeriod = Math.max(1, Math.trunc(manualBtIndicatorParamValue('EMA_FAST', 9)));
+        const useSecond = manualBtIndicatorParamValue('EMA_USE_SECOND_LINE', 1) !== 0;
+        if (bar.ema_fast === null || bar.ema_fast === undefined || !Number.isFinite(primary)) {
+            return { signal: 'NEUTRAL', reason: `EMA ${primaryPeriod} warming up` };
+        }
+        if (!useSecond) {
+            return close >= primary
+                ? { signal: 'BULLISH', reason: `Price above EMA ${primaryPeriod}` }
+                : { signal: 'BEARISH', reason: `Price below EMA ${primaryPeriod}` };
+        }
+        const secondary = Number(bar.ema_slow);
+        const secondaryPeriod = Math.max(1, Math.trunc(manualBtIndicatorParamValue('EMA_SLOW', 21)));
+        if (bar.ema_slow === null || bar.ema_slow === undefined || !Number.isFinite(secondary)) {
+            return { signal: 'NEUTRAL', reason: 'EMA crossover warming up' };
+        }
+        if (primaryPeriod === secondaryPeriod) return { signal: 'NEUTRAL', reason: 'Choose different EMA periods' };
+        const fast = primaryPeriod < secondaryPeriod ? primary : secondary;
+        const slow = primaryPeriod < secondaryPeriod ? secondary : primary;
+        const fastPeriod = Math.min(primaryPeriod, secondaryPeriod);
+        const slowPeriod = Math.max(primaryPeriod, secondaryPeriod);
+        if (fast > slow) return { signal: 'BULLISH', reason: `EMA ${fastPeriod} above ${slowPeriod}` };
+        if (fast < slow) return { signal: 'BEARISH', reason: `EMA ${fastPeriod} below ${slowPeriod}` };
+        return { signal: 'NEUTRAL', reason: `EMA ${fastPeriod} and ${slowPeriod} equal` };
+    }
+    if (indicator === 'ADX Trend') {
+        const adx = Number(bar.adx), plus = Number(bar.di_plus), minus = Number(bar.di_minus);
+        const threshold = Number(manualBtIndicatorParamValue('ADX_TRENDING_THRESHOLD', 25));
+        if (![adx, plus, minus].every(Number.isFinite)) return { signal: 'NEUTRAL', reason: 'ADX warming up' };
+        if (adx < threshold) return { signal: 'NEUTRAL', reason: `ADX ${manualBtFormatPrice(adx)} below ${threshold}` };
+        if (plus > minus) return { signal: 'BULLISH', reason: `+DI > −DI · ADX ${manualBtFormatPrice(adx)}` };
+        if (minus > plus) return { signal: 'BEARISH', reason: `−DI > +DI · ADX ${manualBtFormatPrice(adx)}` };
+        return { signal: 'NEUTRAL', reason: `DI lines equal · ADX ${manualBtFormatPrice(adx)}` };
+    }
     if (indicator === 'Supertrend') return btIsSupertrendBullish(bar) ? { signal: 'BULLISH', reason: 'Supertrend bullish' } : { signal: 'BEARISH', reason: 'Supertrend bearish' };
     if (indicator === 'Bollinger') return close <= Number(bar.boll_lower) ? { signal: 'BULLISH', reason: 'Near lower band' } : close >= Number(bar.boll_upper) ? { signal: 'BEARISH', reason: 'Near upper band' } : { signal: 'NEUTRAL', reason: 'Inside bands' };
-    if (indicator === 'VWAP') return close >= Number(bar.vwap) ? { signal: 'BULLISH', reason: 'Above AVWAP' } : { signal: 'BEARISH', reason: 'Below AVWAP' };
-    if (indicator === 'SMA') return close >= Number(bar.sma) ? { signal: 'BULLISH', reason: 'Above SMA' } : { signal: 'BEARISH', reason: 'Below SMA' };
+    if (indicator === 'VWAP') return close >= Number(bar.vwap) ? { signal: 'BULLISH', reason: 'Above Session VWAP' } : { signal: 'BEARISH', reason: 'Below Session VWAP' };
+    if (indicator === 'Auto-AVWAP') return close >= Number(bar.auto_avwap) ? { signal: 'BULLISH', reason: 'Above Auto-AVWAP' } : { signal: 'BEARISH', reason: 'Below Auto-AVWAP' };
+    if (indicator === 'SMA') {
+        if (bar.sma === null || bar.sma === undefined || bar.sma === '') {
+            const period = Math.max(1, Math.trunc(manualBtIndicatorParamValue('SMA_PERIOD', 200)));
+            return { signal: 'NEUTRAL', reason: `SMA ${period} warming up` };
+        }
+        const primary = Number(bar.sma);
+        const primaryPeriod = Math.max(1, Math.trunc(manualBtIndicatorParamValue('SMA_PERIOD', 200)));
+        const useSecond = manualBtIndicatorParamValue('SMA_USE_SECOND_LINE', 1) !== 0;
+        if (!Number.isFinite(primary)) return { signal: 'NEUTRAL', reason: `SMA ${primaryPeriod} warming up` };
+        if (!useSecond) {
+            return close >= primary
+                ? { signal: 'BULLISH', reason: `Price above SMA ${primaryPeriod}` }
+                : { signal: 'BEARISH', reason: `Price below SMA ${primaryPeriod}` };
+        }
+        const secondary = Number(bar.sma_secondary);
+        const secondaryPeriod = Math.max(1, Math.trunc(manualBtIndicatorParamValue('SMA_SECOND_PERIOD', 50)));
+        if (bar.sma_secondary === null || bar.sma_secondary === undefined || !Number.isFinite(secondary)) {
+            return { signal: 'NEUTRAL', reason: 'SMA crossover warming up' };
+        }
+        if (primaryPeriod === secondaryPeriod) return { signal: 'NEUTRAL', reason: 'Choose different SMA periods' };
+        const fast = primaryPeriod < secondaryPeriod ? primary : secondary;
+        const slow = primaryPeriod < secondaryPeriod ? secondary : primary;
+        const fastPeriod = Math.min(primaryPeriod, secondaryPeriod);
+        const slowPeriod = Math.max(primaryPeriod, secondaryPeriod);
+        if (fast > slow) return { signal: 'BULLISH', reason: `SMA ${fastPeriod} above ${slowPeriod}` };
+        if (fast < slow) return { signal: 'BEARISH', reason: `SMA ${fastPeriod} below ${slowPeriod}` };
+        return { signal: 'NEUTRAL', reason: `SMA ${fastPeriod} and ${slowPeriod} equal` };
+    }
     if (indicator === 'Volume Profile') return bar.volume_profile_bullish ? { signal: 'BULLISH', reason: 'Value area acceptance' } : bar.volume_profile_bearish ? { signal: 'BEARISH', reason: 'Value area rejection' } : { signal: 'NEUTRAL', reason: 'Neutral profile' };
     if (indicator === 'Prior Day High/Low') return bar.daily_high_low_bullish ? { signal: 'BULLISH', reason: 'Prior high breakout' } : bar.daily_high_low_bearish ? { signal: 'BEARISH', reason: 'Prior low breakdown' } : { signal: 'NEUTRAL', reason: 'Inside prior range' };
     if (indicator === 'Pivot Points (S/R)') return bar.pivot_bullish ? { signal: 'BULLISH', reason: 'Pivot support/reclaim' } : bar.pivot_bearish ? { signal: 'BEARISH', reason: 'Pivot rejection/breakdown' } : { signal: 'NEUTRAL', reason: 'Neutral pivot' };
@@ -2279,7 +2671,7 @@ function manualBtRenderConfluence(history) {
             : (s.signal === 'BULLISH' ? 'bullish' : s.signal === 'BEARISH' ? 'bearish' : 'neutral');
         const icon = !enabled ? '●' : s.signal === 'BULLISH' ? '▲' : s.signal === 'BEARISH' ? '▼' : '●';
         const iconColor = !enabled ? 'text-slate-400' : s.signal === 'BULLISH' ? 'text-emerald-600' : s.signal === 'BEARISH' ? 'text-red-500' : 'text-purple-400';
-        const display = name === 'VWAP' ? 'AVWAP' : name;
+        const display = name === 'VWAP' ? 'Session VWAP' : name;
         const escapedName = manualBtEscapeJs(name);
         const safeReason = manualBtEscapeAttr(enabled ? (s.reason || 'No reason available.') : 'Disabled — click to enable');
         const displayLabelClass = name === 'VWAP' ? 'vwap-indicator-label' : (isPremium ? 'text-amber-800' : 'text-indigo-900');
@@ -2322,11 +2714,11 @@ function manualBtRenderConfluence(history) {
         if (isPremium) premiumCards.push(card);
         else standardCards.push(card);
     });
-    const isMobileView = typeof window !== 'undefined' && window.innerWidth <= 640;
+    const isMobileView = typeof window !== 'undefined' && window.innerWidth <= 768;
     if (standardCards.length > 0) {
         grid.style.gridTemplateColumns = isMobileView
-            ? 'repeat(2, minmax(0, 1fr))'
-            : `repeat(${Math.max(Math.ceil(standardCards.length / 3), 2)}, minmax(0, 1fr))`;
+            ? 'repeat(3, minmax(0, 1fr))'
+            : 'repeat(4, minmax(0, 1fr))';
         grid.innerHTML = standardCards.join('');
     } else {
         grid.style.gridTemplateColumns = '';
@@ -2335,8 +2727,8 @@ function manualBtRenderConfluence(history) {
     if (premiumGrid) {
         if (premiumCards.length > 0) {
             premiumGrid.style.gridTemplateColumns = isMobileView
-                ? 'repeat(2, minmax(0, 1fr))'
-                : `repeat(${Math.max(premiumCards.length, 1)}, minmax(0, 1fr))`;
+                ? 'repeat(3, minmax(0, 1fr))'
+                : 'repeat(4, minmax(0, 1fr))';
             premiumGrid.innerHTML = premiumCards.join('');
         } else {
             premiumGrid.style.gridTemplateColumns = '';
@@ -2405,8 +2797,10 @@ function manualBtRenderOscillators(history) {
         if (!manualBtOscSeries.rsi_ob) manualBtOscSeries.rsi_ob = manualBtOscCharts.rsi?.addLineSeries({ color: 'rgba(239,68,68,0.4)', lineWidth: 1, lineStyle: 2 });
         if (!manualBtOscSeries.rsi_os) manualBtOscSeries.rsi_os = manualBtOscCharts.rsi?.addLineSeries({ color: 'rgba(16,185,129,0.4)', lineWidth: 1, lineStyle: 2 });
         const period = manualBtIndicatorParamValue('RSI_PERIOD', 14);
-        const overbought = manualBtIndicatorParamValue('RSI_OVERBOUGHT', 70);
-        const oversold = manualBtIndicatorParamValue('RSI_OVERSOLD', 30);
+        const firstThreshold = manualBtIndicatorParamValue('RSI_OVERBOUGHT', 70);
+        const secondThreshold = manualBtIndicatorParamValue('RSI_OVERSOLD', 30);
+        const overbought = Math.max(firstThreshold, secondThreshold);
+        const oversold = Math.min(firstThreshold, secondThreshold);
         manualBtSetText('manualBtChartPreviewRsiLabel', `RSI (${period})  •  OB: ${overbought} / OS: ${oversold}`);
         manualBtOscSeries.rsi?.setData(manualBtCleanLineData(manualBtLineData(history, 'rsi')));
         manualBtOscSeries.rsi_ob?.setData(history.length > 1 ? manualBtCleanLineData([
@@ -2425,8 +2819,10 @@ function manualBtRenderOscillators(history) {
         if (!manualBtOscSeries.macd_hist) manualBtOscSeries.macd_hist = manualBtOscCharts.macd?.addHistogramSeries({ base: 0, priceFormat: { type: 'price', precision: 2, minMove: 0.01 } });
         if (!manualBtOscSeries.macd_line) manualBtOscSeries.macd_line = manualBtOscCharts.macd?.addLineSeries({ color: '#06b6d4', lineWidth: 1, priceFormat: { type: 'price', precision: 2, minMove: 0.01 } });
         if (!manualBtOscSeries.macd_signal) manualBtOscSeries.macd_signal = manualBtOscCharts.macd?.addLineSeries({ color: '#f97316', lineWidth: 1, priceFormat: { type: 'price', precision: 2, minMove: 0.01 } });
-        const fast = manualBtIndicatorParamValue('MACD_FAST', 12);
-        const slow = manualBtIndicatorParamValue('MACD_SLOW', 26);
+        const first = manualBtIndicatorParamValue('MACD_FAST', 12);
+        const second = manualBtIndicatorParamValue('MACD_SLOW', 26);
+        const fast = Math.min(first, second);
+        const slow = Math.max(first, second);
         const signal = manualBtIndicatorParamValue('MACD_SIGNAL', 9);
         manualBtSetText('manualBtChartPreviewMacdLabel', `MACD (${fast}, ${slow}, ${signal})`);
         manualBtOscSeries.macd_hist?.setData(manualBtCleanLineData(history.filter(b => b.macd_hist != null).map(b => ({ time: b.time, value: b.macd_hist, color: Number(b.macd_hist) >= 0 ? 'rgba(16,185,129,0.5)' : 'rgba(239,68,68,0.5)' }))));
@@ -2472,7 +2868,7 @@ function manualBtRenderOscillators(history) {
         if (!manualBtOscSeries.adx_threshold) manualBtOscSeries.adx_threshold = manualBtOscCharts.adx?.addLineSeries({ color: 'rgba(99,102,241,0.25)', lineWidth: 1, lineStyle: 2 });
         const period = manualBtIndicatorParamValue('ADX_PERIOD', 14);
         const threshold = manualBtIndicatorParamValue('ADX_TRENDING_THRESHOLD', 25);
-        manualBtSetText('manualBtChartPreviewAdxLabel', `ADX (${period})  •  Trend Thresh: ${threshold}`);
+        manualBtSetText('manualBtChartPreviewAdxLabel', `ADX (${period}) · strong ≥ ${threshold} · +DI green · −DI red`);
         manualBtOscSeries.adx?.setData(manualBtCleanLineData(manualBtLineData(history, 'adx')));
         manualBtOscSeries.adx_plus?.setData(manualBtCleanLineData(manualBtLineData(history, 'di_plus')));
         manualBtOscSeries.adx_minus?.setData(manualBtCleanLineData(manualBtLineData(history, 'di_minus')));
@@ -2689,8 +3085,24 @@ function manualBtRenderChart(sourceHistory = null, preserveReplay = false) {
         manualBtExtHoursSeries.setData([]);
     }
 
-    manualBtCandleSeries = manualBtChart.addCandlestickSeries({ upColor: '#10b981', downColor: '#ef4444', borderVisible: false, wickUpColor: '#10b981', wickDownColor: '#ef4444' });
-    manualBtCandleSeries.setData(manualBtCleanCandles(history));
+    manualBtCandleSeries = manualBtChart.addCandlestickSeries({ upColor: '#10b981', downColor: '#ef4444', borderVisible: true, borderUpColor: '#10b981', borderDownColor: '#ef4444', wickUpColor: '#10b981', wickDownColor: '#ef4444' });
+    manualBtCandleSeries.setData(manualBtDisplayCandles(history));
+    manualBtVolumeProfileOverlay = window.VolumeProfileOverlay?.attach({
+        chart: manualBtChart,
+        priceSeries: manualBtCandleSeries,
+        container,
+        profile: manualBtVolumeProfile,
+        candles: manualBtCleanCandles(history),
+        enabled: manualBtSelectedIndicators().includes('Volume Profile'),
+        onProfileChange: (profile, enabled) => {
+            if (!enabled || !profile || !Number.isFinite(profile.startTime) || !Number.isFinite(profile.endTime)) return;
+            const visibleBars = history.filter(bar => Number(bar.time) >= profile.startTime && Number(bar.time) <= profile.endTime);
+            const lineData = value => visibleBars.map(bar => ({ time: Number(bar.time), value: Number(value) }));
+            manualBtAddLabeledLine('volume_profile_poc', lineData(profile.poc), { color: '#7c2d12', lineWidth: 3, lineStyle: 0 }, 'POC');
+            manualBtAddLabeledLine('volume_profile_vah', lineData(profile.vah), { color: '#ea580c', lineWidth: 2, lineStyle: 2 }, 'VAH');
+            manualBtAddLabeledLine('volume_profile_val', lineData(profile.val), { color: '#0f766e', lineWidth: 2, lineStyle: 2 }, 'VAL');
+        },
+    }) || null;
     manualBtVolumeSeries = manualBtChart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: '' });
     manualBtChart.priceScale('').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
     manualBtVolumeSeries.setData(history.map(bar => ({ time: Number(bar.time), value: Number(bar.volume || 0), color: Number(bar.close) >= Number(bar.open) ? 'rgba(16,185,129,0.35)' : 'rgba(239,68,68,0.35)' })));
@@ -2883,6 +3295,7 @@ function manualBtRefreshIndicatorsOnly() {
         return;
     }
     manualBtVisibleHistory = history;
+    manualBtCandleSeries.setData(manualBtDisplayCandles(history));
     manualBtClearOverlaySeries();
     manualBtRenderOverlays(history);
     manualBtCandleSeries.setMarkers(manualBtMarkers(history));
@@ -2922,7 +3335,7 @@ function manualBtRenderReplayFrame(cursor = manualBtReplayCursor) {
     manualBtVisibleHistory = history;
 
     if (manualBtChart && manualBtCandleSeries && manualBtVolumeSeries) {
-        manualBtCandleSeries.setData(history);
+        manualBtCandleSeries.setData(manualBtDisplayCandles(history));
         manualBtVolumeSeries.setData(history.map(c => ({ time: c.time, value: Number(c.volume || 0), color: c.close >= c.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)' })));
         if (manualBtExtHoursSeries) {
             const ticker = manualBtTicker || '';
@@ -3072,9 +3485,7 @@ window.toggleManualBtChartPreviewIndicator = function(name) {
 window.resetManualBtChartPreviewIndicatorsToDefaults = function() {
     const prefs = {};
     MANUAL_BT_CHART_PREVIEW_INDICATORS.forEach(name => {
-        if (name !== 'Botbulls4 News AI') {
-            prefs[name] = false;
-        }
+        prefs[name] = false;
     });
     manualBtSaveIndicatorPrefs(prefs);
     
@@ -3121,9 +3532,6 @@ window.setManualBtChartPreviewRange = function(range) {
         manualBtTimeframe = '4Hour';
     } else if (days > manualBtMaxDaysForTimeframe(manualBtTimeframe || '1Hour', source)) {
         manualBtRange = manualBtCompatibleRange(manualBtRange, manualBtTimeframe || '1Hour', source);
-        if (source === 'webull') {
-            manualBtSetReplayStatus(`Webull fast load capped to ${manualBtRange} for ${manualBtTimeframe || '1Hour'}`);
-        }
     }
     manualBtLoadOrRenderAfterViewChange();
 };
@@ -3134,7 +3542,7 @@ window.setManualBtChartPreviewSession = function(session) {
 };
 
 window.setManualBtDataSource = function(source) {
-    manualBtSourcePreference = String(source || 'webull').toLowerCase() === 'yahoo' ? 'yahoo' : 'webull';
+    manualBtSourcePreference = String(source || 'alpaca').toLowerCase() === 'yahoo' ? 'yahoo' : 'alpaca';
     manualBtStopReplay();
     manualBtReplayStartIndex = 0;
     if (!manualBtTicker) {
@@ -3155,6 +3563,7 @@ window.openManualBtChartEmpty = function() {
     manualBtSyncDaySpanForView();
     manualBtHistory = [];
     manualBtDisplayHistory = [];
+    manualBtVolumeProfile = {};
     manualBtSignals = {};
     manualBtTrade = { entry: null, tp: null, sl: null };
     manualBtPickTarget = null;
@@ -3238,7 +3647,7 @@ function openManualBtChartPreviewFromResults(res) {
     manualBtDataSource = s.data_source || res?.data_source || 'yahoo';
     const sourceSelect = document.getElementById('manualBtDataSourceSelect');
     if (sourceSelect) {
-        sourceSelect.value = manualBtSourcePreference === 'yahoo' ? 'yahoo' : 'webull';
+        sourceSelect.value = manualBtSourcePreference === 'yahoo' ? 'yahoo' : 'alpaca';
     }
     manualBtSignals = res?.signals || s.signals || {};
     // The replay endpoint already applies the requested Manual Backtest
@@ -3246,6 +3655,7 @@ function openManualBtChartPreviewFromResults(res) {
     // separate session selector, or extended candles can be removed before
     // the manual chart receives them.
     manualBtHistory = manualBtCleanCandles((res?.candles || []).map(c => manualBtDisplayCandle(c, btChartTimeframeRef)));
+    manualBtVolumeProfile = res?.volume_profile || res?.volumeProfile || {};
     manualBtDisplayHistory = manualBtFilteredHistory();
     manualBtTrade = { entry: null, tp: null, sl: null };
     manualBtPickTarget = null;
@@ -3321,6 +3731,18 @@ async function runBacktest(options = {}) {
 
     const optionsEnabled = (!chartOnly && currentBtMode === 'options');
 
+    const sharedBacktestGuardSettings = chartOnly ? {} : {
+        post_stop_stabilization_bars: Math.max(0, parseInt(document.getElementById(`strategyPostStopBars_${optionsEnabled ? 'options' : 'regular'}`)?.value || '3', 10)),
+        max_consecutive_losses: Math.max(0, parseInt(document.getElementById(`strategyMaxConsecutiveLosses_${optionsEnabled ? 'options' : 'regular'}`)?.value || '2', 10)),
+        enable_liquidity_filter: true,
+        min_relative_volume: 0.10,
+    };
+    const backtestGuardSettings = optionsEnabled ? {
+        ...sharedBacktestGuardSettings,
+        options_max_entry_spread_pct: parseFloat(document.getElementById('strategyOptionsMaxSpreadPct')?.value || '5'),
+        options_market_open_blackout_minutes: Math.max(0, parseInt(document.getElementById('strategyOptionsOpenBlackoutMinutes')?.value || '15', 10)),
+    } : sharedBacktestGuardSettings;
+
     const cooldownMode = optionsEnabled ? 'options' : 'regular';
     const enableCooldown = chartOnly ? false : (document.getElementById(`strategyEnableCooldown_${cooldownMode}`)?.checked ?? true);
     let cooldownVal = chartOnly ? 'default' : (document.getElementById(`strategyCooldownMinutes_${cooldownMode}`)?.value || 'default');
@@ -3361,6 +3783,41 @@ async function runBacktest(options = {}) {
         const sellThreshold = getBtSignalThreshold(modeVal, 'sell', indicators.length);
         if (sellThreshold > indicators.length) {
             alert(`Your Exit Strategy requires ${sellThreshold} sell signals to trigger an exit, but only ${indicators.length} indicator(s) are checked in your pool!\n\nPlease lower your Sell Signal Threshold to match your checked indicators (between 1 and ${indicators.length}), or check more indicators below.`);
+            return;
+        }
+    }
+    if (!chartOnly && ['percentage', 'hybrid_pct'].includes(buyModeVal)) {
+        const entryPct = parseFloat(document.getElementById(`strategyEntryPctMove_${modeVal}`)?.value);
+        if (!Number.isFinite(entryPct) || entryPct < 0.1 || entryPct > 100) {
+            alert('Percentage Entry must be between 0.1% and 100%.');
+            return;
+        }
+    }
+    const adaptiveExitEnabled = !optionsEnabled && !!document.getElementById('strategyExitGridContinuous_regular')?.checked;
+    if (!chartOnly && ['percentage', 'hybrid_pct'].includes(sellModeVal) && !adaptiveExitEnabled) {
+        const prefix = optionsEnabled ? 'Options' : 'Regular';
+        const stop = parseFloat(document.getElementById(`strategy${prefix}SlPct`)?.value);
+        const target = parseFloat(document.getElementById(`strategy${prefix}TpPct`)?.value);
+        const trailEnabled = !!document.getElementById(optionsEnabled ? 'strategyEnablePctTrail_options' : 'strategyEnablePctTrail')?.checked;
+        const trail = parseFloat(document.getElementById(`strategy${prefix}TrailPct`)?.value);
+        if (!Number.isFinite(stop) || stop < 0.1 || stop >= 100) {
+            alert('Percentage Stop Loss must be between 0.1% and 99%.');
+            return;
+        }
+        if (!Number.isFinite(target) || target < 0.1 || target > 1000) {
+            alert('Percentage Take Profit must be between 0.1% and 1000%.');
+            return;
+        }
+        if (trailEnabled && (!Number.isFinite(trail) || trail < 0.1 || trail >= 100)) {
+            alert('Percentage Trailing Stop must be between 0.1% and 99%, or disable Trail.');
+            return;
+        }
+    }
+    if (!chartOnly && !optionsEnabled) {
+        const gridPayload = getBtRegularStrategyPayload();
+        const gridError = validateBtContinuousGridSettings(gridPayload, buyModeVal, sellModeVal);
+        if (gridError) {
+            alert(`Adaptive Continuous Grid: ${gridError}`);
             return;
         }
     }
@@ -3525,6 +3982,7 @@ async function runBacktest(options = {}) {
                 indicators, ext_hours: extHoursVal, r, dividend_yield: dividendYield, option_contract_fee: optionContractFee, results: null,
                 enable_cooldown: enableCooldown,
                 cooldown_minutes: cooldownMinutes,
+                ...backtestGuardSettings,
                 enable_risk: enableRisk,
                 enable_atr_trail: enableAtrTrail,
                 enable_signal_reset: enableSignalReset,
@@ -3592,6 +4050,7 @@ async function runBacktest(options = {}) {
                     option_contract_fee: optionContractFee,
                     enable_cooldown: enableCooldown,
                     cooldown_minutes: cooldownMinutes,
+                    ...backtestGuardSettings,
                     enable_risk: enableRisk,
                     enable_signal_reset: enableSignalReset,
                     enable_smart_reentry: enableSmartReentry,
@@ -3638,6 +4097,7 @@ async function runBacktest(options = {}) {
                 regular_stop_loss_pct: regularSlPct, regular_take_profit_pct: regularTpPct, regular_trailing_pct: regularTrailPct,
                 enable_pct_trail: enablePctTrail,
                 enable_cooldown: enableCooldown, cooldown_minutes: cooldownMinutes,
+                ...backtestGuardSettings,
                 enable_risk: enableRisk,
                 ...regularExtra,
                 indicator_overrides: getIndicatorOverrides(),
@@ -3672,6 +4132,7 @@ async function runBacktest(options = {}) {
                     enable_pct_trail: enablePctTrail,
                     enable_cooldown: enableCooldown,
                     cooldown_minutes: cooldownMinutes,
+                    ...backtestGuardSettings,
                     enable_risk: enableRisk,
                     ...regularExtra,
                     indicator_overrides: getIndicatorOverrides()
@@ -3699,6 +4160,7 @@ async function runBacktest(options = {}) {
                     best_params: data.results.best_parameters
                 };
             }
+            btVolumeProfile = resToDisplay?.volume_profile || resToDisplay?.volumeProfile || {};
             if (!chartOnly && window.lastBacktestRun) {
                 window.lastBacktestRun.results = resToDisplay;
             }
@@ -3999,9 +4461,14 @@ function resetBacktestUI() {
     btManualChartClickHandler = null;
     btRemoveManualTradePriceLines();
     btClearManualRiskRewardAreas();
+    if (btVolumeProfileOverlay) {
+        try { btVolumeProfileOverlay.destroy(); } catch (e) {}
+        btVolumeProfileOverlay = null;
+    }
     if (btChart) {
         try { btChart.remove(); } catch (e) {}
         btChart = null;
+        btVolumeProfileVisualSeries = {};
         btCandleSeries = null;
         btEqSeries = null;
         btVolumeSeries = null;
@@ -4106,6 +4573,7 @@ window.resetAllBacktestSettingsToDefaults = async function() {
     // Global Top Inputs
     setVal('btTicker', 'SPY');
     setVal('btDays', 365);
+    window.syncBtDaysInput?.(365);
     setVal('strategyTimeframe_regular', '1Hour');
 
     // Uncheck all indicator boxes
@@ -4120,6 +4588,26 @@ window.resetAllBacktestSettingsToDefaults = async function() {
     setVal('strategyBuyMode_regular', 'indicator');
     setVal('strategyCustomBuyPrice_regular', '');
     setVal('strategyEntryAtrMult_regular', '2');
+    ensureBtContinuousAtrGridUi();
+    setCheck('strategyAtrGridContinuous_regular', false);
+    setCheck('strategyExitAtrGridContinuous_regular', false);
+    setCheck('strategyBtSmartGridModePct', true);
+    setCheck('strategyBtSmartGridModeAtr', true);
+    setCheck('strategyBtSmartGridTrailPct', true);
+    setCheck('strategyBtSmartGridTrailAtr', true);
+    setVal('strategyBtSmartGridStrengthPct', 50);
+    setVal('strategyBtSmartGridStrengthAtr', 50);
+    setVal('strategyBtSmartGridEdgePct', 0.35);
+    setVal('strategyBtSmartGridEdgeAtr', 0.35);
+    for (let level = 1; level <= 5; level++) {
+        setCheck(`strategyAtrGridEntryL${level}Enabled_regular`, true);
+        setCheck(`strategyAtrGridExitL${level}Enabled_regular`, true);
+        setVal(`strategyAtrGridEntryL${level}Mult_regular`, level * 2);
+        setVal(`strategyAtrGridExitL${level}Mult_regular`, level * 2);
+        setVal(`strategyAtrGridEntryL${level}BuyPct_regular`, 20);
+        setVal(`strategyAtrGridExitL${level}SellPct_regular`, 20);
+    }
+    window.updateBtContinuousAtrGridUi?.('entry');
     setVal('strategyEntryPctMove_regular', '5');
     setCheck('strategyGridContinuous_regular', false);
     setVal('strategyGridBuyAllocation_regular', '1000');
@@ -4285,6 +4773,7 @@ function btReplayRemoveAuxSeries() {
     });
     btChartAuxSeries = [];
     btIndicatorOverlaySeries = [];
+    btVolumeProfileVisualSeries = {};
     btDailyHighLineSeries = null;
     btDailyLowLineSeries = null;
     btDailyHighTriggerLineSeries = null;
@@ -4435,7 +4924,13 @@ function btRenderReplayFrame(cursor = btReplayCursor) {
     const chartTimeframe = getBtChartTimeframe();
     const visible = rawVisible.map(candle => btDisplayCandle(candle, chartTimeframe)).filter(candle => Number.isFinite(Number(candle.time)));
     if (!visible.length) return;
-    btCandleSeries.setData(visible);
+    const replayTicker = window.lastBacktestRun?.ticker || document.getElementById('btTicker')?.value || '';
+    const displayedVisible = btSelectedIndicatorNames().has('Candle Patterns')
+        ? (window.StandardIndicatorSubcharts?.highlightCandlePatternContext?.(visible, visible, {
+            rolling24Hours: isCrypto(replayTicker),
+        }) || visible)
+        : visible;
+    btCandleSeries.setData(displayedVisible);
     btVolumeSeries.setData(visible.map(c => ({ time: c.time, value: Number(c.volume || 0), color: c.close >= c.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)' })));
 
     // Rebuild only tracked overlay series from the visible prefix. The chart
@@ -4714,6 +5209,23 @@ function btLineDataFromCandles(candles, key) {
         .sort((a, b) => a.time - b.time);
 }
 
+function btSegmentedLineDataFromCandles(candles, key) {
+    const points = btLineDataFromCandles(candles, key);
+    if (points.length < 2) return points;
+    const segmented = [points[0]];
+    let previous = points[0];
+    for (let i = 1; i < points.length; i += 1) {
+        const point = points[i];
+        if (Math.abs(point.value - previous.value) > 1e-9) {
+            const breakTime = point.time - 1;
+            if (breakTime > previous.time) segmented.push({ time: breakTime });
+        }
+        segmented.push(point);
+        previous = point;
+    }
+    return segmented;
+}
+
 function btLineDataFromCandlesWhere(candles, key, predicate) {
     const seen = new Set();
     return (candles || [])
@@ -4821,13 +5333,19 @@ function btAddTrackedLineSeries(options, layer = 'indicator') {
 function btDrawPriceIndicatorOverlays(chartCandles) {
     const enabled = btSelectedIndicatorNames();
     btIndicatorOverlaySeries = [];
+    btVolumeProfileVisualSeries = {};
 
     if (enabled.has('EMA Cross')) {
         btAddIndicatorLine(chartCandles, 'ema_fast', { color: '#3b82f6', lineWidth: 1.5 });
-        btAddIndicatorLine(chartCandles, 'ema_slow', { color: '#ef4444', lineWidth: 1.5 });
+        if (manualBtIndicatorParamValue('EMA_USE_SECOND_LINE', 1) !== 0) {
+            btAddIndicatorLine(chartCandles, 'ema_slow', { color: '#ef4444', lineWidth: 1.5 });
+        }
     }
     if (enabled.has('SMA')) {
-        btAddIndicatorLine(chartCandles, 'sma', { color: '#64748b', lineWidth: 2.5 });
+        btAddIndicatorLine(chartCandles, 'sma', { color: '#8b5cf6', lineWidth: 2.5 });
+        if (manualBtIndicatorParamValue('SMA_USE_SECOND_LINE', 1) !== 0) {
+            btAddIndicatorLine(chartCandles, 'sma_secondary', { color: '#64748b', lineWidth: 2, lineStyle: 2 });
+        }
     }
     if (enabled.has('VWAP')) {
         const avwapData = btLineDataFromCandles(chartCandles, 'vwap');
@@ -4841,6 +5359,9 @@ function btDrawPriceIndicatorOverlays(chartCandles) {
             });
             avwapSeries.setData(avwapData);
         }
+    }
+    if (enabled.has('Auto-AVWAP')) {
+        btAddIndicatorLine(chartCandles, 'auto_avwap', { color: '#7c3aed', lineWidth: 1.5, lineStyle: 2 });
     }
     if (enabled.has('Supertrend')) {
         btAddIndicatorDataLine(btSupertrendLineData(chartCandles), {
@@ -4895,6 +5416,7 @@ function btDrawPriceIndicatorOverlays(chartCandles) {
 
 function btRightVisiblePointForData(data) {
     if (!Array.isArray(data) || data.length === 0 || !btChart) return null;
+    const isValuePoint = point => Number.isFinite(Number(point?.value));
     let from = NaN;
     let to = NaN;
     try {
@@ -4905,15 +5427,18 @@ function btRightVisiblePointForData(data) {
     if (Number.isFinite(to)) {
         for (let i = data.length - 1; i >= 0; i -= 1) {
             const pointTime = Number(data[i]?.time);
-            if (pointTime <= to && (!Number.isFinite(from) || pointTime >= from)) {
+            if (isValuePoint(data[i]) && pointTime <= to && (!Number.isFinite(from) || pointTime >= from)) {
                 return data[i];
             }
         }
         for (let i = data.length - 1; i >= 0; i -= 1) {
-            if (Number(data[i]?.time) <= to) return data[i];
+            if (isValuePoint(data[i]) && Number(data[i]?.time) <= to) return data[i];
         }
     }
-    return data[data.length - 1];
+    for (let i = data.length - 1; i >= 0; i -= 1) {
+        if (isValuePoint(data[i])) return data[i];
+    }
+    return null;
 }
 
 function refreshBtPriceLineLabel(key) {
@@ -4995,10 +5520,15 @@ function destroyBtChartOnly() {
     btRemoveManualTradePriceLines();
     btClearManualRiskRewardAreas();
     btManualReplayVisibleTime = null;
+    if (btVolumeProfileOverlay) {
+        try { btVolumeProfileOverlay.destroy(); } catch (e) {}
+        btVolumeProfileOverlay = null;
+    }
     if (btChart) {
         try { btChart.remove(); } catch (e) {}
     }
     btChart = null;
+    btVolumeProfileVisualSeries = {};
     btCandleSeries = null;
     btReplayStopPriceLine = null;
     btReplayTargetPriceLine = null;
@@ -5062,6 +5592,8 @@ function _btInitChart(candles, trades, equityCurve) {
         .map(candle => btDisplayCandle(candle, chartTimeframe))
         .filter(candle => candle && Number.isFinite(Number(candle.time)))
         .sort((a, b) => Number(a.time) - Number(b.time));
+    const enabledChartIndicators = btSelectedIndicatorNames();
+    const backtestTicker = window.lastBacktestRun?.ticker || document.getElementById('btTicker')?.value || '';
 
     // ── Create chart ─────────────────────────────────────────────────────
     btChart = LightweightCharts.createChart(wrap, {
@@ -5111,11 +5643,48 @@ function _btInitChart(candles, trades, equityCurve) {
     btCandleSeries = btChart.addCandlestickSeries({
         upColor: '#10b981',
         downColor: '#ef4444',
-        borderVisible: false,
+        borderVisible: true,
+        borderUpColor: '#10b981',
+        borderDownColor: '#ef4444',
         wickUpColor: '#10b981',
         wickDownColor: '#ef4444',
     });
-    btCandleSeries.setData(chartCandles);
+    const displayedChartCandles = enabledChartIndicators.has('Candle Patterns')
+        ? (window.StandardIndicatorSubcharts?.highlightCandlePatternContext?.(chartCandles, chartCandles, {
+            rolling24Hours: isCrypto(backtestTicker),
+        }) || chartCandles)
+        : chartCandles;
+    btCandleSeries.setData(displayedChartCandles);
+    btVolumeProfileOverlay = window.VolumeProfileOverlay?.attach({
+        chart: btChart,
+        priceSeries: btCandleSeries,
+        container: wrap,
+        profile: btVolumeProfile,
+        candles: chartCandles,
+        enabled: enabledChartIndicators.has('Volume Profile'),
+        onProfileChange: (profile, enabled) => {
+            if (!enabled || !profile || !Number.isFinite(profile.startTime) || !Number.isFinite(profile.endTime)) return;
+            const visibleBars = chartCandles.filter(bar => Number(bar.time) >= profile.startTime && Number(bar.time) <= profile.endTime);
+            const lineData = value => visibleBars.map(bar => ({ time: Number(bar.time), value: Number(value) }));
+            [
+                ['volume_profile_poc', profile.poc, '#7c2d12', 3, 0],
+                ['volume_profile_vah', profile.vah, '#ea580c', 2, 2],
+                ['volume_profile_val', profile.val, '#0f766e', 2, 2],
+            ].forEach(([key, value, color, lineWidth, lineStyle]) => {
+                const series = btVolumeProfileVisualSeries[key] || (btVolumeProfileVisualSeries[key] = btAddTrackedLineSeries({
+                    color, lineWidth, lineStyle, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+                }));
+                const data = lineData(value);
+                series.setData(data);
+                const labels = {
+                    volume_profile_poc: ['POC', '#7c2d12', 0],
+                    volume_profile_vah: ['VAH', '#ea580c', 2],
+                    volume_profile_val: ['VAL', '#0f766e', 2],
+                }[key];
+                btAddPriceLineLabel(key, series, data, labels[0], labels[1], labels[2]);
+            });
+        },
+    }) || null;
 
     // ── Volume series ────────────────────────────────────────────────────
     btVolumeSeries = btChart.addHistogramSeries({
@@ -5243,7 +5812,7 @@ function _btInitChart(candles, trades, equityCurve) {
         const vahData = btLineDataFromCandles(chartCandles, 'volume_profile_vah');
         const valData = btLineDataFromCandles(chartCandles, 'volume_profile_val');
         if (pocData.length > 1) {
-            const pocSeries = btAddTrackedLineSeries({
+            const pocSeries = btVolumeProfileVisualSeries.volume_profile_poc || btAddTrackedLineSeries({
                 color: '#7c2d12',
                 lineWidth: 3,
                 lineStyle: 0,
@@ -5252,10 +5821,11 @@ function _btInitChart(candles, trades, equityCurve) {
                 crosshairMarkerVisible: false,
             });
             pocSeries.setData(pocData);
+            btVolumeProfileVisualSeries.volume_profile_poc = pocSeries;
             btAddPriceLineLabel('volume_profile_poc', pocSeries, pocData, 'POC', '#7c2d12', 0);
         }
         if (vahData.length > 1) {
-            const vahSeries = btAddTrackedLineSeries({
+            const vahSeries = btVolumeProfileVisualSeries.volume_profile_vah || btAddTrackedLineSeries({
                 color: '#ea580c',
                 lineWidth: 2,
                 lineStyle: 2,
@@ -5264,10 +5834,11 @@ function _btInitChart(candles, trades, equityCurve) {
                 crosshairMarkerVisible: false,
             });
             vahSeries.setData(vahData);
+            btVolumeProfileVisualSeries.volume_profile_vah = vahSeries;
             btAddPriceLineLabel('volume_profile_vah', vahSeries, vahData, 'VAH', '#ea580c', 2);
         }
         if (valData.length > 1) {
-            const valSeries = btAddTrackedLineSeries({
+            const valSeries = btVolumeProfileVisualSeries.volume_profile_val || btAddTrackedLineSeries({
                 color: '#0f766e',
                 lineWidth: 2,
                 lineStyle: 2,
@@ -5276,15 +5847,20 @@ function _btInitChart(candles, trades, equityCurve) {
                 crosshairMarkerVisible: false,
             });
             valSeries.setData(valData);
+            btVolumeProfileVisualSeries.volume_profile_val = valSeries;
             btAddPriceLineLabel('volume_profile_val', valSeries, valData, 'VAL', '#0f766e', 2);
         }
     }
 
+    // Recalculate visual POC/VAH/VAL from the current visible candle range.
+    btVolumeProfileOverlay?.setCandles(chartCandles);
+    btVolumeProfileOverlay?.setProfile(btVolumeProfile, enabledChartIndicators.has('Volume Profile'));
+
     if (btShouldShowSwingPointLines()) {
         const swingLevelCount = getBtSwingLevelCount();
         for (let level = 1; level <= swingLevelCount; level += 1) {
-            const sData = btLineDataFromCandles(chartCandles, `swing_support_${level}`);
-            const rData = btLineDataFromCandles(chartCandles, `swing_resistance_${level}`);
+            const sData = btSegmentedLineDataFromCandles(chartCandles, `swing_support_${level}`);
+            const rData = btSegmentedLineDataFromCandles(chartCandles, `swing_resistance_${level}`);
             if (sData.length > 1) {
                 const sColor = level === 1 ? '#16a34a' : 'rgba(22, 163, 74, 0.72)';
                 const sStyle = level === 1 ? 1 : 2;
@@ -5383,8 +5959,6 @@ function _btInitChart(candles, trades, equityCurve) {
         });
     });
 
-    const enabledChartIndicators = btSelectedIndicatorNames();
-    const backtestTicker = window.lastBacktestRun?.ticker || document.getElementById('btTicker')?.value || '';
     const botBulls5VisibleTimes = enabledChartIndicators.has('BotBulls5')
         ? (window.StandardIndicatorSubcharts?.botBulls5RecentEventTimes
             ? window.StandardIndicatorSubcharts.botBulls5RecentEventTimes(chartCandles, {
@@ -5425,28 +5999,11 @@ function _btInitChart(candles, trades, equityCurve) {
         }
     }
 
-    // Candle Patterns Markers on backtest chart (last candle only, no noise across full chart)
-    const c = chartCandles[chartCandles.length - 1];
-    if (c?.cdl_name && c.cdl_name !== 'Neutral') {
-        if (c.cdl_bullish) {
-            indicatorMarkers.push({
-                time: Number(c.time),
-                position: 'belowBar',
-                color: '#10b981',
-                shape: 'arrowUp',
-                text: c.cdl_name,
-                size: 1.1
-            });
-        } else if (c.cdl_bearish) {
-            indicatorMarkers.push({
-                time: Number(c.time),
-                position: 'aboveBar',
-                color: '#ef4444',
-                shape: 'arrowDown',
-                text: c.cdl_name,
-                size: 1.1
-            });
-        }
+    if (enabledChartIndicators.has('Candle Patterns')) {
+        const candlePatternMarkers = window.StandardIndicatorSubcharts?.buildCandlePatternMarkers?.(chartCandles, {
+            rolling24Hours: isCrypto(backtestTicker),
+        }) || [];
+        indicatorMarkers.push(...candlePatternMarkers);
     }
 
     btTradeMarkersRef = [...tradeMarkers].sort((a, b) => Number(a.time) - Number(b.time));
@@ -5865,7 +6422,8 @@ window.BT_INDICATOR_TOOLTIPS = window.BT_INDICATOR_TOOLTIPS || {
     "Mystic Pulse": "Mystic Pulse is a custom proprietary oscillator. Purpose: Combines multi-timeframe momentum, volatility, and volume flow to detect early trend reversals.",
     "Candle patterns": "Candlestick Patterns identify specific OHLC price formations. Purpose: Provides visual clues about market psychology and potential reversals.",
     "ADX Trend": "Average Directional Index (ADX) quantifies trend strength. Purpose: Determines if the market is trending strongly (ADX > 25) or ranging.",
-    "VWAP": "Anchored Volume Weighted Average Price (AVWAP) tracks the volume-weighted average from the most recent major volume spike. Purpose: Shows institutional-style anchored cost basis and acceptance/rejection.",
+    "VWAP": "Session VWAP is the cumulative typical-price and volume average for the exchange-local trading day, matching the standard Webull-style VWAP calculation.",
+    "Auto-AVWAP": "Auto-AVWAP anchors the volume-weighted average at the latest volume spike. It is intentionally separate from Session VWAP and may not match Webull VWAP.",
     "Strategy Confidence": "Strategy Confidence combines multiple indicator signals into a single probability score. Purpose: Measures the overall conviction of a bullish or bearish trend.",
     "BotBulls1": "Confirmed WaveTrend reversal with MFI reclaim/rejection, then price confirmation within the BB1 window. Confluence stays bullish after the last BB1 BUY marker and bearish after the last BB1 SELL marker.",
     "BotBulls2": "Adaptive ATR trailing stop with trend-smoothed EMA and reversal zone detection. Fires on trend flips confirmed by multi-condition confluence scoring (1-4 strength rating).",
@@ -5880,19 +6438,20 @@ window.BT_INDICATOR_TOOLTIPS = window.BT_INDICATOR_TOOLTIPS || {
 window.BT_INDICATOR_CONFIG_MAP = window.BT_INDICATOR_CONFIG_MAP || {
     'RSI': ['RSI_PERIOD', 'RSI_OVERBOUGHT', 'RSI_OVERSOLD'],
     'MACD': ['MACD_FAST', 'MACD_SLOW', 'MACD_SIGNAL'],
-    'EMA Cross': ['EMA_FAST', 'EMA_SLOW'],
+    'EMA Cross': ['EMA_USE_SECOND_LINE', 'EMA_FAST', 'EMA_SLOW'],
     'Supertrend': ['SUPERTREND_PERIOD', 'SUPERTREND_MULTIPLIER'],
     'Bollinger': ['BOLL_PERIOD', 'BOLL_STD_DEV'],
+    'VWAP': [],
+    'Auto-AVWAP': ['VOL_MA_PERIOD', 'VOL_SPIKE_MULTIPLIER'],
     'Mystic Pulse': ['MYSTIC_PULSE_THRESHOLD'],
     'ADX Trend': ['ADX_PERIOD', 'ADX_TRENDING_THRESHOLD'],
-    'SMA': ['SMA_PERIOD'],
+    'SMA': ['SMA_USE_SECOND_LINE', 'SMA_PERIOD', 'SMA_SECOND_PERIOD'],
     'Prior Day High/Low': ['DAILY_HIGH_LOW_BUFFER_PCT'],
     'Pivot Points (S/R)': ['PIVOT_LEVEL_COUNT', 'PIVOT_TOLERANCE_PCT'],
     'Volume Profile': ['VOLUME_PROFILE_ROWS', 'VOLUME_PROFILE_VALUE_AREA_PCT', 'VOLUME_PROFILE_TOLERANCE_PCT', 'VOLUME_PROFILE_CONFIRMATION_CANDLES'],
     'Swing Points': ['SWING_POINTS_LOOKBACK_DAYS', 'SWING_POINTS_ENTRY_MODE', 'SWING_POINTS_LEVEL_COUNT'],
     'ATR Volatility': ['ATR_PERIOD', 'ATR_STOP_MULTIPLIER', 'ATR_TRAIL_MULTIPLIER', 'ATR_TAKE_PROFIT_MULTIPLIER'],
     'Strategy Confidence': ['MIN_BULLISH_SIGNALS', 'MIN_BEARISH_SIGNALS'],
-    'Botbulls4 News AI': ['SENTIMENT_BULLISH_PERCENTAGE', 'SENTIMENT_BEARISH_PERCENTAGE'],
     'BotBulls1': ['BOTBULLS1_WT_CHANNEL', 'BOTBULLS1_WT_AVERAGE', 'BOTBULLS1_WT_OVERSOLD', 'BOTBULLS1_WT_OVERBOUGHT', 'BOTBULLS1_MFI_BUY_RECLAIM', 'BOTBULLS1_MFI_SELL_REJECT', 'BOTBULLS1_CONFIRM_LOOKBACK', 'BOTBULLS1_REQUIRE_MFI_CONFIRM', 'BOTBULLS1_REQUIRE_CANDLE_CONFIRM', 'BOTBULLS1_REQUIRE_PRICE_CONFIRM', 'BOTBULLS1_PRICE_CONFIRM_EMA', 'BOTBULLS1_PRICE_CONFIRM_LOOKBACK'],
     'BotBulls2': ['BOTBULLS2_ATR_MULT', 'BOTBULLS2_TREND_TRACER_PERIOD', 'BOTBULLS2_REVERSAL_ZONE_PERIOD'],
     'BotBulls3': ['BOTBULLS3_ATR_PERIOD', 'BOTBULLS3_ATR_MULT'],
@@ -5928,6 +6487,7 @@ window.BT_INDICATOR_DEFAULTS = window.BT_INDICATOR_DEFAULTS || {
     'RSI_PERIOD': 14,
     'RSI_OVERBOUGHT': 70,
     'RSI_OVERSOLD': 30,
+    'EMA_USE_SECOND_LINE': 1,
     'EMA_FAST': 9,
     'EMA_SLOW': 21,
     'MACD_FAST': 12,
@@ -5940,7 +6500,9 @@ window.BT_INDICATOR_DEFAULTS = window.BT_INDICATOR_DEFAULTS || {
     'MYSTIC_PULSE_THRESHOLD': 5,
     'ADX_PERIOD': 14,
     'ADX_TRENDING_THRESHOLD': 25,
+    'SMA_USE_SECOND_LINE': 1,
     'SMA_PERIOD': 200,
+    'SMA_SECOND_PERIOD': 50,
     'DAILY_HIGH_LOW_BUFFER_PCT': 0.0,
     'PIVOT_LEVEL_COUNT': 1,
     'PIVOT_TOLERANCE_PCT': 0.0,
@@ -5999,6 +6561,12 @@ function openIndicatorSettings(indicatorName) {
     const overrides = window.lastBacktestData?.indicator_overrides || {};
     const paramLabels = {
         ...(window.STANDARD_INDICATOR_PARAM_LABELS || {}),
+        EMA_USE_SECOND_LINE: 'Use Two EMA Lines',
+        EMA_FAST: 'Primary EMA Period',
+        EMA_SLOW: 'Secondary EMA Period',
+        SMA_USE_SECOND_LINE: 'Use Two SMA Lines',
+        SMA_PERIOD: 'Primary SMA Period',
+        SMA_SECOND_PERIOD: 'Secondary SMA Period',
         DAILY_HIGH_LOW_BUFFER_PCT: 'Breakout Buffer (%)',
         PIVOT_LEVEL_COUNT: 'S/R Levels To Draw (1-5)',
         PIVOT_TOLERANCE_PCT: 'Reclaim/Rejection Tolerance (%)',
@@ -6038,6 +6606,8 @@ function openIndicatorSettings(indicatorName) {
     configKeys.forEach(key => {
         const hasOverride = overrides[key] !== undefined && overrides[key] !== null && overrides[key] !== '';
         const val = currentParams[key] !== undefined ? currentParams[key] : (window.BT_INDICATOR_DEFAULTS[key] !== undefined ? window.BT_INDICATOR_DEFAULTS[key] : '');
+        const isLineToggle = key === 'EMA_USE_SECOND_LINE' || key === 'SMA_USE_SECOND_LINE';
+        const toggleChecked = val === true || val === 1 || String(val).toLowerCase() === 'true' || String(val) === '1';
         const label = paramLabels[key] || key.replace(/_/g, ' ').toLowerCase();
         const isPercent = key.endsWith('_PCT') || key.endsWith('_PERCENTAGE');
         const inputAttrs = botbulls5InputAttrs[key] || (key === 'PIVOT_LEVEL_COUNT'
@@ -6064,7 +6634,13 @@ function openIndicatorSettings(indicatorName) {
 
         const div = document.createElement('div');
         div.className = 'flex flex-col gap-1.5';
-        const controlHtml = key === 'SWING_POINTS_ENTRY_MODE'
+        const controlHtml = isLineToggle
+            ? `<label class="flex items-center justify-between gap-3 w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 cursor-pointer">
+                    <span class="text-xs font-bold text-indigo-900">Checked: two-line crossover · Unchecked: price vs primary line</span>
+                    <input type="checkbox" data-key="${key}" data-default="${window.BT_INDICATOR_DEFAULTS[key] ? 1 : 0}" ${toggleChecked ? 'checked' : ''}
+                        class="w-5 h-5 accent-indigo-600 rounded">
+                </label>`
+            : key === 'SWING_POINTS_ENTRY_MODE'
             ? `<select data-key="${key}" data-default="${window.BT_INDICATOR_DEFAULTS[key] !== undefined ? window.BT_INDICATOR_DEFAULTS[key] : ''}"
                     class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-bold text-indigo-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all">
                     <option value="bounce_retest" ${val === 'bounce_retest' ? 'selected' : ''}>Bounce / Retest</option>
@@ -6085,6 +6661,8 @@ function openIndicatorSettings(indicatorName) {
         container.appendChild(div);
     });
 
+    window.wireMovingAverageLineToggles?.(container);
+
     document.getElementById('indicatorSettingsModal').classList.remove('hidden');
 }
 
@@ -6097,7 +6675,12 @@ function resetIndicatorSettingsToDefaults() {
     if (!btCurrentEditingIndicator) return;
     const inputs = document.querySelectorAll('#indicatorModalContent input, #indicatorModalContent select');
     inputs.forEach(input => {
-        input.value = input.tagName === 'SELECT' ? (input.dataset.default || '') : input.placeholder; // Revert to system default
+        if (input.type === 'checkbox') {
+            input.checked = String(input.dataset.default) === '1';
+            input.dispatchEvent(new Event('change'));
+        } else {
+            input.value = input.tagName === 'SELECT' ? (input.dataset.default || '') : input.placeholder; // Revert to system default
+        }
         const key = input.dataset.key;
         if (key) {
             delete window.btIndicatorOverrides[key];
@@ -6121,8 +6704,19 @@ function resetIndicatorSettingsToDefaults() {
 
 async function saveIndicatorSettings() {
     const inputs = document.querySelectorAll('#indicatorModalContent input, #indicatorModalContent select');
+    const invalidInput = Array.from(inputs).find(input => input.tagName === 'INPUT' && !input.checkValidity());
+    if (invalidInput) {
+        invalidInput.reportValidity();
+        return;
+    }
     const updates = {};
     inputs.forEach(input => {
+        if (input.type === 'checkbox') {
+            const value = input.checked ? 1 : 0;
+            const defaultValue = String(input.dataset.default) === '1' ? 1 : 0;
+            updates[input.dataset.key] = value === defaultValue ? "" : value;
+            return;
+        }
         const defaultValue = input.tagName === 'SELECT' ? input.dataset.default : input.placeholder;
         if (input.value === defaultValue || input.value === "") {
             updates[input.dataset.key] = "";
@@ -6176,6 +6770,12 @@ async function saveIndicatorSettings() {
                 return;
             }
             const rerunRequiredKeys = [
+                'EMA_USE_SECOND_LINE',
+                'EMA_FAST',
+                'EMA_SLOW',
+                'SMA_USE_SECOND_LINE',
+                'SMA_PERIOD',
+                'SMA_SECOND_PERIOD',
                 'DAILY_HIGH_LOW_BUFFER_PCT',
                 'PIVOT_TOLERANCE_PCT',
                 'VOLUME_PROFILE_ROWS',
@@ -6442,6 +7042,7 @@ window.updateBtRegularEntryFields = function() {
     if (helper) helper.textContent = BT_REGULAR_HELPER_TEXTS.entry[mode] || BT_REGULAR_HELPER_TEXTS.entry.indicator;
     window.updateBtSwingLookbackFields?.('entry');
     updateSignalLabels('regular');
+    window.updateBtContinuousGridUi?.('entry');
 };
 
 window.updateBtRegularExitFields = function() {
@@ -6464,6 +7065,7 @@ window.updateBtRegularExitFields = function() {
     if (helper) helper.textContent = BT_REGULAR_HELPER_TEXTS.exit[mode] || BT_REGULAR_HELPER_TEXTS.exit.indicator;
     window.updateBtSwingLookbackFields?.('exit');
     updateSignalLabels('regular');
+    window.updateBtContinuousGridUi?.('exit');
 };
 
 window.updateBtAllocationModeUI = function() {

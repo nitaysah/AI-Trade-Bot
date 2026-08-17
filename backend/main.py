@@ -43,7 +43,7 @@ TERMS_REQUIRED_STATUS = 428
 from trader import evaluate_trade, get_risk_manager, clear_evaluation_cache, get_confluence_decision
 from indicators import calculate_indicators_for_df, get_full_analysis
 from data_manager import get_historical_data
-from engine import FIXED_LEVEL_EXIT_MODES, UserManager, UserEngine
+from engine import FIXED_LEVEL_EXIT_MODES, UserManager, UserEngine, _continuous_grid_forecast_state
 from swing_strategy import build_swing_exit, detect_swing_entry, format_swing_preview, build_entry_signal, format_entry_preview
 from options_direction import validate_options_type, normalize_options_type, VALID_OPTION_DIRECTIONS, options_type_label
 from prior_day_high_low import (
@@ -214,7 +214,16 @@ DASHBOARD_SIGNAL_TO_TOGGLE = {
     "BotBulls5": "ENABLE_BOTBULLS5",
 }
 DASHBOARD_SIGNAL_TO_TOGGLE.update(EXTENSION_INDICATOR_TOGGLE_KEYS)
-DASHBOARD_DEFAULT_DISPLAYED_INDICATORS = list(STANDARD_INDICATOR_NAMES[:10])
+DASHBOARD_INDICATOR_DISPLAY_LIMIT = 12
+DASHBOARD_DEFAULT_DISPLAYED_INDICATORS = [
+    "RSI", "EMA Cross", "SMA", "VWAP", "ADX Trend", "Supertrend",
+    "ATR Volatility", "Volume Profile", "Candle Patterns", "Prior Day High/Low",
+    "Swing Points", "Pivot Points (S/R)",
+]
+DASHBOARD_LEGACY_DEFAULT_SETS = (
+    {"RSI", "MACD", "EMA Cross", "ADX Trend", "Supertrend", "Bollinger", "VWAP", "Volume Profile", "SMA", "Prior Day High/Low"},
+    {"RSI", "MACD", "EMA Cross", "SMA", "Bollinger", "VWAP", "ADX Trend", "Supertrend", "Stochastic", "ATR Volatility"},
+)
 DASHBOARD_STANDARD_INDICATOR_SET = set(STANDARD_INDICATOR_NAMES)
 DASHBOARD_STANDARD_TOGGLE_TO_SIGNAL = {
     toggle_key: name
@@ -234,8 +243,9 @@ def _unique_standard_indicator_names(values) -> list[str]:
 
 def _complete_dashboard_displayed_indicators(values) -> list[str]:
     displayed = _unique_standard_indicator_names(values)
-    displayed.extend(name for name in STANDARD_INDICATOR_NAMES if name not in displayed)
-    return displayed[:10]
+    if len(displayed) == 10 and any(set(displayed) == legacy for legacy in DASHBOARD_LEGACY_DEFAULT_SETS):
+        return list(DASHBOARD_DEFAULT_DISPLAYED_INDICATORS)
+    return (displayed or list(DASHBOARD_DEFAULT_DISPLAYED_INDICATORS))[:DASHBOARD_INDICATOR_DISPLAY_LIMIT]
 
 
 def _dashboard_indicator_workspace_payload(eng: UserEngine) -> dict:
@@ -322,6 +332,7 @@ INDICATOR_PARAMETER_KEYS = [
     "RSI_OVERSOLD",
     "EMA_FAST",
     "EMA_SLOW",
+    "EMA_USE_SECOND_LINE",
     "MACD_FAST",
     "MACD_SLOW",
     "MACD_SIGNAL",
@@ -333,6 +344,8 @@ INDICATOR_PARAMETER_KEYS = [
     "ADX_PERIOD",
     "ADX_TRENDING_THRESHOLD",
     "SMA_PERIOD",
+    "SMA_SECOND_PERIOD",
+    "SMA_USE_SECOND_LINE",
     "DAILY_HIGH_LOW_BUFFER_PCT",
     "PIVOT_LEVEL_COUNT",
     "PIVOT_TOLERANCE_PCT",
@@ -471,8 +484,18 @@ def _clear_chart_analysis_cache(ticker: str = None, timeframe: str = None):
 
 
 _GRID_DEFAULT_ENTRY_LEVEL_PCTS = (1.0, 2.0, 3.0, 4.0, 5.0)
-_GRID_DEFAULT_EXIT_LEVEL_PCTS = (2.0, 4.0, 6.0, 8.0, 10.0)
+_GRID_DEFAULT_EXIT_LEVEL_PCTS = (1.0, 2.0, 3.0, 4.0, 5.0)
+_GRID_DEFAULT_ATR_LEVEL_MULTS = (2.0, 4.0, 6.0, 8.0, 10.0)
 _GRID_CONFIGURATION_KEYS = (
+    "continuous_grid_ladder_version",
+    "continuous_grid_adaptive_mode",
+    "continuous_grid_adaptation_strength",
+    "continuous_grid_min_edge_pct",
+    "continuous_grid_trailing_mode",
+    "pct_grid_regime_mode",
+    "pct_grid_runner_pct",
+    "pct_grid_runner_trail_pct",
+    "pct_grid_bullish_trend_threshold",
     "grid_continuous_mode",
     "grid_buy_allocation",
     "grid_max_levels",
@@ -482,6 +505,21 @@ _GRID_CONFIGURATION_KEYS = (
     "grid_entry_l3_pct",
     "grid_entry_l4_pct",
     "grid_entry_l5_pct",
+    "grid_entry_l1_amount",
+    "grid_entry_l2_amount",
+    "grid_entry_l3_amount",
+    "grid_entry_l4_amount",
+    "grid_entry_l5_amount",
+    "grid_entry_l1_buy_pct",
+    "grid_entry_l2_buy_pct",
+    "grid_entry_l3_buy_pct",
+    "grid_entry_l4_buy_pct",
+    "grid_entry_l5_buy_pct",
+    "grid_entry_l1_enabled",
+    "grid_entry_l2_enabled",
+    "grid_entry_l3_enabled",
+    "grid_entry_l4_enabled",
+    "grid_entry_l5_enabled",
     "exit_grid_continuous_mode",
     "exit_grid_sell_pct",
     "exit_grid_max_levels",
@@ -490,26 +528,61 @@ _GRID_CONFIGURATION_KEYS = (
     "grid_exit_l3_pct",
     "grid_exit_l4_pct",
     "grid_exit_l5_pct",
+    "grid_exit_l1_sell_pct",
+    "grid_exit_l2_sell_pct",
+    "grid_exit_l3_sell_pct",
+    "grid_exit_l4_sell_pct",
+    "grid_exit_l5_sell_pct",
+    "grid_exit_l1_enabled",
+    "grid_exit_l2_enabled",
+    "grid_exit_l3_enabled",
+    "grid_exit_l4_enabled",
+    "grid_exit_l5_enabled",
+    "atr_grid_continuous_mode",
+    "exit_atr_grid_continuous_mode",
+    "grid_atr_entry_l1_mult", "grid_atr_entry_l2_mult", "grid_atr_entry_l3_mult", "grid_atr_entry_l4_mult", "grid_atr_entry_l5_mult",
+    "grid_atr_entry_l1_buy_pct", "grid_atr_entry_l2_buy_pct", "grid_atr_entry_l3_buy_pct", "grid_atr_entry_l4_buy_pct", "grid_atr_entry_l5_buy_pct",
+    "grid_atr_entry_l1_enabled", "grid_atr_entry_l2_enabled", "grid_atr_entry_l3_enabled", "grid_atr_entry_l4_enabled", "grid_atr_entry_l5_enabled",
+    "grid_atr_exit_l1_mult", "grid_atr_exit_l2_mult", "grid_atr_exit_l3_mult", "grid_atr_exit_l4_mult", "grid_atr_exit_l5_mult",
+    "grid_atr_exit_l1_sell_pct", "grid_atr_exit_l2_sell_pct", "grid_atr_exit_l3_sell_pct", "grid_atr_exit_l4_sell_pct", "grid_atr_exit_l5_sell_pct",
+    "grid_atr_exit_l1_enabled", "grid_atr_exit_l2_enabled", "grid_atr_exit_l3_enabled", "grid_atr_exit_l4_enabled", "grid_atr_exit_l5_enabled",
 )
 _GRID_RUNTIME_STATE_KEYS = (
+    "grid_cycle_active",
+    "grid_flat_reentry_armed",
     "entry_grid_level",
     "entry_grid_anchor_price",
+    "entry_grid_anchor_atr",
     "entry_grid_armed_level",
     "entry_grid_last_fill_price",
     "exit_grid_level",
     "exit_grid_anchor_price",
+    "exit_grid_anchor_atr",
+    "exit_grid_anchor_qty",
     "exit_grid_last_fill_price",
+    "entry_grid_trend_score",
+    "entry_grid_volatility_ratio",
+    "entry_grid_high_water_price",
+    "exit_grid_trend_score",
+    "exit_grid_volatility_ratio",
+    "exit_grid_high_water_price",
+    "exit_grid_armed_level",
+    "exit_grid_runner_active",
+    "exit_grid_runner_high_water_price",
     "entry_grid_pending_order_id",
     "entry_grid_pending_level",
     "entry_grid_pending_before_qty",
     "entry_grid_pending_fill_price",
+    "entry_grid_pending_atr",
     "entry_grid_pending_missing_scans",
     "exit_grid_pending_order_id",
     "exit_grid_pending_level",
     "exit_grid_pending_before_qty",
     "exit_grid_pending_fill_price",
+    "exit_grid_pending_atr",
     "exit_grid_pending_entry_price",
     "exit_grid_pending_final_level",
+    "exit_grid_pending_runner_exit",
     "exit_grid_pending_missing_scans",
     "grid_level",
     "grid_last_execution_price",
@@ -522,20 +595,106 @@ def _grid_bool(value) -> bool:
     return bool(value)
 
 
+def _normalize_percentage_strategy_settings(settings: dict) -> dict:
+    """Keep percentage strategy inputs finite and economically valid."""
+    if not isinstance(settings, dict):
+        return settings
+
+    def normalize_if_present(key, fallback, minimum, maximum):
+        if key not in settings:
+            return
+        try:
+            value = float(settings.get(key, fallback))
+        except (TypeError, ValueError):
+            value = float(fallback)
+        if not math.isfinite(value):
+            value = float(fallback)
+        settings[key] = min(maximum, max(minimum, value))
+
+    # entry_pct_move is stored in display-percent units. Exit settings are
+    # stored as decimal fractions (5% == 0.05).
+    normalize_if_present("entry_pct_move", 5.0, 0.1, 100.0)
+    normalize_if_present("regular_stop_loss_pct", 0.05, 0.001, 0.99)
+    normalize_if_present("regular_take_profit_pct", 0.10, 0.001, 10.0)
+    normalize_if_present("regular_trailing_pct", 0.03, 0.0, 0.99)
+    normalize_if_present("options_stop_loss_pct", 0.15, 0.001, 0.99)
+    normalize_if_present("options_take_profit_pct", 0.30, 0.001, 10.0)
+    normalize_if_present("options_trailing_pct", 0.10, 0.0, 0.99)
+    return settings
+
+
 def _normalize_continuous_grid_settings(settings: dict) -> dict:
     """Sanitize one ticker's independent scale-in/scale-out configuration."""
     if not isinstance(settings, dict):
         return settings
+    _normalize_percentage_strategy_settings(settings)
 
     # Grid trading currently operates on stock/crypto positions. Silently
     # disable stale options flags as a backend safety boundary.
-    options_trading = _grid_bool(settings.get("options_trading", False))
+    options_trading = _grid_bool(settings.get("options_trading", False)) or _grid_bool(
+        settings.get("is_option", False)
+    )
     settings["grid_continuous_mode"] = (
         _grid_bool(settings.get("grid_continuous_mode", False)) and not options_trading
     )
     settings["exit_grid_continuous_mode"] = (
         _grid_bool(settings.get("exit_grid_continuous_mode", False)) and not options_trading
     )
+    settings["atr_grid_continuous_mode"] = (
+        _grid_bool(settings.get("atr_grid_continuous_mode", False)) and not options_trading
+    )
+    settings["exit_atr_grid_continuous_mode"] = (
+        _grid_bool(settings.get("exit_atr_grid_continuous_mode", False)) and not options_trading
+    )
+    # A PCT ladder without an explicit smart-mode value is an old saved bot.
+    # Upgrade that case to the quant profile; an explicit false remains a
+    # deliberate request for the legacy balanced/static behavior.
+    pct_pair_requested = bool(
+        _grid_bool(settings.get("grid_continuous_mode", False))
+        and _grid_bool(settings.get("exit_grid_continuous_mode", False))
+    )
+    adaptive_default = pct_pair_requested and "continuous_grid_adaptive_mode" not in settings
+    settings["continuous_grid_adaptive_mode"] = _grid_bool(
+        settings.get("continuous_grid_adaptive_mode", adaptive_default)
+    ) and not options_trading
+    settings["continuous_grid_trailing_mode"] = _grid_bool(
+        settings.get("continuous_grid_trailing_mode", settings["continuous_grid_adaptive_mode"])
+    ) and settings["continuous_grid_adaptive_mode"] and not options_trading
+    buy_mode = str(settings.get("buy_mode", "indicator") or "indicator").lower()
+    sell_mode = str(settings.get("sell_mode", "indicator") or "indicator").lower()
+    if settings["grid_continuous_mode"] or settings["exit_grid_continuous_mode"]:
+        valid_adaptive_pair = bool(
+            settings["grid_continuous_mode"]
+            and settings["exit_grid_continuous_mode"]
+            and buy_mode in {"percentage", "hybrid_pct"}
+            and sell_mode in {"percentage", "hybrid_pct"}
+        )
+        if not valid_adaptive_pair:
+            # The v2 ladder is one atomic strategy. Disabling an invalid or
+            # half-configured pair prevents a hidden full-size initial entry
+            # followed by additional scale-in exposure.
+            settings["grid_continuous_mode"] = False
+            settings["exit_grid_continuous_mode"] = False
+
+    if settings["atr_grid_continuous_mode"] or settings["exit_atr_grid_continuous_mode"]:
+        valid_atr_pair = bool(
+            settings["atr_grid_continuous_mode"]
+            and settings["exit_atr_grid_continuous_mode"]
+            and buy_mode in {"atr", "hybrid_atr"}
+            and sell_mode in {"sltp", "hybrid", "atr", "hybrid_atr"}
+        )
+        if not valid_atr_pair:
+            settings["atr_grid_continuous_mode"] = False
+            settings["exit_atr_grid_continuous_mode"] = False
+
+    # Only the ladder matching the selected strategy modes may execute. Saved
+    # values for the inactive ladder remain intact for a later mode switch.
+    if settings["atr_grid_continuous_mode"] and settings["exit_atr_grid_continuous_mode"]:
+        settings["grid_continuous_mode"] = False
+        settings["exit_grid_continuous_mode"] = False
+    elif settings["grid_continuous_mode"] and settings["exit_grid_continuous_mode"]:
+        settings["atr_grid_continuous_mode"] = False
+        settings["exit_atr_grid_continuous_mode"] = False
 
     def bounded_number(key, fallback, minimum, maximum):
         try:
@@ -546,16 +705,150 @@ def _normalize_continuous_grid_settings(settings: dict) -> dict:
             value = float(fallback)
         settings[key] = min(maximum, max(minimum, value))
 
-    bounded_number("grid_buy_allocation", 1000.0, 1.0, 10_000_000.0)
-    bounded_number("exit_grid_sell_pct", 25.0, 1.0, 100.0)
+    bounded_number("exit_grid_sell_pct", 20.0, 1.0, 100.0)
     bounded_number("grid_reclaim_buffer_pct", 0.15, 0.0, 2.0)
+    bounded_number("continuous_grid_adaptation_strength", 50.0, 0.0, 100.0)
+    bounded_number("continuous_grid_min_edge_pct", 0.35, 0.0, 10.0)
+    mode = str(settings.get("pct_grid_regime_mode", "auto") or "auto").strip().lower()
+    settings["pct_grid_regime_mode"] = mode if mode in {"auto", "balanced", "runner"} else "auto"
+    bounded_number("pct_grid_runner_pct", 25.0, 0.0, 60.0)
+    bounded_number("pct_grid_runner_trail_pct", 3.0, 0.1, 25.0)
+    bounded_number("pct_grid_bullish_trend_threshold", 0.35, 0.0, 0.95)
 
+    legacy_level_counts = {}
     for key in ("grid_max_levels", "exit_grid_max_levels"):
         try:
             value = int(settings.get(key, 5))
         except (TypeError, ValueError):
             value = 5
         settings[key] = min(5, max(1, value))
+        legacy_level_counts[key] = settings[key]
+
+    enabled_levels = {}
+    for side in ("entry", "exit"):
+        prefix = "grid_entry" if side == "entry" else "grid_exit"
+        legacy_key = "grid_max_levels" if side == "entry" else "exit_grid_max_levels"
+        has_explicit_selection = any(f"{prefix}_l{index}_enabled" in settings for index in range(1, 6))
+        active = []
+        for index in range(1, 6):
+            key = f"{prefix}_l{index}_enabled"
+            is_enabled = (
+                _grid_bool(settings.get(key, True))
+                if has_explicit_selection
+                else index <= legacy_level_counts[legacy_key]
+            )
+            settings[key] = is_enabled
+            if is_enabled:
+                active.append(index)
+        if not active:
+            settings[f"{prefix}_l1_enabled"] = True
+            active = [1]
+        enabled_levels[side] = active
+    # The new ladder always contains five visible rows; per-level checkboxes
+    # now determine participation instead of a contiguous level-count selector.
+    settings["grid_max_levels"] = 5
+    settings["exit_grid_max_levels"] = 5
+
+    allocation_mode = str(settings.get("allocation_mode", "fixed") or "fixed").lower()
+    allocation = settings.get("compound_amount") if allocation_mode == "compound" else settings.get("amount")
+    try:
+        allocation = float(allocation or settings.get("amount") or 0.0)
+    except (TypeError, ValueError):
+        allocation = 0.0
+    migrated_buy_pcts = {}
+    default_buy_pcts = (40.0, 25.0, 15.0, 10.0, 10.0)
+    for index in range(1, 6):
+        buy_pct_key = f"grid_entry_l{index}_buy_pct"
+        raw_pct = settings.get(buy_pct_key)
+        if raw_pct is None and allocation > 0:
+            try:
+                legacy_amount = float(settings.get(f"grid_entry_l{index}_amount"))
+                raw_pct = legacy_amount / allocation * 100.0
+            except (TypeError, ValueError):
+                raw_pct = None
+        try:
+            raw_pct = float(default_buy_pcts[index - 1] if raw_pct is None else raw_pct)
+        except (TypeError, ValueError):
+            raw_pct = default_buy_pcts[index - 1]
+        if not math.isfinite(raw_pct):
+            raw_pct = default_buy_pcts[index - 1]
+        migrated_buy_pcts[index] = min(100.0, max(1.0, raw_pct))
+
+    # A full entry ladder represents at most one additional bot allocation.
+    # Preserve the relative weighting of legacy dollar levels while preventing
+    # migration from silently multiplying the bot's intended capital.
+    total_buy_pct = sum(migrated_buy_pcts[index] for index in enabled_levels["entry"])
+    if total_buy_pct > 100.0:
+        for index in enabled_levels["entry"]:
+            migrated_buy_pcts[index] = round(migrated_buy_pcts[index] * 100.0 / total_buy_pct, 4)
+    for index in range(1, 6):
+        settings[f"grid_entry_l{index}_buy_pct"] = migrated_buy_pcts[index]
+
+    try:
+        ladder_version = int(settings.get("continuous_grid_ladder_version", 0) or 0)
+    except (TypeError, ValueError):
+        ladder_version = 0
+    if ladder_version < 2:
+        def legacy_values(keys, fallbacks):
+            values = []
+            for key, fallback in zip(keys, fallbacks):
+                try:
+                    value = float(settings.get(key, fallback))
+                except (TypeError, ValueError):
+                    value = float(fallback)
+                values.append(value)
+            return values
+
+        old_exit_triggers = legacy_values(
+            [f"grid_exit_l{index}_pct" for index in range(1, 6)],
+            (2.0, 4.0, 6.0, 8.0, 10.0),
+        )
+        if all(abs(value - expected) < 0.000001 for value, expected in zip(old_exit_triggers, (2, 4, 6, 8, 10))):
+            for index, value in enumerate(_GRID_DEFAULT_EXIT_LEVEL_PCTS, start=1):
+                settings[f"grid_exit_l{index}_pct"] = value
+
+        old_exit_sizes = legacy_values(
+            [f"grid_exit_l{index}_sell_pct" for index in range(1, 6)],
+            (25.0, 25.0, 25.0, 25.0, 100.0),
+        )
+        legacy_size_patterns = (
+            (25.0, 25.0, 25.0, 25.0, 100.0),
+            (25.0, 25.0, 25.0, 25.0, 25.0),
+        )
+        has_explicit_exit_sizes = any(
+            f"grid_exit_l{index}_sell_pct" in settings for index in range(1, 6)
+        )
+        if has_explicit_exit_sizes and any(
+            all(abs(value - expected) < 0.000001 for value, expected in zip(old_exit_sizes, pattern))
+            for pattern in legacy_size_patterns
+        ):
+            for index in range(1, 6):
+                settings[f"grid_exit_l{index}_sell_pct"] = (10.0, 10.0, 15.0, 20.0, 20.0)[index - 1]
+            settings["exit_grid_sell_pct"] = 20.0
+    settings["continuous_grid_ladder_version"] = 3
+
+    default_sell_pcts = (10.0, 10.0, 15.0, 20.0, 20.0)
+    legacy_sell_pct = settings.get("exit_grid_sell_pct", 20.0)
+    for index in range(1, 6):
+        bounded_number(
+            f"grid_exit_l{index}_sell_pct",
+            default_sell_pcts[index - 1] if f"grid_exit_l{index}_sell_pct" not in settings else legacy_sell_pct,
+            1.0,
+            100.0,
+        )
+    total_sell_pct = sum(
+        settings[f"grid_exit_l{index}_sell_pct"] for index in enabled_levels["exit"]
+    )
+    if total_sell_pct > 100.0:
+        for index in enabled_levels["exit"]:
+            settings[f"grid_exit_l{index}_sell_pct"] = round(
+                settings[f"grid_exit_l{index}_sell_pct"] * 100.0 / total_sell_pct,
+                4,
+            )
+
+    settings.pop("grid_buy_allocation", None)
+    for index in range(1, 6):
+        settings.pop(f"grid_entry_l{index}_amount", None)
 
     for side in ("entry", "exit"):
         prefix = "grid_entry" if side == "entry" else "grid_exit"
@@ -582,6 +875,55 @@ def _normalize_continuous_grid_settings(settings: dict) -> dict:
             values = list(defaults)
         for index, value in enumerate(values, start=1):
             settings[f"{prefix}_l{index}_pct"] = value
+
+    if settings.get("grid_continuous_mode"):
+        first_entry_level = enabled_levels["entry"][0]
+        settings["entry_pct_move"] = settings[f"grid_entry_l{first_entry_level}_pct"]
+        settings["entry_pct_style"] = "dip_reclaim"
+    if settings.get("exit_grid_continuous_mode"):
+        settings["enable_pct_trail"] = False
+
+    atr_enabled_levels = {}
+    for side in ("entry", "exit"):
+        prefix = f"grid_atr_{side}"
+        explicit = any(f"{prefix}_l{index}_enabled" in settings for index in range(1, 6))
+        active = []
+        values = []
+        for index, fallback in enumerate(_GRID_DEFAULT_ATR_LEVEL_MULTS, start=1):
+            enabled_key = f"{prefix}_l{index}_enabled"
+            settings[enabled_key] = _grid_bool(settings.get(enabled_key, True)) if explicit else True
+            if settings[enabled_key]:
+                active.append(index)
+            bounded_number(f"{prefix}_l{index}_mult", fallback, 0.1, 100.0)
+            values.append(settings[f"{prefix}_l{index}_mult"])
+            size_suffix = "buy_pct" if side == "entry" else "sell_pct"
+            bounded_number(f"{prefix}_l{index}_{size_suffix}", 20.0, 1.0, 100.0)
+        if not active:
+            settings[f"{prefix}_l1_enabled"] = True
+            active = [1]
+        # Validate the executable ladder only. Disabled rungs may retain their
+        # saved values, and an invalid active sequence must not silently erase
+        # those unrelated settings. Restore defaults only for the active side
+        # when its enabled multipliers are not strictly increasing.
+        active_values = [settings[f"{prefix}_l{index}_mult"] for index in active]
+        if not all(active_values[pos] > active_values[pos - 1] for pos in range(1, len(active_values))):
+            for index in active:
+                settings[f"{prefix}_l{index}_mult"] = _GRID_DEFAULT_ATR_LEVEL_MULTS[index - 1]
+        size_suffix = "buy_pct" if side == "entry" else "sell_pct"
+        total = sum(settings[f"{prefix}_l{index}_{size_suffix}"] for index in active)
+        if total > 100.0:
+            for index in active:
+                key = f"{prefix}_l{index}_{size_suffix}"
+                settings[key] = round(settings[key] * 100.0 / total, 4)
+        atr_enabled_levels[side] = active
+
+    if settings.get("atr_grid_continuous_mode"):
+        first = atr_enabled_levels["entry"][0]
+        settings["entry_atr_multiplier"] = settings[f"grid_atr_entry_l{first}_mult"]
+        settings["entry_atr_style"] = "pullback_reclaim"
+    # Keep fixed ATR preferences intact while the ladder is active. Execution
+    # bypasses them at runtime, so disabling the ladder restores the user's
+    # prior stop/target/trail choices instead of silently overwriting them.
 
     # This legacy field was displayed beside entry allocation but was never
     # used by execution. Exit sizing has one canonical setting above.
@@ -664,7 +1006,12 @@ def _queue_settings_save(eng: UserEngine, reason: str = "settings"):
     return task
 
 
-def _get_chart_analysis_fallback(ticker: str, timeframe: str, settings: dict = None):
+def _get_chart_analysis_fallback(
+    ticker: str,
+    timeframe: str,
+    settings: dict = None,
+    force_refresh: bool = False,
+):
     """Use cached/Yahoo OHLCV only when the primary live providers return no chart."""
     timeframe_key = timeframe or "5Min"
     lookback_days = {
@@ -690,6 +1037,7 @@ def _get_chart_analysis_fallback(ticker: str, timeframe: str, settings: dict = N
             start_date,
             end_date,
             force_yahoo=True,
+            force_refresh=force_refresh,
         )
         if fallback_df is None or fallback_df.empty or len(fallback_df) < 30:
             return None
@@ -713,8 +1061,14 @@ def _get_cached_chart_analysis(ticker: str, timeframe: str, eng: UserEngine, for
     ticker_key = _normalize_quote_symbol(ticker)
     timeframe_key = timeframe or get_user_config().DEFAULT_TIMEFRAME
     settings_hash = _cache_settings_hash(eng, ticker_key, source, settings)
-    cache_key = stable_cache_key(eng.uid, source, ticker_key, timeframe_key, "webull", settings_hash, 2)
+    cache_key = stable_cache_key(eng.uid, source, ticker_key, timeframe_key, "webull", settings_hash, 3)
     cache_ttl = _chart_cache_ttl(timeframe_key)
+    if isinstance(settings, dict) and settings.get("_chart_preview"):
+        # The preview refresh timer is 30s for short timeframes. Keep one
+        # provider result warm across that timer so the UI does not fetch and
+        # recalculate the same draft twice before the next candle matters.
+        preview_ttl = 45 if str(timeframe_key).upper() in {"30SEC", "1MIN", "2MIN", "3MIN", "5MIN"} else 60
+        cache_ttl = max(cache_ttl, preview_ttl)
     cached, age = _chart_analysis_cache.peek_with_age(cache_key)
     if cached and not force and age is not None and age < cache_ttl:
         return cached["analysis"], True, age
@@ -726,7 +1080,7 @@ def _get_cached_chart_analysis(ticker: str, timeframe: str, eng: UserEngine, for
     lock_acquired = fetch_lock.acquire(blocking=False)
     if not lock_acquired:
         stale_cached, stale_age = _chart_analysis_cache.peek_with_age(cache_key)
-        if stale_cached:
+        if stale_cached and not force:
             return stale_cached["analysis"], True, stale_age
         # Another request is already doing the Webull + indicator work. Wait a
         # short window for it to populate cache instead of launching duplicate
@@ -736,7 +1090,10 @@ def _get_cached_chart_analysis(ticker: str, timeframe: str, eng: UserEngine, for
             if fetch_lock.acquire(blocking=False):
                 try:
                     cached, age = _chart_analysis_cache.peek_with_age(cache_key)
-                    if cached:
+                    if cached and (
+                        not force
+                        or (age is not None and age < 2.0)
+                    ):
                         return cached["analysis"], True, age
                     break
                 finally:
@@ -744,7 +1101,7 @@ def _get_cached_chart_analysis(ticker: str, timeframe: str, eng: UserEngine, for
             time.sleep(0.1)
 
         stale_cached, stale_age = _chart_analysis_cache.peek_with_age(cache_key)
-        if stale_cached:
+        if stale_cached and not force:
             return stale_cached["analysis"], True, stale_age
         return None, False, 0.0
 
@@ -761,10 +1118,15 @@ def _get_cached_chart_analysis(ticker: str, timeframe: str, eng: UserEngine, for
         analysis = get_full_analysis(ticker_key, timeframe=timeframe_key, data_source="webull", settings=settings)
         if not analysis:
             stale_cached, stale_age = _chart_analysis_cache.peek_with_age(cache_key)
-            if stale_cached:
+            if stale_cached and not force:
                 print(f"[chart] Live providers unavailable for {ticker_key}; serving stale chart cache")
                 return stale_cached["analysis"], True, stale_age
-            analysis = _get_chart_analysis_fallback(ticker_key, timeframe_key, settings)
+            analysis = _get_chart_analysis_fallback(
+                ticker_key,
+                timeframe_key,
+                settings,
+                force_refresh=force,
+            )
         if analysis:
             _chart_analysis_cache.set(cache_key, {"analysis": analysis})
         return analysis, False, 0.0
@@ -1033,6 +1395,7 @@ def _build_chart_payload(
         "total_signals": formatted_scan.get("total_signals", 0),
         "preview_meta": preview_meta or {},
         "candle_meta": analysis.get("candle_meta", {}),
+        "volumeProfile": analysis.get("volume_profile") or {},
         "performance": {
             "total_ms": total_ms,
             "cache_age_seconds": round(cache_age or 0.0, 1),
@@ -2990,6 +3353,175 @@ def _scan_reference_price(formatted_scan: dict, current: float) -> float:
     return current
 
 
+def _continuous_grid_side_forecast_text(ticker: str, side: str, state: dict, current_price: float) -> str:
+    if not state or not state.get("enabled"):
+        return ""
+    is_entry = side == "entry"
+    side_label = "Adaptive Buy Grid" if is_entry else "Adaptive Sell Grid"
+    anchor_label = "buy anchor" if is_entry else "average-cost anchor"
+    anchor = _entry_forecast_float(state.get("anchor_price"), 0.0)
+    progress = f"{int(state.get('completed_count') or 0)}/{int(state.get('enabled_count') or 0)} enabled rungs completed"
+    status = str(state.get("status") or "monitoring")
+
+    if status == "waiting_position":
+        return f"{side_label} | Waiting for an open position to establish the sell anchor | Progress {progress}"
+    if status == "waiting_initial_entry":
+        level = int(state.get("next_level") or state.get("display_level") or 0)
+        allocation_pct = _entry_forecast_float(state.get("allocation_pct"), 0.0)
+        allocation_amount = _entry_forecast_float(state.get("allocation_amount"), 0.0)
+        allocation = f"Buy {allocation_pct:.1f}%"
+        if allocation_amount > 0:
+            allocation += f" ({_format_quote_price(ticker, allocation_amount)})"
+        return (
+            f"{side_label} | Waiting for the initial {str(state.get('grid_kind') or 'PCT').upper()} signal; first fill is "
+            f"L{level} {allocation}, not a full allocation | Progress {progress}"
+        )
+    if status == "runner_monitoring":
+        trigger = _entry_forecast_float(state.get("trigger_price"), 0.0)
+        peak = _entry_forecast_float(state.get("trailing_peak_price"), 0.0)
+        runner_pct = _entry_forecast_float(state.get("runner_pct"), 0.0)
+        trail_pct = _entry_forecast_float(state.get("runner_trail_pct"), 0.0)
+        distance = _scan_distance_text(ticker, current_price, trigger, "Distance") if current_price > 0 else ""
+        return (
+            f"{side_label} | Runner monitoring: retain {runner_pct:.1f}% of ladder-start position; "
+            f"trail {trail_pct:.2f}% below peak {_format_quote_price(ticker, peak)}; "
+            f"close runner at/below {_format_quote_price(ticker, trigger)} | Progress {progress}"
+            + (f" | {distance}" if distance else "")
+        )
+    if status == "no_levels":
+        return f"{side_label} | No enabled levels"
+    if status == "all_levels_complete":
+        return f"{side_label} | All enabled levels completed | {anchor_label.title()} {_format_quote_price(ticker, anchor)} | Progress {progress}"
+
+    level = state.get("pending_level") if status == "order_pending" else state.get("display_level")
+    level = int(level or state.get("next_level") or 0)
+    from_level = int(state.get("from_level") or level)
+    rung_label = f"L{from_level}–L{level}" if from_level < level else f"L{level}"
+    trigger = _entry_forecast_float(state.get("trigger_price"), 0.0)
+    level_pct = _entry_forecast_float(state.get("level_pct"), 0.0)
+    base_level_pct = _entry_forecast_float(state.get("base_level_pct"), level_pct)
+    allocation_pct = _entry_forecast_float(state.get("allocation_pct"), 0.0)
+    trailing_sell = bool((not is_entry) and state.get("trailing_enabled") and state.get("armed_level"))
+    action = "Buy at/below" if is_entry else ("Sell at/below" if trailing_sell else "Sell at/above")
+    allocation = f"Buy {allocation_pct:.1f}%"
+    if is_entry:
+        allocation_amount = _entry_forecast_float(state.get("allocation_amount"), 0.0)
+        if allocation_amount > 0:
+            allocation += f" ({_format_quote_price(ticker, allocation_amount)})"
+    else:
+        allocation = f"Sell {allocation_pct:.1f}% of ladder-start position"
+    pending = " | Order pending" if status == "order_pending" else ""
+    distance = _scan_distance_text(ticker, current_price, trigger, "Distance") if current_price > 0 else ""
+    unit = "x ATR" if state.get("grid_kind") == "atr" else "%"
+    move = f"{'-' if is_entry else '+'}{level_pct:.2f}{unit}"
+    smart = ""
+    if state.get("smart_dynamic"):
+        factors = state.get("adaptive_factors") or {}
+        trend = _entry_forecast_float(factors.get("trend_score"), 0.0)
+        volatility = _entry_forecast_float(factors.get("volatility_ratio"), 1.0)
+        regime = "uptrend" if trend > 0.15 else ("downtrend" if trend < -0.15 else "balanced")
+        base = f"{base_level_pct:.2f}{unit} base → " if abs(base_level_pct - level_pct) > 0.0001 else ""
+        smart = f" | Smart {base}{level_pct:.2f}{unit}; {regime} {trend:+.2f}, vol {volatility:.2f}x"
+        if state.get("grid_kind") == "pct" and state.get("pct_regime_profile_active"):
+            if is_entry:
+                smart += " | Bull profile buy weights 40/25/15/10/10"
+            else:
+                smart += f" | Bull profile sell weights 10/10/15/20/20; {_entry_forecast_float(state.get('pct_runner_pct_configured'), 25.0):.0f}% runner"
+    if state.get("trailing_enabled"):
+        peak = _entry_forecast_float(state.get("trailing_peak_price"), 0.0)
+        activation = _entry_forecast_float(state.get("activation_price"), 0.0)
+        if not is_entry and state.get("armed_level") and peak > 0:
+            smart += f" | Trailing sell armed at L{int(state.get('armed_level'))}; peak {_format_quote_price(ticker, peak)}"
+        elif not is_entry and activation > 0:
+            smart += f" | Activates {_format_quote_price(ticker, activation)}, then trails peak"
+        elif is_entry and peak > 0:
+            smart += f" | Buy levels ratchet from high-water {_format_quote_price(ticker, peak)}"
+    return (
+        f"{side_label} | {'Pending' if status == 'order_pending' else 'Next'} {rung_label}: {action} {_format_quote_price(ticker, trigger)} ({move})"
+        f" | {allocation} | {anchor_label.title()} {_format_quote_price(ticker, anchor)}"
+        f" | Progress {progress}{smart}{pending}{f' | {distance}' if distance else ''}"
+    )
+
+
+def _build_continuous_grid_forecast(settings: dict, formatted_scan: dict, position: dict, ticker: str) -> dict:
+    current = _entry_forecast_float((formatted_scan or {}).get("price_raw"), 0.0)
+    if current <= 0 and position:
+        current = _entry_forecast_float(position.get("current_price"), 0.0)
+    average = _entry_forecast_float(
+        (position or {}).get("avg_price") or (position or {}).get("avg_entry_price"),
+        0.0,
+    )
+    qty = _entry_forecast_float((position or {}).get("qty"), 0.0)
+    forecast = _continuous_grid_forecast_state(
+        settings,
+        current_price=current,
+        has_position=bool(position),
+        average_entry_price=average,
+        position_qty=qty,
+        current_atr=_entry_forecast_float((formatted_scan or {}).get("atr"), 0.0),
+        price_history=(formatted_scan or {}).get("price_history") or [],
+    )
+    if not forecast.get("enabled"):
+        return forecast
+    forecast["entry"]["text"] = _continuous_grid_side_forecast_text(
+        ticker, "entry", forecast.get("entry"), current
+    )
+    forecast["exit"]["text"] = _continuous_grid_side_forecast_text(
+        ticker, "exit", forecast.get("exit"), current
+    )
+    return forecast
+
+
+def _continuous_grid_scan_levels(ticker: str, forecast: dict) -> list[str]:
+    if not forecast or not forecast.get("enabled"):
+        return []
+    current = _entry_forecast_float(forecast.get("current_price"), 0.0)
+    lines = []
+    for side, label in (("entry", "Next buy"), ("exit", "Next sell")):
+        state = forecast.get(side) or {}
+        if not state.get("enabled"):
+            continue
+        status = str(state.get("status") or "")
+        if status == "waiting_position":
+            lines.append("Sell ladder waiting for a position")
+            continue
+        if status == "waiting_initial_entry":
+            level = int(state.get("next_level") or state.get("display_level") or 0)
+            allocation_pct = _entry_forecast_float(state.get("allocation_pct"), 0.0)
+            amount = _entry_forecast_float(state.get("allocation_amount"), 0.0)
+            amount_text = f"/{_format_quote_price(ticker, amount)}" if amount > 0 else ""
+            lines.append(
+                f"Initial buy L{level}: waiting for percentage signal, then buy "
+                f"{allocation_pct:.1f}%{amount_text}"
+            )
+            continue
+        if status == "all_levels_complete":
+            lines.append(f"{label.title()} ladder: all enabled rungs completed")
+            continue
+        level = int((state.get("pending_level") if status == "order_pending" else state.get("display_level")) or state.get("next_level") or 0)
+        from_level = int(state.get("from_level") or level)
+        rung_label = f"L{from_level}–L{level}" if from_level < level else f"L{level}"
+        trigger = _entry_forecast_float(state.get("trigger_price"), 0.0)
+        allocation_pct = _entry_forecast_float(state.get("allocation_pct"), 0.0)
+        if level <= 0 or trigger <= 0:
+            continue
+        allocation = f"buy {allocation_pct:.1f}%"
+        if side == "entry":
+            amount = _entry_forecast_float(state.get("allocation_amount"), 0.0)
+            if amount > 0:
+                allocation += f"/{_format_quote_price(ticker, amount)}"
+        else:
+            allocation = f"sell {allocation_pct:.1f}%"
+        pending = ", order pending" if status == "order_pending" else ""
+        distance_label = f"{label} {rung_label}"
+        if side == "exit" and state.get("trailing_enabled") and state.get("armed_level"):
+            distance_label = f"Trailing sell {rung_label}"
+        distance = _scan_distance_text(ticker, current, trigger, distance_label)
+        trailing_note = " after profit activation" if side == "exit" and state.get("trailing_enabled") and state.get("armed_level") else ""
+        lines.append(f"{distance} ({allocation}{trailing_note}{pending})" if distance else f"{distance_label} ({allocation}{trailing_note}{pending})")
+    return lines
+
+
 def _active_trailing_stop(eng: UserEngine, symbol: str):
     trailing = getattr(eng, "last_trailing_stops", {}).get(symbol)
     if isinstance(trailing, dict):
@@ -3022,6 +3554,9 @@ def _scan_log_entry_levels(ticker: str, formatted_scan: dict, settings: dict, ta
         return [text] if text else []
 
     if mode in {"atr", "hybrid_atr"}:
+        if settings.get("atr_grid_continuous_mode") and settings.get("exit_atr_grid_continuous_mode"):
+            forecast = _build_continuous_grid_forecast(settings, formatted_scan, None, ticker)
+            return _continuous_grid_scan_levels(ticker, forecast)
         atr = _entry_forecast_float(formatted_scan.get("atr"), 0.0)
         mult = _entry_forecast_float(settings.get("entry_atr_multiplier", settings.get("atr_stop_multiplier", 2.0)), 2.0)
         style = settings.get("entry_atr_style", "pullback_reclaim")
@@ -3040,6 +3575,10 @@ def _scan_log_entry_levels(ticker: str, formatted_scan: dict, settings: dict, ta
             if text:
                 lines.append(text)
         return lines
+
+    if mode in {"percentage", "hybrid_pct"} and settings.get("grid_continuous_mode"):
+        forecast = _build_continuous_grid_forecast(settings, formatted_scan, None, ticker)
+        return _continuous_grid_scan_levels(ticker, forecast)
 
     if mode in {"percentage", "hybrid_pct"}:
         pct = _entry_forecast_float(settings.get("entry_pct_move", 1.0), 1.0) / 100.0
@@ -3097,6 +3636,16 @@ def _scan_log_exit_levels(ticker: str, formatted_scan: dict, settings: dict, pos
     premium_now = _entry_forecast_float(position.get("current_price"), 0.0)
     underlying_now = _entry_forecast_float(formatted_scan.get("price_raw"), 0.0)
     lines = []
+
+    if (
+        not is_option
+        and (
+            (mode in {"percentage", "hybrid_pct"} and (settings.get("grid_continuous_mode") or settings.get("exit_grid_continuous_mode")))
+            or (mode in {"sltp", "hybrid", "atr", "hybrid_atr"} and (settings.get("atr_grid_continuous_mode") or settings.get("exit_atr_grid_continuous_mode")))
+        )
+    ):
+        forecast = _build_continuous_grid_forecast(settings, formatted_scan, position, ticker)
+        return _continuous_grid_scan_levels(ticker, forecast)
 
     if exit_protection:
         tp = _entry_forecast_float(exit_protection.get("take_profit"), 0.0)
@@ -3347,7 +3896,7 @@ def _build_static_entry_forecast(settings: dict, scan: dict, ticker: str) -> str
     mode = settings.get("buy_mode", "indicator")
     buy_threshold = _get_threshold_setting(settings, ("min_buy_signals", "threshold", "buy_threshold"), 1)
     pool_text = _indicator_pool_text(settings)
-    parts = [_entry_strategy_label(mode)]
+    parts = [f"Strategy: {_entry_strategy_label(mode)}"]
 
     is_option = bool(settings.get("options_trading"))
     if is_option:
@@ -3357,46 +3906,33 @@ def _build_static_entry_forecast(settings: dict, scan: dict, ticker: str) -> str
     if mode in {"indicator", "hybrid", "hybrid_atr", "hybrid_pct", "hybrid_pivot", "hybrid_high_low", "hybrid_swing"}:
         if is_option:
             if option_label == "CALLS_ONLY":
-                parts.append(f"Opens CALL when {buy_threshold} enabled bullish signals confirm")
+                parts.append(f"Trigger: Opens CALL when {buy_threshold} enabled bullish signals confirm")
             elif option_label == "PUTS_ONLY":
-                parts.append(f"Opens PUT when {buy_threshold} enabled bearish signals confirm")
+                parts.append(f"Trigger: Opens PUT when {buy_threshold} enabled bearish signals confirm")
             else:
-                parts.append(f"Opens CALL on {buy_threshold} bullish signals or PUT on {buy_threshold} bearish signals")
+                parts.append(f"Trigger: Opens CALL on {buy_threshold} bullish signals or PUT on {buy_threshold} bearish signals")
         else:
-            parts.append(f"Opens long when {buy_threshold} enabled bullish signals confirm")
+            parts.append(f"Trigger: Opens long when {buy_threshold} enabled bullish signals confirm")
 
     if mode == "custom_price":
-        parts.append(f"[Trigger] {_entry_forecast_money(settings.get('custom_buy_price'))}")
+        parts.append(f"Trigger Price: {_entry_forecast_money(settings.get('custom_buy_price'))}")
     elif mode in {"atr", "hybrid_atr"}:
-        atr_val = _entry_forecast_float((scan or {}).get("atr"), 0.0)
         mult = _entry_forecast_float(settings.get("entry_atr_multiplier", settings.get("atr_stop_multiplier", 2.0)), 2.0)
-        parts.append(f"[ATR Trigger] x{mult:.1f}")
-        if atr_val > 0:
-            parts.append(f"[ATR Snapshot] {_entry_forecast_money(atr_val)}")
+        parts.append(f"Trigger: ATR move x{mult:.1f}")
     elif mode in {"percentage", "hybrid_pct"}:
         pct = _entry_forecast_float(settings.get("entry_pct_move", 1.0), 1.0)
-        parts.append(f"[Move] {pct:.1f}%")
+        parts.append(f"Trigger: Price move {pct:.1f}%")
     elif mode in {"pivot_points", "hybrid_pivot"}:
-        prior = (scan or {}).get("prior_day_ohlc") or {}
-        if prior:
-            parts.append(f"[Pivot Day High] {_entry_forecast_money(prior.get('high'))}")
-            parts.append(f"[Pivot Day Low] {_entry_forecast_money(prior.get('low'))}")
+        parts.append(f"Trigger: Pivot point S/R breakout")
     elif mode in {"high_low", "hybrid_high_low"}:
-        prior = (scan or {}).get("prior_day_ohlc") or {}
-        levels = buffered_prior_day_levels(prior, resolve_high_low_buffer_pct(settings)) if prior else None
-        if levels:
-            parts.append(f"[High Trigger] {_entry_forecast_money(levels.get('high_trigger'))}")
-            parts.append(f"[Low Trigger] {_entry_forecast_money(levels.get('low_trigger'))}")
-            parts.append(f"[PDH/PDL] {_entry_forecast_money(levels.get('high'))} / {_entry_forecast_money(levels.get('low'))}")
-            if levels.get("buffer_pct"):
-                parts.append(f"[Buffer] {levels.get('buffer_pct', 0.0):.2f}%")
+        buffer_pct = resolve_high_low_buffer_pct(settings)
+        parts.append(f"Trigger: Prior Day High/Low breakout ({buffer_pct:.2f}% buffer)")
     elif mode in {"swing_points", "hybrid_swing"}:
         lookback = int(settings.get("swing_entry_lookback_days", settings.get("swing_lookback_days", 20)) or 20)
-        swing_mode = str(settings.get("swing_entry_mode", "bounce_retest")).replace("_", " ").title()
-        parts.append(f"[Swing] {swing_mode} | {lookback}D")
+        parts.append(f"Trigger: {lookback}D Swing S/R level breakout")
 
     if mode in {"indicator", "hybrid", "hybrid_atr", "hybrid_pct", "hybrid_pivot", "hybrid_high_low", "hybrid_swing"}:
-        parts.append(f"[Pool] {pool_text}")
+        parts.append(f"[Indicator Pool] {pool_text}")
     return " | ".join(parts)
 
 
@@ -3412,23 +3948,22 @@ def _build_static_exit_forecast(settings: dict, scan: dict, position: dict, tick
     sell_threshold = _get_threshold_setting(settings, ("min_sell_signals", "sell_threshold"), 1)
 
     if settings.get("ai_autopilot"):
-        parts = ["AI Autopilot", f"[Position] {direction_label}"]
+        parts = ["AI Autopilot Exit", f"[Position] {direction_label}"]
         if avg_price > 0:
             parts.append(f"[Entry] {_format_quote_price(ticker, avg_price)}")
-        parts.append("AI evaluates trend invalidation, stop, target, and risk for exit")
+        parts.append("Trigger: AI evaluates trend invalidation, SL/TP, and risk for exit")
         return " | ".join(parts)
 
-    parts = [_exit_strategy_label(sell_mode)]
+    parts = [f"Exit Strategy: {_exit_strategy_label(sell_mode)}"]
     parts.append(f"[Position] {direction_label}")
     if avg_price > 0:
         parts.append(f"[Entry] {_format_quote_price(ticker, avg_price)}")
 
     if sell_mode in {"indicator", "hybrid", "hybrid_pct", "hybrid_pivot", "hybrid_high_low", "hybrid_swing"}:
         if direction_label == "PUT":
-            parts.append(f"Exits when {buy_threshold} enabled bullish signals confirm")
+            parts.append(f"Trigger: Exits when {buy_threshold} enabled bullish signals confirm")
         else:
-            parts.append(f"Exits when {sell_threshold} enabled bearish signals confirm")
-        parts.append(f"[Pool] {_indicator_pool_text(settings)}")
+            parts.append(f"Trigger: Exits when {sell_threshold} enabled bearish signals confirm")
 
     if sell_mode in {"sltp", "hybrid"}:
         atr_val = _entry_forecast_float((scan or {}).get("atr"), 0.0)
@@ -3441,9 +3976,8 @@ def _build_static_exit_forecast(settings: dict, scan: dict, position: dict, tick
             else:
                 sl_price = avg_price - (atr_val * stop_mult)
                 tp_price = avg_price + (atr_val * tp_mult)
-            parts.append(f"[ATR SL] {_format_quote_price(ticker, sl_price)}")
-            parts.append(f"[ATR TP] {_format_quote_price(ticker, tp_price)}")
-            parts.append(f"[ATR Snapshot] {_entry_forecast_money(atr_val)}")
+            parts.append(f"Trigger SL: {_format_quote_price(ticker, sl_price)}")
+            parts.append(f"Trigger TP: {_format_quote_price(ticker, tp_price)}")
 
     if sell_mode in {"percentage", "hybrid_pct", "premium_pct"} and avg_price > 0:
         if is_option:
@@ -3458,26 +3992,19 @@ def _build_static_exit_forecast(settings: dict, scan: dict, position: dict, tick
         else:
             sl_price = avg_price * (1 - sl_pct)
             tp_price = avg_price * (1 + tp_pct)
-        parts.append(f"[Pct SL] {_format_quote_price(ticker, sl_price)}")
-        parts.append(f"[Pct TP] {_format_quote_price(ticker, tp_price)}")
+        parts.append(f"Trigger SL: {_format_quote_price(ticker, sl_price)} ({sl_pct*100:.1f}%)")
+        parts.append(f"Trigger TP: {_format_quote_price(ticker, tp_price)} ({tp_pct*100:.1f}%)")
 
     if sell_mode == "custom_sltp":
-        parts.append(f"[Custom SL] {_entry_forecast_money(settings.get('custom_stop_loss_price'))}")
-        parts.append(f"[Custom TP] {_entry_forecast_money(settings.get('custom_take_profit_price'))}")
+        parts.append(f"Trigger SL: {_entry_forecast_money(settings.get('custom_stop_loss_price'))}")
+        parts.append(f"Trigger TP: {_entry_forecast_money(settings.get('custom_take_profit_price'))}")
 
     if sell_mode == "custom_underlying_sltp":
-        parts.append(f"[Underlying SL] {_entry_forecast_money(settings.get('custom_underlying_stop_loss_price'))}")
-        parts.append(f"[Underlying TP] {_entry_forecast_money(settings.get('custom_underlying_take_profit_price'))}")
+        parts.append(f"Trigger Underlying SL: {_entry_forecast_money(settings.get('custom_underlying_stop_loss_price'))}")
+        parts.append(f"Trigger Underlying TP: {_entry_forecast_money(settings.get('custom_underlying_take_profit_price'))}")
 
-    if sell_mode in {"pivot_points", "hybrid_pivot", "high_low", "hybrid_high_low"}:
-        prior = (scan or {}).get("prior_day_ohlc") or {}
-        if prior:
-            parts.append(f"[Prior High] {_entry_forecast_money(prior.get('high'))}")
-            parts.append(f"[Prior Low] {_entry_forecast_money(prior.get('low'))}")
-
-    if sell_mode in {"swing_points", "hybrid_swing"}:
-        lookback = int(settings.get("swing_exit_lookback_days", settings.get("swing_lookback_days", 20)) or 20)
-        parts.append(f"[Swing Exit] {lookback}D structural stop/target")
+    if sell_mode in {"indicator", "hybrid", "hybrid_pct", "hybrid_pivot", "hybrid_high_low", "hybrid_swing"}:
+        parts.append(f"[Indicator Pool] {_indicator_pool_text(settings)}")
 
     return " | ".join(parts)
 
@@ -3573,6 +4100,8 @@ def _build_scan_log(
     exit_protection: dict = None,
 ) -> dict:
     phase, target_direction, required_count, strategy_context = _resolve_scan_log_target(settings, formatted_scan, position)
+    continuous_grid_forecast = _build_continuous_grid_forecast(settings, formatted_scan, position, ticker)
+    continuous_grid_enabled = bool(continuous_grid_forecast.get("enabled"))
     selected_indicators = _selected_indicator_names(settings)
     has_indicator_pool = bool(selected_indicators)
     strategy_uses_indicators = bool(strategy_context["uses_indicators"])
@@ -3602,6 +4131,7 @@ def _build_scan_log(
                 "next_open_str": opt_status["next_open_str"],
                 "refresh_rate_sec": max(10, min(3600, opt_status["seconds_to_pre_open"])),
                 "is_option": True,
+                "continuous_grid_forecast": continuous_grid_forecast,
             }
     elif not _is_crypto_symbol(ticker):
         market_session = str(settings.get("market_session", "Regular")).strip().lower()
@@ -3627,6 +4157,7 @@ def _build_scan_log(
                 "next_open_str": stock_status["next_open_str"],
                 "refresh_rate_sec": max(60, min(3600, stock_status["seconds_to_pre_open"])),
                 "is_option": False,
+                "continuous_grid_forecast": continuous_grid_forecast,
             }
 
     signals = formatted_scan.get("signals", {}) or {}
@@ -3710,24 +4241,38 @@ def _build_scan_log(
         blockers.append(f"No indicator pool selected for {strategy_label}.")
 
     live_levels = (
-        _scan_log_exit_levels(ticker, formatted_scan, settings, position, exit_protection, eng=eng)
-        if phase == "EXIT"
-        else _scan_log_entry_levels(ticker, formatted_scan, settings, target_direction)
+        _continuous_grid_scan_levels(ticker, continuous_grid_forecast)
+        if continuous_grid_enabled
+        else (
+            _scan_log_exit_levels(ticker, formatted_scan, settings, position, exit_protection, eng=eng)
+            if phase == "EXIT"
+            else _scan_log_entry_levels(ticker, formatted_scan, settings, target_direction)
+        )
     )
 
+    is_cooldown_active = False
+    is_signal_reset_active = False
     if phase == "ENTRY":
+        adaptive_flat_reentry = bool(
+            continuous_grid_enabled
+            and not position
+            and (continuous_grid_forecast.get("entry") or {}).get("flat_reentry_armed")
+        )
         if settings.get("enable_cooldown", True) and ticker in eng.last_trade_timestamps:
             tf_seconds = max(1, _timeframe_to_seconds(str(settings.get("timeframe") or "5Min")))
             cooldown_minutes = settings.get("cooldown_minutes")
             cooldown_secs = int(cooldown_minutes * 60) if cooldown_minutes is not None else int(tf_seconds * 4)
             elapsed = (eng.get_now() - eng.last_trade_timestamps[ticker]).total_seconds()
             if elapsed < cooldown_secs:
-                blockers.append(f"Re-entry cooldown active ({_format_duration_compact(cooldown_secs - elapsed)} remaining).")
+                rem_secs = max(1, int(cooldown_secs - elapsed))
+                blockers.append(f"⏳ Trade Cooldown Active ({_format_duration_compact(rem_secs)} remaining after trade exit).")
+                is_cooldown_active = True
 
-        if settings.get("enable_signal_reset", getattr(eng.config, "ENABLE_SIGNAL_RESET", False)):
+        if settings.get("enable_signal_reset", True) and not adaptive_flat_reentry:
             locked_dir = eng._get_signal_reset_lock(ticker, settings)
             if locked_dir:
-                blockers.append(f"Waiting for signal reset on stale {locked_dir} signal.")
+                blockers.append(f"🔄 Signal Reset Active: Waiting for {locked_dir} signal to reset below threshold.")
+                is_signal_reset_active = True
 
         smart_reentry_text = _smart_reentry_blocker_text(settings, formatted_scan, target_direction, eng)
         if smart_reentry_text:
@@ -3739,10 +4284,16 @@ def _build_scan_log(
                 blockers.append(f"Max positions reached ({len(positions or [])}/{max_positions}).")
 
     status = "WAITING_EXIT" if phase == "EXIT" else "WAITING_ENTRY"
-    if blockers:
+    if is_cooldown_active:
+        status = "COOLDOWN"
+    elif is_signal_reset_active:
+        status = "SIGNAL_RESET"
+    elif blockers:
         status = "BLOCKED"
     elif decision in {"BUY", "SELL"} and (not show_indicator_leg or remaining_count == 0):
         status = "READY"
+    elif continuous_grid_enabled:
+        status = "GRID_MONITORING"
     elif show_indicator_leg and remaining_count <= 1:
         status = "NEAR_EXIT" if phase == "EXIT" else "NEAR_ENTRY"
 
@@ -3782,7 +4333,7 @@ def _build_scan_log(
         else _entry_forecast_float(formatted_scan.get("price_raw"), 0.0)
     )
     current_symbol = (position or {}).get("symbol") or ticker
-    watch_parts = [f"{phase.title()} watch"]
+    watch_parts = ["Adaptive grid watch" if continuous_grid_enabled else f"{phase.title()} watch"]
     if current_for_label > 0:
         watch_parts.append(f"Current {_format_quote_price(current_symbol, current_for_label)}")
     if live_levels:
@@ -3835,6 +4386,7 @@ def _build_scan_log(
         "remaining_count": remaining_count,
         "blockers": blockers,
         "exit_protection": exit_protection or {},
+        "continuous_grid_forecast": continuous_grid_forecast,
         "indicators": indicators,
         "updated_at": formatted_scan.get("time") or get_now().isoformat(),
         "is_option": bool(settings.get("options_trading", settings.get("is_option", False))),
@@ -4509,15 +5061,21 @@ async def get_dashboard(
             t_settings = eng.config.TICKER_SETTINGS.get(t, {})
             is_opt = t_settings.get('options_trading', t_settings.get('is_option', False))
             active_position = _matching_position_for_ticker(positions, t, t_settings)
-            if active_position is None and t_settings.get("forecast_exit_snapshots"):
-                _clear_forecast_exit_snapshots(t_settings)
-                settings_dirty = True
-            entry_static, entry_dirty = _ensure_entry_forecast_snapshot(t_settings, scan or ui_scan, t)
-            exit_static, exit_dirty = _ensure_exit_forecast_snapshot(t_settings, scan or ui_scan, active_position, t)
-            settings_dirty = settings_dirty or entry_dirty or exit_dirty
+            continuous_grid_forecast = _build_continuous_grid_forecast(t_settings, ui_scan, active_position, t)
+            if continuous_grid_forecast.get("enabled"):
+                entry_static = continuous_grid_forecast.get("entry", {}).get("text", "")
+                exit_static = continuous_grid_forecast.get("exit", {}).get("text", "")
+            else:
+                if active_position is None and t_settings.get("forecast_exit_snapshots"):
+                    _clear_forecast_exit_snapshots(t_settings)
+                    settings_dirty = True
+                entry_static, entry_dirty = _ensure_entry_forecast_snapshot(t_settings, scan or ui_scan, t)
+                exit_static, exit_dirty = _ensure_exit_forecast_snapshot(t_settings, scan or ui_scan, active_position, t)
+                settings_dirty = settings_dirty or entry_dirty or exit_dirty
 
             ui_scan["forecast_entry_static"] = str(entry_static or "").replace("[Entry Strategy] ", "").replace("[Exit Strategy] ", "")
             ui_scan["forecast_exit_static"] = str(exit_static or "").replace("[Entry Strategy] ", "").replace("[Exit Strategy] ", "")
+            ui_scan["continuous_grid_forecast"] = continuous_grid_forecast
             ui_scan['entry_forecast'] = _build_entry_forecast(
                 t_settings,
                 scan,
@@ -4603,7 +5161,7 @@ async def get_dashboard(
             "positionsList": ", ".join(p['symbol'] for p in positions) if positions else "No positions",
             "dailyPL": f"{daily_pl_sign}${daily_pl:.2f} ({daily_pl_sign}{daily_pl_pct:.2f}%)",
             "totalProfit": f"{total_pl_sign}${total_profit:.2f} ({total_pl_sign}{total_profit_pct:.2f}%)",
-            "account": account,
+            "account": {k: v for k, v in account.items() if not str(k).startswith("_")},
             "positions": positions,
             "pendingOrders": orders,
             "orderHistory": orders_history,
@@ -4787,8 +5345,21 @@ async def get_bots_snapshot(
             "options_compound_amount", "options_exit_strategy", "options_expiry_days",
             "options_trade_amount", "options_type", "sell_mode", "sell_threshold", "started_at",
             "threshold", "today_trades", "total_trades", "timeframe", "paused", "pause_reason",
-            "is_incubator", "source", "strategy_mode", "bot_type",
+            "paused_at", "pause_code", "pause_event_id", "pause_requires_review", "consecutive_losses",
+            "is_incubator", "source", "strategy_mode", "bot_type", "asset_class", "is_crypto",
+            "grid_continuous_mode", "exit_grid_continuous_mode",
+            "atr_grid_continuous_mode", "exit_atr_grid_continuous_mode",
         )
+        stored_asset_class = str(t_settings.get("asset_class", "") or "").strip().lower()
+        if is_opt:
+            canonical_asset_class = "options"
+        elif stored_asset_class in {"crypto", "cryptocurrency"}:
+            canonical_asset_class = "crypto"
+        elif stored_asset_class in {"stock", "equity", "us_equity"}:
+            canonical_asset_class = "stock"
+        else:
+            canonical_asset_class = "crypto" if _is_crypto_symbol(t) else "stock"
+        is_crypto_bot = canonical_asset_class == "crypto"
         slim_settings_dict[t] = {key: t_settings.get(key) for key in card_setting_keys if key in t_settings}
         slim_settings_dict[t].update({
             "timeframe": t_settings.get("timeframe", eng.config.DEFAULT_TIMEFRAME),
@@ -4800,6 +5371,8 @@ async def get_bots_snapshot(
             "source": t_settings.get("source", "user"),
             "market_session": t_settings.get("market_session", "Regular"),
             "bot_type": t_settings.get("bot_type", "options" if is_opt else "standard"),
+            "asset_class": canonical_asset_class,
+            "is_crypto": is_crypto_bot,
         })
 
         bot_tf = t_settings.get('timeframe', eng.config.DEFAULT_TIMEFRAME)
@@ -4807,12 +5380,18 @@ async def get_bots_snapshot(
         ui_scan = _inject_price_into_scan(_format_scan_for_ui(scan, use_global_settings=False), t, latest_prices=latest_prices)
 
         active_position = _matching_position_for_ticker(positions, t, t_settings)
-        entry_static, entry_dirty = _ensure_entry_forecast_snapshot(t_settings, scan or ui_scan, t)
-        exit_static, exit_dirty = _ensure_exit_forecast_snapshot(t_settings, scan or ui_scan, active_position, t)
-        settings_dirty = settings_dirty or entry_dirty or exit_dirty
+        continuous_grid_forecast = _build_continuous_grid_forecast(t_settings, ui_scan, active_position, t)
+        if continuous_grid_forecast.get("enabled"):
+            entry_static = continuous_grid_forecast.get("entry", {}).get("text", "")
+            exit_static = continuous_grid_forecast.get("exit", {}).get("text", "")
+        else:
+            entry_static, entry_dirty = _ensure_entry_forecast_snapshot(t_settings, scan or ui_scan, t)
+            exit_static, exit_dirty = _ensure_exit_forecast_snapshot(t_settings, scan or ui_scan, active_position, t)
+            settings_dirty = settings_dirty or entry_dirty or exit_dirty
         if isinstance(ui_scan, dict):
             ui_scan["forecast_entry_static"] = str(entry_static or "").replace("[Entry Strategy] ", "").replace("[Exit Strategy] ", "")
             ui_scan["forecast_exit_static"] = str(exit_static or "").replace("[Entry Strategy] ", "").replace("[Exit Strategy] ", "")
+            ui_scan["continuous_grid_forecast"] = continuous_grid_forecast
             ui_scan["scan_log"] = _build_scan_log(
                 ticker=t,
                 formatted_scan=ui_scan,
@@ -4875,6 +5454,12 @@ async def get_bots_snapshot(
 
     total_profit = float(total_profit or account.get("totalProfit", 0.0) or 0.0)
     total_profit_pct = float(total_profit_pct or 0.0)
+    from trader import get_risk_manager
+    global_risk_status = get_risk_manager().get_global_status(
+        equity_val if equity_val > 0 else None,
+        account_key=raw_account.get("_risk_account_key"),
+        daily_reference_equity=raw_account.get("daily_starting_equity"),
+    )
 
     if daily_pl_val > 0:
         daily_pl_str = f"+${abs(daily_pl_val):.2f} (+{abs(daily_pl_pct):.2f}%)"
@@ -4907,6 +5492,7 @@ async def get_bots_snapshot(
         "totalProfit": total_profit_str,
         "ticker_settings": slim_settings_dict,
         "indicator_parameters": eng.config.active_parameters,
+        "global_risk_status": global_risk_status,
         "strategyTimeframe": getattr(eng.config, "DEFAULT_TIMEFRAME", "5Min"),
         "watchlist": getattr(eng.config, "WATCHLIST", []),
         "botRunning": getattr(eng, "bot_running", True),
@@ -5059,8 +5645,30 @@ async def get_bot_chart_preview(data: dict, eng: UserEngine = Depends(get_user_e
 
     draft_settings = _normalize_draft_bot_settings(ticker, data.get("settings", {}), eng)
     draft_settings["_botbulls5_recent_session_only"] = True
+    # Chart preview needs enough warm-up for the selected indicators, but does
+    # not need the full live-chart history. Keeping the draft calculation to a
+    # bounded recent window avoids slow multi-page provider requests while
+    # preserving the latest candles shown in the preview.
+    draft_settings["_chart_preview"] = True
+    try:
+        preview_display_bars = int(draft_settings.get("_chart_display_bars", 800) or 800)
+    except (TypeError, ValueError):
+        preview_display_bars = 800
+    draft_settings["_chart_display_bars"] = max(300, min(preview_display_bars, 800))
     timeframe = data.get("timeframe") or draft_settings.get("timeframe") or eng.config.DEFAULT_TIMEFRAME
-    force = bool(data.get("force", True))
+    # The draft settings/timeframe are included in the cache key. A forced
+    # provider fetch is unnecessary for normal preview edits and can turn a
+    # quick cached response into a 45-second Webull calculation.
+    force = bool(data.get("force", False))
+    preview_cache_key = stable_cache_key(
+        eng.uid,
+        "bots",
+        ticker,
+        timeframe,
+        "webull",
+        _cache_settings_hash(eng, ticker, "bots", draft_settings),
+        3,
+    )
     started = time.perf_counter()
     overlay_token = set_draft_ticker_settings({ticker: draft_settings})
 
@@ -5069,10 +5677,19 @@ async def get_bot_chart_preview(data: dict, eng: UserEngine = Depends(get_user_e
             try:
                 analysis, cached, cache_age = await asyncio.wait_for(
                     asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, eng, force, "bots", draft_settings),
-                    timeout=30.0,
+                    timeout=45.0,
                 )
             except asyncio.TimeoutError:
-                raise HTTPException(status_code=504, detail=f"Chart preview timed out for {ticker}")
+                # A previous preview is still useful while a slow provider
+                # refresh finishes in the background. Return it instead of
+                # replacing a working chart with a 504 whenever stale data is
+                # available for this exact draft/timeframe.
+                stale_cached, stale_age = _chart_analysis_cache.peek_with_age(preview_cache_key)
+                if stale_cached and stale_cached.get("analysis"):
+                    print(f"[preview] Provider refresh slow for {ticker}; serving stale chart preview")
+                    analysis, cached, cache_age = stale_cached["analysis"], True, stale_age
+                else:
+                    raise HTTPException(status_code=504, detail=f"Chart preview timed out for {ticker}")
 
             if not analysis:
                 raise HTTPException(status_code=404, detail=f"Could not load chart preview for {ticker}")
@@ -5432,7 +6049,7 @@ async def get_backtest_replay_data(data: dict, eng: UserEngine = Depends(get_use
     the backtest page's manual replay chart.
     """
     ticker = str(data.get("ticker", "")).strip().upper()
-    if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
+    if not re.fullmatch(r"[A-Z0-9.\-/]{1,15}", ticker):
         raise HTTPException(status_code=400, detail="Invalid ticker format")
     timeframe = str(data.get("timeframe", "1Hour") or "1Hour")
     allowed_timeframes = {"1Min", "5Min", "10Min", "15Min", "30Min", "1Hour", "4Hour", "1Day"}
@@ -5442,17 +6059,27 @@ async def get_backtest_replay_data(data: dict, eng: UserEngine = Depends(get_use
         days = max(1, min(int(data.get("days", 90) or 90), 1825))
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="days must be an integer")
-    if timeframe == "1Min":
-        days = min(days, 7)
-    elif timeframe in {"5Min", "10Min", "15Min", "30Min"}:
-        days = min(days, 60)
-    elif timeframe in {"1Hour", "4Hour"}:
-        days = min(days, 730)
 
-    requested_source = str(data.get("source") or "webull").strip().lower()
-    if requested_source not in {"webull", "yahoo"}:
-        requested_source = "webull"
+    requested_source = str(data.get("source") or "alpaca").strip().lower()
+    if requested_source == "webull":
+        requested_source = "alpaca"
+    if requested_source not in {"alpaca", "yahoo"}:
+        requested_source = "alpaca"
     force_yahoo = requested_source == "yahoo"
+
+    if force_yahoo:
+        if timeframe == "1Min":
+            days = min(days, 7)
+        elif timeframe in {"5Min", "10Min", "15Min", "30Min"}:
+            days = min(days, 60)
+        elif timeframe in {"1Hour", "4Hour"}:
+            days = min(days, 730)
+    else:
+        if timeframe in {"1Min", "2Min", "3Min", "5Min", "10Min", "15Min", "30Min", "1Hour", "2Hour", "4Hour"}:
+            days = min(days, 366)
+        elif timeframe == "1Day":
+            days = min(days, 1825)
+
     indicators = data.get("indicators") if isinstance(data.get("indicators"), list) else []
     indicator_overrides = data.get("indicator_overrides") if isinstance(data.get("indicator_overrides"), dict) else {}
     selected_indicators = [str(value) for value in indicators if value]
@@ -5501,7 +6128,7 @@ async def get_backtest_replay_data(data: dict, eng: UserEngine = Depends(get_use
                     raise HTTPException(status_code=404, detail=f"No completed replay candles available for {ticker}")
                 completed_df.attrs.update(getattr(raw_df, "attrs", {}) or {})
                 raw_df = completed_df
-            actual_source = str(getattr(raw_df, "attrs", {}).get("data_source") or ("yahoo" if force_yahoo else "webull")).lower()
+            actual_source = str(getattr(raw_df, "attrs", {}).get("data_source") or ("yahoo" if force_yahoo else "alpaca")).lower()
             analysis = await asyncio.to_thread(calculate_indicators_for_df, raw_df, timeframe, ticker, settings)
         finally:
             active_evaluation_context.set(previous_context)
@@ -5553,6 +6180,7 @@ async def get_backtest_replay_data(data: dict, eng: UserEngine = Depends(get_use
             "bullish_count": bullish_count,
             "bearish_count": bearish_count,
             "total_signals": sum(1 for s in signals.values() if s.get("enabled")),
+            "volume_profile": (analysis or {}).get("volume_profile") or {},
         }
     except HTTPException:
         raise
@@ -5564,6 +6192,8 @@ async def get_backtest_replay_data(data: dict, eng: UserEngine = Depends(get_use
 @app.post("/api/backtest")
 async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
     """Runs a historical backtest for a ticker."""
+    data = dict(data or {})
+    _normalize_percentage_strategy_settings(data)
     global_backtest_cancel.clear()
     from user_config import active_evaluation_context, active_ticker_context
     active_evaluation_context.set("backtest")
@@ -5620,6 +6250,10 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
     ai_autopilot = data.get("ai_autopilot", False) or (sell_mode == "ai_autopilot")
     ai_interval = int(data.get("ai_interval", 10))
     ai_model = data.get("ai_model", "llama-3.3-70b-versatile")
+    continuous_grid_settings = dict(data)
+    continuous_grid_settings["amount"] = trade_amount
+    continuous_grid_settings["allocation_mode"] = allocation_mode
+    _normalize_continuous_grid_settings(continuous_grid_settings)
     
     from backtester import Backtester
     bt = Backtester(
@@ -5657,7 +6291,7 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
         swing_entry_lookback_days=int(data.get("swing_entry_lookback_days", data.get("swing_lookback_days", 20)) or 20),
         swing_exit_lookback_days=swing_exit_lookback_days,
         market_session=data.get("market_session", "Regular"),
-        enable_signal_reset=bool(data.get("enable_signal_reset", False)),
+        enable_signal_reset=bool(data.get("enable_signal_reset", True)),
         enable_smart_reentry=bool(data.get("enable_smart_reentry", False)),
         smart_reentry_type=data.get("smart_reentry_type", "RSI"),
         smart_reentry_rsi_call_max=float(data.get("smart_reentry_rsi_call_max", 70.0)),
@@ -5668,10 +6302,16 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
         ai_interval=ai_interval,
         ai_model=ai_model,
         enable_cooldown=bool(data.get("enable_cooldown", True)),
+        continuous_grid_settings=continuous_grid_settings,
         cooldown_minutes=int(data["cooldown_minutes"]) if data.get("cooldown_minutes") is not None else None,
         enable_risk=enable_risk,
         daily_high_low_buffer_pct=daily_high_low_buffer_pct,
         indicator_overrides=indicator_overrides,
+        post_stop_stabilization_bars=int(data.get("post_stop_stabilization_bars", 3) or 0),
+        max_consecutive_losses=int(data.get("max_consecutive_losses", 2) or 0),
+        max_daily_loss_pct=float(data.get("max_daily_loss_pct", 0.0) or 0.0),
+        enable_liquidity_filter=bool(data.get("enable_liquidity_filter", True)),
+        min_relative_volume=float(data.get("min_relative_volume", 0.10) or 0.0),
         cancel_event=global_backtest_cancel
     )
     
@@ -5688,6 +6328,8 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
 
 @app.post("/api/backtest/optimize")
 async def run_optimization_endpoint(data: dict, eng: UserEngine = Depends(get_user_engine)):
+    data = dict(data or {})
+    _normalize_percentage_strategy_settings(data)
     """Runs an Auto-Optimization grid search with In-Sample/Out-of-Sample splitting."""
     global_backtest_cancel.clear()
     from user_config import active_evaluation_context, active_ticker_context
@@ -5743,7 +6385,7 @@ async def run_optimization_endpoint(data: dict, eng: UserEngine = Depends(get_us
         "regular_trailing_pct": float(data.get("regular_trailing_pct", 0.03)),
         "custom_stop_loss_price": float(data.get("custom_stop_loss_price", 0.0)),
         "custom_take_profit_price": float(data.get("custom_take_profit_price", 0.0)),
-        "enable_signal_reset": bool(data.get("enable_signal_reset", False)),
+        "enable_signal_reset": bool(data.get("enable_signal_reset", True)),
         "enable_smart_reentry": bool(data.get("enable_smart_reentry", False)),
         "smart_reentry_type": data.get("smart_reentry_type", "RSI"),
         "smart_reentry_rsi_call_max": float(data.get("smart_reentry_rsi_call_max", 70.0)),
@@ -5752,7 +6394,17 @@ async def run_optimization_endpoint(data: dict, eng: UserEngine = Depends(get_us
         "smart_reentry_vwap_put_max_dist_pct": float(data.get("smart_reentry_vwap_put_max_dist_pct", 0.5)),
         "daily_high_low_buffer_pct": daily_high_low_buffer_pct,
         "indicator_overrides": indicator_overrides,
+        "post_stop_stabilization_bars": int(data.get("post_stop_stabilization_bars", 3) or 0),
+        "max_consecutive_losses": int(data.get("max_consecutive_losses", 2) or 0),
+        "max_daily_loss_pct": float(data.get("max_daily_loss_pct", 0.0) or 0.0),
+        "enable_liquidity_filter": bool(data.get("enable_liquidity_filter", True)),
+        "min_relative_volume": float(data.get("min_relative_volume", 0.10) or 0.0),
     }
+    continuous_grid_settings = dict(data)
+    continuous_grid_settings["amount"] = base_kwargs["trade_amount"]
+    continuous_grid_settings["allocation_mode"] = base_kwargs["allocation_mode"]
+    _normalize_continuous_grid_settings(continuous_grid_settings)
+    base_kwargs["continuous_grid_settings"] = continuous_grid_settings
     
     from optimizer import run_optimization
     try:
@@ -5819,7 +6471,7 @@ async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_en
     enable_risk = bool(data.get("enable_risk", True))
     print(f"[options-backtest] Running {ticker} | {timeframe} | {days}d | BuyMode: {data.get('buy_mode','indicator')} (Thresh: {threshold}) | SellMode: {data.get('sell_mode','atr')} | Risk: {enable_risk}")
 
-    enable_signal_reset = bool(data.get("enable_signal_reset", False))
+    enable_signal_reset = bool(data.get("enable_signal_reset", True))
     enable_smart_reentry = bool(data.get("enable_smart_reentry", False))
     smart_reentry_type = data.get("smart_reentry_type", "RSI")
     smart_reentry_rsi_call_max = int(data.get("smart_reentry_rsi_call_max", 70))
@@ -5896,6 +6548,11 @@ async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_en
         enable_risk=enable_risk,
         daily_high_low_buffer_pct=daily_high_low_buffer_pct,
         indicator_overrides=indicator_overrides,
+        post_stop_stabilization_bars=int(data.get("post_stop_stabilization_bars", 3) or 0),
+        max_consecutive_losses=int(data.get("max_consecutive_losses", 2) or 0),
+        max_daily_loss_pct=float(data.get("max_daily_loss_pct", 0.0) or 0.0),
+        options_max_entry_spread_pct=float(data.get("options_max_entry_spread_pct", 5.0) or 0.0),
+        options_market_open_blackout_minutes=int(data.get("options_market_open_blackout_minutes", 15) or 0),
     )
 
     
@@ -6018,6 +6675,7 @@ async def deploy_backtest_as_bot(data: dict, eng: UserEngine = Depends(get_user_
             "regular_stop_loss_pct": data.get("regular_stop_loss_pct"),
             "regular_take_profit_pct": data.get("regular_take_profit_pct"),
             "regular_trailing_pct": data.get("regular_trailing_pct"),
+            "enable_pct_trail": data.get("enable_pct_trail"),
             "custom_stop_loss_price": data.get("custom_stop_loss_price"),
             "custom_take_profit_price": data.get("custom_take_profit_price"),
             "swing_exit_lookback_days": data.get("swing_exit_lookback_days"),
@@ -6030,6 +6688,9 @@ async def deploy_backtest_as_bot(data: dict, eng: UserEngine = Depends(get_user_
             "smart_reentry_vwap_call_max_dist_pct": data.get("smart_reentry_vwap_call_max_dist_pct"),
             "smart_reentry_vwap_put_max_dist_pct": data.get("smart_reentry_vwap_put_max_dist_pct"),
         })
+        for grid_key in _GRID_CONFIGURATION_KEYS:
+            if grid_key in data:
+                deploy_payload[grid_key] = data.get(grid_key)
         if "ai_autopilot" in data:
             deploy_payload["ai_autopilot"] = data.get("ai_autopilot")
             deploy_payload["ai_interval"] = data.get("ai_interval")
@@ -6322,8 +6983,11 @@ async def update_dashboard_indicator_workspace(
         )
 
     displayed = _unique_standard_indicator_names(raw_lists["displayed_indicators"])
-    if len(displayed) != 10:
-        raise HTTPException(status_code=422, detail="Dashboard must display exactly 10 regular indicators")
+    if not 1 <= len(displayed) <= DASHBOARD_INDICATOR_DISPLAY_LIMIT:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Dashboard must display between 1 and {DASHBOARD_INDICATOR_DISPLAY_LIMIT} regular indicators",
+        )
 
     requested_enabled = _unique_standard_indicator_names(raw_lists["enabled_indicators"])
     enabled_outside_grid = [name for name in requested_enabled if name not in displayed]
@@ -6391,11 +7055,11 @@ def get_indicator_settings(context: str = "dashboard", eng: UserEngine = Depends
             "ENABLE_MACD": {"label": "MACD", "description": "Moving Average Convergence Divergence", "enabled": getattr(eng.config, "ENABLE_MACD", True)},
         },
         "Trend": {
-            "ENABLE_EMA": {"label": "EMA Cross", "description": "Exponential Moving Average Crossover (9/21)", "enabled": getattr(eng.config, "ENABLE_EMA", True)},
+            "ENABLE_EMA": {"label": "EMA", "description": "Configurable one-line price filter or two-line EMA crossover", "enabled": getattr(eng.config, "ENABLE_EMA", True)},
             "ENABLE_SUPERTREND": {"label": "Supertrend", "description": "Supertrend Indicator (10, 3)", "enabled": getattr(eng.config, "ENABLE_SUPERTREND", True)},
             "ENABLE_BOLLINGER": {"label": "Bollinger", "description": "Bollinger Bands (20, 2σ)", "enabled": getattr(eng.config, "ENABLE_BOLLINGER", True)},
             "ENABLE_ADX_TREND": {"label": "ADX Trend", "description": "Wilder's ADX (14-period) Trend Strength Filter", "enabled": getattr(eng.config, "ENABLE_ADX_TREND", True)},
-            "ENABLE_SMA": {"label": "SMA 200", "description": "Simple Moving Average (200-period) institutional filter", "enabled": getattr(eng.config, "ENABLE_SMA", True)},
+            "ENABLE_SMA": {"label": "SMA", "description": "Configurable one-line price filter or two-line SMA crossover", "enabled": getattr(eng.config, "ENABLE_SMA", True)},
             "ENABLE_DAILY_HIGH_LOW": {"label": "Prior Day High/Low", "description": "Uses the previous completed trading session's high and low as breakout/breakdown levels. Buffer is entered as percent points.", "enabled": getattr(eng.config, "ENABLE_DAILY_HIGH_LOW", True)},
             "ENABLE_PIVOT_POINTS": {"label": "Pivot Points (S/R)", "description": "Classic prior-session pivot, support, and resistance levels. Bullish on support/pivot reclaim; bearish on resistance rejection or pivot breakdown.", "enabled": getattr(eng.config, "ENABLE_PIVOT_POINTS", True)},
             "ENABLE_SWING_POINTS": {"label": "Swing Points", "description": "Rolling swing support/resistance clusters. Bullish on support bounce or resistance reclaim; bearish on resistance rejection or support loss.", "enabled": getattr(eng.config, "ENABLE_SWING_POINTS", True)},
@@ -6436,19 +7100,71 @@ async def update_risk_settings(settings: dict, context: str = "dashboard", eng: 
     ctx = _normalize_analysis_context(context)
     token = active_evaluation_context.set(ctx)
     try:
+        normalized_settings = {}
         for key, value in settings.items():
             if key in ['MAX_DAILY_DRAWDOWN', 'RISK_PER_TRADE', 'MAX_POSITION_PCT', 'GLOBAL_HARD_STOP_PCT']:
-                if isinstance(value, (int, float)) and value > 1:
-                    value = value / 100.0
-            elif value is None:
-                value = None # Explicit pass for null values
+                if value is not None:
+                    try:
+                        value = float(value)
+                    except (TypeError, ValueError):
+                        raise HTTPException(status_code=400, detail=f"{key} must be numeric or null")
+                    if value < 0:
+                        raise HTTPException(status_code=400, detail=f"{key} cannot be negative")
+                    if value > 1:
+                        value = value / 100.0
+                    if value > 1:
+                        raise HTTPException(status_code=400, detail=f"{key} cannot exceed 100%")
             eng.config.set(key, value)
+            normalized_settings[key] = value
     finally:
         active_evaluation_context.reset(token)
             
     await eng.save_settings()
+    if ctx == "bots":
+        # Re-evaluate account risk immediately when the user tightens a
+        # global limit instead of waiting for the next 10s/60s bot interval.
+        eng.force_scan_trigger.set()
     print(f"[settings] Updated risk parameters ({ctx}) for {eng.uid}: {', '.join(settings.keys())}")
-    return {"status": "success", "settings": settings}
+    return {"status": "success", "settings": normalized_settings}
+
+
+@app.post("/api/settings/risk/reactivate")
+async def reactivate_global_risk(eng: UserEngine = Depends(get_user_engine)):
+    """Manually reactivate account-wide bot entries after a global risk halt."""
+    from trader import get_risk_manager
+    from user_config import active_evaluation_context
+
+    token = active_evaluation_context.set("bots")
+    try:
+        try:
+            account = await asyncio.wait_for(asyncio.to_thread(eng.broker.get_account_info), timeout=3.0)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"Current account equity is unavailable: {type(exc).__name__}")
+        equity = float((account or {}).get("equity", 0.0) or 0.0)
+        if equity <= 0:
+            raise HTTPException(status_code=503, detail="Current account equity is unavailable; global risk cannot be reactivated safely.")
+
+        status = get_risk_manager().reactivate(
+            equity,
+            account_key=(account or {}).get("_risk_account_key"),
+        )
+        eng.last_global_risk_signature = None
+        eng.last_global_risk_save_ts = 0
+        eng.last_global_halt_cancel_event_id = None
+        await eng.save_settings()
+        eng.force_scan_trigger.set()
+        individually_paused = sum(
+            1 for ticker in eng.config.TRADELIST
+            if eng.config.TICKER_SETTINGS.get(ticker, {}).get("paused", False)
+        )
+        return {
+            "status": "success",
+            "message": "Global risk halt cleared. Eligible bots can evaluate new entries again.",
+            "global_risk_status": status,
+            "individually_paused_bots": individually_paused,
+        }
+    finally:
+        active_evaluation_context.reset(token)
 
 
 @app.post("/api/settings/ticker_amount")
@@ -6680,6 +7396,13 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         eng.config.TICKER_SETTINGS[symbol] = {}
         
     eng.config.TICKER_SETTINGS[symbol]["source"] = "bots"
+    broker_asset_class = str(tradable_check.get("asset_class", "") or "").strip().lower()
+    if broker_asset_class in {"crypto", "cryptocurrency"}:
+        eng.config.TICKER_SETTINGS[symbol]["asset_class"] = "crypto"
+    elif broker_asset_class in {"stock", "equity", "us_equity"}:
+        eng.config.TICKER_SETTINGS[symbol]["asset_class"] = "stock"
+    else:
+        eng.config.TICKER_SETTINGS[symbol]["asset_class"] = "crypto" if _is_crypto_symbol(symbol) else "stock"
         
     if "capital" in data and data["capital"] is not None:
         eng.config.TICKER_SETTINGS[symbol]["amount"] = float(data["capital"])
@@ -6739,6 +7462,21 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         "smart_reentry_rsi_put_min",
         "smart_reentry_vwap_call_max_dist_pct",
         "smart_reentry_vwap_put_max_dist_pct",
+        "post_stop_stabilization_bars",
+        "max_consecutive_losses",
+        "enable_liquidity_filter",
+        "stock_max_spread_pct",
+        "crypto_max_spread_pct",
+        "max_quote_age_seconds",
+        "options_max_entry_spread_pct",
+        "options_max_quote_age_seconds",
+        "options_min_volume",
+        "options_min_open_interest",
+        "options_limit_aggression",
+        "options_entry_order_timeout_seconds",
+        "options_exit_order_timeout_seconds",
+        "enable_options_market_open_filter",
+        "options_market_open_blackout_minutes",
         *_GRID_CONFIGURATION_KEYS,
     ]
     for key in passthrough_settings:
@@ -6748,6 +7486,9 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
                 eng.config.TICKER_SETTINGS[symbol].pop(key, None)
             else:
                 eng.config.TICKER_SETTINGS[symbol][key] = value
+    # Live bots use one consistent safety policy: pause after exactly three
+    # consecutive completed losing trades.
+    eng.config.TICKER_SETTINGS[symbol]["max_consecutive_losses"] = 3
     if eng.config.TICKER_SETTINGS[symbol].get("smart_reentry_type"):
         eng.config.TICKER_SETTINGS[symbol]["smart_reentry_type"] = str(eng.config.TICKER_SETTINGS[symbol]["smart_reentry_type"]).upper()
     if eng.config.TICKER_SETTINGS[symbol].get("enable_signal_reset") is False:
@@ -6828,7 +7569,14 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         eng.config.TICKER_SETTINGS[symbol]["paused"] = bool(data["paused"])
         if not data["paused"]:
             eng.config.TICKER_SETTINGS[symbol]["pause_reason"] = ""
+            eng.config.TICKER_SETTINGS[symbol].pop("paused_at", None)
+            eng.config.TICKER_SETTINGS[symbol].pop("pause_code", None)
+            eng.config.TICKER_SETTINGS[symbol].pop("pause_event_id", None)
+            eng.config.TICKER_SETTINGS[symbol].pop("pause_requires_review", None)
             eng.config.TICKER_SETTINGS[symbol]["realized_pl"] = 0.0
+            eng.config.TICKER_SETTINGS[symbol]["daily_realized_pl"] = 0.0
+            eng.config.TICKER_SETTINGS[symbol]["consecutive_losses"] = 0
+            eng.config.TICKER_SETTINGS[symbol].pop("post_stop_state", None)
             eng.config.TICKER_SETTINGS[symbol]["entry_trades"] = 0
             eng.config.TICKER_SETTINGS[symbol]["started_at"] = get_now().isoformat()
     else:
@@ -6911,6 +7659,35 @@ async def update_indicators(updates: dict, context: str = "dashboard", ticker: s
     reset_confluence = bool(updates.pop("reset_confluence", False) or updates.pop("__reset_confluence", False))
     requested_confluence_defaults = updates.pop("confluence_toggles", None)
     reset_all = bool(updates.pop("reset_all", False))
+    for period_key in ("EMA_FAST", "EMA_SLOW", "SMA_PERIOD", "SMA_SECOND_PERIOD"):
+        raw_value = updates.get(period_key)
+        if raw_value is None or raw_value == "":
+            continue
+        try:
+            numeric_period = float(raw_value)
+            if not numeric_period.is_integer():
+                raise ValueError
+            normalized_period = int(numeric_period)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{period_key} must be a whole number from 1 to 500")
+        if normalized_period < 1 or normalized_period > 500:
+            raise HTTPException(status_code=400, detail=f"{period_key} must be between 1 and 500")
+        updates[period_key] = normalized_period
+    for line_toggle_key in ("EMA_USE_SECOND_LINE", "SMA_USE_SECOND_LINE"):
+        raw_value = updates.get(line_toggle_key)
+        if raw_value is None or raw_value == "":
+            continue
+        if isinstance(raw_value, str):
+            normalized_text = raw_value.strip().lower()
+            if normalized_text in {"1", "true", "yes", "on"}:
+                normalized_toggle = True
+            elif normalized_text in {"0", "false", "no", "off"}:
+                normalized_toggle = False
+            else:
+                raise HTTPException(status_code=400, detail=f"{line_toggle_key} must be true or false")
+        else:
+            normalized_toggle = bool(raw_value)
+        updates[line_toggle_key] = normalized_toggle
     if not isinstance(requested_confluence_defaults, dict):
         requested_confluence_defaults = {}
     reset_confluence_toggles = {
@@ -6932,7 +7709,8 @@ async def update_indicators(updates: dict, context: str = "dashboard", ticker: s
             else:
                 try:
                     default_val = getattr(global_config, k, None)
-                    if isinstance(default_val, int): v = int(v)
+                    if isinstance(default_val, bool): v = bool(v)
+                    elif isinstance(default_val, int): v = int(v)
                     elif isinstance(default_val, float): v = float(v)
                 except Exception:
                     pass
@@ -6968,7 +7746,9 @@ async def update_indicators(updates: dict, context: str = "dashboard", ticker: s
                     else:
                         try:
                             default_val = getattr(global_config, k, None)
-                            if isinstance(default_val, int):
+                            if isinstance(default_val, bool):
+                                eng.config.set(k, bool(v))
+                            elif isinstance(default_val, int):
                                 eng.config.set(k, int(v))
                             elif isinstance(default_val, float):
                                 eng.config.set(k, float(v))
@@ -7034,6 +7814,10 @@ async def update_ticker_settings(data: dict, eng: UserEngine = Depends(get_user_
         elif k in eng.config.TICKER_SETTINGS[ticker]:
             del eng.config.TICKER_SETTINGS[ticker][k]
 
+    # Do not allow stale or client-supplied values to weaken or accelerate the
+    # three-loss live-bot pause policy.
+    eng.config.TICKER_SETTINGS[ticker]["max_consecutive_losses"] = 3
+
     if "max_trades" in settings and settings.get("max_trades") is not None:
         try:
             max_trades = int(settings["max_trades"])
@@ -7070,7 +7854,14 @@ async def update_ticker_settings(data: dict, eng: UserEngine = Depends(get_user_
 
     if settings.get('paused') is False:
         eng.config.TICKER_SETTINGS[ticker]['pause_reason'] = ""
+        eng.config.TICKER_SETTINGS[ticker].pop('paused_at', None)
+        eng.config.TICKER_SETTINGS[ticker].pop('pause_code', None)
+        eng.config.TICKER_SETTINGS[ticker].pop('pause_event_id', None)
+        eng.config.TICKER_SETTINGS[ticker].pop('pause_requires_review', None)
         eng.config.TICKER_SETTINGS[ticker]['realized_pl'] = 0.0
+        eng.config.TICKER_SETTINGS[ticker]['daily_realized_pl'] = 0.0
+        eng.config.TICKER_SETTINGS[ticker]['consecutive_losses'] = 0
+        eng.config.TICKER_SETTINGS[ticker].pop('post_stop_state', None)
         # Unpausing starts a new limited run; preserve historical totals but
         # reset the entry counter used by max_trades.
         if previously_paused:
@@ -7177,6 +7968,10 @@ def _format_trade_for_ui(trade: dict) -> dict:
         "exit_watch_details": trade.get("exit_watch_details", {}),
         "option_intent": trade.get("option_intent", "HOLD"),
         "has_position": trade.get("has_position", False),
+        "buy_mode": trade.get("buy_mode", ""),
+        "sell_mode": trade.get("sell_mode", ""),
+        "structure_direction": trade.get("structure_direction", ""),
+        "structure_ok": trade.get("structure_ok", False),
     }
 
 
@@ -7494,6 +8289,10 @@ def _format_scan_for_ui(scan: dict, use_global_settings: bool = False) -> dict:
         "exit_watch_details": scan.get("exit_watch_details", {}),
         "option_intent": scan.get("option_intent", "HOLD"),
         "has_position": scan.get("has_position", False),
+        "buy_mode": scan.get("buy_mode", ""),
+        "sell_mode": scan.get("sell_mode", ""),
+        "structure_direction": scan.get("structure_direction", ""),
+        "structure_ok": scan.get("structure_ok", False),
     }
 
 @app.get("/api/debug-doge")

@@ -7,6 +7,8 @@ Exposes calculate_indicators_for_df and _generate_signals for backtesting.
 
 from datetime import datetime, timedelta
 import hashlib
+import threading
+import time
 import pandas as pd
 import numpy as np
 import ta as ta_lib
@@ -27,6 +29,24 @@ from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from broker_factory import get_alpaca_clients
 
 wb_data_provider = None
+
+# Bot chart previews often request the same ticker/timeframe with a different
+# indicator selection. Keep the provider candle fetch independent from the
+# indicator-result cache so changing a setting does not trigger another
+# Webull request. The short TTL keeps preview candles fresh while removing the
+# repeated network round-trip during interactive edits.
+_preview_bars_cache = {}
+_preview_bars_fetch_locks = {}
+_preview_bars_cache_guard = threading.Lock()
+
+
+def _preview_bars_cache_ttl(timeframe):
+    tf = str(timeframe or "").upper()
+    if tf in {"30SEC", "1MIN"}:
+        return 8.0
+    if tf in {"2MIN", "3MIN", "5MIN"}:
+        return 15.0
+    return 30.0
 
 
 def _is_crypto_ticker(ticker):
@@ -125,7 +145,8 @@ def _selected_chart_field_keys(enabled_indicators, buy_mode="", sell_mode=""):
         "Supertrend": {"supertrend", "supertrend_up"},
         "Bollinger": {"boll_upper", "boll_middle", "boll_lower"},
         "VWAP": {"vwap"},
-        "SMA": {"sma"},
+        "Auto-AVWAP": {"auto_avwap"},
+        "SMA": {"sma", "sma_secondary"},
         "Prior Day High/Low": {
             "daily_high_low_high", "daily_high_low_low",
             "daily_high_low_high_trigger", "daily_high_low_low_trigger",
@@ -222,6 +243,329 @@ def _wilder_atr(high, low, close, period):
     return atr
 
 
+def _indicator_period(value, fallback, minimum=1, maximum=2_000):
+    """Normalize a configurable indicator period before passing it to math libraries."""
+    try:
+        resolved = int(float(value))
+    except (TypeError, ValueError):
+        resolved = int(fallback)
+    return min(int(maximum), max(int(minimum), resolved))
+
+
+def _setting_enabled(value, fallback=True):
+    """Normalize bool-like persisted settings without treating the string '0' as true."""
+    if value is None or value == "":
+        return bool(fallback)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+    return bool(value)
+
+
+def _required_indicator_history_bars(settings=None):
+    """Return enough source bars to warm up selected long-lookback indicators."""
+    if not isinstance(settings, dict):
+        enabled = None
+        sell_mode = ""
+    else:
+        raw_enabled = settings.get("enabled_indicators")
+        enabled = (
+            {str(value) for value in raw_enabled if value}
+            if isinstance(raw_enabled, (list, tuple, set))
+            else None
+        )
+        sell_mode = str(settings.get("sell_mode") or "").strip().lower()
+
+    periods = []
+    rsi_selected = (
+        enabled is None
+        or "RSI" in enabled
+        or "BotBulls2" in enabled
+        or bool((settings or {}).get("_require_rsi_dependency", False))
+    )
+    if rsi_selected:
+        # Wilder RSI needs ``period`` price changes, or period + 1 prices.
+        periods.append(
+            _indicator_period(
+                _resolve_param("RSI_PERIOD", 14, settings=settings),
+                14,
+                minimum=2,
+                maximum=500,
+            ) + 1
+        )
+
+    macd_selected = enabled is None or "MACD" in enabled
+    if macd_selected:
+        macd_fast, macd_slow, macd_signal = _macd_periods(settings=settings)
+        # MACD signal/histogram becomes available after the slow EMA and
+        # signal EMA have both completed their warm-up windows.
+        periods.append(macd_slow + macd_signal - 1)
+
+    ema_selected = enabled is None or "EMA Cross" in enabled
+    if ema_selected or sell_mode == "trend_rider":
+        periods.append(
+            _indicator_period(_resolve_param("EMA_FAST", 9, settings=settings), 9, maximum=500)
+        )
+        ema_use_second_line = _setting_enabled(
+            _resolve_param("EMA_USE_SECOND_LINE", None, settings=settings),
+            True,
+        )
+        if ema_use_second_line or sell_mode == "trend_rider":
+            periods.append(
+                _indicator_period(_resolve_param("EMA_SLOW", 21, settings=settings), 21, maximum=500)
+            )
+
+    sma_selected = enabled is None or "SMA" in enabled
+    if sma_selected or sell_mode == "trend_rider":
+        periods.append(
+            _indicator_period(_resolve_param("SMA_PERIOD", 200, settings=settings), 200, maximum=500)
+        )
+        sma_use_second_line = _setting_enabled(
+            _resolve_param("SMA_USE_SECOND_LINE", None, settings=settings),
+            True,
+        )
+        if sma_selected and sma_use_second_line:
+            periods.append(
+                _indicator_period(_resolve_param("SMA_SECOND_PERIOD", 50, settings=settings), 50, maximum=500)
+            )
+    if not periods:
+        return 0
+    # The extra bars let the returned chart show a usable line segment rather
+    # than only the first point at the end of the warm-up window.
+    return max(periods) + 50
+
+
+def _wilder_rsi(close, period):
+    """Return textbook Wilder RSI with an arithmetic seed and causal warm-up.
+
+    The first RSI requires ``period`` completed price changes. Earlier rows
+    remain NaN so charts and backtests cannot receive a future RSI value.
+    """
+    length = _indicator_period(period, 14, minimum=2, maximum=500)
+    values = pd.to_numeric(close, errors="coerce").to_numpy(dtype=float)
+    rsi = pd.Series(np.nan, index=close.index, dtype=float)
+    if len(values) <= length:
+        return rsi
+
+    deltas = np.diff(values)
+    gains = np.where(deltas > 0, deltas, 0.0)
+    losses = np.where(deltas < 0, -deltas, 0.0)
+    if not np.isfinite(deltas[:length]).all():
+        return rsi
+
+    average_gain = float(gains[:length].mean())
+    average_loss = float(losses[:length].mean())
+
+    def reading(avg_gain, avg_loss):
+        if avg_gain == 0.0 and avg_loss == 0.0:
+            return 50.0
+        if avg_loss == 0.0:
+            return 100.0
+        if avg_gain == 0.0:
+            return 0.0
+        relative_strength = avg_gain / avg_loss
+        return 100.0 - (100.0 / (1.0 + relative_strength))
+
+    rsi.iloc[length] = reading(average_gain, average_loss)
+    for position in range(length + 1, len(values)):
+        delta = deltas[position - 1]
+        if not np.isfinite(delta):
+            continue
+        gain = max(float(delta), 0.0)
+        loss = max(float(-delta), 0.0)
+        average_gain = ((average_gain * (length - 1)) + gain) / length
+        average_loss = ((average_loss * (length - 1)) + loss) / length
+        rsi.iloc[position] = reading(average_gain, average_loss)
+    return rsi
+
+
+def _macd_periods(settings=None, fast=None, slow=None, signal=None):
+    """Normalize MACD periods and always treat the lower EMA as the fast EMA."""
+    fast_period = _indicator_period(
+        _resolve_param("MACD_FAST", 12, settings=settings) if fast is None else fast,
+        12,
+        minimum=2,
+        maximum=500,
+    )
+    slow_period = _indicator_period(
+        _resolve_param("MACD_SLOW", 26, settings=settings) if slow is None else slow,
+        26,
+        minimum=2,
+        maximum=500,
+    )
+    signal_period = _indicator_period(
+        _resolve_param("MACD_SIGNAL", 9, settings=settings) if signal is None else signal,
+        9,
+        minimum=2,
+        maximum=500,
+    )
+    return min(fast_period, slow_period), max(fast_period, slow_period), signal_period
+
+
+def _rsi_thresholds(oversold, overbought):
+    """Clamp RSI thresholds and consistently treat the lower value as oversold."""
+    try:
+        first = min(100.0, max(0.0, float(oversold)))
+    except (TypeError, ValueError):
+        first = 30.0
+    try:
+        second = min(100.0, max(0.0, float(overbought)))
+    except (TypeError, ValueError):
+        second = 70.0
+    return min(first, second), max(first, second)
+
+
+def _wilder_dmi_series(high, low, close, period):
+    """Return standard Wilder ADX, +DI, and -DI without false warm-up zeros.
+
+    Wilder smoothing starts +DI/-DI after one complete period and ADX after a
+    second complete period. Values before those points remain NaN so chart
+    renderers do not draw a misleading line from zero into the first valid
+    reading.
+    """
+    length = _indicator_period(period, 14, minimum=2, maximum=500)
+    index = close.index
+    count = len(close)
+    adx = pd.Series(np.nan, index=index, dtype=float)
+    di_plus = pd.Series(np.nan, index=index, dtype=float)
+    di_minus = pd.Series(np.nan, index=index, dtype=float)
+    if count < length:
+        return adx, di_plus, di_minus
+
+    high_values = pd.to_numeric(high, errors="coerce").to_numpy(dtype=float)
+    low_values = pd.to_numeric(low, errors="coerce").to_numpy(dtype=float)
+    close_values = pd.to_numeric(close, errors="coerce").to_numpy(dtype=float)
+    true_range = np.full(count, np.nan, dtype=float)
+    plus_dm = np.zeros(count, dtype=float)
+    minus_dm = np.zeros(count, dtype=float)
+
+    if np.isfinite(high_values[0]) and np.isfinite(low_values[0]):
+        true_range[0] = high_values[0] - low_values[0]
+    for position in range(1, count):
+        if not all(np.isfinite(value) for value in (
+            high_values[position], low_values[position], close_values[position - 1]
+        )):
+            continue
+        true_range[position] = max(
+            high_values[position] - low_values[position],
+            abs(high_values[position] - close_values[position - 1]),
+            abs(low_values[position] - close_values[position - 1]),
+        )
+        up_move = high_values[position] - high_values[position - 1]
+        down_move = low_values[position - 1] - low_values[position]
+        plus_dm[position] = up_move if up_move > down_move and up_move > 0 else 0.0
+        minus_dm[position] = down_move if down_move > up_move and down_move > 0 else 0.0
+
+    seed_position = length - 1
+    initial_tr = true_range[:length]
+    if not np.isfinite(initial_tr).all():
+        return adx, di_plus, di_minus
+
+    smoothed_tr = np.full(count, np.nan, dtype=float)
+    smoothed_plus = np.full(count, np.nan, dtype=float)
+    smoothed_minus = np.full(count, np.nan, dtype=float)
+    smoothed_tr[seed_position] = initial_tr.sum()
+    smoothed_plus[seed_position] = plus_dm[:length].sum()
+    smoothed_minus[seed_position] = minus_dm[:length].sum()
+    for position in range(length, count):
+        if not np.isfinite(true_range[position]):
+            continue
+        smoothed_tr[position] = (
+            smoothed_tr[position - 1]
+            - (smoothed_tr[position - 1] / length)
+            + true_range[position]
+        )
+        smoothed_plus[position] = (
+            smoothed_plus[position - 1]
+            - (smoothed_plus[position - 1] / length)
+            + plus_dm[position]
+        )
+        smoothed_minus[position] = (
+            smoothed_minus[position - 1]
+            - (smoothed_minus[position - 1] / length)
+            + minus_dm[position]
+        )
+
+    valid_tr = np.isfinite(smoothed_tr) & (smoothed_tr > 0)
+    plus_values = np.full(count, np.nan, dtype=float)
+    minus_values = np.full(count, np.nan, dtype=float)
+    plus_values[valid_tr] = 100.0 * smoothed_plus[valid_tr] / smoothed_tr[valid_tr]
+    minus_values[valid_tr] = 100.0 * smoothed_minus[valid_tr] / smoothed_tr[valid_tr]
+    di_plus.iloc[:] = plus_values
+    di_minus.iloc[:] = minus_values
+
+    denominator = plus_values + minus_values
+    dx = np.full(count, np.nan, dtype=float)
+    valid_dx = np.isfinite(denominator) & (denominator > 0)
+    dx[valid_dx] = 100.0 * np.abs(plus_values[valid_dx] - minus_values[valid_dx]) / denominator[valid_dx]
+    flat_dx = np.isfinite(plus_values) & np.isfinite(minus_values) & (denominator == 0)
+    dx[flat_dx] = 0.0
+
+    first_adx_position = (2 * length) - 2
+    if first_adx_position < count:
+        seed_dx = dx[seed_position:first_adx_position + 1]
+        if len(seed_dx) == length and np.isfinite(seed_dx).all():
+            adx.iloc[first_adx_position] = float(seed_dx.mean())
+            for position in range(first_adx_position + 1, count):
+                if not np.isfinite(dx[position]) or not np.isfinite(adx.iloc[position - 1]):
+                    continue
+                adx.iloc[position] = (
+                    (adx.iloc[position - 1] * (length - 1)) + dx[position]
+                ) / length
+    return adx, di_plus, di_minus
+
+
+def _session_vwap_series(df, high, low, close, volume, ticker=None):
+    """Calculate session VWAP using the exchange-local calendar date.
+
+    Webull's VWAP is a cumulative intraday typical-price/volume average. The
+    session key must use New York time for equities; using a raw UTC date can
+    incorrectly reset the line during an evening/extended-hours boundary.
+    """
+    typical_price = (high + low + close) / 3.0
+    pv = typical_price * volume
+    session_key = pd.Series(_exchange_session_dates_for_df(df, ticker), index=df.index)
+    session_pv = pv.groupby(session_key).cumsum()
+    session_volume = volume.groupby(session_key).cumsum()
+    return (session_pv / session_volume.replace(0, np.nan)).fillna(close)
+
+
+def _auto_avwap_series(df, high, low, close, volume, ticker=None, session_vwap=None, param=None):
+    """Calculate the legacy volume-spike anchored AVWAP separately from VWAP."""
+    param = param or (lambda _key, fallback=None: fallback)
+    typical_price = (high + low + close) / 3.0
+    pv = typical_price * volume
+    cumulative_pv = pv.cumsum().to_numpy()
+    cumulative_volume = volume.cumsum().to_numpy()
+    volume_ma_period = max(2, int(float(param("VOL_MA_PERIOD", 20))))
+    volume_spike_multiplier = max(0.0, float(param("VOL_SPIKE_MULTIPLIER", 1.5)))
+    volume_ma = volume.rolling(window=volume_ma_period, min_periods=1).mean()
+    spike_condition = volume > (volume_ma * volume_spike_multiplier)
+    index_series = pd.Series(range(len(df)), index=df.index)
+    anchor_indices = index_series.where(spike_condition).ffill()
+    session_values = (session_vwap if session_vwap is not None else _session_vwap_series(
+        df, high, low, close, volume, ticker=ticker
+    )).to_numpy()
+    close_values = close.to_numpy()
+    values = np.empty(len(df), dtype=float)
+    for current_index, anchor_index in enumerate(anchor_indices.to_numpy()):
+        if pd.isna(anchor_index):
+            values[current_index] = session_values[current_index]
+            continue
+        anchor_index = int(anchor_index)
+        anchor_pv = cumulative_pv[anchor_index - 1] if anchor_index > 0 else 0.0
+        anchor_volume = cumulative_volume[anchor_index - 1] if anchor_index > 0 else 0.0
+        total_volume = cumulative_volume[current_index] - anchor_volume
+        values[current_index] = (
+            (cumulative_pv[current_index] - anchor_pv) / total_volume
+            if total_volume > 0 else close_values[current_index]
+        )
+    return pd.Series(values, index=df.index), anchor_indices
+
+
 def _atr_period(value, fallback=14):
     """Normalize a user-supplied ATR length without accepting invalid input."""
     try:
@@ -316,7 +660,44 @@ def _timeframe_seconds(timeframe):
         return value * 60
     return 300
 
-def _completed_candles_for_live_chart(df, timeframe, safety_delay_seconds=5):
+def _session_dates_for_df(df, ticker=None):
+    """Return canonical America/Chicago calendar-session dates for a frame.
+
+    Live provider frames are timezone-aware (normally UTC). Historical Yahoo
+    frames are normalized by data_manager to naive Eastern wall-clock times
+    for equities and naive UTC times for crypto. Keeping that distinction in
+    one helper prevents extended-hours premarket bars from being assigned to
+    the wrong session.
+    """
+    timestamps = pd.DatetimeIndex(df.index)
+    if timestamps.tz is None:
+        local_tz = "UTC" if _is_crypto_ticker(ticker) else "America/New_York"
+        timestamps = timestamps.tz_localize(
+            local_tz,
+            ambiguous="infer",
+            nonexistent="shift_forward",
+        )
+    central = timestamps.tz_convert("America/Chicago")
+    return central.date
+
+
+def _exchange_session_dates_for_df(df, ticker=None):
+    """Return the exchange-local calendar date used by session VWAP."""
+    timestamps = pd.DatetimeIndex(df.index)
+    if timestamps.tz is None:
+        local_tz = "UTC" if _is_crypto_ticker(ticker) else "America/New_York"
+        timestamps = timestamps.tz_localize(
+            local_tz,
+            ambiguous="infer",
+            nonexistent="shift_forward",
+        )
+    else:
+        local_tz = "UTC" if _is_crypto_ticker(ticker) else "America/New_York"
+        timestamps = timestamps.tz_convert(local_tz)
+    return timestamps.date
+
+
+def _completed_candles_for_live_chart(df, timeframe, safety_delay_seconds=5, ticker=None):
     """Return only candles that are fully closed for live dashboard/bot views."""
     if df is None or df.empty or len(df) <= 1:
         return df
@@ -327,7 +708,8 @@ def _completed_candles_for_live_chart(df, timeframe, safety_delay_seconds=5):
 
     index = df.index
     if getattr(index, "tz", None) is None:
-        index = index.tz_localize("UTC")
+        local_tz = "UTC" if _is_crypto_ticker(ticker) else "America/New_York"
+        index = index.tz_localize(local_tz, ambiguous="infer", nonexistent="shift_forward")
     else:
         index = index.tz_convert("UTC")
 
@@ -363,17 +745,12 @@ def _bounded_chart_frame(chart_df, settings=None):
     return chart_df.tail(limit)
 
 
-def _prior_session_ohlc_from_df(chart_df):
+def _prior_session_ohlc_from_df(chart_df, ticker=None):
     """Derive prior-session OHLC from the full completed calculation frame."""
     if chart_df is None or chart_df.empty:
         return None
     try:
-        timestamps = pd.DatetimeIndex(chart_df.index)
-        if timestamps.tz is None:
-            central = timestamps.tz_localize("UTC").tz_convert("America/Chicago")
-        else:
-            central = timestamps.tz_convert("America/Chicago")
-        session_key = pd.Series(central.date, index=chart_df.index)
+        session_key = pd.Series(_session_dates_for_df(chart_df, ticker), index=chart_df.index)
         sessions = chart_df.groupby(session_key).agg({"High": "max", "Low": "min", "Close": "last"})
         if len(sessions) < 2:
             return None
@@ -389,10 +766,17 @@ def _prior_session_ohlc_from_df(chart_df):
         print(f"[indicators] Prior-session OHLC summary failed: {exc}")
         return None
 
-def _volume_profile_levels(session_df, rows=48, value_area_pct=70.0):
-    """Approximate volume-at-price from OHLCV bars for one completed session."""
+def _volume_profile_distribution(session_df, rows=48, value_area_pct=70.0):
+    """Build an OHLCV approximation of a session volume-at-price profile.
+
+    The provider supplies candle totals rather than trade-at-price records, so
+    exact tape-level volume cannot be reconstructed. Each candle's volume is
+    allocated across the price bins touched by its high-low range. POC, VAH,
+    and VAL are all derived from this same bin array and the array is returned
+    for the chart's VPVR renderer.
+    """
     if session_df is None or session_df.empty:
-        return (np.nan, np.nan, np.nan)
+        return None
 
     try:
         rows = int(float(rows))
@@ -411,41 +795,79 @@ def _volume_profile_levels(session_df, rows=48, value_area_pct=70.0):
     if not np.isfinite(low_price) or not np.isfinite(high_price) or high_price <= low_price:
         close_vals = pd.to_numeric(session_df["Close"], errors="coerce").dropna()
         if close_vals.empty:
-            return (np.nan, np.nan, np.nan)
+            return None
         price = float(close_vals.iloc[-1])
-        return (price, price, price)
+        return {
+            "poc": price,
+            "vah": price,
+            "val": price,
+            "session_low": price,
+            "session_high": price,
+            "rows": 1,
+            "value_area_pct": value_area_pct * 100.0,
+            "total_volume": 0.0,
+            "bins": [{
+                "low": price,
+                "high": price,
+                "price": price,
+                "volume": 0.0,
+                "buy_volume": 0.0,
+                "sell_volume": 0.0,
+            }],
+        }
 
     edges = np.linspace(low_price, high_price, rows + 1)
     centers = (edges[:-1] + edges[1:]) / 2.0
     profile = np.zeros(rows, dtype=float)
+    buy_profile = np.zeros(rows, dtype=float)
+    sell_profile = np.zeros(rows, dtype=float)
 
     for _, row in session_df.iterrows():
-        lo = float(row.get("Low", np.nan))
-        hi = float(row.get("High", np.nan))
-        close = float(row.get("Close", np.nan))
-        vol = float(row.get("Volume", 0.0) or 0.0)
+        try:
+            lo = float(row.get("Low", np.nan))
+            hi = float(row.get("High", np.nan))
+            close = float(row.get("Close", np.nan))
+            open_price = float(row.get("Open", np.nan))
+            vol = float(row.get("Volume", 0.0))
+        except (TypeError, ValueError):
+            continue
         if not np.isfinite(vol) or vol <= 0:
             continue
+        is_buy_volume = (
+            np.isfinite(open_price) and np.isfinite(close) and close >= open_price
+        )
         if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
             price = close if np.isfinite(close) else (lo if np.isfinite(lo) else np.nan)
             if not np.isfinite(price):
                 continue
             idx = int(np.clip(np.searchsorted(edges, price, side="right") - 1, 0, rows - 1))
             profile[idx] += vol
+            if is_buy_volume:
+                buy_profile[idx] += vol
+            else:
+                sell_profile[idx] += vol
             continue
 
-        candle_range = hi - lo
         overlaps = np.maximum(0.0, np.minimum(edges[1:], hi) - np.maximum(edges[:-1], lo))
         overlap_sum = overlaps.sum()
         if overlap_sum > 0:
-            profile += vol * (overlaps / overlap_sum)
+            allocation = vol * (overlaps / overlap_sum)
+            profile += allocation
+            if is_buy_volume:
+                buy_profile += allocation
+            else:
+                sell_profile += allocation
         else:
             idx = int(np.clip(np.searchsorted(edges, close, side="right") - 1, 0, rows - 1))
             profile[idx] += vol
+            if is_buy_volume:
+                buy_profile[idx] += vol
+            else:
+                sell_profile[idx] += vol
 
     total_volume = profile.sum()
     if total_volume <= 0:
-        return (np.nan, np.nan, np.nan)
+        return None
 
     poc_idx = int(np.argmax(profile))
     target_volume = total_volume * value_area_pct
@@ -467,7 +889,36 @@ def _volume_profile_levels(session_df, rows=48, value_area_pct=70.0):
     poc = float(centers[poc_idx])
     val = float(edges[low_idx])
     vah = float(edges[high_idx + 1])
-    return (poc, vah, val)
+    bins = [
+        {
+            "low": float(edges[idx]),
+            "high": float(edges[idx + 1]),
+            "price": float(centers[idx]),
+            "volume": float(profile[idx]),
+            "buy_volume": float(buy_profile[idx]),
+            "sell_volume": float(sell_profile[idx]),
+        }
+        for idx in range(rows)
+    ]
+    return {
+        "poc": poc,
+        "vah": vah,
+        "val": val,
+        "session_low": low_price,
+        "session_high": high_price,
+        "rows": rows,
+        "value_area_pct": value_area_pct * 100.0,
+        "total_volume": float(total_volume),
+        "bins": bins,
+    }
+
+
+def _volume_profile_levels(session_df, rows=48, value_area_pct=70.0):
+    """Return POC, VAH, and VAL from the shared volume profile bins."""
+    profile = _volume_profile_distribution(session_df, rows=rows, value_area_pct=value_area_pct)
+    if not profile:
+        return (np.nan, np.nan, np.nan)
+    return (float(profile["poc"]), float(profile["vah"]), float(profile["val"]))
 
 def _is_crypto_symbol(symbol):
     clean = str(symbol or "").upper().replace("/", "").replace("-", "")
@@ -542,8 +993,21 @@ def _add_swing_point_columns(df, ticker, settings, param_getter, timeframe=None)
     if not is_backtest_context and len(df) > 600:
         seconds = max(60, _timeframe_seconds(timeframe))
         minutes = max(1.0, seconds / 60.0)
-        rth_bars_per_day = max(1, int(round(390 / minutes)))
-        live_window_bars = max(240, min(600, lookback_days * rth_bars_per_day))
+        session_name = str(market_session or "Regular").strip().lower()
+        if is_crypto or session_name in {"crypto24", "24h", "all"}:
+            bars_per_day = max(1, int(round(1440 / minutes)))
+        elif session_name in {"extended", "extended_hours"}:
+            bars_per_day = max(1, int(round(960 / minutes)))
+        else:
+            bars_per_day = max(1, int(round(390 / minutes)))
+
+        # Keep enough candles for the requested structural lookback, while
+        # bounding the live rolling calculation for low timeframes. The chart
+        # response itself is capped separately; the extra warmup here keeps
+        # the first displayed Swing level from starting with a cold context.
+        requested_bars = max(240, lookback_days * bars_per_day)
+        display_limit = _live_chart_display_limit(timeframe, ticker)
+        live_window_bars = max(display_limit, min(5000, requested_bars))
         calc_df = df.iloc[-live_window_bars:]
 
     from swing_strategy import detect_swing_entry, _normalize_candle
@@ -554,6 +1018,17 @@ def _add_swing_point_columns(df, ticker, settings, param_getter, timeframe=None)
     
     calc_records = calc_df.to_dict(orient="records")
     calc_times = calc_df.index
+    if is_backtest_context:
+        swing_evaluation_start = 0
+    else:
+        try:
+            output_limit = int((settings or {}).get("_chart_display_bars", 0) or 0)
+        except (TypeError, ValueError):
+            output_limit = 0
+        output_limit = output_limit or _live_chart_display_limit(timeframe, ticker)
+        # Build warmup history for the selected lookback, but only calculate
+        # Swing levels for candles that can reach the live chart payload.
+        swing_evaluation_start = max(0, len(calc_records) - output_limit)
 
     for i, row in enumerate(calc_records):
         idx = calc_times[i]
@@ -565,6 +1040,9 @@ def _add_swing_point_columns(df, ticker, settings, param_getter, timeframe=None)
         # Trim history if it exceeds our safe sliding window
         if len(history) > max_history_len * 2:
             history = history[-max_history_len:]
+
+        if i < swing_evaluation_start:
+            continue
             
         decision = detect_swing_entry(
             history[-max_history_len:],
@@ -780,8 +1258,11 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca", settings=N
     Supports both Stocks and Crypto.
     """
 
+    import time
+    start_t = time.perf_counter()
     try:
         df = None
+        required_indicator_history_bars = _required_indicator_history_bars(settings)
 
         # --- Mode 1: Webull Data (High Fidelity for Dashboard) ---
         if data_source == "webull":
@@ -802,6 +1283,8 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca", settings=N
                 "30Min": 1200,
             }
             requested_count = live_count_map.get(timeframe, 1200)
+            if required_indicator_history_bars:
+                requested_count = max(requested_count, required_indicator_history_bars)
             requested_session = str((settings or {}).get("market_session", "extended") or "extended").lower()
             is_crypto_request = _is_crypto_ticker(ticker)
             provider_sessions = "RTH" if not is_crypto_request and requested_session == "regular" else "RTH,PRE,ATH"
@@ -810,12 +1293,61 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca", settings=N
             # the complete prior session, and warm-up bars are all available.
             if timeframe == "1Min" and provider_sessions == "RTH":
                 requested_count = 1200 if is_crypto_request else 1650
-            bars = _get_wb_data_provider().get_bars(
-                ticker,
-                timespan=wb_tf,
-                count=requested_count,
-                trading_sessions=provider_sessions,
-            )
+            # Apply the preview cap after the regular-session adjustment above;
+            # otherwise the 1-minute regular-session branch silently expands
+            # the request back to 1,650 bars.
+            if isinstance(settings, dict) and settings.get("_chart_preview"):
+                try:
+                    preview_bars = int(settings.get("_chart_display_bars", 800) or 800)
+                except (TypeError, ValueError):
+                    preview_bars = 800
+                requested_count = min(requested_count, max(300, min(preview_bars, 800)))
+            preview_cache_key = None
+            preview_fetch_lock = None
+            if isinstance(settings, dict) and settings.get("_chart_preview"):
+                preview_cache_key = (
+                    str(ticker or "").upper(),
+                    str(timeframe or "").upper(),
+                    provider_sessions,
+                    int(requested_count),
+                )
+                with _preview_bars_cache_guard:
+                    cached_preview_bars = _preview_bars_cache.get(preview_cache_key)
+                    if cached_preview_bars and (time.monotonic() - cached_preview_bars[0]) < _preview_bars_cache_ttl(timeframe):
+                        bars = cached_preview_bars[1]
+                    else:
+                        bars = None
+                    preview_fetch_lock = _preview_bars_fetch_locks.setdefault(
+                        preview_cache_key,
+                        threading.Lock(),
+                    )
+                if bars is None:
+                    # Serialize only the preview fetch for this exact market
+                    # window. A second settings edit waits for the first fetch,
+                    # then reuses its result instead of opening another Webull
+                    # request in parallel.
+                    with preview_fetch_lock:
+                        with _preview_bars_cache_guard:
+                            cached_preview_bars = _preview_bars_cache.get(preview_cache_key)
+                            if cached_preview_bars and (time.monotonic() - cached_preview_bars[0]) < _preview_bars_cache_ttl(timeframe):
+                                bars = cached_preview_bars[1]
+                        if bars is None:
+                            bars = _get_wb_data_provider().get_bars(
+                                ticker,
+                                timespan=wb_tf,
+                                count=requested_count,
+                                trading_sessions=provider_sessions,
+                            )
+                            if bars:
+                                with _preview_bars_cache_guard:
+                                    _preview_bars_cache[preview_cache_key] = (time.monotonic(), bars)
+            else:
+                bars = _get_wb_data_provider().get_bars(
+                    ticker,
+                    timespan=wb_tf,
+                    count=requested_count,
+                    trading_sessions=provider_sessions,
+                )
             if bars:
                 if isinstance(bars, list) and len(bars) > 0:
                     # Check for dummy bar with None time
@@ -917,8 +1449,30 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca", settings=N
                 tf_obj = TimeFrame(5, TimeFrameUnit.Minute)
                 lookback_days = 5
 
+            if required_indicator_history_bars:
+                interval_minutes = {
+                    "30SEC": 1, "1MIN": 1, "2MIN": 2, "3MIN": 3,
+                    "5MIN": 5, "10MIN": 10, "15MIN": 15, "30MIN": 30,
+                    "1HOUR": 60, "60MIN": 60, "2HOUR": 120, "4HOUR": 240,
+                }.get(tf_str)
+                if interval_minutes:
+                    if is_crypto:
+                        bars_per_day = max(1.0, 1440.0 / interval_minutes)
+                        indicator_lookback_days = int(np.ceil(required_indicator_history_bars / bars_per_day)) + 1
+                    else:
+                        bars_per_trading_day = max(1.0, 390.0 / interval_minutes)
+                        trading_days = required_indicator_history_bars / bars_per_trading_day
+                        indicator_lookback_days = int(np.ceil(trading_days * 7.0 / 5.0)) + 3
+                    lookback_days = max(lookback_days, indicator_lookback_days)
+
             # Incremental cache
-            if cache_key in _data_cache:
+            if (
+                cache_key in _data_cache
+                and (
+                    not required_indicator_history_bars
+                    or len(_data_cache[cache_key][1]) >= required_indicator_history_bars
+                )
+            ):
                 last_bar_time, cached_df = _data_cache[cache_key]
                 start_date = last_bar_time
             else:
@@ -966,7 +1520,11 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca", settings=N
 
         calculation_settings = dict(settings or {})
         calculation_settings.setdefault("_chart_display_bars", _live_chart_display_limit(timeframe, ticker))
-        return calculate_indicators_for_df(df, timeframe, ticker, settings=calculation_settings)
+        calc_start = time.perf_counter()
+        res = calculate_indicators_for_df(df, timeframe, ticker, settings=calculation_settings)
+        end_t = time.perf_counter()
+        print(f"[perf] {ticker} {timeframe} fetch_time: {(calc_start - start_t)*1000:.1f}ms | calc_time: {(end_t - calc_start)*1000:.1f}ms")
+        return res
 
     except Exception as exc:
         print(f"[indicators] Fetch error: {exc}")
@@ -1243,6 +1801,12 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
         )
         buy_mode = str((settings or {}).get("buy_mode", "") if isinstance(settings, dict) else "").lower()
         sell_mode = str((settings or {}).get("sell_mode", "") if isinstance(settings, dict) else "").lower()
+        # Trend Rider privately depends on both EMA lines even when EMA is not
+        # selected as a visible confluence vote.
+        ema_is_required = _needs("EMA Cross") or sell_mode == "trend_rider"
+        # Trend Rider uses the primary SMA as an exit dependency even when the
+        # user does not also select SMA as a confluence indicator.
+        sma_is_required = _needs("SMA") or sell_mode == "trend_rider"
         selected_chart_keys = _selected_chart_field_keys(enabled_indicators, buy_mode, sell_mode)
         structural_modes = {"pivot_points", "hybrid_pivot", "high_low", "hybrid_high_low", "swing_points", "hybrid_swing"}
         needs_prior_session = (
@@ -1257,6 +1821,11 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
             or buy_mode in {"swing_points", "hybrid_swing"}
             or sell_mode in {"swing_points", "hybrid_swing"}
         )
+        volume_profile_payload = {
+            "enabled": False,
+            "source": "prior_session",
+            "bins": [],
+        }
 
         # --- Column normalisation ------------------------------------------
         for col in ("Open", "High", "Low", "Close", "Volume"):
@@ -1302,10 +1871,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
             if not needs_prior_session:
                 _init_structural_columns()
             else:
-                if getattr(df.index, "tz", None) is not None:
-                    session_dates = df.index.tz_convert("America/Chicago").date
-                else:
-                    session_dates = df.index.date
+                session_dates = _session_dates_for_df(df, ticker)
                 session_key = pd.Series(session_dates, index=df.index)
                 daily_levels = df.groupby(session_key).agg({"High": "max", "Low": "min", "Close": "last"})
                 prior_high_by_session = daily_levels["High"].shift(1)
@@ -1331,13 +1897,22 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
                     vp_value_area_pct = _param("VOLUME_PROFILE_VALUE_AREA_PCT", 70.0)
                     profile_by_session = {}
                     for session_date, session_df in df.groupby(session_key):
-                        profile_by_session[session_date] = _volume_profile_levels(
+                        profile = _volume_profile_distribution(
                             session_df,
                             rows=vp_rows,
                             value_area_pct=vp_value_area_pct,
                         )
+                        if profile:
+                            profile_by_session[session_date] = profile
                     profile_df = pd.DataFrame.from_dict(
-                        profile_by_session,
+                        {
+                            session_date: (
+                                profile["poc"],
+                                profile["vah"],
+                                profile["val"],
+                            )
+                            for session_date, profile in profile_by_session.items()
+                        },
                         orient="index",
                         columns=["Volume_Profile_POC", "Volume_Profile_VAH", "Volume_Profile_VAL"],
                     ).sort_index()
@@ -1345,6 +1920,20 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
                     df["Volume_Profile_POC"] = session_key.map(prior_profile_df["Volume_Profile_POC"]).astype(float)
                     df["Volume_Profile_VAH"] = session_key.map(prior_profile_df["Volume_Profile_VAH"]).astype(float)
                     df["Volume_Profile_VAL"] = session_key.map(prior_profile_df["Volume_Profile_VAL"]).astype(float)
+                    session_dates_sorted = sorted(profile_by_session)
+                    current_session = session_key.iloc[-1] if len(session_key) else None
+                    prior_sessions = [
+                        session_date for session_date in session_dates_sorted
+                        if current_session is not None and session_date < current_session
+                    ]
+                    if prior_sessions:
+                        profile_session = prior_sessions[-1]
+                        volume_profile_payload = {
+                            **profile_by_session[profile_session],
+                            "enabled": True,
+                            "source": "prior_session",
+                            "session_date": str(profile_session),
+                        }
                 else:
                     df["Volume_Profile_POC"] = np.nan
                     df["Volume_Profile_VAH"] = np.nan
@@ -1406,32 +1995,47 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
 
         # --- RSI -----------------------------------------------------------
         if rsi_is_required:
-            df["RSI"] = ta_lib.momentum.rsi(close, window=int(_param("RSI_PERIOD", 14)))
+            rsi_period = _indicator_period(_param("RSI_PERIOD", 14), 14, minimum=2, maximum=500)
+            df["RSI"] = _wilder_rsi(close, rsi_period)
         else:
             df["RSI"] = np.nan
 
         # --- EMA -----------------------------------------------------------
-        if _needs("EMA Cross"):
-            df["EMA_Fast"] = ta_lib.trend.ema_indicator(close, window=int(_param("EMA_FAST", 9)))
-            df["EMA_Slow"] = ta_lib.trend.ema_indicator(close, window=int(_param("EMA_SLOW", 21)))
+        if ema_is_required:
+            ema_fast_period = _indicator_period(_param("EMA_FAST", 9), 9, maximum=500)
+            ema_slow_period = _indicator_period(_param("EMA_SLOW", 21), 21, maximum=500)
+            df["EMA_Fast"] = ta_lib.trend.ema_indicator(close, window=ema_fast_period)
+            df["EMA_Slow"] = ta_lib.trend.ema_indicator(close, window=ema_slow_period)
         else:
             df["EMA_Fast"] = close
             df["EMA_Slow"] = close
 
         # --- SMA -----------------------------------------------------------
-        df["SMA"] = (
-            ta_lib.trend.sma_indicator(close, window=int(_param("SMA_PERIOD", 200)))
-            if _needs("SMA")
-            else close
-        )
+        if sma_is_required:
+            df["SMA"] = ta_lib.trend.sma_indicator(
+                close,
+                window=_indicator_period(_param("SMA_PERIOD", 200), 200, maximum=500),
+            )
+            df["SMA_Secondary"] = ta_lib.trend.sma_indicator(
+                close,
+                window=_indicator_period(_param("SMA_SECOND_PERIOD", 50), 50, maximum=500),
+            )
+        else:
+            df["SMA"] = close
+            df["SMA_Secondary"] = close
 
         # --- MACD ----------------------------------------------------------
         if _needs("MACD"):
+            macd_fast_period, macd_slow_period, macd_signal_period = _macd_periods(
+                fast=_param("MACD_FAST", 12),
+                slow=_param("MACD_SLOW", 26),
+                signal=_param("MACD_SIGNAL", 9),
+            )
             macd_ind = ta_lib.trend.MACD(
                 close,
-                window_fast=int(_param("MACD_FAST", 12)),
-                window_slow=int(_param("MACD_SLOW", 26)),
-                window_sign=int(_param("MACD_SIGNAL", 9)),
+                window_fast=macd_fast_period,
+                window_slow=macd_slow_period,
+                window_sign=macd_signal_period,
             )
             df["MACD_Line"] = macd_ind.macd()
             df["MACD_Signal"] = macd_ind.macd_signal()
@@ -1486,44 +2090,30 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
             # Standard indicators already calculated above can return without
             # entering the premium, trend-loop, and pattern-engine blocks.
             try:
-                if not _needs("VWAP"):
+                needs_session_vwap = _needs("VWAP")
+                needs_auto_avwap = _needs("Auto-AVWAP")
+                if not (needs_session_vwap or needs_auto_avwap):
                     raise _SkipUnselectedIndicator
-                typical_price = (df["High"] + df["Low"] + df["Close"]) / 3
-                pv = typical_price * df["Volume"]
-                cpv = pv.cumsum()
-                cvol = df["Volume"].cumsum()
-                vol_ma = df["Volume"].rolling(window=int(float(_param("VOL_MA_PERIOD", 20))), min_periods=1).mean()
-                spike_condition = df["Volume"] > (vol_ma * float(_param("VOL_SPIKE_MULTIPLIER", 1.5)))
-                int_indices = pd.Series(range(len(df)), index=df.index)
-                current_anchor_idx = int_indices.where(spike_condition).ffill()
-
-                date_key = pd.Series(df.index.date, index=df.index)
-                daily_pv = pv.groupby(date_key).cumsum()
-                daily_vol = df["Volume"].groupby(date_key).cumsum()
-                daily_vwap = (daily_pv / daily_vol.replace(0, np.nan)).fillna(close)
-
-                cpv_arr = cpv.to_numpy()
-                cvol_arr = cvol.to_numpy()
-                anchor_arr = current_anchor_idx.to_numpy()
-                daily_vwap_arr = daily_vwap.to_numpy()
-                close_arr_fast = close.to_numpy()
-                avwap_vals = np.empty(len(df))
-                for t_idx, a_idx in enumerate(anchor_arr):
-                    if pd.isna(a_idx):
-                        avwap_vals[t_idx] = daily_vwap_arr[t_idx]
-                    else:
-                        a_idx = int(a_idx)
-                        sum_pv = cpv_arr[t_idx] - (cpv_arr[a_idx - 1] if a_idx > 0 else 0)
-                        sum_vol = cvol_arr[t_idx] - (cvol_arr[a_idx - 1] if a_idx > 0 else 0)
-                        avwap_vals[t_idx] = sum_pv / sum_vol if sum_vol > 0 else close_arr_fast[t_idx]
-                df["VWAP"] = avwap_vals
-                df["Anchor_Date"] = current_anchor_idx.map(lambda idx: df.index[int(idx)] if not pd.isna(idx) else pd.NaT)
+                session_vwap = _session_vwap_series(
+                    df, df["High"], df["Low"], df["Close"], df["Volume"], ticker=ticker
+                )
+                auto_avwap, current_anchor_idx = _auto_avwap_series(
+                    df, df["High"], df["Low"], df["Close"], df["Volume"],
+                    ticker=ticker, session_vwap=session_vwap, param=_param,
+                )
+                df["VWAP"] = session_vwap if needs_session_vwap else close.copy()
+                df["Auto_AVWAP"] = auto_avwap if needs_auto_avwap else close.copy()
+                df["Anchor_Date"] = current_anchor_idx.map(
+                    lambda idx: df.index[int(idx)] if not pd.isna(idx) else pd.NaT
+                ) if needs_auto_avwap else pd.NaT
             except _SkipUnselectedIndicator:
                 df["VWAP"] = close.copy()
+                df["Auto_AVWAP"] = close.copy()
                 df["Anchor_Date"] = pd.NaT
             except Exception as e:
                 print(f"[indicators] Fast AVWAP calc error: {e}")
                 df["VWAP"] = close.copy()
+                df["Auto_AVWAP"] = close.copy()
                 df["Anchor_Date"] = pd.NaT
 
             atr_period = _atr_period(_param("ATR_PERIOD", 14))
@@ -1539,13 +2129,13 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
             df["Bull_Pulse"] = 0
             df["Bear_Pulse"] = 0
 
-            for col in ["RSI", "BOLL_Upper", "BOLL_Lower", "BOLL_Middle", "VWAP", "ATR"]:
+            for col in ["RSI", "BOLL_Upper", "BOLL_Lower", "BOLL_Middle", "VWAP", "Auto_AVWAP", "ATR"]:
                 df[col] = df[col].ffill().bfill()
 
             from user_config import active_evaluation_context
             eval_context = active_evaluation_context.get()
             if eval_context in ("dashboard", "bots"):
-                chart_df = _completed_candles_for_live_chart(df, timeframe)
+                chart_df = _completed_candles_for_live_chart(df, timeframe, ticker=ticker)
                 latest = chart_df.iloc[-1]
                 prev = chart_df.iloc[-2] if len(chart_df) > 1 else latest
                 recent_bars = chart_df.tail(5)
@@ -1554,11 +2144,6 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
                 latest = df.iloc[-1]
                 prev = df.iloc[-2] if len(df) > 1 else latest
                 recent_bars = df.tail(5)
-
-            if eval_context != "backtest" and len(chart_df) > 0:
-                mask_not_last = df.index != chart_df.index[-1]
-                df.loc[mask_not_last, "cdl_name"] = "Neutral"
-                df.loc[mask_not_last, ["cdl_bullish", "cdl_bearish"]] = False
 
             signals = _generate_signals(latest, prev, settings=settings, recent_bars=recent_bars, chart_latest=latest)
 
@@ -1572,7 +2157,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
             internal_rsi = _safe_fast(latest.get("RSI"))
 
             display_chart_df = _bounded_chart_frame(chart_df, settings=settings)
-            prior_day_ohlc = _prior_session_ohlc_from_df(chart_df)
+            prior_day_ohlc = _prior_session_ohlc_from_df(chart_df, ticker=ticker)
             price_history = [
                 _prune_chart_record({
                     "time": _unix_timestamp(t),
@@ -1583,7 +2168,9 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
                     "volume": _safe_fast(row["Volume"]),
                     **_extension_chart_fields(row, _safe_fast, selected_chart_keys),
                     "sma": _safe_fast(row.get("SMA")),
+                    "sma_secondary": _safe_fast(row.get("SMA_Secondary")),
                     "vwap": _safe_fast(row.get("VWAP")),
+                    "auto_avwap": _safe_fast(row.get("Auto_AVWAP")),
                     "boll_upper": _safe_fast(row.get("BOLL_Upper")),
                     "boll_middle": _safe_fast(row.get("BOLL_Middle")),
                     "boll_lower": _safe_fast(row.get("BOLL_Lower")),
@@ -1593,14 +2180,36 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
                     "macd_hist": _safe_fast(row.get("MACD_Hist")),
                     "daily_high_low_high": _safe_fast(row.get("Daily_HighLow_High")),
                     "daily_high_low_low": _safe_fast(row.get("Daily_HighLow_Low")),
+                    "daily_high_low_high_trigger": _safe_fast(row.get("Daily_HighLow_High_Trigger")),
+                    "daily_high_low_low_trigger": _safe_fast(row.get("Daily_HighLow_Low_Trigger")),
+                    "daily_high_low_bullish": bool(row.get("Daily_HighLow_Bullish", False)),
+                    "daily_high_low_bearish": bool(row.get("Daily_HighLow_Bearish", False)),
                     "pivot_p": _safe_fast(row.get("Pivot_P")),
                     "pivot_r1": _safe_fast(row.get("Pivot_R1")),
                     "pivot_s1": _safe_fast(row.get("Pivot_S1")),
+                    "pivot_r2": _safe_fast(row.get("Pivot_R2")),
+                    "pivot_s2": _safe_fast(row.get("Pivot_S2")),
+                    "pivot_r3": _safe_fast(row.get("Pivot_R3")),
+                    "pivot_s3": _safe_fast(row.get("Pivot_S3")),
+                    "pivot_r4": _safe_fast(row.get("Pivot_R4")),
+                    "pivot_s4": _safe_fast(row.get("Pivot_S4")),
+                    "pivot_r5": _safe_fast(row.get("Pivot_R5")),
+                    "pivot_s5": _safe_fast(row.get("Pivot_S5")),
+                    "pivot_bullish": bool(row.get("Pivot_Bullish", False)),
+                    "pivot_bearish": bool(row.get("Pivot_Bearish", False)),
                     "volume_profile_poc": _safe_fast(row.get("Volume_Profile_POC")),
                     "volume_profile_vah": _safe_fast(row.get("Volume_Profile_VAH")),
                     "volume_profile_val": _safe_fast(row.get("Volume_Profile_VAL")),
                     "swing_support_1": _safe_fast(row.get("Swing_Support_1")),
+                    "swing_support_2": _safe_fast(row.get("Swing_Support_2")),
+                    "swing_support_3": _safe_fast(row.get("Swing_Support_3")),
+                    "swing_support_4": _safe_fast(row.get("Swing_Support_4")),
+                    "swing_support_5": _safe_fast(row.get("Swing_Support_5")),
                     "swing_resistance_1": _safe_fast(row.get("Swing_Resistance_1")),
+                    "swing_resistance_2": _safe_fast(row.get("Swing_Resistance_2")),
+                    "swing_resistance_3": _safe_fast(row.get("Swing_Resistance_3")),
+                    "swing_resistance_4": _safe_fast(row.get("Swing_Resistance_4")),
+                    "swing_resistance_5": _safe_fast(row.get("Swing_Resistance_5")),
                     "cdl_name": str(row.get("cdl_name", "Neutral")),
                     "cdl_bullish": bool(row.get("cdl_bullish", False)),
                     "cdl_bearish": bool(row.get("cdl_bearish", False)),
@@ -1618,6 +2227,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
                 "signals": signals,
                 "price_history": price_history,
                 "prior_day_ohlc": prior_day_ohlc,
+                "volume_profile": volume_profile_payload,
                 "candle_meta": {
                     "calculation_bars": len(chart_df),
                     "display_bars": len(display_chart_df),
@@ -1698,57 +2308,31 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
         # 4. AVWAP / AUTO-ANCHORED VWAP (Institutional Smart Line - Rolling Model)
         # ---------------------------------------------------------
         try:
-            if not _needs("VWAP"):
+            needs_session_vwap = _needs("VWAP")
+            needs_auto_avwap = _needs("Auto-AVWAP")
+            if not (needs_session_vwap or needs_auto_avwap):
                 raise _SkipUnselectedIndicator
-            # Calculate typical price and PV across the whole DataFrame
-            typical_price = (df["High"] + df["Low"] + df["Close"]) / 3
-            pv = typical_price * df["Volume"]
-            
-            # Pre-calculate Cumulative sums for O(1) interval summation
-            cpv = pv.cumsum()
-            cvol = df["Volume"].cumsum()
-            
-            # Find the Volume Spike indices (institutions entering)
-            vol_ma = df["Volume"].rolling(window=int(float(_param('VOL_MA_PERIOD', 20))), min_periods=1).mean()
-            spike_condition = df["Volume"] > (vol_ma * float(_param('VOL_SPIKE_MULTIPLIER', 1.5)))
-            
-            # Create a forward-filled Series of the most recent spike's integer index
-            int_indices = pd.Series(range(len(df)), index=df.index)
-            spike_int_indices = int_indices.where(spike_condition)
-            current_anchor_idx = spike_int_indices.ffill()
-            
-            # Calculate rolling AVWAP for all rows
-            avwap_vals = []
-            for t_idx in range(len(df)):
-                a_idx = current_anchor_idx.iloc[t_idx]
-                if pd.isna(a_idx):
-                    # Before the first anchor, fall back to standard daily VWAP
-                    date_val = df.index[t_idx].date()
-                    day_mask = df.index.date == date_val
-                    day_df = df[day_mask]
-                    day_pv = ( (day_df["High"] + day_df["Low"] + day_df["Close"]) / 3 * day_df["Volume"] ).cumsum()
-                    day_vol = day_df["Volume"].cumsum()
-                    
-                    # Align index
-                    current_time = df.index[t_idx]
-                    day_val_pv = day_pv.loc[current_time]
-                    day_val_vol = day_vol.loc[current_time]
-                    avwap_vals.append(day_val_pv / day_val_vol if day_val_vol > 0 else close.iloc[t_idx])
-                else:
-                    a_idx = int(a_idx)
-                    sum_pv = cpv.iloc[t_idx] - (cpv.iloc[a_idx - 1] if a_idx > 0 else 0)
-                    sum_vol = cvol.iloc[t_idx] - (cvol.iloc[a_idx - 1] if a_idx > 0 else 0)
-                    avwap_vals.append(sum_pv / sum_vol if sum_vol > 0 else close.iloc[t_idx])
-            
-            df["VWAP"] = avwap_vals
-            df["Anchor_Date"] = current_anchor_idx.map(lambda idx: df.index[int(idx)] if not pd.isna(idx) else pd.NaT)
+            session_vwap = _session_vwap_series(
+                df, df["High"], df["Low"], df["Close"], df["Volume"], ticker=ticker
+            )
+            auto_avwap, current_anchor_idx = _auto_avwap_series(
+                df, df["High"], df["Low"], df["Close"], df["Volume"],
+                ticker=ticker, session_vwap=session_vwap, param=_param,
+            )
+            df["VWAP"] = session_vwap if needs_session_vwap else close.copy()
+            df["Auto_AVWAP"] = auto_avwap if needs_auto_avwap else close.copy()
+            df["Anchor_Date"] = current_anchor_idx.map(
+                lambda idx: df.index[int(idx)] if not pd.isna(idx) else pd.NaT
+            ) if needs_auto_avwap else pd.NaT
 
         except _SkipUnselectedIndicator:
             df["VWAP"] = close.copy()
+            df["Auto_AVWAP"] = close.copy()
             df["Anchor_Date"] = pd.NaT
         except Exception as e:
             print(f"[indicators] AVWAP Calc Error: {e}")
             df["VWAP"] = close.copy()
+            df["Auto_AVWAP"] = close.copy()
             df["Anchor_Date"] = pd.NaT
 
         # --- ATR (Wilder's Smoothing) --------------------------------------
@@ -1756,12 +2340,15 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
         df["ATR"] = _wilder_atr(high, low, close, atr_period)
 
         # --- ADX (Standard Welles Wilder ADX / DI+ / DI-) -------------------
-        adx_ind = ta_lib.trend.ADXIndicator(
-            high=high, low=low, close=close, window=int(_param("ADX_PERIOD", 14))
-        )
-        df["ADX"] = adx_ind.adx()
-        df["DI_Plus"] = adx_ind.adx_pos()
-        df["DI_Minus"] = adx_ind.adx_neg()
+        if _needs("ADX Trend"):
+            adx_period = _indicator_period(_param("ADX_PERIOD", 14), 14, minimum=2, maximum=500)
+            df["ADX"], df["DI_Plus"], df["DI_Minus"] = _wilder_dmi_series(
+                high, low, close, adx_period
+            )
+        else:
+            df["ADX"] = np.nan
+            df["DI_Plus"] = np.nan
+            df["DI_Minus"] = np.nan
 
         # --- Mystic Pulse V2.0 (Adaptive DMI + Persistence Engine) ----------
         presets = _get_mystic_v2_presets(timeframe)
@@ -2348,10 +2935,10 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
         # levels. Back-filling PDH/PDL or POC/VAH/VAL would leak future sessions
         # into earlier candles and distort backtests.
         indicator_cols = [
-            "RSI", "EMA_Fast", "EMA_Slow", "SMA",
+            "RSI", "EMA_Fast", "EMA_Slow", "SMA", "SMA_Secondary",
             "MACD_Line", "MACD_Signal", "MACD_Hist",
             "BOLL_Upper", "BOLL_Lower", "BOLL_Middle",
-            "Supertrend", "ATR", "VWAP",
+            "Supertrend", "ATR", "VWAP", "Auto_AVWAP",
             "ADX", "DI_Plus", "DI_Minus",
             "Daily_HighLow_High", "Daily_HighLow_Low",
             "Daily_HighLow_High_Trigger", "Daily_HighLow_Low_Trigger",
@@ -2372,9 +2959,14 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
             "Swing_Resistance_1", "Swing_Resistance_2", "Swing_Resistance_3", "Swing_Resistance_4", "Swing_Resistance_5",
         }
         no_backfill_cols = prior_session_cols | set(EXTENSION_CALCULATION_COLUMNS)
-        # ATR is unavailable until its complete Wilder seed window exists.
-        # Back-filling it would leak future volatility into early strategy bars.
-        no_backfill_cols.add("ATR")
+        # Warm-up indicators must never be back-filled. Doing so leaks a future
+        # computed value into earlier strategy bars and draws a false flat/vertical
+        # line before the indicator actually exists.
+        no_backfill_cols.update({
+            "RSI", "MACD_Line", "MACD_Signal", "MACD_Hist",
+            "ATR", "EMA_Fast", "EMA_Slow", "SMA", "SMA_Secondary",
+            "ADX", "DI_Plus", "DI_Minus",
+        })
         for col in indicator_cols:
             if col in df.columns:
                 df[col] = df[col].ffill() if col in no_backfill_cols else df[col].ffill().bfill()
@@ -2382,7 +2974,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
         from user_config import active_evaluation_context
         eval_context = active_evaluation_context.get()
         if eval_context in ("dashboard", "bots"):
-            chart_df = _completed_candles_for_live_chart(df, timeframe)
+            chart_df = _completed_candles_for_live_chart(df, timeframe, ticker=ticker)
             latest = chart_df.iloc[-1]  # Dashboard and bots use the latest fully closed/completed candle.
             prev = chart_df.iloc[-2] if len(chart_df) > 1 else latest
             recent_bars = chart_df.tail(5)
@@ -2395,13 +2987,6 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
         signal_chart_latest = latest if eval_context in ("dashboard", "bots") else df.iloc[-1]
         signals = _generate_signals(latest, prev, settings=settings, recent_bars=recent_bars, chart_latest=signal_chart_latest)
 
-        # For dashboard and bots preview charts, mask candlestick markers to the displayed latest candle only.
-        # During backtesting simulation, we keep all bars active so the historical loop can evaluate rolling pattern windows at each bar i.
-        if eval_context != "backtest" and len(chart_df) > 0:
-            mask_not_last = df.index != chart_df.index[-1]
-            df.loc[mask_not_last, "cdl_name"] = "Neutral"
-            df.loc[mask_not_last, ["cdl_bullish", "cdl_bearish"]] = False
-
         def _safe(val):
             """Return float or None, never NaN/Inf."""
             try:
@@ -2413,7 +2998,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
         internal_rsi = _safe(latest.get("RSI"))
 
         display_chart_df = _bounded_chart_frame(chart_df, settings=settings)
-        prior_day_ohlc = _prior_session_ohlc_from_df(chart_df)
+        prior_day_ohlc = _prior_session_ohlc_from_df(chart_df, ticker=ticker)
         chart_records = display_chart_df.to_dict(orient="records")
         chart_times = [_unix_timestamp(t) for t in display_chart_df.index]
 
@@ -2432,6 +3017,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
             ),
             "signals": signals,
             "prior_day_ohlc": prior_day_ohlc,
+            "volume_profile": volume_profile_payload,
             "candle_meta": {
                 "calculation_bars": len(chart_df),
                 "display_bars": len(display_chart_df),
@@ -2450,7 +3036,9 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
                     "ema_fast":      _safe(row.get("EMA_Fast")),
                     "ema_slow":      _safe(row.get("EMA_Slow")),
                     "sma":           _safe(row.get("SMA")),
+                    "sma_secondary": _safe(row.get("SMA_Secondary")),
                     "vwap":          _safe(row.get("VWAP")),
+                    "auto_avwap":    _safe(row.get("Auto_AVWAP")),
                     "supertrend":    _safe(row.get("Supertrend")),
                     "supertrend_up": bool(row.get("Supertrend_Trend", True)),
                     "boll_upper":    _safe(row.get("BOLL_Upper")),
@@ -2570,12 +3158,15 @@ def _generate_standard_extension_signals(latest, prev, param):
             return "BEARISH"
         return "NEUTRAL"
 
-    def signal(name, verdict, reason):
+    def signal(name, verdict, reason, details=None):
         reason_text = str(reason)
         if "nan" in reason_text.lower() or "inf" in reason_text.lower():
             reason_text = "Awaiting sufficient history"
             verdict = "NEUTRAL"
-        return name, {"signal": verdict, "reason": reason_text, "weight": 1}
+        payload = {"signal": verdict, "reason": reason_text, "weight": 1}
+        if isinstance(details, dict):
+            payload.update(details)
+        return name, payload
 
     price = value(latest, "Close", 0.0)
     prev_price = value(prev, "Close", price)
@@ -2600,6 +3191,13 @@ def _generate_standard_extension_signals(latest, prev, param):
             f"({((atr / atr_avg) - 1.0) * 100:+.1f}%) • next-bar {atr_range_multiplier:g}× range "
             f"{range_low:.3f}-{range_high:.3f}"
         ) if np.isfinite(atr) and np.isfinite(atr_avg) else "Awaiting ATR / baseline history",
+        {
+            "value": float(atr) if np.isfinite(atr) else None,
+            "baseline": float(atr_avg) if np.isfinite(atr_avg) else None,
+            "range_low": float(range_low) if np.isfinite(range_low) else None,
+            "range_high": float(range_high) if np.isfinite(range_high) else None,
+            "period": int(_atr_period(param("ATR_PERIOD", 14))),
+        },
     ))
 
     stoch_k, stoch_d = value(latest, "Stoch_K"), value(latest, "Stoch_D")
@@ -2764,6 +3362,201 @@ def _generate_standard_extension_signals(latest, prev, param):
     return dict(entries)
 
 
+def _generate_rsi_signal(current_rsi, previous_rsi, oversold=30, overbought=70, period=14):
+    """Create the shared RSI exhaustion-turn vote without warm-up leakage."""
+    length = _indicator_period(period, 14, minimum=2, maximum=500)
+    oversold_level, overbought_level = _rsi_thresholds(oversold, overbought)
+    if oversold_level >= overbought_level:
+        return {
+            "signal": "NEUTRAL",
+            "reason": "Choose different RSI oversold and overbought levels",
+            "weight": 1,
+        }
+    if not np.isfinite(current_rsi) or not np.isfinite(previous_rsi):
+        return {
+            "signal": "NEUTRAL",
+            "reason": f"RSI {length} warming up; awaiting {length + 1} completed candles",
+            "weight": 1,
+        }
+    if current_rsi < oversold_level and current_rsi > previous_rsi:
+        signal_value = "BULLISH"
+        reason = f"Oversold and rising {current_rsi:.1f} (below {oversold_level:g})"
+    elif current_rsi > overbought_level and current_rsi < previous_rsi:
+        signal_value = "BEARISH"
+        reason = f"Overbought and falling {current_rsi:.1f} (above {overbought_level:g})"
+    elif current_rsi < oversold_level:
+        signal_value = "NEUTRAL"
+        reason = f"Oversold but not rising {current_rsi:.1f}"
+    elif current_rsi > overbought_level:
+        signal_value = "NEUTRAL"
+        reason = f"Overbought but not falling {current_rsi:.1f}"
+    else:
+        signal_value = "NEUTRAL"
+        reason = f"Inside RSI range {current_rsi:.1f}"
+    return {"signal": signal_value, "reason": reason, "weight": 1}
+
+
+def _generate_macd_signal(
+    histogram,
+    previous_histogram,
+    fast_period=12,
+    slow_period=26,
+    signal_period=9,
+):
+    """Create one MACD vote from histogram sign with accurate state text."""
+    fast, slow, signal = _macd_periods(
+        fast=fast_period,
+        slow=slow_period,
+        signal=signal_period,
+    )
+    if fast == slow:
+        return {
+            "signal": "NEUTRAL",
+            "reason": "Choose different MACD fast and slow EMA periods",
+            "weight": 1,
+        }
+    if not np.isfinite(histogram):
+        required_candles = slow + signal - 1
+        return {
+            "signal": "NEUTRAL",
+            "reason": f"MACD warming up; awaiting {required_candles} completed candles",
+            "weight": 1,
+        }
+
+    previous_ready = np.isfinite(previous_histogram)
+    crossed_up = previous_ready and histogram > 0 and previous_histogram <= 0
+    crossed_down = previous_ready and histogram < 0 and previous_histogram >= 0
+    if histogram > 0:
+        reason = (
+            "Bullish MACD crossover: histogram crossed above zero"
+            if crossed_up
+            else f"Positive MACD histogram {histogram:.4f}"
+        )
+        return {"signal": "BULLISH", "reason": reason, "weight": 1}
+    if histogram < 0:
+        reason = (
+            "Bearish MACD crossover: histogram crossed below zero"
+            if crossed_down
+            else f"Negative MACD histogram {histogram:.4f}"
+        )
+        return {"signal": "BEARISH", "reason": reason, "weight": 1}
+    return {
+        "signal": "NEUTRAL",
+        "reason": "MACD histogram is at zero",
+        "weight": 1,
+    }
+
+
+def _generate_vwap_signal(price, prev_close, vwap, prev_vwap, bull_candle, label):
+    """Create the shared price-vs-volume-weighted-line confluence vote."""
+    is_near = abs(price - vwap) / vwap < 0.015 if vwap else False
+    crossed_up = price >= vwap and prev_close < prev_vwap
+    bounced = price >= vwap and is_near and bull_candle
+    return {
+        "signal": "BULLISH" if crossed_up or bounced else "BEARISH" if price < vwap else "NEUTRAL",
+        "reason": (
+            f"{label} Breakout ({vwap:.1f})" if crossed_up
+            else f"{label} bounce ({vwap:.1f})" if bounced
+            else f"Below {label} ({vwap:.1f})" if price < vwap
+            else f"Holding above {label} ({vwap:.1f})"
+        ),
+        "weight": 1,
+    }
+
+
+def _generate_moving_average_signal(
+    *,
+    average_type,
+    price,
+    primary_value,
+    previous_primary,
+    primary_period,
+    use_second_line,
+    secondary_value=np.nan,
+    previous_secondary=np.nan,
+    secondary_period=None,
+):
+    """Return one vote for either price-vs-line or fast-vs-slow MA mode."""
+    average_type = str(average_type or "MA").upper()
+    primary_period = _indicator_period(primary_period, 1, maximum=500)
+    primary_ready = np.isfinite(primary_value)
+
+    if not use_second_line:
+        if not primary_ready:
+            return {
+                "signal": "NEUTRAL",
+                "reason": f"{average_type} {primary_period} warming up; awaiting enough completed candles",
+                "weight": 1,
+                "line_mode": 1,
+            }
+        return {
+            "signal": "BULLISH" if price >= primary_value else "BEARISH",
+            "reason": (
+                f"Price above {average_type} {primary_period} ({primary_value:.2f})"
+                if price >= primary_value
+                else f"Price below {average_type} {primary_period} ({primary_value:.2f})"
+            ),
+            "weight": 1,
+            "line_mode": 1,
+        }
+
+    secondary_period = _indicator_period(secondary_period, primary_period, maximum=500)
+    if primary_period == secondary_period:
+        return {
+            "signal": "NEUTRAL",
+            "reason": f"Choose different {average_type} periods for two-line crossover mode",
+            "weight": 1,
+            "line_mode": 2,
+        }
+    if not primary_ready or not np.isfinite(secondary_value):
+        required_period = max(primary_period, secondary_period)
+        return {
+            "signal": "NEUTRAL",
+            "reason": f"{average_type} crossover warming up; awaiting {required_period} completed candles",
+            "weight": 1,
+            "line_mode": 2,
+        }
+
+    if primary_period < secondary_period:
+        fast_value, fast_previous, fast_period = primary_value, previous_primary, primary_period
+        slow_value, slow_previous, slow_period = secondary_value, previous_secondary, secondary_period
+    else:
+        fast_value, fast_previous, fast_period = secondary_value, previous_secondary, secondary_period
+        slow_value, slow_previous, slow_period = primary_value, previous_primary, primary_period
+
+    previous_ready = np.isfinite(fast_previous) and np.isfinite(slow_previous)
+    crossed_up = previous_ready and fast_value > slow_value and fast_previous <= slow_previous
+    crossed_down = previous_ready and fast_value < slow_value and fast_previous >= slow_previous
+    if fast_value > slow_value:
+        return {
+            "signal": "BULLISH",
+            "reason": (
+                f"Bullish {average_type} crossover: {fast_period} crossed above {slow_period}"
+                if crossed_up
+                else f"Bullish {average_type} alignment: {fast_period} above {slow_period}"
+            ),
+            "weight": 1,
+            "line_mode": 2,
+        }
+    if fast_value < slow_value:
+        return {
+            "signal": "BEARISH",
+            "reason": (
+                f"Bearish {average_type} crossover: {fast_period} crossed below {slow_period}"
+                if crossed_down
+                else f"Bearish {average_type} alignment: {fast_period} below {slow_period}"
+            ),
+            "weight": 1,
+            "line_mode": 2,
+        }
+    return {
+        "signal": "NEUTRAL",
+        "reason": f"{average_type} {fast_period} and {slow_period} are equal",
+        "weight": 1,
+        "line_mode": 2,
+    }
+
+
 def _generate_signals(latest, prev, settings=None, recent_bars=None, chart_latest=None):
     """
     Read indicator values from a single bar and return signal verdicts.
@@ -2778,7 +3571,7 @@ def _generate_signals(latest, prev, settings=None, recent_bars=None, chart_lates
         if enabled is not None and not enabled:
             return {}
 
-        if enabled and enabled.issubset({"RSI", "Bollinger", "VWAP"}):
+        if enabled and enabled.issubset({"RSI", "Bollinger", "VWAP", "Auto-AVWAP"}):
             rsi_val = float(latest["RSI"])
             prev_rsi = float(prev.get("RSI", rsi_val))
             price = float(latest["Close"])
@@ -2786,27 +3579,23 @@ def _generate_signals(latest, prev, settings=None, recent_bars=None, chart_lates
             boll_hi = float(latest["BOLL_Upper"])
             vwap = float(latest["VWAP"])
             prev_vwap = float(prev.get("VWAP", vwap))
+            auto_avwap = float(latest.get("Auto_AVWAP", vwap))
+            prev_auto_avwap = float(prev.get("Auto_AVWAP", auto_avwap))
             bull_candle = bool(latest.get("cdl_bullish", False))
             prev_close = float(prev.get("Close", price))
-            is_near_vwap = abs(price - vwap) / vwap < 0.015 if vwap else False
             rsi_os = float(_param("RSI_OVERSOLD", 30))
             rsi_ob = float(_param("RSI_OVERBOUGHT", 70))
+            rsi_period = _indicator_period(_param("RSI_PERIOD", 14), 14, minimum=2, maximum=500)
 
             signals = {}
             if "RSI" in enabled:
-                signals["RSI"] = {
-                    "signal": (
-                        "BULLISH" if rsi_val < rsi_os and rsi_val > prev_rsi
-                        else "BEARISH" if rsi_val > rsi_ob and rsi_val < prev_rsi
-                        else "NEUTRAL"
-                    ),
-                    "reason": (
-                        f"Oversold and rising {rsi_val:.1f}" if rsi_val < rsi_os and rsi_val > prev_rsi
-                        else f"Overbought and falling {rsi_val:.1f}" if rsi_val > rsi_ob and rsi_val < prev_rsi
-                        else f"Neutral {rsi_val:.1f}"
-                    ),
-                    "weight": 1,
-                }
+                signals["RSI"] = _generate_rsi_signal(
+                    rsi_val,
+                    prev_rsi,
+                    oversold=rsi_os,
+                    overbought=rsi_ob,
+                    period=rsi_period,
+                )
             if "Bollinger" in enabled:
                 boll_width = boll_hi - boll_lo
                 signals["Bollinger"] = {
@@ -2823,20 +3612,13 @@ def _generate_signals(latest, prev, settings=None, recent_bars=None, chart_lates
                     "weight": 1,
                 }
             if "VWAP" in enabled:
-                signals["VWAP"] = {
-                    "signal": (
-                        "BULLISH" if (price >= vwap and prev_close < prev_vwap) or (price >= vwap and is_near_vwap and bull_candle)
-                        else "BEARISH" if price < vwap
-                        else "NEUTRAL"
-                    ),
-                    "reason": (
-                        f"AVWAP Breakout ({vwap:.1f})" if (price >= vwap and prev_close < prev_vwap)
-                        else f"Bounce off AVWAP ({vwap:.1f})" if (price >= vwap and is_near_vwap and bull_candle)
-                        else f"Below AVWAP ({vwap:.1f})" if price < vwap
-                        else f"Holding above AVWAP ({vwap:.1f})"
-                    ),
-                    "weight": 1,
-                }
+                signals["VWAP"] = _generate_vwap_signal(
+                    price, prev_close, vwap, prev_vwap, bull_candle, "Session VWAP"
+                )
+            if "Auto-AVWAP" in enabled:
+                signals["Auto-AVWAP"] = _generate_vwap_signal(
+                    price, prev_close, auto_avwap, prev_auto_avwap, bull_candle, "Auto-AVWAP"
+                )
             return signals
 
         rsi_val = float(latest["RSI"])
@@ -2844,6 +3626,11 @@ def _generate_signals(latest, prev, settings=None, recent_bars=None, chart_lates
         macd_h = float(latest["MACD_Hist"])
         ema_f = float(latest["EMA_Fast"])
         ema_s = float(latest["EMA_Slow"])
+        prev_ema_f = float(prev.get("EMA_Fast", ema_f))
+        prev_ema_s = float(prev.get("EMA_Slow", ema_s))
+        ema_primary_period = _indicator_period(_param("EMA_FAST", 9), 9, maximum=500)
+        ema_secondary_period = _indicator_period(_param("EMA_SLOW", 21), 21, maximum=500)
+        ema_use_second_line = _setting_enabled(_param("EMA_USE_SECOND_LINE", None), True)
         st_bull = bool(latest["Supertrend_Trend"])
         price = float(latest["Close"])
         boll_lo = float(latest["BOLL_Lower"])
@@ -2854,11 +3641,30 @@ def _generate_signals(latest, prev, settings=None, recent_bars=None, chart_lates
         # Smart AVWAP Dynamics
         vwap = float(latest["VWAP"])
         prev_vwap = float(prev.get("VWAP", vwap))
-        is_near_vwap = abs(price - vwap) / vwap < 0.015  # Price is within 1.5% of the Anchor Line
         bull_candle = bool(latest.get("cdl_bullish", False))
         prev_close = float(prev.get("Close", price))
+        auto_avwap = float(latest.get("Auto_AVWAP", vwap))
+        prev_auto_avwap = float(prev.get("Auto_AVWAP", auto_avwap))
 
-        sma_val = float(latest.get("SMA", price))
+        try:
+            sma_val = float(latest.get("SMA", np.nan))
+        except (TypeError, ValueError):
+            sma_val = np.nan
+        try:
+            prev_sma_val = float(prev.get("SMA", sma_val))
+        except (TypeError, ValueError):
+            prev_sma_val = np.nan
+        try:
+            sma_secondary_val = float(latest.get("SMA_Secondary", np.nan))
+        except (TypeError, ValueError):
+            sma_secondary_val = np.nan
+        try:
+            prev_sma_secondary_val = float(prev.get("SMA_Secondary", sma_secondary_val))
+        except (TypeError, ValueError):
+            prev_sma_secondary_val = np.nan
+        sma_period = _indicator_period(_param("SMA_PERIOD", 200), 200, maximum=500)
+        sma_secondary_period = _indicator_period(_param("SMA_SECOND_PERIOD", 50), 50, maximum=500)
+        sma_use_second_line = _setting_enabled(_param("SMA_USE_SECOND_LINE", None), True)
         dhl_high = float(latest.get("Daily_HighLow_High", np.nan))
         dhl_low = float(latest.get("Daily_HighLow_Low", np.nan))
         dhl_buffer_pct = max(0.0, float(_param("DAILY_HIGH_LOW_BUFFER_PCT", 0.0)))
@@ -3001,29 +3807,57 @@ def _generate_signals(latest, prev, settings=None, recent_bars=None, chart_lates
         di_plus = float(latest.get("DI_Plus", 0))
         di_minus = float(latest.get("DI_Minus", 0))
 
-        # Check if trend strength exists (> 25)
         prev_adx = float(prev.get("ADX", adx_val))
-        is_trending = (
-            adx_val > float(_param("ADX_TRENDING_THRESHOLD", 25))
-            and adx_val > prev_adx
-        )
+        try:
+            adx_threshold = min(100.0, max(0.0, float(_param("ADX_TRENDING_THRESHOLD", 25))))
+        except (TypeError, ValueError):
+            adx_threshold = 25.0
+        adx_ready = all(np.isfinite(value) for value in (adx_val, di_plus, di_minus))
+        is_trending = adx_ready and adx_val >= adx_threshold
 
         # ADX Trend signal generator
-        if is_trending:
+        if not adx_ready:
+            adx_signal = "NEUTRAL"
+            adx_reason = "ADX warming up; awaiting enough completed candles"
+        elif is_trending:
+            strength_change = adx_val - prev_adx if np.isfinite(prev_adx) else 0.0
+            strength_state = "strengthening" if strength_change > 0 else "weakening" if strength_change < 0 else "steady"
             if di_plus > di_minus:
                 adx_signal = "BULLISH"
-                adx_reason = f"DI+ ({di_plus:.1f}) > DI- ({di_minus:.1f}) | Trend Strong ({adx_val:.1f})"
+                adx_reason = f"Strong bullish trend: ADX {adx_val:.1f} ({strength_state}), +DI {di_plus:.1f} > -DI {di_minus:.1f}"
             elif di_minus > di_plus:
                 adx_signal = "BEARISH"
-                adx_reason = f"DI- ({di_minus:.1f}) > DI+ ({di_plus:.1f}) | Trend Strong ({adx_val:.1f})"
+                adx_reason = f"Strong bearish trend: ADX {adx_val:.1f} ({strength_state}), -DI {di_minus:.1f} > +DI {di_plus:.1f}"
             else:
                 adx_signal = "NEUTRAL"
-                adx_reason = f"DI Neutral | Trend Strong ({adx_val:.1f})"
+                adx_reason = f"Strong trend but no DI direction: ADX {adx_val:.1f}"
         else:
             adx_signal = "NEUTRAL"
-            adx_reason = (
-                f"Trend not confirmed (ADX {adx_val:.1f}, change {adx_val - prev_adx:+.1f})"
-            )
+            directional_hint = "+DI above -DI" if di_plus > di_minus else "-DI above +DI" if di_minus > di_plus else "DI lines equal"
+            adx_reason = f"Weak/ranging: ADX {adx_val:.1f} below {adx_threshold:.1f} ({directional_hint})"
+
+        ema_vote = _generate_moving_average_signal(
+            average_type="EMA",
+            price=price,
+            primary_value=ema_f,
+            previous_primary=prev_ema_f,
+            primary_period=ema_primary_period,
+            use_second_line=ema_use_second_line,
+            secondary_value=ema_s,
+            previous_secondary=prev_ema_s,
+            secondary_period=ema_secondary_period,
+        )
+        sma_vote = _generate_moving_average_signal(
+            average_type="SMA",
+            price=price,
+            primary_value=sma_val,
+            previous_primary=prev_sma_val,
+            primary_period=sma_period,
+            use_second_line=sma_use_second_line,
+            secondary_value=sma_secondary_val,
+            previous_secondary=prev_sma_secondary_val,
+            secondary_period=sma_secondary_period,
+        )
 
         # Check Candle Patterns on the latest/new candle (analyzed using previous 5 bars during formula calculation)
         cdl_bar = chart_latest if chart_latest is not None else latest
@@ -3039,6 +3873,12 @@ def _generate_signals(latest, prev, settings=None, recent_bars=None, chart_lates
 
         rsi_os = float(_param("RSI_OVERSOLD", 30))
         rsi_ob = float(_param("RSI_OVERBOUGHT", 70))
+        rsi_period = _indicator_period(_param("RSI_PERIOD", 14), 14, minimum=2, maximum=500)
+        macd_fast_period, macd_slow_period, macd_signal_period = _macd_periods(
+            fast=_param("MACD_FAST", 12),
+            slow=_param("MACD_SLOW", 26),
+            signal=_param("MACD_SIGNAL", 9),
+        )
         bb5_direction = int(latest.get("BB5_Signal", 0) or 0)
         bb5_state = str(latest.get("BB5_State", "NONE") or "NONE")
         bb5_pattern = str(
@@ -3065,42 +3905,21 @@ def _generate_signals(latest, prev, settings=None, recent_bars=None, chart_lates
         else:
             bb5_reason = "No qualified pattern on the latest completed candle"
         signals = {
-            "RSI": {
-                "signal": (
-                    "BULLISH" if rsi_val < rsi_os and rsi_val > prev_rsi
-                    else "BEARISH" if rsi_val > rsi_ob and rsi_val < prev_rsi
-                    else "NEUTRAL"
-                ),
-                "reason": (
-                    f"Oversold and rising {rsi_val:.1f}" if rsi_val < rsi_os and rsi_val > prev_rsi
-                    else f"Overbought and falling {rsi_val:.1f}" if rsi_val > rsi_ob and rsi_val < prev_rsi
-                    else f"Neutral {rsi_val:.1f}"
-                ),
-                "weight": 1,
-            },
-            "MACD": {
-                "signal": (
-                    "BULLISH" if macd_h > 0 
-                    else "BEARISH" if macd_h < 0
-                    else "NEUTRAL"
-                ),
-                "reason": (
-                    f"Bullish Cross" if (macd_h > 0 and float(prev.get("MACD_Hist", 0)) <= 0)
-                    else f"Bearish Cross" if (macd_h < 0 and float(prev.get("MACD_Hist", 0)) >= 0)
-                    else f"Rising {macd_h:.2f}" if macd_h > 0
-                    else f"Falling {macd_h:.2f}"
-                ),
-                "weight": 1,
-            },
-            "EMA Cross": {
-                "signal": ("BULLISH" if ema_f > ema_s else "BEARISH") if is_trending else "NEUTRAL",
-                "reason": (
-                    f"{ema_f:.1f} vs {ema_s:.1f} (ADX: {adx_val:.1f}, rising)"
-                    if is_trending
-                    else f"No strengthening trend confirmation (ADX {adx_val:.1f}, change {adx_val - prev_adx:+.1f})"
-                ),
-                "weight": 1,
-            },
+            "RSI": _generate_rsi_signal(
+                rsi_val,
+                prev_rsi,
+                oversold=rsi_os,
+                overbought=rsi_ob,
+                period=rsi_period,
+            ),
+            "MACD": _generate_macd_signal(
+                macd_h,
+                float(prev.get("MACD_Hist", np.nan)),
+                fast_period=macd_fast_period,
+                slow_period=macd_slow_period,
+                signal_period=macd_signal_period,
+            ),
+            "EMA Cross": ema_vote,
             "ADX Trend": {
                 "signal": adx_signal,
                 "reason": adx_reason,
@@ -3124,27 +3943,13 @@ def _generate_signals(latest, prev, settings=None, recent_bars=None, chart_lates
                 ),
                 "weight": 1,
             },
-            "VWAP": {
-                "signal": (
-                    # BUY: Price breaks above AVWAP or holds support with a bullish candle
-                    "BULLISH" if (price >= vwap and prev_close < prev_vwap) or (price >= vwap and is_near_vwap and bull_candle)
-                    # SELL: Price collapses below AVWAP (distribution)
-                    else "BEARISH" if price < vwap
-                    else "NEUTRAL"
-                ),
-                "reason": (
-                    f"AVWAP Breakout ({vwap:.1f})" if (price >= vwap and prev_close < prev_vwap)
-                    else f"Bounce off AVWAP ({vwap:.1f})" if (price >= vwap and is_near_vwap and bull_candle)
-                    else f"Below AVWAP ({vwap:.1f})" if price < vwap
-                    else f"Holding above AVWAP ({vwap:.1f})"
-                ),
-                "weight": 1
-            },
-            "SMA": {
-                "signal": "BULLISH" if price >= sma_val else "BEARISH",
-                "reason": f"Above SMA ({sma_val:.1f})" if price >= sma_val else f"Below SMA ({sma_val:.1f})",
-                "weight": 1,
-            },
+            "VWAP": _generate_vwap_signal(
+                price, prev_close, vwap, prev_vwap, bull_candle, "Session VWAP"
+            ),
+            "Auto-AVWAP": _generate_vwap_signal(
+                price, prev_close, auto_avwap, prev_auto_avwap, bull_candle, "Auto-AVWAP"
+            ),
+            "SMA": sma_vote,
             "Prior Day High/Low": {
                 "signal": dhl_signal,
                 "reason": dhl_reason,

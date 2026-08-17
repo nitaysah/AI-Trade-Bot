@@ -23,8 +23,12 @@ from indicator_catalog import (
     STANDARD_INDICATOR_NAMES,
 )
 from indicators import (
+    _generate_macd_signal,
+    _generate_moving_average_signal,
+    _generate_rsi_signal,
     _generate_signals,
     _generate_standard_extension_signals,
+    _wilder_rsi,
     calculate_indicators_for_df,
 )
 from options_backtester import _chart_indicator_fields as options_backtest_fields
@@ -185,6 +189,159 @@ def signal_rule_probes() -> list[str]:
     return failures
 
 
+def ema_adx_rule_probes(dataframe: pd.DataFrame) -> list[str]:
+    """Keep EMA direction independent from the separate ADX strength vote."""
+    failures: list[str] = []
+    latest = dataframe.iloc[-1].copy()
+    previous = dataframe.iloc[-2].copy()
+    latest["EMA_Fast"], latest["EMA_Slow"] = 105.0, 100.0
+    previous["EMA_Fast"], previous["EMA_Slow"] = 99.0, 100.0
+    latest["DI_Plus"], latest["DI_Minus"] = 28.0, 18.0
+    latest["ADX"], previous["ADX"] = 20.0, 22.0
+    signals = _generate_signals(
+        latest,
+        previous,
+        settings={"enabled_indicators": ["EMA Cross", "ADX Trend"]},
+    )
+    if signals.get("EMA Cross", {}).get("signal") != "BULLISH":
+        failures.append("EMA bullish crossover must not be suppressed by weak ADX")
+    if signals.get("ADX Trend", {}).get("signal") != "NEUTRAL":
+        failures.append("ADX below threshold must remain neutral")
+
+    latest["ADX"], previous["ADX"] = 30.0, 35.0
+    signals = _generate_signals(
+        latest,
+        previous,
+        settings={"enabled_indicators": ["EMA Cross", "ADX Trend"]},
+    )
+    if signals.get("ADX Trend", {}).get("signal") != "BULLISH":
+        failures.append("Strong declining ADX must retain +DI/-DI direction")
+    return failures
+
+
+def moving_average_mode_probes() -> list[str]:
+    """Verify one-line price mode and two-line crossover mode each emit one vote."""
+    failures: list[str] = []
+    ema_one_line = _generate_moving_average_signal(
+        average_type="EMA",
+        price=99.0,
+        primary_value=100.0,
+        previous_primary=98.0,
+        primary_period=9,
+        use_second_line=False,
+    )
+    if ema_one_line.get("signal") != "BEARISH" or ema_one_line.get("line_mode") != 1:
+        failures.append("EMA one-line mode must use price versus primary EMA")
+
+    sma_cross = _generate_moving_average_signal(
+        average_type="SMA",
+        price=100.0,
+        primary_value=100.0,
+        previous_primary=100.0,
+        primary_period=200,
+        use_second_line=True,
+        secondary_value=105.0,
+        previous_secondary=99.0,
+        secondary_period=50,
+    )
+    if sma_cross.get("signal") != "BULLISH" or "crossover" not in sma_cross.get("reason", "").lower():
+        failures.append("SMA two-line mode must detect the lower-period bullish crossover")
+    if sma_cross.get("weight") != 1 or sma_cross.get("line_mode") != 2:
+        failures.append("SMA two-line mode must contribute exactly one vote")
+
+    equal_periods = _generate_moving_average_signal(
+        average_type="EMA",
+        price=100.0,
+        primary_value=100.0,
+        previous_primary=99.0,
+        primary_period=20,
+        use_second_line=True,
+        secondary_value=101.0,
+        previous_secondary=100.0,
+        secondary_period=20,
+    )
+    if equal_periods.get("signal") != "NEUTRAL":
+        failures.append("Equal two-line moving-average periods must remain neutral")
+    return failures
+
+
+def rsi_macd_rule_probes(dataframe: pd.DataFrame) -> list[str]:
+    """Verify textbook RSI, causal warm-up, MACD normalization, and vote text."""
+    failures: list[str] = []
+
+    sample = pd.Series([10.0, 11.0, 13.0, 12.0, 14.0])
+    sample_rsi = _wilder_rsi(sample, 3)
+    if not sample_rsi.iloc[:3].isna().all():
+        failures.append("RSI textbook seed must not backfill its warm-up rows")
+    if not math.isclose(float(sample_rsi.iloc[3]), 75.0, rel_tol=1e-9):
+        failures.append("RSI textbook Wilder seed is incorrect")
+    if not math.isclose(float(sample_rsi.iloc[4]), 85.71428571428571, rel_tol=1e-9):
+        failures.append("RSI recursive Wilder smoothing is incorrect")
+
+    flat_rsi = _wilder_rsi(pd.Series([10.0] * 8), 3)
+    if not (flat_rsi.dropna() == 50.0).all():
+        failures.append("Flat-price RSI must remain neutral at 50")
+
+    warm_rsi_vote = _generate_rsi_signal(np.nan, np.nan, period=14)
+    if warm_rsi_vote.get("signal") != "NEUTRAL" or "warming up" not in warm_rsi_vote.get("reason", "").lower():
+        failures.append("RSI warm-up must return an explicit neutral vote")
+    reversed_threshold_vote = _generate_rsi_signal(25.0, 20.0, oversold=70, overbought=30)
+    if reversed_threshold_vote.get("signal") != "BULLISH":
+        failures.append("RSI reversed thresholds must be normalized lower-to-higher")
+
+    positive_macd = _generate_macd_signal(0.25, 0.30)
+    if positive_macd.get("signal") != "BULLISH" or "positive" not in positive_macd.get("reason", "").lower():
+        failures.append("MACD positive histogram state text is inaccurate")
+    negative_macd = _generate_macd_signal(-0.25, -0.30)
+    if negative_macd.get("signal") != "BEARISH" or "negative" not in negative_macd.get("reason", "").lower():
+        failures.append("MACD negative histogram state text is inaccurate")
+    warm_macd_vote = _generate_macd_signal(np.nan, np.nan)
+    if warm_macd_vote.get("signal") != "NEUTRAL" or "warming up" not in warm_macd_vote.get("reason", "").lower():
+        failures.append("MACD warm-up must return an explicit neutral vote")
+    equal_macd_vote = _generate_macd_signal(0.0, 0.0, fast_period=12, slow_period=12)
+    if equal_macd_vote.get("signal") != "NEUTRAL" or "different" not in equal_macd_vote.get("reason", "").lower():
+        failures.append("Equal MACD EMA periods must remain neutral")
+
+    if not dataframe["RSI"].iloc[:14].isna().all() or not pd.notna(dataframe["RSI"].iloc[14]):
+        failures.append("RSI warm-up must require 14 completed price changes")
+    if not dataframe["MACD_Line"].iloc[:25].isna().all() or not pd.notna(dataframe["MACD_Line"].iloc[25]):
+        failures.append("MACD line warm-up must remain causal")
+    if not dataframe["MACD_Hist"].iloc[:33].isna().all() or not pd.notna(dataframe["MACD_Hist"].iloc[33]):
+        failures.append("MACD histogram warm-up must remain causal")
+
+    history = synthetic_history(120)
+    normal = calculate_indicators_for_df(
+        history.copy(),
+        timeframe="15Min",
+        ticker="AUDIT",
+        settings={
+            "enabled_indicators": ["MACD"],
+            "MACD_FAST": 12,
+            "MACD_SLOW": 26,
+            "MACD_SIGNAL": 9,
+        },
+    )
+    reversed_periods = calculate_indicators_for_df(
+        history.copy(),
+        timeframe="15Min",
+        ticker="AUDIT",
+        settings={
+            "enabled_indicators": ["MACD"],
+            "MACD_FAST": 26,
+            "MACD_SLOW": 12,
+            "MACD_SIGNAL": 9,
+        },
+    )
+    if not normal or not reversed_periods:
+        failures.append("MACD reversed-period calculation did not complete")
+    else:
+        normal_hist = normal["df"]["MACD_Hist"]
+        reversed_hist = reversed_periods["df"]["MACD_Hist"]
+        if not np.allclose(normal_hist, reversed_hist, equal_nan=True):
+            failures.append("MACD must treat the lower EMA period as fast")
+    return failures
+
+
 def main() -> int:
     names = list(STANDARD_INDICATOR_NAMES)
     failures: list[str] = []
@@ -269,6 +426,9 @@ def main() -> int:
         ("Ultimate_Osc", 0, 100),
         ("Aroon_Up", 0, 100),
         ("Aroon_Down", 0, 100),
+        ("ADX", 0, 100),
+        ("DI_Plus", 0, 100),
+        ("DI_Minus", 0, 100),
     ):
         values = dataframe[column].dropna()
         if values.empty or not values.between(lower, upper).all():
@@ -286,6 +446,17 @@ def main() -> int:
             failures.append(f"{upper}/{lower}: channel ordering failed")
 
     failures.extend(signal_rule_probes())
+    failures.extend(ema_adx_rule_probes(dataframe))
+    failures.extend(moving_average_mode_probes())
+    failures.extend(rsi_macd_rule_probes(dataframe))
+    if not dataframe["EMA_Slow"].iloc[:20].isna().all():
+        failures.append("EMA slow warm-up values were back-filled into earlier candles")
+    if not dataframe["SMA"].iloc[:199].isna().all():
+        failures.append("Primary SMA warm-up values were back-filled into earlier candles")
+    if not dataframe["SMA_Secondary"].iloc[:49].isna().all():
+        failures.append("Secondary SMA warm-up values were back-filled into earlier candles")
+    if not dataframe["ADX"].iloc[:26].isna().all():
+        failures.append("ADX warm-up values were back-filled into earlier candles")
     if failures:
         print("\nAUDIT FAILED")
         for failure in failures:

@@ -122,6 +122,71 @@ function isCryptoTicker(ticker) {
     return clean.includes('USD') || ['BTC', 'ETH', 'LTC', 'SOL', 'DOGE', 'ADA', 'DOT', 'SHIB', 'AVAX', 'XRP'].some(c => clean.startsWith(c));
 }
 
+function isExtendedChartSession(ticker = selectedTicker) {
+    return !isCryptoTicker(ticker)
+        && currentChartSession === 'extended'
+        && currentBackendTf !== '1Day';
+}
+
+function isDashboardMobileViewport() {
+    return typeof window !== 'undefined'
+        && (window.matchMedia?.('(max-width: 768px)').matches || window.innerWidth <= 768);
+}
+
+function getDashboardChartFontSize() {
+    return isDashboardMobileViewport() ? 9 : 12;
+}
+
+function getDashboardSubchartResponsiveOptions() {
+    return {
+        layout: { fontSize: getDashboardChartFontSize() },
+        rightPriceScale: { minimumWidth: isDashboardMobileViewport() ? 48 : 75 },
+    };
+}
+
+function getDashboardChartBackground(ticker = selectedTicker) {
+    // Extended mode uses the RTH white base; the extHoursSeries shades only
+    // pre-market and after-hours bars so regular trading hours stay identical
+    // to the dedicated RTH view.
+    return DASHBOARD_CHART_BG_REGULAR;
+}
+
+function applyDashboardChartBackground(ticker = selectedTicker) {
+    const isExtended = isExtendedChartSession(ticker);
+    const backgroundColor = getDashboardChartBackground(ticker);
+    const chartContainer = document.getElementById('tradingChart');
+    const chartStage = chartContainer?.closest('.chart-stage');
+    const applyDomBackground = () => {
+        [chartStage, chartContainer].forEach(el => {
+            if (!el) return;
+            el.style.setProperty('--dashboard-chart-bg', backgroundColor);
+            el.classList.toggle('chart-extended-session-bg', isExtended);
+        });
+        if (chartContainer) {
+            chartContainer
+                .querySelectorAll('table, tr, td')
+                .forEach(el => {
+                    el.style.setProperty('background', backgroundColor, 'important');
+                    el.style.setProperty('background-color', backgroundColor, 'important');
+                });
+        }
+    };
+    applyDomBackground();
+    requestAnimationFrame(applyDomBackground);
+    if (lwChart) {
+        lwChart.applyOptions({
+            layout: {
+                background: { color: backgroundColor },
+                textColor: '#334155',
+                fontSize: getDashboardChartFontSize(),
+            },
+            rightPriceScale: {
+                minimumWidth: isDashboardMobileViewport() ? 48 : 64,
+            },
+        });
+    }
+}
+
 function formatChartTime(time, compact = true) {
     const ts = typeof time === 'object' && time?.timestamp ? time.timestamp : time;
     const d = new Date(ts * 1000);
@@ -171,8 +236,7 @@ function formatTimeOnlyCT(time) {
 }
 
 function getChartDisplayOffsetSeconds(timeframe = currentBackendTf) {
-    const seconds = CHART_INTERVALS[timeframe]?.seconds || 300;
-    return seconds > 0 && seconds < 86400 ? seconds : 0;
+    return 0;
 }
 
 function toCloseTimeDisplayBar(bar, timeframe = currentBackendTf) {
@@ -254,6 +318,7 @@ function getDisplayBars(rawBars, ticker = selectedTicker) {
 }
 
 function updateChartControlState(ticker = selectedTicker) {
+    applyDashboardChartBackground(ticker);
     if (lwChart) {
         const showSeconds = (CHART_INTERVALS[currentBackendTf]?.seconds || 300) < 60;
         lwChart.applyOptions({ timeScale: { secondsVisible: showSeconds, timeVisible: true } });
@@ -312,8 +377,22 @@ function updateVisibleHighLow() {
         window._hlLines.forEach(l => { try { candleSeries.removePriceLine(l); } catch (e) { } });
     }
     window._hlLines = [
-        candleSeries.createPriceLine({ price: highBar.high, color: 'rgba(16,185,129,0.75)', lineWidth: 1, lineStyle: 1, axisLabelVisible: true, title: `${formatPrice(highBar.high)}` }),
-        candleSeries.createPriceLine({ price: lowBar.low, color: 'rgba(239,68,68,0.75)', lineWidth: 1, lineStyle: 1, axisLabelVisible: true, title: `${formatPrice(lowBar.low)}` }),
+        candleSeries.createPriceLine({
+            price: highBar.high,
+            color: 'rgba(16,185,129,0.75)',
+            lineWidth: 1,
+            lineStyle: 1,
+            axisLabelVisible: true,
+            title: '',
+        }),
+        candleSeries.createPriceLine({
+            price: lowBar.low,
+            color: 'rgba(239,68,68,0.75)',
+            lineWidth: 1,
+            lineStyle: 1,
+            axisLabelVisible: true,
+            title: '',
+        }),
     ];
 }
 
@@ -374,7 +453,7 @@ let authTokenRequestUserId = null;
 let genericDashboardCardsRequestPromise = null;
 const chartDataCache = new Map();
 let chartRequestSerial = 0;
-const CHART_CACHE_VERSION = 'v10';
+const CHART_CACHE_VERSION = 'v12';
 const CHART_CACHE_TTL_MS = 30 * 60 * 1000;
 const CHART_IDB_NAME = 'aiTradeBotChartCache';
 const CHART_IDB_VERSION = 1;
@@ -387,6 +466,8 @@ const DASHBOARD_FETCH_TIMEOUT_MS = 20000;
 const CHART_FETCH_TIMEOUT_MS = 30000;
 const QUOTE_FETCH_TIMEOUT_MS = 4500;
 const DASHBOARD_VISIBILITY_REFRESH_MIN_AGE_MS = 15000;
+const DASHBOARD_CHART_BG_REGULAR = '#ffffff';
+const DASHBOARD_CHART_EXTENDED_FILL = 'rgba(100, 116, 139, 0.12)';
 let completedCandleHeartbeatId = null;
 let lastCompletedChartFetchAt = 0;
 let lastCompletedChartBarTime = 0;
@@ -560,11 +641,17 @@ const _overlaySeries = {};
 const _oscSeries = {};
 const _overlayPriceLines = {};
 const _overlayLabelMeta = {};
+const _segmentedOverlaySeries = {};
+const _horizontalOverlayPriceLines = {};
+const _horizontalOverlayLabelMeta = {};
+let dashboardVolumeProfileOverlay = null;
+let dashboardVolumeProfilePayload = null;
 
 // Which indicators are currently visible (toggled by toolbar)
 const _defaultVisibleIndicators = {
     ema: false,
     vwap: false,
+    auto_avwap: false,
     supertrend: false,
     bollinger: false,
     rsi: false,
@@ -608,6 +695,7 @@ const IND_COLORS = {
     ema_fast: '#3b82f6',
     ema_slow: '#ef4444',
     vwap: '#000000',
+    auto_avwap: '#7c3aed',
     boll_upper: '#f97316', // Orange
     boll_middle: '#3b82f6', // Blue
     boll_lower: '#a855f7', // Purple
@@ -615,6 +703,7 @@ const IND_COLORS = {
     macd_line: '#06b6d4',
     macd_signal: '#f97316', // Orange
     sma: '#8b5cf6', // Violet
+    sma_secondary: '#64748b',
     adx: '#6366f1', // Indigo
     di_plus: '#10b981', // Green
     di_minus: '#ef4444', // Red
@@ -645,7 +734,12 @@ const IND_COLORS = {
 function initChart() {
     const container = document.getElementById('tradingChart');
     if (!container) return;
+    if (dashboardVolumeProfileOverlay) {
+        try { dashboardVolumeProfileOverlay.destroy(); } catch (_) {}
+        dashboardVolumeProfileOverlay = null;
+    }
     container.innerHTML = '';
+    container.style.setProperty('--dashboard-chart-bg', getDashboardChartBackground(selectedTicker));
 
 
     lwChart = LightweightCharts.createChart(container, {
@@ -660,7 +754,11 @@ function initChart() {
             mouseWheel: true,
             pinch: true,
         },
-        layout: { background: { color: '#ffffff' }, textColor: '#334155' },
+        layout: {
+            background: { color: getDashboardChartBackground(selectedTicker) },
+            textColor: '#334155',
+            fontSize: getDashboardChartFontSize(),
+        },
         grid: {
             vertLines: { color: 'rgba(168, 85, 247, 0.05)' },
             horzLines: { color: 'rgba(168, 85, 247, 0.05)' },
@@ -668,7 +766,7 @@ function initChart() {
         crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
         rightPriceScale: {
             borderColor: 'rgba(197, 203, 206, 0.8)',
-            minimumWidth: 64,
+            minimumWidth: isDashboardMobileViewport() ? 48 : 64,
             scaleMargins: { top: 0.08, bottom: 0.08 },
         },
         localization: {
@@ -695,7 +793,7 @@ function initChart() {
     });
 
     extHoursSeries = lwChart.addHistogramSeries({
-        color: 'rgba(100, 116, 139, 0.12)', // Slight grey background
+        color: DASHBOARD_CHART_EXTENDED_FILL,
         priceFormat: { type: 'custom', formatter: () => '' },
         priceScaleId: 'ext-hours-bg',
         scaleMargins: { top: 0, bottom: 0 },
@@ -707,13 +805,40 @@ function initChart() {
         visible: false,
         scaleMargins: { top: 0, bottom: 0 },
     });
+    applyDashboardChartBackground(selectedTicker);
 
     candleSeries = lwChart.addCandlestickSeries({
         upColor: '#10b981', downColor: '#ef4444',
-        borderVisible: false,
+        borderVisible: true,
+        borderUpColor: '#10b981', borderDownColor: '#ef4444',
         wickUpColor: '#10b981', wickDownColor: '#ef4444',
         priceScaleId: 'right',
     });
+
+    dashboardVolumeProfileOverlay = window.VolumeProfileOverlay?.attach({
+        chart: lwChart,
+        priceSeries: candleSeries,
+        container,
+        profile: dashboardVolumeProfilePayload,
+        candles: window._displayPriceHistory || [],
+        enabled: Boolean(_visibleIndicators.volume_profile),
+        onProfileChange: (profile, enabled) => {
+            if (!enabled || !profile || !Number.isFinite(profile.startTime) || !Number.isFinite(profile.endTime)) return;
+            const visibleBars = (window._displayPriceHistory || []).filter(bar => (
+                Number(bar.time) >= profile.startTime && Number(bar.time) <= profile.endTime
+            ));
+            const lineData = value => clean(visibleBars.map(bar => ({ time: bar.time, value })));
+            _setLabeledLineData(_overlaySeries, 'volume_profile_poc', lwChart, lineData(profile.poc), {
+                color: IND_COLORS.volume_profile_poc, lineWidth: 3, lineStyle: 0,
+            }, 'POC');
+            _setLabeledLineData(_overlaySeries, 'volume_profile_vah', lwChart, lineData(profile.vah), {
+                color: IND_COLORS.volume_profile_vah, lineWidth: 2, lineStyle: 2,
+            }, 'VAH');
+            _setLabeledLineData(_overlaySeries, 'volume_profile_val', lwChart, lineData(profile.val), {
+                color: IND_COLORS.volume_profile_val, lineWidth: 2, lineStyle: 2,
+            }, 'VAL');
+        },
+    }) || null;
 
     volumeSeries = lwChart.addHistogramSeries({
         priceFormat: { type: 'volume' },
@@ -730,12 +855,15 @@ function initChart() {
         if (entries.length === 0 || !entries[0].contentRect) return;
         const { width, height } = entries[0].contentRect;
         lwChart.applyOptions({ width, height });
+        applyDashboardChartBackground(selectedTicker);
+        scheduleChartRangeUiRefresh();
         
         // Auto-fit content on significant width changes (e.g. going full screen)
         if (lastChartWidth > 0 && Math.abs(width - lastChartWidth) > 100) {
             if (window._displayPriceHistory && window._displayPriceHistory.length > 0) {
                 setTimeout(() => {
                     try { lwChart.timeScale().fitContent(); } catch(e){}
+                    applyDashboardChartBackground(selectedTicker);
                 }, 150);
             }
         }
@@ -745,6 +873,7 @@ function initChart() {
 
     _initOscPane();
     lwChart.timeScale().subscribeVisibleTimeRangeChange(() => {
+        applyDashboardChartBackground(selectedTicker);
         scheduleChartRangeUiRefresh();
     });
 }
@@ -755,9 +884,9 @@ function _initOscPane() {
     if (rsiContainer) {
         rsiContainer.innerHTML = '';
         oscChartRsi = LightweightCharts.createChart(rsiContainer, {
-            layout: { background: { color: '#fafbff' }, textColor: '#64748b' },
+            layout: { background: { color: '#fafbff' }, textColor: '#64748b', fontSize: getDashboardChartFontSize() },
             grid: { vertLines: { color: 'rgba(168,85,247,0.04)' }, horzLines: { color: 'rgba(168,85,247,0.04)' } },
-            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)', minimumWidth: 75 },
+            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)', minimumWidth: isDashboardMobileViewport() ? 48 : 75 },
             localization: {
                 timeFormatter: time => {
                     return `${formatChartTime(time, false)} CT`;
@@ -769,7 +898,8 @@ function _initOscPane() {
             if (!entries[0] || !oscChartRsi) return;
             oscChartRsi.applyOptions({ 
                 width: entries[0].contentRect.width,
-                height: entries[0].contentRect.height
+                height: entries[0].contentRect.height,
+                ...getDashboardSubchartResponsiveOptions(),
             });
         });
         resizeRsi.observe(rsiContainer);
@@ -780,9 +910,9 @@ function _initOscPane() {
     if (macdContainer) {
         macdContainer.innerHTML = '';
         oscChartMacd = LightweightCharts.createChart(macdContainer, {
-            layout: { background: { color: '#fafbff' }, textColor: '#64748b' },
+            layout: { background: { color: '#fafbff' }, textColor: '#64748b', fontSize: getDashboardChartFontSize() },
             grid: { vertLines: { color: 'rgba(168,85,247,0.04)' }, horzLines: { color: 'rgba(168,85,247,0.04)' } },
-            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)', minimumWidth: 75 },
+            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)', minimumWidth: isDashboardMobileViewport() ? 48 : 75 },
             localization: {
                 timeFormatter: time => {
                     return `${formatChartTime(time, false)} CT`;
@@ -794,7 +924,8 @@ function _initOscPane() {
             if (!entries[0] || !oscChartMacd) return;
             oscChartMacd.applyOptions({ 
                 width: entries[0].contentRect.width,
-                height: entries[0].contentRect.height
+                height: entries[0].contentRect.height,
+                ...getDashboardSubchartResponsiveOptions(),
             });
         });
         resizeMacd.observe(macdContainer);
@@ -805,9 +936,9 @@ function _initOscPane() {
     if (mysticContainer) {
         mysticContainer.innerHTML = '';
         oscChartMystic = LightweightCharts.createChart(mysticContainer, {
-            layout: { background: { color: '#fafbff' }, textColor: '#64748b' },
+            layout: { background: { color: '#fafbff' }, textColor: '#64748b', fontSize: getDashboardChartFontSize() },
             grid: { vertLines: { color: 'rgba(168,85,247,0.04)' }, horzLines: { color: 'rgba(168,85,247,0.04)' } },
-            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)', minimumWidth: 75 },
+            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)', minimumWidth: isDashboardMobileViewport() ? 48 : 75 },
             localization: {
                 timeFormatter: time => {
                     return `${formatChartTime(time, false)} CT`;
@@ -819,7 +950,8 @@ function _initOscPane() {
             if (!entries[0] || !oscChartMystic) return;
             oscChartMystic.applyOptions({ 
                 width: entries[0].contentRect.width,
-                height: entries[0].contentRect.height
+                height: entries[0].contentRect.height,
+                ...getDashboardSubchartResponsiveOptions(),
             });
         });
         resizeMystic.observe(mysticContainer);
@@ -830,9 +962,9 @@ function _initOscPane() {
     if (adxContainer) {
         adxContainer.innerHTML = '';
         oscChartAdx = LightweightCharts.createChart(adxContainer, {
-            layout: { background: { color: '#fafbff' }, textColor: '#64748b' },
+            layout: { background: { color: '#fafbff' }, textColor: '#64748b', fontSize: getDashboardChartFontSize() },
             grid: { vertLines: { color: 'rgba(168,85,247,0.04)' }, horzLines: { color: 'rgba(168,85,247,0.04)' } },
-            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)', minimumWidth: 75 },
+            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)', minimumWidth: isDashboardMobileViewport() ? 48 : 75 },
             localization: {
                 timeFormatter: time => {
                     return `${formatChartTime(time, false)} CT`;
@@ -844,7 +976,8 @@ function _initOscPane() {
             if (!entries[0] || !oscChartAdx) return;
             oscChartAdx.applyOptions({ 
                 width: entries[0].contentRect.width,
-                height: entries[0].contentRect.height
+                height: entries[0].contentRect.height,
+                ...getDashboardSubchartResponsiveOptions(),
             });
         });
         resizeAdx.observe(adxContainer);
@@ -855,9 +988,9 @@ function _initOscPane() {
     if (botbulls1Container) {
         botbulls1Container.innerHTML = '';
         oscChartBotbulls1 = LightweightCharts.createChart(botbulls1Container, {
-            layout: { background: { color: '#fafbff' }, textColor: '#64748b' },
+            layout: { background: { color: '#fafbff' }, textColor: '#64748b', fontSize: getDashboardChartFontSize() },
             grid: { vertLines: { color: 'rgba(168,85,247,0.04)' }, horzLines: { color: 'rgba(168,85,247,0.04)' } },
-            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)', minimumWidth: 75 },
+            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)', minimumWidth: isDashboardMobileViewport() ? 48 : 75 },
             localization: {
                 timeFormatter: time => {
                     return `${formatChartTime(time, false)} CT`;
@@ -869,7 +1002,8 @@ function _initOscPane() {
             if (!entries[0] || !oscChartBotbulls1) return;
             oscChartBotbulls1.applyOptions({ 
                 width: entries[0].contentRect.width,
-                height: entries[0].contentRect.height
+                height: entries[0].contentRect.height,
+                ...getDashboardSubchartResponsiveOptions(),
             });
         });
         resizeBotbulls1.observe(botbulls1Container);
@@ -881,8 +1015,10 @@ function _initOscPane() {
     });
 }
 
-function updateChart(priceHistory, ticker) {
+function updateChart(priceHistory, ticker, volumeProfile = undefined) {
     if (!lwChart || !candleSeries) initChart();
+
+    if (volumeProfile !== undefined) dashboardVolumeProfilePayload = volumeProfile;
 
     updateActiveTickerDisplay(ticker);
     if (!priceHistory || priceHistory.length === 0) return;
@@ -942,7 +1078,7 @@ function updateChart(priceHistory, ticker) {
                 return {
                     time: b.time,
                     value: isExt ? 100 : 0,
-                    color: isExt ? 'rgba(100, 116, 139, 0.12)' : 'rgba(0,0,0,0)'
+                    color: isExt ? DASHBOARD_CHART_EXTENDED_FILL : 'rgba(0,0,0,0)'
                 };
             });
             extHoursSeries.setData(extData);
@@ -950,8 +1086,23 @@ function updateChart(priceHistory, ticker) {
             extHoursSeries.setData([]);
         }
     }
+    applyDashboardChartBackground(ticker);
 
-    candleSeries.setData(sorted.map(b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })));
+    const chartCandles = sorted.map(b => ({
+        time: b.time,
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+        volume: b.volume,
+    }));
+        const displayedChartCandles = _visibleIndicators['Candle Patterns']
+        ? (window.StandardIndicatorSubcharts?.highlightCandlePatternContext?.(chartCandles, sorted, {
+            rolling24Hours: isCryptoTicker(ticker),
+            maxCandles: 20,
+        }) || chartCandles)
+        : chartCandles;
+    candleSeries.setData(displayedChartCandles);
     if (volumeSeries) {
         volumeSeries.setData(sorted.map(b => ({
             time: b.time,
@@ -991,6 +1142,11 @@ function updateChart(priceHistory, ticker) {
     _updateChartHeader(sorted);
     _refreshOverlays(sorted);
     _refreshOscillators(sorted);
+    dashboardVolumeProfileOverlay?.setCandles(chartCandles);
+    dashboardVolumeProfileOverlay?.setProfile(
+        dashboardVolumeProfilePayload,
+        Boolean(_visibleIndicators.volume_profile),
+    );
 
     // Always maintain a comfortable zoom level for horizontal sliding
     const isNewTicker = window._lastFittedTicker !== ticker;
@@ -1005,6 +1161,7 @@ function updateChart(priceHistory, ticker) {
     } else if (!shouldFollowRealtime && logicalRange !== null) {
         try { lwChart.timeScale().setVisibleLogicalRange(logicalRange); } catch(e) {}
     }
+    applyDashboardChartBackground(ticker);
 
     updateVisibleHighLow();
     const visibleRange = lwChart.timeScale().getVisibleLogicalRange();
@@ -1031,6 +1188,7 @@ function _removeSeries(map, key, chartInst) {
 
 function _rightVisiblePointForData(data, chartInst) {
     if (!Array.isArray(data) || data.length === 0) return null;
+    const isValuePoint = point => Number.isFinite(Number(point?.value));
     let from = NaN;
     let to = NaN;
     try {
@@ -1041,15 +1199,18 @@ function _rightVisiblePointForData(data, chartInst) {
     if (Number.isFinite(to)) {
         for (let i = data.length - 1; i >= 0; i -= 1) {
             const pointTime = Number(data[i]?.time);
-            if (pointTime <= to && (!Number.isFinite(from) || pointTime >= from)) {
+            if (isValuePoint(data[i]) && pointTime <= to && (!Number.isFinite(from) || pointTime >= from)) {
                 return data[i];
             }
         }
         for (let i = data.length - 1; i >= 0; i -= 1) {
-            if (Number(data[i]?.time) <= to) return data[i];
+            if (isValuePoint(data[i]) && Number(data[i]?.time) <= to) return data[i];
         }
     }
-    return data[data.length - 1];
+    for (let i = data.length - 1; i >= 0; i -= 1) {
+        if (isValuePoint(data[i])) return data[i];
+    }
+    return null;
 }
 
 function _refreshOverlayPriceLineLabel(key) {
@@ -1078,6 +1239,7 @@ function _refreshOverlayPriceLineLabel(key) {
 
 function _refreshOverlayPriceLineLabels() {
     Object.keys(_overlayLabelMeta).forEach(_refreshOverlayPriceLineLabel);
+    Object.keys(_horizontalOverlayLabelMeta).forEach(_refreshHorizontalOverlayPriceLineLabel);
 }
 
 function _setLabeledLineData(map, key, chartInst, data, options, labelTitle) {
@@ -1093,6 +1255,49 @@ function _setLabeledLineData(map, key, chartInst, data, options, labelTitle) {
     return series;
 }
 
+function _removeSegmentedLabeledLineData(key, chartInst) {
+    (_segmentedOverlaySeries[key] || []).forEach(segmentKey => {
+        _removeSeries(_overlaySeries, segmentKey, chartInst);
+    });
+    delete _segmentedOverlaySeries[key];
+    delete _horizontalOverlayLabelMeta[key];
+    if (_horizontalOverlayPriceLines[key] && candleSeries) {
+        try { candleSeries.removePriceLine(_horizontalOverlayPriceLines[key]); } catch (e) {}
+    }
+    delete _horizontalOverlayPriceLines[key];
+}
+
+function _refreshHorizontalOverlayPriceLineLabel(key) {
+    const meta = _horizontalOverlayLabelMeta[key];
+    if (!meta || !candleSeries) return;
+    if (_horizontalOverlayPriceLines[key]) {
+        try { candleSeries.removePriceLine(_horizontalOverlayPriceLines[key]); } catch (e) {}
+        delete _horizontalOverlayPriceLines[key];
+    }
+    const point = _rightVisiblePointForData(meta.data, lwChart);
+    const price = Number(point?.value);
+    if (!Number.isFinite(price) || !meta.labelTitle) return;
+    _horizontalOverlayPriceLines[key] = candleSeries.createPriceLine({
+        price,
+        color: meta.options.color,
+        lineWidth: meta.options.lineWidth || 2,
+        lineStyle: meta.options.lineStyle ?? 0,
+        axisLabelVisible: true,
+        lineVisible: true,
+        title: meta.labelTitle,
+    });
+}
+
+function _setSegmentedLabeledLineData(key, chartInst, data, options, labelTitle) {
+    _removeSegmentedLabeledLineData(key, chartInst);
+    // Swing levels are rolling zones, not a time-series value that should be
+    // connected across every candle. Render the level selected at the right
+    // side of the visible range as a true horizontal price line instead.
+    _segmentedOverlaySeries[key] = [];
+    _horizontalOverlayLabelMeta[key] = { data, options, labelTitle };
+    _refreshHorizontalOverlayPriceLineLabel(key);
+}
+
 function clean(arr) {
     const seen = new Set();
     return arr.filter(p => {
@@ -1104,6 +1309,29 @@ function clean(arr) {
     }).sort((a, b) => a.time - b.time);
 }
 
+function segmentedLevelData(bars, key) {
+    const points = clean((bars || [])
+        .filter(bar => bar && bar[key] != null)
+        .map(bar => ({ time: Number(bar.time), value: Number(bar[key]) })));
+    if (points.length < 2) return points;
+
+    const segmented = [points[0]];
+    let previous = points[0];
+    for (let i = 1; i < points.length; i += 1) {
+        const point = points[i];
+        if (Math.abs(Number(point.value) - Number(previous.value)) > 1e-9) {
+            // A whitespace point breaks the line before the new horizontal
+            // zone, preventing Lightweight Charts from drawing a diagonal
+            // connector between unrelated support/resistance prices.
+            const breakTime = Number(point.time) - 1;
+            if (breakTime > Number(previous.time)) segmented.push({ time: breakTime });
+        }
+        segmented.push(point);
+        previous = point;
+    }
+    return segmented;
+}
+
 function _refreshOverlays(bars) {
     const activeMarkers = [];
 
@@ -1111,13 +1339,17 @@ function _refreshOverlays(bars) {
     if (_visibleIndicators.ema) {
         _getOrCreate(_overlaySeries, 'ema_fast', lwChart, { color: IND_COLORS.ema_fast, lineWidth: 1.5 })
             .setData(clean(bars.filter(b => b.ema_fast != null).map(b => ({ time: b.time, value: b.ema_fast }))));
-        _getOrCreate(_overlaySeries, 'ema_slow', lwChart, { color: IND_COLORS.ema_slow, lineWidth: 1.5 })
-            .setData(clean(bars.filter(b => b.ema_slow != null).map(b => ({ time: b.time, value: b.ema_slow }))));
+        if (indicatorParamValue('EMA_USE_SECOND_LINE', 1) !== 0) {
+            _getOrCreate(_overlaySeries, 'ema_slow', lwChart, { color: IND_COLORS.ema_slow, lineWidth: 1.5 })
+                .setData(clean(bars.filter(b => b.ema_slow != null).map(b => ({ time: b.time, value: b.ema_slow }))));
+        } else {
+            _removeSeries(_overlaySeries, 'ema_slow', lwChart);
+        }
     } else {
         _removeSeries(_overlaySeries, 'ema_fast', lwChart);
         _removeSeries(_overlaySeries, 'ema_slow', lwChart);
     }
-    // AVWAP
+    // Session VWAP
     if (_visibleIndicators.vwap) {
         _getOrCreate(_overlaySeries, 'vwap', lwChart, { color: IND_COLORS.vwap || '#000000', lineWidth: 2, lineStyle: 0 })
             .setData(clean(bars.filter(b => b.vwap != null).map(b => ({ time: b.time, value: b.vwap }))));
@@ -1128,8 +1360,15 @@ function _refreshOverlays(bars) {
     if (_visibleIndicators.sma) {
         _getOrCreate(_overlaySeries, 'sma', lwChart, { color: IND_COLORS.sma, lineWidth: 2.5, lineStyle: 0 })
             .setData(clean(bars.filter(b => b.sma != null).map(b => ({ time: b.time, value: b.sma }))));
+        if (indicatorParamValue('SMA_USE_SECOND_LINE', 1) !== 0) {
+            _getOrCreate(_overlaySeries, 'sma_secondary', lwChart, { color: IND_COLORS.sma_secondary, lineWidth: 2, lineStyle: 2 })
+                .setData(clean(bars.filter(b => b.sma_secondary != null).map(b => ({ time: b.time, value: b.sma_secondary }))));
+        } else {
+            _removeSeries(_overlaySeries, 'sma_secondary', lwChart);
+        }
     } else {
         _removeSeries(_overlaySeries, 'sma', lwChart);
+        _removeSeries(_overlaySeries, 'sma_secondary', lwChart);
     }
     // Supertrend (Continuous multi-color line)
     if (_visibleIndicators.supertrend) {
@@ -1273,29 +1512,30 @@ function _refreshOverlays(bars) {
             const sKey = `swing_support_${level}`;
             const rKey = `swing_resistance_${level}`;
             if (active) {
-                _setLabeledLineData(_overlaySeries, sKey, lwChart, clean(bars.filter(b => b[sKey] != null).map(b => ({ time: b.time, value: b[sKey] }))), {
+                _setSegmentedLabeledLineData(sKey, lwChart, segmentedLevelData(bars, sKey), {
                     color: level === 1 ? IND_COLORS.swing_support : 'rgba(22, 163, 74, 0.72)',
                     lineWidth: level === 1 ? 3 : 2,
                     lineStyle: level === 1 ? 1 : 2,
                 }, `SW S${level}`);
-                _setLabeledLineData(_overlaySeries, rKey, lwChart, clean(bars.filter(b => b[rKey] != null).map(b => ({ time: b.time, value: b[rKey] }))), {
+                _setSegmentedLabeledLineData(rKey, lwChart, segmentedLevelData(bars, rKey), {
                     color: level === 1 ? IND_COLORS.swing_resistance : 'rgba(220, 38, 38, 0.72)',
                     lineWidth: level === 1 ? 3 : 2,
                     lineStyle: level === 1 ? 1 : 2,
                 }, `SW R${level}`);
             } else {
-                _removeSeries(_overlaySeries, sKey, lwChart);
-                _removeSeries(_overlaySeries, rKey, lwChart);
+                _removeSegmentedLabeledLineData(sKey, lwChart);
+                _removeSegmentedLabeledLineData(rKey, lwChart);
             }
         }
     } else {
         for (let level = 1; level <= 5; level += 1) {
-            _removeSeries(_overlaySeries, `swing_support_${level}`, lwChart);
-            _removeSeries(_overlaySeries, `swing_resistance_${level}`, lwChart);
+            _removeSegmentedLabeledLineData(`swing_support_${level}`, lwChart);
+            _removeSegmentedLabeledLineData(`swing_resistance_${level}`, lwChart);
         }
     }
 
-    // Volume Profile — prior-session POC and value-area structure
+    // Volume Profile — server levels remain available for signal context;
+    // the VPVR overlay itself uses the current visible candle range.
     if (_visibleIndicators.volume_profile) {
         _setLabeledLineData(_overlaySeries, 'volume_profile_poc', lwChart, clean(bars.filter(b => b.volume_profile_poc != null).map(b => ({ time: b.time, value: b.volume_profile_poc }))), {
             color: IND_COLORS.volume_profile_poc,
@@ -1451,37 +1691,11 @@ function _refreshOverlays(bars) {
 
     // Candle Patterns Markers
     if (_visibleIndicators['Candle Patterns']) {
-        const b = bars[bars.length - 1];
-        if (b?.cdl_name && b.cdl_name !== 'Neutral') {
-            if (b.cdl_bullish) {
-                activeMarkers.push({
-                    time: b.time,
-                    position: 'belowBar',
-                    color: '#10b981',
-                    shape: 'arrowUp',
-                    text: b.cdl_name,
-                    size: 1.1
-                });
-            } else if (b.cdl_bearish) {
-                activeMarkers.push({
-                    time: b.time,
-                    position: 'aboveBar',
-                    color: '#ef4444',
-                    shape: 'arrowDown',
-                    text: b.cdl_name,
-                    size: 1.1
-                });
-            } else {
-                activeMarkers.push({
-                    time: b.time,
-                    position: 'aboveBar',
-                    color: '#f59e0b',
-                    shape: 'circle',
-                    text: b.cdl_name,
-                    size: 1.1
-                });
-            }
-        }
+        const candlePatternMarkers = window.StandardIndicatorSubcharts?.buildCandlePatternMarkers?.(bars, {
+            rolling24Hours: isCryptoTicker(selectedTicker),
+            maxCandles: 20,
+        }) || [];
+        activeMarkers.push(...candlePatternMarkers);
     }
 
     const dashboardIndicatorPrefs = getGlobalIndicatorPrefs();
@@ -1598,8 +1812,10 @@ function _refreshOscillators(bars) {
         const ob = _getOrCreate(_oscSeries, 'rsi_ob', oscChartRsi, { color: 'rgba(239,68,68,0.4)', lineWidth: 1, lineStyle: 2 });
         const os = _getOrCreate(_oscSeries, 'rsi_os', oscChartRsi, { color: 'rgba(16,185,129,0.4)', lineWidth: 1, lineStyle: 2 });
         const rsiPeriod = indicatorParamValue('RSI_PERIOD', 14);
-        const obVal = indicatorParamValue('RSI_OVERBOUGHT', 70);
-        const osVal = indicatorParamValue('RSI_OVERSOLD', 30);
+        const rsiFirstThreshold = indicatorParamValue('RSI_OVERBOUGHT', 70);
+        const rsiSecondThreshold = indicatorParamValue('RSI_OVERSOLD', 30);
+        const obVal = Math.max(rsiFirstThreshold, rsiSecondThreshold);
+        const osVal = Math.min(rsiFirstThreshold, rsiSecondThreshold);
         if (rsiLabel) {
             rsiLabel.textContent = `RSI (${rsiPeriod})  •  OB: ${obVal} / OS: ${osVal}`;
         }
@@ -1626,8 +1842,10 @@ function _refreshOscillators(bars) {
         }
     }
     if (_visibleIndicators.macd && oscChartMacd) {
-        const macdFast = indicatorParamValue('MACD_FAST', 12);
-        const macdSlow = indicatorParamValue('MACD_SLOW', 26);
+        const macdFirst = indicatorParamValue('MACD_FAST', 12);
+        const macdSecond = indicatorParamValue('MACD_SLOW', 26);
+        const macdFast = Math.min(macdFirst, macdSecond);
+        const macdSlow = Math.max(macdFirst, macdSecond);
         const macdSig = indicatorParamValue('MACD_SIGNAL', 9);
         if (macdLabel) {
             macdLabel.textContent = `MACD (${macdFast}, ${macdSlow}, ${macdSig})`;
@@ -1727,7 +1945,7 @@ function _refreshOscillators(bars) {
         const adxPeriod = indicatorParamValue('ADX_PERIOD', 14);
         const adxThreshVal = indicatorParamValue('ADX_TRENDING_THRESHOLD', 25);
         if (adxLabel) {
-            adxLabel.textContent = `ADX (${adxPeriod})  •  Trend Thresh: ${adxThreshVal}`;
+            adxLabel.textContent = `ADX (${adxPeriod}) · strong ≥ ${adxThreshVal} · +DI green · −DI red`;
         }
         _getOrCreate(_oscSeries, 'adx', oscChartAdx, { color: IND_COLORS.adx, lineWidth: 2 })
             .setData(clean(bars.filter(b => b.adx != null).map(b => ({ time: b.time, value: b.adx }))));
@@ -2023,8 +2241,10 @@ function renderFastChartPayload(data, requestedTicker) {
 
     const payload = data?.data || data;
     const history = payload?.priceHistory || payload?.price_history || payload?.primaryScan?.price_history || [];
+    const volumeProfile = payload?.volumeProfile ?? payload?.volume_profile;
+    if (volumeProfile !== undefined) dashboardVolumeProfilePayload = volumeProfile;
     if (history.length > 0) {
-        updateChart(history, ticker);
+        updateChart(history, ticker, volumeProfile);
     }
 
     const scan = payload?.primaryScan || payload;
@@ -2417,7 +2637,7 @@ function setChartTimeframe(tf) {
     }
 
     updateChartControlState(selectedTicker);
-    loadSelectedTickerChart({ renderCached: true });
+    loadSelectedTickerChart({ force: true, renderCached: false, fetchFresh: true });
     fetchDashboard('fast');
     if (selectedTicker) fetchAIIndicator(selectedTicker, currentBackendTf);
 }
@@ -2448,7 +2668,7 @@ function setChartRange(range) {
     if (window._lastPriceHistory) {
         updateChart(window._lastPriceHistory, window._lastTicker || selectedTicker);
     }
-    loadSelectedTickerChart({ renderCached: true });
+    loadSelectedTickerChart({ force: true, renderCached: false, fetchFresh: true });
     fetchDashboard('fast');
 }
 
@@ -2554,7 +2774,8 @@ var INDICATOR_TOOLTIPS = {
     "Mystic Pulse": "Mystic Pulse is a custom proprietary oscillator. Purpose: Combines multi-timeframe momentum, volatility, and volume flow to detect early trend reversals.",
     "Candle patterns": "Candlestick Patterns identify specific OHLC price formations. Purpose: Provides visual clues about market psychology and potential reversals.",
     "ADX Trend": "Average Directional Index (ADX) quantifies trend strength. Purpose: Determines if the market is trending strongly (ADX > 25) or ranging.",
-    "VWAP": "Anchored Volume Weighted Average Price (AVWAP) is a volume-weighted average anchored from the most recent major volume spike. Purpose: Tracks institutional-style cost basis and acceptance/rejection around high-volume events.",
+    "VWAP": "Session VWAP is the cumulative typical-price and volume average for the exchange-local trading day, matching the standard Webull-style VWAP calculation.",
+    "Auto-AVWAP": "Auto-AVWAP anchors the volume-weighted average at the latest volume spike. It is intentionally separate from Session VWAP and may not match Webull VWAP.",
     "Volume Profile": "Prior-session volume-at-price profile using POC, VAH, and VAL. Purpose: Identifies institutional acceptance/rejection zones where the most volume traded.",
     "Prior Day High/Low": "Uses the previous completed trading session's high and low as breakout/breakdown levels. Buffer is entered as %, with dotted trigger lines when non-zero.",
     "Pivot Points (S/R)": "Classic prior-session floor pivot levels. Draws up to 5 support/resistance ladders; bullish when price reclaims support/pivot, bearish when price rejects resistance or loses pivot.",
@@ -2565,12 +2786,12 @@ var INDICATOR_TOOLTIPS = {
 var INDICATOR_CONFIG_MAP = {
     'RSI': ['RSI_PERIOD', 'RSI_OVERBOUGHT', 'RSI_OVERSOLD'],
     'MACD': ['MACD_FAST', 'MACD_SLOW', 'MACD_SIGNAL'],
-    'EMA Cross': ['EMA_FAST', 'EMA_SLOW'],
+    'EMA Cross': ['EMA_USE_SECOND_LINE', 'EMA_FAST', 'EMA_SLOW'],
     'Supertrend': ['SUPERTREND_PERIOD', 'SUPERTREND_MULTIPLIER'],
     'Bollinger': ['BOLL_PERIOD', 'BOLL_STD_DEV'],
     'Mystic Pulse': ['MYSTIC_PULSE_THRESHOLD'],
     'ADX Trend': ['ADX_PERIOD', 'ADX_TRENDING_THRESHOLD'],
-    'SMA': ['SMA_PERIOD'],
+    'SMA': ['SMA_USE_SECOND_LINE', 'SMA_PERIOD', 'SMA_SECOND_PERIOD'],
     'Prior Day High/Low': ['DAILY_HIGH_LOW_BUFFER_PCT'],
     'Pivot Points (S/R)': ['PIVOT_LEVEL_COUNT', 'PIVOT_TOLERANCE_PCT'],
     'Volume Profile': ['VOLUME_PROFILE_ROWS', 'VOLUME_PROFILE_VALUE_AREA_PCT', 'VOLUME_PROFILE_TOLERANCE_PCT', 'VOLUME_PROFILE_CONFIRMATION_CANDLES'],
@@ -2613,6 +2834,7 @@ var INDICATOR_DEFAULTS = {
     'RSI_PERIOD': 14,
     'RSI_OVERBOUGHT': 70,
     'RSI_OVERSOLD': 30,
+    'EMA_USE_SECOND_LINE': 1,
     'EMA_FAST': 9,
     'EMA_SLOW': 21,
     'MACD_FAST': 12,
@@ -2625,7 +2847,9 @@ var INDICATOR_DEFAULTS = {
     'MYSTIC_PULSE_THRESHOLD': 5,
     'ADX_PERIOD': 14,
     'ADX_TRENDING_THRESHOLD': 25,
+    'SMA_USE_SECOND_LINE': 1,
     'SMA_PERIOD': 200,
+    'SMA_SECOND_PERIOD': 50,
     'DAILY_HIGH_LOW_BUFFER_PCT': 0.0,
     'PIVOT_LEVEL_COUNT': 1,
     'PIVOT_TOLERANCE_PCT': 0.0,
@@ -2673,6 +2897,7 @@ const INDICATOR_TOGGLE_KEYS = {
     'Supertrend': 'ENABLE_SUPERTREND',
     'Bollinger': 'ENABLE_BOLLINGER',
     'VWAP': 'ENABLE_VWAP',
+    'Auto-AVWAP': 'ENABLE_AUTO_AVWAP',
     'Mystic Pulse': 'ENABLE_MYSTIC_PULSE',
     'ADX Trend': 'ENABLE_ADX_TREND',
     'SMA': 'ENABLE_SMA',
@@ -2690,6 +2915,12 @@ const INDICATOR_TOGGLE_KEYS = {
 Object.assign(INDICATOR_TOGGLE_KEYS, window.STANDARD_INDICATOR_TOGGLE_KEYS || {});
 const DASHBOARD_STANDARD_INDICATOR_NAMES = window.STANDARD_INDICATOR_NAMES || [];
 const DASHBOARD_STANDARD_INDICATOR_SET = new Set(DASHBOARD_STANDARD_INDICATOR_NAMES);
+const DASHBOARD_INDICATOR_DISPLAY_LIMIT = 12;
+const DASHBOARD_DEFAULT_DISPLAYED_INDICATORS = window.STANDARD_INDICATOR_DEFAULT_NAMES || [
+    'RSI', 'EMA Cross', 'SMA', 'VWAP', 'ADX Trend', 'Supertrend',
+    'ATR Volatility', 'Volume Profile', 'Candle Patterns', 'Prior Day High/Low',
+    'Swing Points', 'Pivot Points (S/R)',
+];
 const DASHBOARD_STANDARD_TOGGLE_KEYS = new Set(
     DASHBOARD_STANDARD_INDICATOR_NAMES
         .map(name => INDICATOR_TOGGLE_KEYS[name])
@@ -2726,7 +2957,7 @@ function getGlobalIndicatorPrefs() {
 }
 
 function getDashboardWorkspaceShownSet() {
-    const fallback = (window.STANDARD_INDICATOR_NAMES || []).slice(0, 10);
+    const fallback = DASHBOARD_DEFAULT_DISPLAYED_INDICATORS.slice(0, DASHBOARD_INDICATOR_DISPLAY_LIMIT);
     const ticker = String(typeof selectedTicker !== 'undefined'
         ? selectedTicker
         : document.getElementById('chartTickerLabel')?.textContent || '')
@@ -2744,8 +2975,8 @@ function getDashboardWorkspaceShownSet() {
         const sharedShown = store?.scopes?.['dashboard:GLOBAL']?.shown;
         const tickerShown = store?.scopes?.[`dashboard:${ticker || 'DEFAULT'}`]?.shown;
         const scopedShown = Array.isArray(sharedShown) ? sharedShown : tickerShown;
-        if (Array.isArray(scopedShown)) {
-            return new Set([...new Set([...scopedShown, ...fallback])].slice(0, 10));
+        if (Array.isArray(scopedShown) && scopedShown.length) {
+            return new Set([...new Set(scopedShown)].slice(0, DASHBOARD_INDICATOR_DISPLAY_LIMIT));
         }
     } catch (error) {}
     return new Set(fallback);
@@ -2782,12 +3013,14 @@ function allIndicatorPrefs(enabled = false) {
 }
 
 function getDashboardIndicatorWorkspacePayload(enabledOverride = null) {
-    const selected = window.IndicatorWorkspace?.getShown?.('dashboard')
-        || DASHBOARD_STANDARD_INDICATOR_NAMES.slice(0, 10);
-    const displayed = [...new Set([
-        ...selected.filter(name => DASHBOARD_STANDARD_INDICATOR_SET.has(name)),
-        ...DASHBOARD_STANDARD_INDICATOR_NAMES,
-    ])].slice(0, 10);
+    const selected = window.IndicatorWorkspace?.getShown?.('dashboard');
+    const selectedStandard = Array.isArray(selected)
+        ? [...new Set(selected.filter(name => DASHBOARD_STANDARD_INDICATOR_SET.has(name)))]
+        : [];
+    const displayed = (selectedStandard.length
+        ? selectedStandard
+        : DASHBOARD_DEFAULT_DISPLAYED_INDICATORS)
+        .slice(0, DASHBOARD_INDICATOR_DISPLAY_LIMIT);
     const displayedSet = new Set(displayed);
     const prefs = getGlobalIndicatorPrefs();
     const enabledSource = Array.isArray(enabledOverride)
@@ -2796,7 +3029,7 @@ function getDashboardIndicatorWorkspacePayload(enabledOverride = null) {
     return {
         displayed_indicators: displayed
             .filter(name => DASHBOARD_STANDARD_INDICATOR_SET.has(name))
-            .slice(0, 10),
+            .slice(0, DASHBOARD_INDICATOR_DISPLAY_LIMIT),
         enabled_indicators: displayed.filter(name => (
             DASHBOARD_STANDARD_INDICATOR_SET.has(name)
             && (enabledSource ? enabledSource.has(name) : prefs[name] === true)
@@ -2808,9 +3041,13 @@ function getDashboardIndicatorWorkspacePayload(enabledOverride = null) {
 
 function applyDashboardIndicatorWorkspace(workspace) {
     if (!workspace || typeof workspace !== 'object') return false;
-    const displayed = Array.isArray(workspace.displayed_indicators)
-        ? workspace.displayed_indicators.filter(name => DASHBOARD_STANDARD_INDICATOR_SET.has(name)).slice(0, 10)
+    const requestedDisplayed = Array.isArray(workspace.displayed_indicators)
+        ? workspace.displayed_indicators.filter(name => DASHBOARD_STANDARD_INDICATOR_SET.has(name))
         : [];
+    const displayed = (requestedDisplayed.length
+        ? [...new Set(requestedDisplayed)]
+        : DASHBOARD_DEFAULT_DISPLAYED_INDICATORS)
+        .slice(0, DASHBOARD_INDICATOR_DISPLAY_LIMIT);
     const displayedSet = new Set(displayed);
     const enabled = new Set(
         (Array.isArray(workspace.enabled_indicators) ? workspace.enabled_indicators : [])
@@ -2880,9 +3117,19 @@ let dashboardWorkspaceSaveTimer = null;
 let dashboardWorkspaceSaveInFlight = false;
 let dashboardWorkspaceSaveRetryCount = 0;
 let dashboardWorkspaceRefreshRequired = false;
+const dashboardWorkspaceRefreshIndicators = new Set();
 
-function scheduleDashboardWorkspaceSave({ refresh = false } = {}) {
-    dashboardWorkspaceRefreshRequired = dashboardWorkspaceRefreshRequired || refresh;
+function scheduleDashboardWorkspaceSave({ refresh = null, indicatorName = null } = {}) {
+    // An enable needs a fresh chart calculation. A disable only changes the
+    // local presentation/confluence state, so it must be allowed to cancel a
+    // queued refresh (for example, when the user toggles twice quickly).
+    // Calls without an explicit refresh flag preserve the current requirement.
+    if (indicatorName && refresh !== null) {
+        if (refresh === true) dashboardWorkspaceRefreshIndicators.add(indicatorName);
+        else dashboardWorkspaceRefreshIndicators.delete(indicatorName);
+    } else if (refresh !== null) {
+        dashboardWorkspaceRefreshRequired = refresh === true;
+    }
     holdDashboardIndicatorRefreshLock();
     clearTimeout(dashboardWorkspaceSaveTimer);
     dashboardWorkspaceSaveTimer = setTimeout(flushDashboardWorkspaceSave, 120);
@@ -2895,8 +3142,9 @@ async function flushDashboardWorkspaceSave() {
         return;
     }
     dashboardWorkspaceSaveInFlight = true;
-    const refreshAfterSave = dashboardWorkspaceRefreshRequired;
+    const refreshAfterSave = dashboardWorkspaceRefreshRequired || dashboardWorkspaceRefreshIndicators.size > 0;
     dashboardWorkspaceRefreshRequired = false;
+    dashboardWorkspaceRefreshIndicators.clear();
     try {
         // Do not reapply the response here: the user may make another change
         // while this request is in flight. The next queued snapshot must win.
@@ -2938,7 +3186,13 @@ function holdDashboardIndicatorRefreshLock() {
 
 function scheduleDashboardIndicatorSave(toggleKey, enabled) {
     if (DASHBOARD_STANDARD_TOGGLE_KEYS.has(toggleKey)) {
-        scheduleDashboardWorkspaceSave({ refresh: true });
+        const indicatorName = DASHBOARD_STANDARD_INDICATOR_NAMES.find(
+            name => INDICATOR_TOGGLE_KEYS[name] === toggleKey
+        );
+        scheduleDashboardWorkspaceSave({
+            refresh: enabled === true,
+            indicatorName,
+        });
         return;
     }
     pendingDashboardIndicatorUpdates[toggleKey] = enabled;
@@ -2992,7 +3246,11 @@ async function flushDashboardIndicatorUpdates() {
         if (!response.ok) throw new Error(`Indicator save failed with HTTP ${response.status}`);
 
         dashboardIndicatorSaveRetryCount = 0;
-        refreshDashboardSignalsAfterIndicatorSave();
+        // Disabling is intentionally local-only after the preference is
+        // persisted. Recalculate only when at least one indicator was enabled.
+        if (Object.values(updates).some(value => value === true)) {
+            refreshDashboardSignalsAfterIndicatorSave();
+        }
 
         if (updates.ENABLE_AI_SENTIMENT === true && typeof fetchAIIndicator === 'function') {
             fetchAIIndicator(selectedTicker, currentBackendTf, false).catch(error => {
@@ -3029,6 +3287,7 @@ function setGlobalIndicatorPref(indicatorName, enabled, options = {}) {
     const prefs = getGlobalIndicatorPrefs();
     prefs[indicatorName] = enabled;
     localStorage.setItem(GLOBAL_INDICATOR_PREFS_KEY, JSON.stringify(prefs));
+    if (!enabled) clearDisabledIndicatorSignalLocally(indicatorName);
     _syncIndicatorsFromSignals(window._lastSignals || {});
     recomputeConfluence();
     if (Array.isArray(window._displayPriceHistory) && window._displayPriceHistory.length) {
@@ -3080,41 +3339,42 @@ window.addEventListener('indicator-workspace:workspace-change', event => {
 
 async function resetConfluenceIndicatorsToDefaults() {
     try {
-        const defaultPrefs = getDashboardDefaultIndicatorPrefs();
+        const defaultPrefs = allIndicatorPrefs(false);
         localStorage.setItem(GLOBAL_INDICATOR_PREFS_KEY, JSON.stringify(defaultPrefs));
         localStorage.setItem(
             DASHBOARD_CONFLUENCE_PREFS_VERSION_KEY,
             DASHBOARD_CONFLUENCE_PREFS_VERSION
         );
-        localStorage.setItem('visibleIndicators', JSON.stringify(_defaultVisibleIndicators));
+        const disabledVisible = Object.fromEntries(ALL_SIGNAL_NAMES.map(name => [name, false]));
+        localStorage.setItem('visibleIndicators', JSON.stringify(disabledVisible));
 
-        _visibleIndicators = { ..._defaultVisibleIndicators };
-        Object.entries(_visibleIndicators).forEach(([key, enabled]) => {
+        _visibleIndicators = { ...disabledVisible };
+        ALL_SIGNAL_NAMES.forEach(key => {
             const btn = document.getElementById(`ind_btn_${key}`);
             if (btn) {
-                btn.classList.toggle('ind-btn-active', enabled);
-                btn.classList.toggle('ind-btn-inactive', !enabled);
+                btn.classList.remove('ind-btn-active');
+                btn.classList.add('ind-btn-inactive');
             }
         });
 
         if (window.lastDashboardData) {
             window.lastDashboardData.indicator_overrides = {};
-            window.lastDashboardData.indicator_toggle_overrides = {};
+            window.lastDashboardData.indicator_toggle_overrides = getDashboardConfluenceToggleDefaults(defaultPrefs);
             window.lastDashboardData.indicator_parameters = { ...INDICATOR_DEFAULTS };
             if (window.lastDashboardData.primaryScan?.signals) {
                 for (const [name, signal] of Object.entries(window.lastDashboardData.primaryScan.signals)) {
-                    signal.enabled = defaultPrefs[name] === true;
+                    signal.enabled = false;
                 }
             }
             if (window.lastDashboardData.signals) {
                 for (const [name, signal] of Object.entries(window.lastDashboardData.signals)) {
-                    signal.enabled = defaultPrefs[name] === true;
+                    signal.enabled = false;
                 }
             }
         }
         if (window._lastSignals) {
             for (const [name, signal] of Object.entries(window._lastSignals)) {
-                signal.enabled = defaultPrefs[name] === true;
+                signal.enabled = false;
             }
         }
         recomputeConfluence();
@@ -3129,7 +3389,7 @@ async function resetConfluenceIndicatorsToDefaults() {
             headers: headers,
             body: JSON.stringify({
                 reset_confluence: true,
-                confluence_toggles: getDashboardConfluenceToggleDefaults(),
+                confluence_toggles: getDashboardConfluenceToggleDefaults(allIndicatorPrefs(false)),
             })
         }, 8000);
         const resetPayload = response.ok ? await response.json().catch(() => null) : null;
@@ -3139,7 +3399,7 @@ async function resetConfluenceIndicatorsToDefaults() {
             window.lastDashboardData.indicator_parameters = { ...INDICATOR_DEFAULTS };
         }
         await postDashboardIndicatorWorkspace(
-            getDashboardIndicatorWorkspacePayload(),
+            getDashboardIndicatorWorkspacePayload(allIndicatorPrefs(false)),
             { refresh: false, applyResponse: false }
         );
 
@@ -3169,18 +3429,65 @@ function indicatorParamValue(key, fallback) {
     return Number.isFinite(value) ? value : fallback;
 }
 
+function getEnabledSignalCounts(signals, prefs = getGlobalIndicatorPrefs()) {
+    let bullish = 0;
+    let bearish = 0;
+    for (const [name, data] of Object.entries(signals || {})) {
+        if (prefs[name] !== true || !isDashboardIndicatorAllowed(name)) continue;
+        if (data?.signal === 'BULLISH') bullish++;
+        if (data?.signal === 'BEARISH') bearish++;
+    }
+    return { bullish, bearish };
+}
+
+function clearDisabledIndicatorSignalLocally(indicatorName) {
+    // The same signal object can be held by several dashboard caches. Update
+    // each store so a later local render cannot restore a stale BULLISH/
+    // BEARISH vote before the next intentional enable refresh.
+    const stores = [
+        window._lastSignals,
+        window.lastDashboardData?.signals,
+        window.lastDashboardData?.primaryScan?.signals,
+    ];
+    const seen = new Set();
+    stores.forEach(store => {
+        if (!store || seen.has(store) || !store[indicatorName]) return;
+        seen.add(store);
+        const signal = store[indicatorName];
+        if (typeof signal !== 'object') return;
+        signal.signal = 'NEUTRAL';
+        signal.reason = 'Disabled — click to enable';
+        signal.enabled = false;
+    });
+
+    const counts = getEnabledSignalCounts(window._lastSignals || {});
+    const scans = [
+        window.lastDashboardData?.primaryScan,
+        window.lastDashboardData,
+    ];
+    const updatedScans = new Set();
+    scans.forEach(scan => {
+        if (!scan || updatedScans.has(scan)) return;
+        updatedScans.add(scan);
+        scan.bullish_count = counts.bullish;
+        scan.bearish_count = counts.bearish;
+    });
+}
+
 function recomputeConfluence() {
     const signals = window._lastSignals;
     if (!signals) return;
 
     const prefs = getGlobalIndicatorPrefs();
-    let bullish = 0, bearish = 0;
+    const { bullish, bearish } = getEnabledSignalCounts(signals, prefs);
 
-    for (const [name, data] of Object.entries(signals)) {
-        const isEnabled = prefs[name] === true && isDashboardIndicatorAllowed(name);
-        if (!isEnabled) continue;
-        if (data.signal === 'BULLISH') bullish++;
-        if (data.signal === 'BEARISH') bearish++;
+    if (window.lastDashboardData?.primaryScan) {
+        window.lastDashboardData.primaryScan.bullish_count = bullish;
+        window.lastDashboardData.primaryScan.bearish_count = bearish;
+    }
+    if (window.lastDashboardData) {
+        window.lastDashboardData.bullish_count = bullish;
+        window.lastDashboardData.bearish_count = bearish;
     }
 
     // Determine verdict
@@ -3193,6 +3500,11 @@ function recomputeConfluence() {
     } else if (bearish >= minBearish) {
         action = 'SELL';
         reason = `SELL Triggered: ${bearish} bearish signals`;
+    }
+
+    if (window.lastDashboardData?.primaryScan) {
+        window.lastDashboardData.primaryScan.action = action;
+        window.lastDashboardData.primaryScan.reason = reason;
     }
 
     // We pass signals, action, reason, bullish, bearish to renderSignals
@@ -3319,6 +3631,13 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
 
     setSignalConfluenceLoadingState(false);
 
+    // Backend counts may include indicators the user has just disabled. The
+    // enabled local preferences are authoritative for the visible confluence
+    // grid, so always render counts from the current signal set.
+    const effectiveCounts = getEnabledSignalCounts(signals);
+    bullishCount = effectiveCounts.bullish;
+    bearishCount = effectiveCounts.bearish;
+
     const activeIds = new Set();
     const premiumActiveIds = new Set();
     const prefs = getGlobalIndicatorPrefs();
@@ -3398,7 +3717,7 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
             card.title = isEnabled ? "Click to disable this indicator" : "Click to enable this indicator";
         }
 
-        const cacheKey = `${isEnabled}-${data.signal}-${data.reason}-${data.value || ''}-${data.percentage ?? data.sentiment_pct ?? ''}`;
+        const cacheKey = `${isEnabled}-${data.signal}-${data.reason}-${data.value ?? ''}-${data.baseline ?? ''}-${data.period ?? ''}-${data.percentage ?? data.sentiment_pct ?? ''}`;
         if (card.dataset.cacheKey !== cacheKey) {
             let reasonHtml = isEnabled ? data.reason : 'Disabled — click to enable';
             const isNewsSentiment = name === 'Botbulls4 News AI';
@@ -3465,7 +3784,7 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
                 `;
             } else {
                 // Standard signal card
-                const displayName = name === 'VWAP' ? 'AVWAP' : name;
+                const displayName = name === 'VWAP' ? 'Session VWAP' : name;
                 const labelClass = name === 'VWAP' ? 'vwap-indicator-label' : 'text-indigo-900';
                 card.innerHTML = `
                     <div class="flex items-start justify-between">
@@ -3502,7 +3821,7 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
         if (isNew) {
             if (!isPremium) {
                 const shownNames = window.IndicatorWorkspace?.getShown?.('dashboard')
-                    || (window.STANDARD_INDICATOR_NAMES || ALL_SIGNAL_NAMES).slice(0, 10);
+                    || (window.STANDARD_INDICATOR_NAMES || ALL_SIGNAL_NAMES).slice(0, DASHBOARD_INDICATOR_DISPLAY_LIMIT);
                 const isShownInWorkspace = shownNames.includes(name);
                 card.hidden = !isShownInWorkspace;
                 card.classList.toggle('indicator-workspace-hidden', !isShownInWorkspace);
@@ -3552,6 +3871,7 @@ const SIGNAL_TO_CHART_KEY = {
     'Supertrend': 'supertrend',
     'Bollinger': 'bollinger',
     'VWAP': 'vwap',
+    'Auto-AVWAP': 'auto_avwap',
     'Mystic Pulse': 'mystic',
     'SMA': 'sma',
     'Prior Day High/Low': 'daily_high_low',
@@ -4207,8 +4527,10 @@ async function fetchDashboard(mode = 'heavy', options = {}) {
         renderWatchlist(data.watchlistScans, data.watchlist);
 
         if (data.indicator_parameters) {
-            const macdFast = data.indicator_parameters.MACD_FAST || 12;
-            const macdSlow = data.indicator_parameters.MACD_SLOW || 26;
+            const macdFirst = data.indicator_parameters.MACD_FAST || 12;
+            const macdSecond = data.indicator_parameters.MACD_SLOW || 26;
+            const macdFast = Math.min(macdFirst, macdSecond);
+            const macdSlow = Math.max(macdFirst, macdSecond);
             const macdSig = data.indicator_parameters.MACD_SIGNAL || 9;
             const macdLabel = document.getElementById('macdLabel');
             if (macdLabel) {
@@ -4412,6 +4734,14 @@ async function toggleIndicator(key, value) {
             body: JSON.stringify({ [key]: value })
         }, 8000);
 
+        // Persisting a disable is enough. Do not request a new chart/signal
+        // calculation for an indicator the user just turned off.
+        if (value !== true) {
+            clearTimeout(window._indicatorToggleDebounce);
+            window._indicatorToggleDebounce = null;
+            return;
+        }
+
         clearTimeout(window._indicatorToggleDebounce);
         window._indicatorToggleDebounce = setTimeout(() => {
             if (typeof loadSelectedTickerChart === 'function') {
@@ -4493,7 +4823,7 @@ document.addEventListener('DOMContentLoaded', () => {
             let chartWarmup = null;
             if (selectedTicker) {
                 console.log(`[dashboard] Phase 1 — Fetching completed candles for: ${selectedTicker}`);
-                chartWarmup = loadSelectedTickerChart({ renderCached: true, fetchFresh: true });
+                chartWarmup = loadSelectedTickerChart({ force: true, renderCached: false, fetchFresh: true });
             }
             startActiveChartHeartbeat();
             dashboardHeartbeatEnabled = shouldRunDashboardRefresh();
@@ -4931,6 +5261,12 @@ function openIndicatorSettings(indicatorName) {
     const overrides = window.lastDashboardData?.indicator_overrides || {};
     const paramLabels = {
         ...(window.STANDARD_INDICATOR_PARAM_LABELS || {}),
+        EMA_USE_SECOND_LINE: 'Use Two EMA Lines',
+        EMA_FAST: 'Primary EMA Period',
+        EMA_SLOW: 'Secondary EMA Period',
+        SMA_USE_SECOND_LINE: 'Use Two SMA Lines',
+        SMA_PERIOD: 'Primary SMA Period',
+        SMA_SECOND_PERIOD: 'Secondary SMA Period',
         DAILY_HIGH_LOW_BUFFER_PCT: 'Breakout Buffer (%)',
         PIVOT_LEVEL_COUNT: 'S/R Levels To Draw (1-5)',
         PIVOT_TOLERANCE_PCT: 'Reclaim/Rejection Tolerance (%)',
@@ -4970,6 +5306,8 @@ function openIndicatorSettings(indicatorName) {
     configKeys.forEach(key => {
         const hasOverride = overrides[key] !== undefined && overrides[key] !== null && overrides[key] !== '';
         const val = currentParams[key] !== undefined ? currentParams[key] : (INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : '');
+        const isLineToggle = key === 'EMA_USE_SECOND_LINE' || key === 'SMA_USE_SECOND_LINE';
+        const toggleChecked = val === true || val === 1 || String(val).toLowerCase() === 'true' || String(val) === '1';
         const label = paramLabels[key] || key.replace(/_/g, ' ').toLowerCase();
         const isPercent = key.endsWith('_PCT') || key.endsWith('_PERCENTAGE');
         const inputAttrs = botbulls5InputAttrs[key] || (key === 'PIVOT_LEVEL_COUNT'
@@ -4996,7 +5334,13 @@ function openIndicatorSettings(indicatorName) {
 
         const div = document.createElement('div');
         div.className = 'flex flex-col gap-1.5';
-        const controlHtml = key === 'SWING_POINTS_ENTRY_MODE'
+        const controlHtml = isLineToggle
+            ? `<label class="flex items-center justify-between gap-3 w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 cursor-pointer">
+                    <span class="text-xs font-bold text-indigo-900">Checked: two-line crossover · Unchecked: price vs primary line</span>
+                    <input type="checkbox" data-key="${key}" data-default="${INDICATOR_DEFAULTS[key] ? 1 : 0}" ${toggleChecked ? 'checked' : ''}
+                        class="w-5 h-5 accent-indigo-600 rounded">
+                </label>`
+            : key === 'SWING_POINTS_ENTRY_MODE'
             ? `<select data-key="${key}" data-default="${INDICATOR_DEFAULTS[key] !== undefined ? INDICATOR_DEFAULTS[key] : ''}"
                     class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-bold text-indigo-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all">
                     <option value="bounce_retest" ${val === 'bounce_retest' ? 'selected' : ''}>Bounce / Retest</option>
@@ -5017,6 +5361,8 @@ function openIndicatorSettings(indicatorName) {
         container.appendChild(div);
     });
 
+    window.wireMovingAverageLineToggles?.(container);
+
     document.getElementById('indicatorSettingsModal').classList.remove('hidden');
 }
 
@@ -5029,7 +5375,12 @@ function resetIndicatorSettingsToDefaults() {
     if (!currentEditingIndicator) return;
     const controls = document.querySelectorAll('#indicatorModalContent input, #indicatorModalContent select');
     controls.forEach(control => {
-        control.value = control.tagName === 'SELECT' ? (control.dataset.default || '') : control.placeholder; // Revert to system default
+        if (control.type === 'checkbox') {
+            control.checked = String(control.dataset.default) === '1';
+            control.dispatchEvent(new Event('change'));
+        } else {
+            control.value = control.tagName === 'SELECT' ? (control.dataset.default || '') : control.placeholder; // Revert to system default
+        }
         const container = control.closest('.flex-col');
         if (container) {
             const header = container.querySelector('.flex.justify-between.items-center');
@@ -5080,8 +5431,19 @@ function applyIndicatorSettingUpdatesLocally(updates) {
 
 async function saveIndicatorSettings() {
     const inputs = document.querySelectorAll('#indicatorModalContent input, #indicatorModalContent select');
+    const invalidInput = Array.from(inputs).find(input => input.tagName === 'INPUT' && !input.checkValidity());
+    if (invalidInput) {
+        invalidInput.reportValidity();
+        return;
+    }
     const updates = {};
     inputs.forEach(input => {
+        if (input.type === 'checkbox') {
+            const value = input.checked ? 1 : 0;
+            const defaultValue = String(input.dataset.default) === '1' ? 1 : 0;
+            updates[input.dataset.key] = value === defaultValue ? "" : value;
+            return;
+        }
         const defaultValue = input.tagName === 'SELECT' ? input.dataset.default : input.placeholder;
         if (input.value === defaultValue || input.value === "") {
             updates[input.dataset.key] = "";

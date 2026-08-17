@@ -1,0 +1,18 @@
+{
+  "name": "BotBulls Trading Command Center",
+  "short_name": "BotBulls",
+  "description": "Research, backtest, and manage BotBulls trading workflows.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f5f3ff",
+  "theme_color": "#312e81",
+  "icons": [
+    {
+      "src": "assets/bot_bulls_logo.png",
+      "sizes": "1254x1254",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

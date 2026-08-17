@@ -18,6 +18,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module=".*webull.
 import uuid
 import time
 import pandas as pd
+
 import config
 import os
 import logging
@@ -131,6 +132,7 @@ class WebullBroker:
         self.trade_client = None
         self.market_client = None
         self.account_id = None
+        self._risk_account_key = "webull:simulation"
 
         # Simulation state (mirrors AlpacaBroker)
         self.sim_equity = 100.0
@@ -253,6 +255,8 @@ class WebullBroker:
             )
             if res.status_code == 200:
                 self.simulation_mode = False
+                account_fingerprint = hashlib.sha256(str(self.account_id).encode("utf-8")).hexdigest()[:16]
+                self._risk_account_key = f"webull:live:{account_fingerprint}"
                 bal = res.json()
                 equity = bal.get('total_market_value', bal.get('net_liquidation', 0))
                 print(f"[webull] SUCCESS: Connected (Account: {self.account_id}) - Equity: ${equity}")
@@ -307,9 +311,11 @@ class WebullBroker:
                 'equity': self.sim_equity,
                 'cash': self.sim_cash,
                 'buying_power': self.sim_cash,
+                'daily_starting_equity': 100.0,
                 'daily_pl': round(self.sim_equity - 100.0, 2),
                 'daily_pl_pct': round(((self.sim_equity / 100.0) - 1) * 100, 2),
-                'simulation': True
+                'simulation': True,
+                '_risk_account_key': self._risk_account_key,
             }
 
         try:
@@ -334,9 +340,11 @@ class WebullBroker:
                 'cash': round(cash, 2),
                 'buying_power': round(buying_power, 2),
                 'non_marginable_buying_power': round(cash, 2),
+                'daily_starting_equity': round(last_equity, 2),
                 'daily_pl': round(daily_pl, 2),
                 'daily_pl_pct': round(daily_pl_pct, 2),
-                'simulation': False
+                'simulation': False,
+                '_risk_account_key': self._risk_account_key,
             }
         except Exception as e:
             print(f"[webull] Error getting account info: {e}")
@@ -416,15 +424,24 @@ class WebullBroker:
             return []
 
         try:
-            res = self._retry_request(
-                self.trade_client.order_v2.get_open_orders,
-                self.account_id
-            )
+            order_api = self.trade_client.order_v2
+            get_open = getattr(order_api, "get_open_orders", None) or getattr(order_api, "get_order_open", None)
+            if not callable(get_open):
+                raise AttributeError("Webull SDK does not expose an open-orders method")
+            try:
+                res = self._retry_request(get_open, self.account_id, page_size=100)
+            except TypeError:
+                # Compatibility with older Webull SDK builds whose alias only
+                # accepts the account ID.
+                res = self._retry_request(get_open, self.account_id)
             if res.status_code != 200:
                 return []
 
             open_list = []
-            for o in res.json():
+            payload = res.json()
+            if isinstance(payload, dict):
+                payload = payload.get("orders") or payload.get("data") or payload.get("items") or []
+            for o in payload if isinstance(payload, list) else []:
                 open_list.append({
                     'id': o.get('client_order_id', ''),
                     'symbol': o.get('symbol', '').replace('/', '').upper(),
@@ -438,6 +455,60 @@ class WebullBroker:
         except Exception as e:
             print(f"[webull] Error getting open orders: {e}")
             return []
+
+    def cancel_order_by_id(self, order_id: str) -> dict:
+        """Cancel a Webull working order by client order ID."""
+        if self.simulation_mode:
+            return {'success': False, 'error': 'Cannot cancel orders in simple simulation mode.'}
+        try:
+            cancel = getattr(self.trade_client.order_v2, "cancel_order", None)
+            if not callable(cancel):
+                raise AttributeError("Webull SDK does not expose order cancellation")
+            res = self._retry_request(cancel, self.account_id, str(order_id))
+            if res.status_code == 200:
+                return {'success': True}
+            return {'success': False, 'error': f"Webull cancellation failed ({res.status_code}): {res.text}"}
+        except Exception as e:
+            print(f"[webull] Error cancelling order {order_id}: {e}")
+            return {'success': False, 'error': str(e)}
+
+    def cancel_orders_for_ticker(self, ticker: str, side_filter: str = None) -> dict:
+        """Cancel working orders for one equity/crypto ticker or option underlying."""
+        import re
+
+        ticker_norm = str(ticker or "").replace("/", "").upper()
+        cancelled = 0
+        errors = []
+        for order in self.get_open_orders():
+            order_symbol = str(order.get("symbol", "")).replace("/", "").upper()
+            option_match = re.fullmatch(r"([A-Z]{1,6})\d{6}[CP]\d{8}", order_symbol)
+            belongs_to_ticker = order_symbol == ticker_norm or bool(
+                option_match and option_match.group(1) == ticker_norm
+            )
+            if not belongs_to_ticker:
+                continue
+            if side_filter and str(order.get("side", "")).lower() != str(side_filter).lower():
+                continue
+            result = self.cancel_order_by_id(str(order.get("id", "")))
+            if result.get("success"):
+                cancelled += 1
+            else:
+                errors.append(result.get("error", "Cancellation failed"))
+        return {'success': not errors, 'cancelled': cancelled, 'errors': errors}
+
+    def cancel_all_entry_orders(self) -> dict:
+        """Cancel every working BUY order while preserving protective SELL exits."""
+        cancelled = 0
+        errors = []
+        for order in self.get_open_orders():
+            if str(order.get("side", "")).lower() != "buy":
+                continue
+            result = self.cancel_order_by_id(str(order.get("id", "")))
+            if result.get("success"):
+                cancelled += 1
+            else:
+                errors.append(result.get("error", "Cancellation failed"))
+        return {'success': not errors, 'cancelled': cancelled, 'errors': errors}
 
     def place_order(self, symbol: str, notional: float, side: str = 'buy',
                     stop_loss: float = 0, take_profit: float = 0) -> dict:
@@ -685,11 +756,23 @@ class WebullBroker:
                 # the newest provider page and merge it with the older cache.
                 # This avoids a second API call and its rate-limit delay on
                 # every completed-candle refresh.
-                remaining = (
-                    min(page_limit, requested_count)
-                    if len(cached_history) >= requested_count
-                    else requested_count
-                )
+                latest_time = 0
+                if cached_history:
+                    latest_bar = cached_history[-1]
+                    latest_time = _time_value(latest_bar.get('time')) / 1_000_000_000 # convert to seconds
+                
+                if len(cached_history) >= min(200, requested_count) and latest_time > 0:
+                    tf_seconds_map = {
+                        "M1": 60, "M2": 120, "M3": 180, "M5": 300, "M10": 600,
+                        "M15": 900, "M30": 1800, "M60": 3600, "M120": 7200,
+                        "M240": 14400, "D": 86400, "W": 604800, "M": 2592000
+                    }
+                    tf_sec = tf_seconds_map.get(timespan.upper(), 300)
+                    elapsed_seconds = time.time() - latest_time
+                    needed_bars = int(elapsed_seconds / tf_sec) + 20 # add a 20-bar buffer for safety
+                    remaining = min(page_limit, max(50, needed_bars))
+                else:
+                    remaining = requested_count
                 last_time = None
                 responses = []
                 seen_cursors = set()
