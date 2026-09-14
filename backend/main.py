@@ -18,10 +18,11 @@ from fastapi import FastAPI, Query, Header, HTTPException, Depends, Request, Res
 from fastapi.encoders import jsonable_encoder
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager, contextmanager, suppress
+from contextlib import asynccontextmanager, contextmanager, suppress, redirect_stdout, redirect_stderr
 from pydantic import BaseModel
 from typing import Optional, Any
 import asyncio
+import copy
 import threading
 from datetime import datetime, timedelta
 import pytz
@@ -31,17 +32,19 @@ import time
 import os
 import re
 import json
+import io
 import yfinance as yf
 from cryptography.fernet import Fernet
 import base64
 import hashlib
 import math
+import numbers
 
 LEGAL_TERMS_VERSION = "BB-2026.07"
 TERMS_REQUIRED_STATUS = 428
 
 from trader import evaluate_trade, get_risk_manager, clear_evaluation_cache, get_confluence_decision
-from indicators import calculate_indicators_for_df, get_full_analysis
+from indicators import calculate_indicators_for_df, get_full_analysis, get_latest_completed_candle_metadata
 from data_manager import get_historical_data
 from engine import FIXED_LEVEL_EXIT_MODES, UserManager, UserEngine, _continuous_grid_forecast_state
 from swing_strategy import build_swing_exit, detect_swing_entry, format_swing_preview, build_entry_signal, format_entry_preview
@@ -65,7 +68,16 @@ from user_config import (
     reset_draft_ticker_settings,
     active_evaluation_context,
 )
+from screener_service import (
+    ScreenerManager,
+    ScreenerUserState,
+    evaluate_screener_profile,
+    normalize_screener_sms_phone,
+    normalize_screener_symbol,
+    profile_revision,
+)
 from ai_indicator import (
+    build_screener_news_watch,
     get_ai_indicator,
     get_ai_sentiment,
     clear_ai_cache,
@@ -73,6 +85,14 @@ from ai_indicator import (
     AI_TIMEFRAME_SPECS,
     normalize_ai_model_name,
     normalize_ai_timeframe,
+)
+from earnings_service import (
+    build_earnings_watch,
+    get_earnings_watch_detail,
+)
+from fundamental_service import (
+    build_fundamental_report,
+    get_fundamental_report_detail,
 )
 from cache_manager import TTLCacheStore, stable_cache_key
 from macro_actuals import enrich_macro_calendar_events
@@ -161,9 +181,11 @@ if not firebase_admin._apps:
 
 db = firestore.client()
 user_manager = UserManager(db)
+screener_manager = ScreenerManager(db)
 _webull_market_data_broker = None
 _chart_analysis_cache = TTLCacheStore(maxsize=256)
 _quote_cache = TTLCacheStore(maxsize=512)
+_webull_unavailable_quote_cache = TTLCacheStore(maxsize=512)
 _dashboard_broker_cache = TTLCacheStore(maxsize=64)
 _bots_broker_cache = TTLCacheStore(maxsize=64)
 _ai_indicator_endpoint_cache = TTLCacheStore(maxsize=128)
@@ -406,7 +428,7 @@ def _chart_cache_ttl(timeframe: str) -> int:
 
 
 def _normalize_analysis_context(source: str = "dashboard") -> str:
-    return source if source in {"dashboard", "bots", "backtest"} else "dashboard"
+    return source if source in {"dashboard", "bots", "screener", "backtest"} else "dashboard"
 
 
 def _enabled_indicator_names_from_toggles(toggles: dict) -> list[str]:
@@ -468,7 +490,9 @@ def _format_scan_price(price) -> str:
     try:
         p = float(price)
     except (TypeError, ValueError):
-        return "$0.00"
+        return "N/A"
+    if not math.isfinite(p):
+        return "N/A"
     return f"${p:.4f}" if p < 10 else f"${p:.2f}"
 
 
@@ -1082,10 +1106,18 @@ def _get_cached_chart_analysis(ticker: str, timeframe: str, eng: UserEngine, for
         stale_cached, stale_age = _chart_analysis_cache.peek_with_age(cache_key)
         if stale_cached and not force:
             return stale_cached["analysis"], True, stale_age
+        if stale_cached and force:
+            # A forced refresh is already in flight for this exact symbol,
+            # timeframe, source, and settings. Keep the chart usable while
+            # that worker publishes the fresh result to the same cache.
+            return stale_cached["analysis"], True, stale_age
         # Another request is already doing the Webull + indicator work. Wait a
         # short window for it to populate cache instead of launching duplicate
         # calculations that can make both browser requests time out.
-        wait_deadline = time.time() + 8.0
+        # Indicator calculation can take 20–25s on a cold 1,200-bar request.
+        # Stay inside the 30s route timeout so duplicate requests can observe
+        # the result instead of incorrectly becoming a 404 at eight seconds.
+        wait_deadline = time.time() + 28.0
         while time.time() < wait_deadline:
             if fetch_lock.acquire(blocking=False):
                 try:
@@ -1101,7 +1133,7 @@ def _get_cached_chart_analysis(ticker: str, timeframe: str, eng: UserEngine, for
             time.sleep(0.1)
 
         stale_cached, stale_age = _chart_analysis_cache.peek_with_age(cache_key)
-        if stale_cached and not force:
+        if stale_cached:
             return stale_cached["analysis"], True, stale_age
         return None, False, 0.0
 
@@ -1118,7 +1150,7 @@ def _get_cached_chart_analysis(ticker: str, timeframe: str, eng: UserEngine, for
         analysis = get_full_analysis(ticker_key, timeframe=timeframe_key, data_source="webull", settings=settings)
         if not analysis:
             stale_cached, stale_age = _chart_analysis_cache.peek_with_age(cache_key)
-            if stale_cached and not force:
+            if stale_cached:
                 print(f"[chart] Live providers unavailable for {ticker_key}; serving stale chart cache")
                 return stale_cached["analysis"], True, stale_age
             analysis = _get_chart_analysis_fallback(
@@ -1137,6 +1169,49 @@ def _get_cached_chart_analysis(ticker: str, timeframe: str, eng: UserEngine, for
 
 def _get_prior_day_ohlc(price_history):
     return _shared_prior_day_ohlc_from_history(price_history)
+
+
+def _sanitize_json_values(value):
+    """Return a JSON-safe copy, replacing non-finite numeric values with None.
+
+    Indicator calculations can legitimately contain NaN/Inf while an indicator
+    is warming up or a provider returns an incomplete bar. Starlette's JSON
+    response encoder rejects those values, so sanitize at the API boundary
+    instead of allowing a single incomplete field to turn a chart into a 500.
+    """
+    if isinstance(value, dict):
+        return {key: _sanitize_json_values(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_json_values(item) for item in value]
+    # numbers.Real also covers numpy floating/integer scalar values returned by
+    # pandas calculations. Keep booleans as booleans (bool is a Real subclass).
+    if isinstance(value, numbers.Real) and not isinstance(value, bool):
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            return None
+        if isinstance(value, numbers.Integral):
+            return int(value)
+        return numeric if not isinstance(value, float) else value
+    return value
+
+
+def _has_usable_chart_history(analysis: dict) -> bool:
+    """Whether the latest chart candle has a finite close."""
+    if not isinstance(analysis, dict):
+        return False
+    history = analysis.get("price_history")
+    if not isinstance(history, (list, tuple)):
+        return False
+    if not history:
+        return False
+    latest = history[-1]
+    if not isinstance(latest, dict):
+        return False
+    close = latest.get("close")
+    try:
+        return close is not None and math.isfinite(float(close))
+    except (TypeError, ValueError):
+        return False
 
 
 def _next_level_above(levels, current_price, fallback_step):
@@ -1238,7 +1313,7 @@ def _technical_scan_from_analysis(
     )
     price = analysis.get("price", 0.0)
     prior_day = analysis.get("prior_day_ohlc") or _get_prior_day_ohlc(analysis.get("price_history", []))
-    return {
+    return _sanitize_json_values({
         "prior_day_ohlc": prior_day,
         "time": get_now().isoformat(),
         "ticker": _normalize_quote_symbol(ticker),
@@ -1270,7 +1345,7 @@ def _technical_scan_from_analysis(
         "price_history": analysis.get("price_history", []),
         "risk_status": {},
         "is_custom": False,
-    }
+    })
 
 
 def _build_chart_payload(
@@ -1380,7 +1455,7 @@ def _build_chart_payload(
     formatted_scan.pop("price_history", None)
     price_history = scan.get("price_history", [])
     total_ms = ((time.perf_counter() - started) * 1000) if started is not None else 0.0
-    return {
+    return _sanitize_json_values({
         "ticker": ticker,
         "timeframe": timeframe,
         "cached": cached,
@@ -1401,7 +1476,7 @@ def _build_chart_payload(
             "cache_age_seconds": round(cache_age or 0.0, 1),
             "cached": cached,
         }
-    }
+    })
 
 
 def _normalize_quote_symbol(symbol: str) -> str:
@@ -1424,6 +1499,24 @@ def _normalize_market_session_for_symbol(symbol: str, session: str = None) -> st
     return session_text
 
 
+def _normalize_screener_market_session(symbol: str, session: str = None, is_options: bool = False) -> str:
+    """Return a session the independent Screener can evaluate with current data.
+
+    Crypto has continuous candles.  The stock Screener's free provider path has
+    regular and pre/post-market bars only; it must never present a stock 24/5
+    setting as live overnight analysis.  Legacy stock ``24h`` profiles are
+    migrated to Extended instead of silently retaining a misleading label.
+    """
+    if _is_crypto_symbol(symbol):
+        return "24h"
+    if is_options:
+        return "Regular"
+    value = str(session or "Regular").strip().lower()
+    if value in {"extended", "all", "24h", "crypto24", "24/5", "overnight"}:
+        return "Extended"
+    return "Regular"
+
+
 def _validate_market_session_for_symbol(symbol: str, market_session: str, eng: UserEngine) -> dict:
     session = _normalize_market_session_for_symbol(symbol, market_session)
     check = eng.broker.check_market_session_allowed(symbol, session)
@@ -1440,14 +1533,14 @@ def _format_quote_price(symbol: str, price) -> str:
         return ""
     clean = _normalize_quote_symbol(symbol)
     is_crypto = any(clean.endswith(base) for base in ["USD", "USDT", "USDC"])
-    
+
     if is_crypto:
         decimals = 8
     elif price_float < 1.0:
         decimals = 4
     else:
         decimals = 2
-        
+
     res = f"${price_float:.{decimals}f}"
     if is_crypto and '.' in res:
         res = res.rstrip('0').rstrip('.')
@@ -1505,19 +1598,38 @@ def _get_cached_latest_prices(eng: UserEngine, tickers: list, max_age: int = 3, 
                 if hasattr(eng.broker, "get_latest_prices") and getattr(eng.broker, "market_client", None)
                 else None
             )
-
+            provider_source = "broker" if provider is not None else "webull"
             if provider is None:
                 provider = _get_webull_market_data_broker()
 
             if provider is not None:
+                provider_misses = (
+                    [ticker for ticker in misses if not _webull_unavailable_quote_cache.get(ticker, ttl_seconds=900)]
+                    if provider_source == "webull" else misses
+                )
                 try:
-                    fresh = provider.get_latest_prices(misses) or {}
+                    fresh = provider.get_latest_prices(provider_misses) if provider_misses else {}
                     for ticker, price in fresh.items():
                         cache_key = stable_cache_key(eng.uid, _normalize_quote_symbol(ticker), "quote", 1)
                         _quote_cache.set(cache_key, price)
                         result[_normalize_quote_symbol(ticker)] = price
                 except Exception as e:
-                    print(f"[dashboard] Live quote fetch failed for {misses}: {type(e).__name__}: {e!r}")
+                    print(f"[dashboard] Live quote fetch failed for {provider_misses}: {type(e).__name__}: {e!r}")
+                if provider_source == "webull":
+                    for ticker in provider_misses:
+                        if ticker not in result:
+                            _webull_unavailable_quote_cache.set(ticker, True)
+
+            # Yahoo is the fallback for symbols that Webull does not list,
+            # including valid equities such as DJT. This runs in the existing
+            # worker thread and is cached with the same quote TTL.
+            for ticker in misses:
+                if ticker not in result:
+                    yahoo_price = _get_yahoo_latest_price(ticker)
+                    if yahoo_price is not None:
+                        cache_key = stable_cache_key(eng.uid, ticker, "quote", 1)
+                        _quote_cache.set(cache_key, yahoo_price)
+                        result[ticker] = yahoo_price
 
             for ticker in misses:
                 if ticker not in result:
@@ -1536,6 +1648,44 @@ def _lookup_quote_price(latest_prices: dict, symbol: str):
     return None
 
 
+def _get_yahoo_latest_price(symbol: str):
+    """Fetch one quote from Yahoo when Webull does not support the symbol."""
+    clean = _normalize_quote_symbol(symbol)
+    if not clean:
+        return None
+    try:
+        import requests
+        response = requests.get(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{clean}",
+            params={"range": "1d", "interval": "1m", "includePrePost": "true"},
+            headers={"User-Agent": "BotBulls/1.0"},
+            timeout=3.0,
+        )
+        response.raise_for_status()
+        result = (response.json().get("chart") or {}).get("result") or []
+        if not result:
+            return None
+        meta = result[0].get("meta") or {}
+        candidates = [meta.get("regularMarketPrice"), meta.get("postMarketPrice")]
+        indicators = result[0].get("indicators") or {}
+        quote_rows = indicators.get("quote") or []
+        closes = (quote_rows[0] if quote_rows else {}).get("close") or []
+        candidates.extend(reversed(closes))
+        for candidate in candidates:
+            try:
+                price = float(candidate)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(price) and price > 0:
+                return price
+    except Exception:
+        # The caller will retain a stale cache (when available) or return the
+        # normal unavailable response. Do not turn a fallback outage into a
+        # second noisy provider error.
+        return None
+    return None
+
+
 def _get_cached_quote_detail(eng: UserEngine, symbol: str, max_age: int = 10, stale_max_age: int = 300) -> dict:
     clean = _normalize_quote_symbol(symbol)
     cache_key = stable_cache_key(eng.uid, clean, "quote", 1)
@@ -1550,7 +1700,8 @@ def _get_cached_quote_detail(eng: UserEngine, symbol: str, max_age: int = 10, st
 
         providers = []
         webull_provider = _get_webull_market_data_broker()
-        if webull_provider is not None:
+        webull_unavailable = _webull_unavailable_quote_cache.get(clean, ttl_seconds=900)
+        if webull_provider is not None and not webull_unavailable:
             providers.append(("webull", webull_provider))
 
         broker_provider = (
@@ -1568,8 +1719,20 @@ def _get_cached_quote_detail(eng: UserEngine, symbol: str, max_age: int = 10, st
                 if price is not None:
                     _quote_cache.set(cache_key, price)
                     return {"price": price, "cache_age": 0.0, "source": source, "stale": False}
+                if source == "webull":
+                    # Unsupported symbols such as DJT should not generate the
+                    # same Webull 417 on every refresh while Yahoo supplies a
+                    # valid fallback quote.
+                    _webull_unavailable_quote_cache.set(clean, True)
             except Exception as e:
+                if source == "webull":
+                    _webull_unavailable_quote_cache.set(clean, True)
                 print(f"[dashboard] Live quote fetch failed for {clean} via {source}: {type(e).__name__}: {e!r}")
+
+        yahoo_price = _get_yahoo_latest_price(clean)
+        if yahoo_price is not None:
+            _quote_cache.set(cache_key, yahoo_price)
+            return {"price": yahoo_price, "cache_age": 0.0, "source": "yahoo", "stale": False}
 
     cached, age = _quote_cache.peek_with_age(cache_key)
     if cached is not None and age is not None and age < stale_max_age:
@@ -1701,6 +1864,14 @@ async def get_user_engine(request: Request, user: dict = Depends(verify_token)) 
     set_user_config(eng.config)
     return eng
 
+
+async def get_screener_state(user: dict = Depends(verify_token)) -> ScreenerUserState:
+    """Load Screener state without creating or starting a trading engine."""
+    state = screener_manager.get_state(user["uid"])
+    await state.load()
+    set_user_config(state.config)
+    return state
+
 def get_now():
     """Returns current time in the configured timezone."""
     tz = pytz.timezone(get_user_config().TIMEZONE)
@@ -1717,13 +1888,823 @@ class LegalAcceptance(BaseModel):
     paper_trading_acknowledged: bool = True
 
 
+async def _scan_screener_state(
+    state: ScreenerUserState,
+    symbols: list[str] = None,
+    force_scan: bool = False,
+) -> None:
+    """Refresh Screener analysis only; a settings save may force one run."""
+    if state.scan_lock.locked():
+        return
+    async with state.scan_lock:
+        # The event is a pending-request marker. Clear it only after the lock
+        # is acquired so a settings save that races an in-flight normal scan
+        # is retried by the scheduler instead of being lost.
+        if force_scan:
+            state.force_scan.clear()
+        requested_symbols = symbols or list(state.order)
+        selected = []
+        seen_symbols = set()
+        for raw_symbol in requested_symbols:
+            symbol = normalize_screener_symbol(raw_symbol)
+            if symbol and symbol in state.profiles and symbol not in seen_symbols:
+                selected.append(symbol)
+                seen_symbols.add(symbol)
+        set_user_config(state.config)
+        context_token = active_evaluation_context.set("screener")
+        cycle_error = False
+        try:
+            for raw_symbol in selected:
+                symbol = normalize_screener_symbol(raw_symbol)
+                settings = state.profiles.get(symbol, {})
+                if not symbol or not settings or not bool(settings.get("enabled", not settings.get("paused", False))):
+                    continue
+                timeframe = settings.get("timeframe") or state.page_settings.get("chart_timeframe") or state.config.DEFAULT_TIMEFRAME
+                evaluation_state = state.evaluation_state.setdefault(symbol, {})
+                scan_interval = _screener_scan_interval_seconds(settings)
+                session_status = _screener_market_status(symbol, settings)
+                if not session_status["is_active_window"] and not force_scan:
+                    # Match Bots: do not fetch candles or run technical
+                    # evaluation while the configured market session is shut.
+                    # Keep the latest price/analysis in place so reopening the
+                    # session can restore it until a new candle is available.
+                    next_due_at = time.time() + scan_interval
+                    cached_scan = copy.deepcopy(
+                        state.latest_scans.get(symbol) or _empty_screener_scan(symbol, settings)
+                    )
+                    scan_log = cached_scan.setdefault("scan_log", {})
+                    is_options = bool(settings.get("options_trading") or settings.get("is_option"))
+                    session_label = session_status["market_session_label"]
+                    scan_log.update({
+                        "summary": f"🛑 {session_label} Market Closed. Starts scanning 2m before open ({session_status['next_open_str']}).",
+                        "detail": f"Starts scanning in {_format_duration_compact(session_status['seconds_to_pre_open'])} (2m prior to market opening).",
+                        "status": "MARKET_CLOSED",
+                        "decision": "HOLD",
+                        "market_session": session_label,
+                        "is_options_market_closed": is_options,
+                        "is_stock_market_closed": not is_options,
+                        "seconds_to_open": session_status["seconds_to_open"],
+                        "seconds_to_pre_open": session_status["seconds_to_pre_open"],
+                        "next_open_str": session_status["next_open_str"],
+                        # Keep the configured scan interval separate from the
+                        # countdown until the next market session opens.
+                        "refresh_rate_sec": scan_interval,
+                        "next_due_at": next_due_at,
+                        "session_paused": True,
+                    })
+                    cached_scan["scan_log"] = scan_log
+                    state.latest_scans[symbol] = cached_scan
+                    evaluation_state["next_due_at"] = next_due_at
+                    evaluation_state["last_data_check_at"] = datetime.now(pytz.UTC).isoformat()
+                    evaluation_state["session_paused"] = True
+                    continue
+                evaluation_state["session_paused"] = False
+                previous_candle_key = str(evaluation_state.get("last_candle_key") or "")
+                if previous_candle_key and not evaluation_state.get("baseline_required") and not force_scan:
+                    # Poll only the newest bars after the first valid analysis.
+                    # A repeated completed-candle key must not trigger another
+                    # 1,200-bar fetch and full indicator calculation.
+                    try:
+                        async with screener_manager.evaluation_semaphore:
+                            latest_meta = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    get_latest_completed_candle_metadata,
+                                    symbol,
+                                    timeframe,
+                                    settings.get("market_session", "extended"),
+                                ),
+                                timeout=8.0,
+                            )
+                    except Exception as exc:
+                        latest_meta = {"candle_key": None, "candle_status": "unavailable"}
+                        print(f"[screener] Candle probe failed for {symbol}: {exc}")
+                    probe_key = str(latest_meta.get("candle_key") or "")
+                    next_due_at = time.time() + scan_interval
+                    if probe_key == previous_candle_key or not probe_key:
+                        cached_scan = state.latest_scans.get(symbol)
+                        if isinstance(cached_scan, dict) and isinstance(cached_scan.get("scan_log"), dict):
+                            cached_scan = copy.deepcopy(cached_scan)
+                            if cached_scan["scan_log"].get("status") == "MARKET_CLOSED":
+                                cached_scan["scan_log"] = _build_screener_scan_log(
+                                    symbol,
+                                    cached_scan,
+                                    settings,
+                                    evaluation_state,
+                                )
+                            cached_scan["scan_log"]["next_due_at"] = next_due_at
+                            cached_scan["scan_log"]["refresh_rate_sec"] = scan_interval
+                            cached_scan["scan_log"]["last_data_check_at"] = datetime.now(pytz.UTC).isoformat()
+                            cached_scan["scan_log"]["no_new_completed_candle"] = bool(probe_key)
+                            state.latest_scans[symbol] = cached_scan
+                        evaluation_state["next_due_at"] = next_due_at
+                        evaluation_state["last_data_check_at"] = datetime.now(pytz.UTC).isoformat()
+                        if not probe_key:
+                            cycle_error = True
+                            state.health["last_error"] = f"Completed-candle probe unavailable for {symbol}; retained last valid analysis"
+                        else:
+                            print(f"[screener] Skip: {symbol} no new completed candle (candle_key={previous_candle_key})")
+                        continue
+                try:
+                    async with screener_manager.evaluation_semaphore:
+                        scan = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                evaluate_screener_profile,
+                                state.uid,
+                                {**copy.deepcopy(settings), "symbol": symbol},
+                                copy.deepcopy(state.config.contexts.get("screener", {})),
+                            ),
+                            timeout=45.0,
+                        )
+                    formatted = _format_scan_for_ui(scan or {}, use_global_settings=False)
+                    formatted["evaluation_status"] = scan.get("evaluation_status", "waiting")
+                    direction = scan.get("direction", "NEUTRAL")
+                    formatted["candle_meta"] = scan.get("candle_meta", {})
+                    formatted["atr_levels"] = scan.get("atr_levels", {})
+
+                    # Anti-Chasing / Overextension Quality Guard
+                    if direction in ("BULLISH", "BEARISH"):
+                        blocker = _smart_reentry_blocker_text(settings, formatted, direction, None)
+                        if blocker:
+                            scan["direction"] = "NEUTRAL"
+                            direction = "NEUTRAL"
+                            existing_reason = formatted.get("reason", "")
+                            formatted["reason"] = f"⚠️ {blocker}" + (f" | {existing_reason}" if existing_reason else "")
+                            scan["reason"] = formatted["reason"]
+
+                    formatted["direction"] = direction
+                    bullish = int(formatted.get("bullish_count", 0) or 0)
+                    bearish = int(formatted.get("bearish_count", 0) or 0)
+                    formatted["ticker"] = symbol
+                    formatted["timeframe"] = timeframe
+                    formatted["log_type"] = "Screener"
+                    formatted["scanned_at"] = datetime.now(pytz.UTC).isoformat()
+                    # Structural exits are evaluated against the current
+                    # virtual Screener cycle before committing this candle.
+                    # If an ATR/PCT/level trigger fires while the indicator
+                    # direction is still bullish, record a bearish transition
+                    # so Alerts and Signal Activity cannot miss the exit.
+                    new_exit_event = {}
+                    exit_event = {}
+                    sell_mode = str(
+                        settings.get("sell_mode")
+                        or settings.get("options_exit_strategy")
+                        or "indicator"
+                    ).strip().lower()
+                    stored_exit_key = str(evaluation_state.get("last_exit_event_candle_key") or "")
+                    current_candle_key = str((formatted.get("candle_meta") or {}).get("candle_key") or "")
+                    stored_exit_event = evaluation_state.get("last_exit_event")
+                    if (
+                        stored_exit_key
+                        and stored_exit_key == current_candle_key
+                        and isinstance(stored_exit_event, dict)
+                        and stored_exit_event.get("triggered")
+                    ):
+                        exit_event = copy.deepcopy(stored_exit_event)
+                    if evaluation_state.get("virtual_position") and sell_mode != "indicator":
+                        candidate_exit = _screener_exit_level_status(
+                            settings,
+                            formatted,
+                            evaluation_state,
+                            sell_mode,
+                        )
+                        if candidate_exit.get("triggered"):
+                            new_exit_event = candidate_exit
+                            exit_event = candidate_exit
+                    if settings.get("options_trading"):
+                        exp_days = settings.get("options_expiry_days", 3)
+                        strike_type = settings.get("options_strike_type", "ATM")
+                        opt_side = "CALL" if direction == "BULLISH" else ("PUT" if direction == "BEARISH" else None)
+                        formatted["options_play"] = {
+                            "side": opt_side,
+                            "expiry_days": exp_days,
+                            "strike_type": strike_type,
+                            "summary": f"{symbol} ~{exp_days}D {strike_type} {opt_side}" if opt_side else f"~{exp_days}D {strike_type} (Pending Setup)",
+                        }
+                    state.latest_scans[symbol] = formatted
+                    evaluation_for_commit = scan
+                    if new_exit_event:
+                        evaluation_for_commit = copy.deepcopy(scan)
+                        evaluation_for_commit["direction"] = "BEARISH"
+                        evaluation_for_commit["action"] = "SELL"
+                        evaluation_for_commit["atr_levels"] = exit_event
+                        evaluation_for_commit["screener_exit_event"] = True
+                        evaluation_for_commit["reason"] = str(
+                            exit_event.get("text")
+                            or evaluation_for_commit.get("reason")
+                            or "Configured structural exit reached."
+                        )
+                    notification = state.commit_evaluation(symbol, evaluation_for_commit)
+                    event_direction = "BEARISH" if exit_event else direction
+                    print(
+                        f"[screener] Scan: {symbol} direction={direction} "
+                        f"candle_close_ts={(scan.get('candle_meta') or {}).get('candle_close_ts')} "
+                        f"alert={'created' if notification else 'none'}"
+                        f" event_direction={event_direction}"
+                    )
+                    evaluation_state["next_due_at"] = time.time() + scan_interval
+                    formatted["scan_log"] = _build_screener_scan_log(
+                        symbol,
+                        formatted,
+                        settings,
+                        evaluation_state,
+                        alert_created=bool(notification),
+                        exit_event=exit_event,
+                    )
+                    # Preserve the exact scan-log snapshot that accompanied a
+                    # newly created alert. Signal Activity is historical, so
+                    # it must remain explainable even after the live card has
+                    # moved to a later candle.
+                    if notification:
+                        notification.update({
+                            "event_direction": event_direction,
+                            "timeframe": timeframe,
+                            "scan_log": copy.deepcopy(formatted["scan_log"]),
+                            "scan_reason": str(formatted.get("reason") or ""),
+                            "candle_meta": copy.deepcopy(formatted.get("candle_meta") or {}),
+                            "atr_levels": copy.deepcopy(
+                                evaluation_for_commit.get("atr_levels")
+                                or formatted.get("atr_levels")
+                                or {}
+                            ),
+                        })
+                    # A force scan may run outside the selected stock session
+                    # to refresh settings immediately. Keep the market-closed
+                    # banner and stopped regular timer visible while exposing
+                    # the freshly evaluated result underneath that state.
+                    if force_scan and not session_status["is_active_window"]:
+                        is_options_market = bool(settings.get("options_trading") or settings.get("is_option"))
+                        formatted["scan_log"].update({
+                            "market_session": session_status["market_session_label"],
+                            "is_options_market_closed": is_options_market,
+                            "is_stock_market_closed": not is_options_market,
+                            "seconds_to_open": session_status["seconds_to_open"],
+                            "seconds_to_pre_open": session_status["seconds_to_pre_open"],
+                            "next_open_str": session_status["next_open_str"],
+                            "session_paused": True,
+                            "force_scan_completed": True,
+                        })
+                    if notification:
+                        state.health["email_queued"] = sum(item.get("status") == "queued" for item in state.email_outbox)
+                        state.health["sms_queued"] = sum(item.get("status") == "queued" for item in state.sms_outbox)
+                    state.activity.insert(0, {
+                        "time": formatted["scanned_at"],
+                        "ticker": symbol,
+                        "action": event_direction,
+                        "price": formatted.get("price", ""),
+                        "reason": evaluation_for_commit.get("reason", formatted.get("reason", "")),
+                        "bullish_count": bullish,
+                        "bearish_count": bearish,
+                        "total_signals": formatted.get("total_signals", 0),
+                        "timeframe": timeframe,
+                        "log_type": "Screener",
+                        "scan_log_status": formatted["scan_log"].get("status"),
+                        "scan_log_summary": formatted["scan_log"].get("summary"),
+                        "target_direction": formatted["scan_log"].get("target_direction"),
+                        "virtual_position": formatted["scan_log"].get("virtual_position", False),
+                    })
+                    state.activity = state.activity[:100]
+                except asyncio.TimeoutError:
+                    cycle_error = True
+                    print(f"[screener] Scan timed out for {symbol}")
+                    state.health["last_error"] = f"Scan timed out for {symbol}"
+                except Exception as exc:
+                    cycle_error = True
+                    print(f"[screener] Scan failed for {symbol}: {exc}")
+                    state.health["last_error"] = str(exc)
+            state.health.update({
+                "status": "degraded" if cycle_error else "healthy",
+                "last_scan_at": time.time(),
+                "last_success_at": time.time() if not cycle_error else state.health.get("last_success_at"),
+                "consecutive_failures": 0,
+            })
+            if not cycle_error:
+                state.health["last_error"] = ""
+            await state.save()
+        finally:
+            active_evaluation_context.reset(context_token)
+
+
+async def _watch_screener_news_state(state: ScreenerUserState, symbols: list[str] = None) -> None:
+    """Refresh ticker news independently from completed-candle signal scans."""
+    if state.news_lock.locked():
+        return
+    async with state.news_lock:
+        selected = symbols or list(state.order)
+        set_user_config(state.config)
+        context_token = active_evaluation_context.set("screener")
+
+        async def _refresh_symbol(symbol: str):
+            settings = state.profiles.get(symbol, {})
+            previous = copy.deepcopy(state.news_watch.get(symbol) or {})
+            model = settings.get("ai_model") or getattr(state.config, "AI_INDICATOR_MODEL", None)
+            try:
+                async with screener_manager.news_semaphore:
+                    payload = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            build_screener_news_watch,
+                            symbol,
+                            previous,
+                            model,
+                            60,
+                        ),
+                        timeout=50.0,
+                    )
+                return symbol, payload
+            except Exception as exc:
+                now_ts = time.time()
+                failures = int(previous.get("failure_count") or 0) + 1
+                retry_seconds = min(900, 60 * (2 ** min(failures - 1, 4)))
+                payload = dict(previous)
+                payload.update({
+                    "enabled": True,
+                    "status": "stale" if previous.get("initialized") else "unavailable",
+                    "ticker": symbol,
+                    "checked_at": datetime.now(pytz.UTC).isoformat(),
+                    "failure_count": failures,
+                    "new_count": 0,
+                    "error": f"{type(exc).__name__}: {str(exc)[:160]}",
+                    "next_check_at": now_ts + retry_seconds,
+                })
+                print(f"[screener] News watch failed for {symbol}: {exc}")
+                return symbol, payload
+
+        try:
+            active_symbols = [
+                normalize_screener_symbol(raw_symbol)
+                for raw_symbol in selected
+                if normalize_screener_symbol(raw_symbol)
+                and bool(state.profiles.get(normalize_screener_symbol(raw_symbol), {}).get("enabled", True))
+                and bool(state.profiles.get(normalize_screener_symbol(raw_symbol), {}).get("news_watch_enabled", True))
+            ]
+            if not active_symbols:
+                return
+            results = await asyncio.gather(
+                *(_refresh_symbol(symbol) for symbol in active_symbols),
+                return_exceptions=False,
+            )
+            for symbol, payload in results:
+                state.news_watch[symbol] = payload
+            await state.save()
+        finally:
+            active_evaluation_context.reset(context_token)
+
+
+async def _watch_screener_earnings_state(state: ScreenerUserState, symbols: list[str] = None) -> None:
+    """Refresh structured earnings risk independently from technical scans."""
+    if state.earnings_lock.locked():
+        return
+    async with state.earnings_lock:
+        selected = symbols or list(state.order)
+        set_user_config(state.config)
+
+        async def _refresh_symbol(symbol: str):
+            settings = state.profiles.get(symbol, {})
+            previous = copy.deepcopy(state.earnings_watch.get(symbol) or {})
+            try:
+                async with screener_manager.earnings_semaphore:
+                    payload = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            build_earnings_watch,
+                            symbol,
+                            previous,
+                            bool(settings.get("options_trading")),
+                            False,
+                        ),
+                        timeout=50.0,
+                    )
+                return symbol, payload
+            except Exception as exc:
+                now_ts = time.time()
+                payload = dict(previous)
+                payload.update({
+                    "enabled": True,
+                    "status": "stale" if previous.get("initialized") else "unavailable",
+                    "ticker": symbol,
+                    "checked_at": datetime.now(pytz.UTC).isoformat(),
+                    "error": f"{type(exc).__name__}: {str(exc)[:160]}",
+                    "next_check_at": now_ts + 1800,
+                })
+                print(f"[screener] Earnings watch failed for {symbol}: {exc}")
+                return symbol, payload
+
+        active_symbols = [
+            normalize_screener_symbol(raw_symbol)
+            for raw_symbol in selected
+            if normalize_screener_symbol(raw_symbol)
+            and bool(state.profiles.get(normalize_screener_symbol(raw_symbol), {}).get("enabled", True))
+            and bool(state.profiles.get(normalize_screener_symbol(raw_symbol), {}).get("earnings_watch_enabled", True))
+            and not _is_crypto_symbol(normalize_screener_symbol(raw_symbol))
+        ]
+        if not active_symbols:
+            return
+        results = await asyncio.gather(
+            *(_refresh_symbol(symbol) for symbol in active_symbols),
+            return_exceptions=False,
+        )
+        for symbol, payload in results:
+            state.earnings_watch[symbol] = payload
+        await state.save()
+
+
+async def _watch_screener_fundamental_state(state: ScreenerUserState, symbols: list[str] = None) -> None:
+    """Refresh 24-hour fundamental reports independently from technical scans."""
+    if state.fundamental_lock.locked():
+        return
+    async with state.fundamental_lock:
+        selected = symbols or list(state.order)
+        set_user_config(state.config)
+
+        async def _refresh_symbol(symbol: str):
+            settings = state.profiles.get(symbol, {})
+            previous = copy.deepcopy(state.fundamental_reports.get(symbol) or {})
+            try:
+                async with screener_manager.earnings_semaphore:
+                    payload = await asyncio.wait_for(asyncio.to_thread(
+                        build_fundamental_report,
+                        symbol,
+                        previous,
+                        bool(settings.get("options_trading")),
+                        False,
+                    ), timeout=50.0)
+                return symbol, payload
+            except Exception as exc:
+                payload = dict(previous)
+                payload.update({
+                    "ticker": symbol,
+                    "status": "stale" if previous.get("status") == "current" else "unavailable",
+                    "checked_at": datetime.now(pytz.UTC).isoformat(),
+                    "error": f"{type(exc).__name__}: {str(exc)[:160]}",
+                    "next_check_at": time.time() + 1800,
+                })
+                print(f"[screener] Fundamental report failed for {symbol}: {exc}")
+                return symbol, payload
+
+        active_symbols = [
+            normalize_screener_symbol(raw_symbol)
+            for raw_symbol in selected
+            if normalize_screener_symbol(raw_symbol)
+            and bool(state.profiles.get(normalize_screener_symbol(raw_symbol), {}).get("enabled", True))
+            and bool(state.profiles.get(normalize_screener_symbol(raw_symbol), {}).get("fundamental_watch_enabled", True))
+            and not _is_crypto_symbol(normalize_screener_symbol(raw_symbol))
+        ]
+        if not active_symbols:
+            return
+        results = await asyncio.gather(*(_refresh_symbol(symbol) for symbol in active_symbols), return_exceptions=False)
+        for symbol, payload in results:
+            state.fundamental_reports[symbol] = payload
+        await state.save()
+
+
+async def _screener_scheduler_loop() -> None:
+    """Independent scheduler that survives Bots-page and trading-loop disablement."""
+    await screener_manager.discover_active_users()
+    next_discovery = time.monotonic() + 60
+    while True:
+        cycle_started = time.monotonic()
+        if cycle_started >= next_discovery:
+            await screener_manager.discover_active_users()
+            next_discovery = cycle_started + 60
+        states = list(screener_manager.states.values())
+        if states:
+            due_work = []
+            due_news_work = []
+            due_earnings_work = []
+            due_fundamental_work = []
+            now = time.time()
+            for state in states:
+                due_symbols = [
+                    symbol for symbol in state.order
+                    if bool(state.profiles.get(symbol, {}).get("enabled", True))
+                    and now >= float(state.evaluation_state.get(symbol, {}).get("next_due_at", 0) or 0)
+                ]
+                if state.force_scan.is_set() and not state.scan_lock.locked():
+                    due_work.append(_scan_screener_state(state, due_symbols or list(state.order), force_scan=True))
+                elif due_symbols:
+                    due_work.append(_scan_screener_state(state, due_symbols))
+                due_news_symbols = [
+                    symbol for symbol in state.order
+                    if bool(state.profiles.get(symbol, {}).get("enabled", True))
+                    and bool(state.profiles.get(symbol, {}).get("news_watch_enabled", True))
+                    and now >= float(state.news_watch.get(symbol, {}).get("next_check_at", 0) or 0)
+                ]
+                if due_news_symbols:
+                    due_news_work.append(_watch_screener_news_state(state, due_news_symbols))
+                due_earnings_symbols = [
+                    symbol for symbol in state.order
+                    if bool(state.profiles.get(symbol, {}).get("enabled", True))
+                    and bool(state.profiles.get(symbol, {}).get("earnings_watch_enabled", True))
+                    and not _is_crypto_symbol(symbol)
+                    and now >= float(state.earnings_watch.get(symbol, {}).get("next_check_at", 0) or 0)
+                ]
+                if due_earnings_symbols:
+                    due_earnings_work.append(_watch_screener_earnings_state(state, due_earnings_symbols))
+                due_fundamental_symbols = [
+                    symbol for symbol in state.order
+                    if bool(state.profiles.get(symbol, {}).get("enabled", True))
+                    and bool(state.profiles.get(symbol, {}).get("fundamental_watch_enabled", True))
+                    and not _is_crypto_symbol(symbol)
+                    and now >= float(state.fundamental_reports.get(symbol, {}).get("next_check_at", 0) or 0)
+                ]
+                if due_fundamental_symbols:
+                    due_fundamental_work.append(_watch_screener_fundamental_state(state, due_fundamental_symbols))
+            if due_work or due_news_work or due_earnings_work or due_fundamental_work:
+                await asyncio.gather(*(due_work + due_news_work + due_earnings_work + due_fundamental_work), return_exceptions=True)
+        elapsed = time.monotonic() - cycle_started
+        await asyncio.sleep(max(1.0, 10.0 - elapsed))
+
+
+def _smtp_settings() -> dict:
+    return {
+        "host": os.getenv("SCREENER_SMTP_HOST") or os.getenv("SMTP_HOST", ""),
+        "port": int(os.getenv("SCREENER_SMTP_PORT") or os.getenv("SMTP_PORT", "587")),
+        "username": os.getenv("SCREENER_SMTP_USERNAME") or os.getenv("SMTP_USERNAME", ""),
+        "password": os.getenv("SCREENER_SMTP_PASSWORD") or os.getenv("SMTP_PASSWORD", ""),
+        "from_email": os.getenv("SCREENER_SMTP_FROM") or os.getenv("SMTP_FROM", ""),
+        "use_tls": str(os.getenv("SCREENER_SMTP_USE_TLS", os.getenv("SMTP_USE_TLS", "true"))).lower() not in {"0", "false", "no"},
+    }
+
+
+def _send_screener_email_sync(recipient: str, subject: str, body_text: str, body_html: str, message_id: str) -> None:
+    import smtplib
+    from email.message import EmailMessage
+
+    smtp = _smtp_settings()
+    if not smtp["host"] or not smtp["from_email"]:
+        raise RuntimeError("Screener SMTP is not configured")
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = smtp["from_email"]
+    message["To"] = recipient
+    message["Message-ID"] = message_id
+    message.set_content(body_text)
+    message.add_alternative(body_html, subtype="html")
+    with smtplib.SMTP(smtp["host"], smtp["port"], timeout=15) as connection:
+        connection.ehlo()
+        if smtp["use_tls"]:
+            connection.starttls()
+            connection.ehlo()
+        if smtp["username"]:
+            connection.login(smtp["username"], smtp["password"])
+        connection.send_message(message)
+
+
+def _twilio_sms_settings() -> dict:
+    """Read SMS provider credentials without returning them to the UI."""
+    return {
+        "account_sid": os.getenv("TWILIO_ACCOUNT_SID", "").strip(),
+        "auth_token": os.getenv("TWILIO_AUTH_TOKEN", "").strip(),
+        "from_number": normalize_screener_sms_phone(os.getenv("TWILIO_FROM_NUMBER", "")),
+    }
+
+
+def _sms_provider_configured() -> bool:
+    settings = _twilio_sms_settings()
+    return bool(settings["account_sid"] and settings["auth_token"] and settings["from_number"])
+
+
+def _send_screener_sms_sync(recipient: str, body: str) -> None:
+    """Send one SMS via Twilio's HTTPS API; callers run this off the event loop."""
+    import urllib.parse
+    import urllib.request
+
+    settings = _twilio_sms_settings()
+    if not settings["account_sid"] or not settings["auth_token"] or not settings["from_number"]:
+        raise RuntimeError("Screener SMS provider is not configured")
+    destination = normalize_screener_sms_phone(recipient)
+    if not destination:
+        raise ValueError("A valid E.164 SMS phone number is required")
+    payload = urllib.parse.urlencode({
+        "To": destination,
+        "From": settings["from_number"],
+        "Body": body[:1200],
+    }).encode("utf-8")
+    credentials = base64.b64encode(
+        f"{settings['account_sid']}:{settings['auth_token']}".encode("utf-8")
+    ).decode("ascii")
+    request = urllib.request.Request(
+        f"https://api.twilio.com/2010-04-01/Accounts/{settings['account_sid']}/Messages.json",
+        data=payload,
+        headers={
+            "Authorization": f"Basic {credentials}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=15) as response:
+        if not 200 <= int(response.getcode() or 0) < 300:
+            raise RuntimeError("Screener SMS provider returned a non-success status")
+
+
+async def _verified_email_for_user(uid: str) -> str:
+    try:
+        record = await asyncio.to_thread(auth.get_user, uid)
+        email = str(getattr(record, "email", "") or "").strip()
+        return email if bool(getattr(record, "email_verified", False)) else ""
+    except Exception as exc:
+        print(f"[screener-email] Could not resolve verified email for {uid}: {exc}")
+        return ""
+
+
+def _email_content(notification: dict, recipient: str) -> tuple[str, str, str]:
+    import html
+    symbol = html.escape(str(notification.get("symbol", "")))
+    direction = html.escape(str(notification.get("direction", "Neutral")))
+    reason = html.escape(str(notification.get("reason", "")))
+    price = html.escape(str(notification.get("price", "Unavailable")))
+    atr_levels = notification.get("atr_levels") or {}
+    stop = html.escape(str(atr_levels.get("stop", "Unavailable")))
+    target = html.escape(str(atr_levels.get("target", "Unavailable")))
+    subject = f"BotBulls Screener: {symbol} {direction.title()} setup"
+    text = (
+        f"{symbol} has a {direction} Screener setup.\n\n"
+        f"Price: {price}\nReason: {notification.get('reason', '')}\n"
+        f"ATR reference stop: {atr_levels.get('stop', 'Unavailable')}\n"
+        f"ATR reference target: {atr_levels.get('target', 'Unavailable')}\n"
+        f"This is an analysis alert only; no trade was placed."
+    )
+    html_body = (
+        f"<h2>{symbol} {direction.title()} setup</h2>"
+        f"<p><strong>Price:</strong> {price}</p><p>{reason}</p>"
+        f"<p><strong>ATR informational stop:</strong> {stop}<br>"
+        f"<strong>ATR informational target:</strong> {target}</p>"
+        f"<p>This is an analysis alert only; no trade was placed.</p>"
+        f"<p><a href=\"{html.escape(os.getenv('SCREENER_PUBLIC_URL', 'http://localhost:8000/screener.html'))}\">Open Screener</a></p>"
+    )
+    return subject, text, html_body
+
+
+def _sms_content(notification: dict) -> str:
+    symbol = str(notification.get("symbol") or "Ticker")
+    direction = str(notification.get("direction") or "Signal").title()
+    price = notification.get("price")
+    price_text = f" Price: ${price}" if price is not None else ""
+    reason = " ".join(str(notification.get("reason") or "").split())
+    suffix = f" {reason}" if reason else ""
+    return f"BotBulls {symbol} {direction} screener alert.{price_text}{suffix} Analysis only; no order was placed."
+
+
+async def _process_screener_email_outbox(state: ScreenerUserState) -> None:
+    now = time.time()
+    def _timestamp(value, fallback=0.0):
+        try:
+            if isinstance(value, str):
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+            return float(value or fallback)
+        except (TypeError, ValueError, OverflowError):
+            return float(fallback)
+    smtp = _smtp_settings()
+    if not smtp["host"] or not smtp["from_email"]:
+        return
+    for item in list(state.email_outbox):
+        if item.get("status") not in {"queued", "retrying"} or float(item.get("next_attempt_at", 0) or 0) > now:
+            continue
+        item["status"] = "sending"
+        item["lease_until"] = now + 120
+        notification = next((entry for entry in state.notifications if entry.get("id") == item.get("notification_id")), None)
+        if not notification and not item.get("test"):
+            item.update({"status": "skipped", "skip_reason": "notification_missing"})
+            continue
+        if item.get("test"):
+            notification = {"symbol": "Screener", "direction": "Test", "reason": "Test email delivery", "price": "N/A", "atr_levels": {}}
+        else:
+            profile = state.profiles.get(notification.get("symbol"), {})
+            opposite_exists = any(
+                other.get("symbol") == notification.get("symbol")
+                and other.get("direction") in {"BULLISH", "BEARISH"}
+                and other.get("direction") != notification.get("direction")
+                and _timestamp(other.get("created_at")) > _timestamp(notification.get("created_at"))
+                for other in state.notifications
+            )
+            age_seconds = now - _timestamp(notification.get("created_at"), now)
+            if not profile or not bool(profile.get("enabled", True)):
+                item.update({"status": "skipped", "skip_reason": "profile_disabled_or_deleted"})
+                notification["email_status"] = "skipped"
+                notification["email_skip_reason"] = item["skip_reason"]
+                continue
+            if not bool(profile.get("email_enabled", state.notification_settings.get("email_enabled"))):
+                item.update({"status": "skipped", "skip_reason": "email_disabled"})
+                notification["email_status"] = "skipped"
+                notification["email_skip_reason"] = item["skip_reason"]
+                continue
+            if opposite_exists or age_seconds > 1800:
+                item.update({"status": "skipped", "skip_reason": "superseded_or_expired"})
+                notification["email_status"] = "skipped"
+                notification["email_skip_reason"] = item["skip_reason"]
+                continue
+        recipient = await _verified_email_for_user(state.uid)
+        if not recipient:
+            item.update({"status": "skipped", "skip_reason": "verified_email_required"})
+            if not item.get("test") and notification:
+                notification["email_status"] = "skipped"
+                notification["email_skip_reason"] = item["skip_reason"]
+            continue
+        subject, text_body, html_body = _email_content(notification, recipient)
+        try:
+            domain = smtp["from_email"].split("@")[-1] or "localhost"
+            await asyncio.to_thread(
+                _send_screener_email_sync,
+                recipient,
+                subject,
+                text_body,
+                html_body,
+                f"<{item.get('id')}@{domain}>",
+            )
+            item.update({"status": "sent", "sent_at": time.time(), "lease_until": None})
+            if not item.get("test") and notification:
+                notification["email_status"] = "sent"
+        except Exception as exc:
+            attempts = int(item.get("attempts", 0) or 0) + 1
+            item["attempts"] = attempts
+            if attempts >= 4:
+                item.update({"status": "failed", "failed_at": time.time(), "error": str(exc), "lease_until": None})
+                if not item.get("test") and notification:
+                    notification["email_status"] = "failed"
+            else:
+                item.update({"status": "retrying", "next_attempt_at": now + (60, 300, 900)[attempts - 1], "error": str(exc), "lease_until": None})
+                if not item.get("test") and notification:
+                    notification["email_status"] = "retrying"
+    state.health["email_queued"] = sum(item.get("status") in {"queued", "sending", "retrying"} for item in state.email_outbox)
+    state.health["email_failed"] = sum(item.get("status") == "failed" for item in state.email_outbox)
+    await state.save()
+
+
+async def _process_screener_sms_outbox(state: ScreenerUserState) -> None:
+    """Deliver queued SMS alerts with the same bounded retry policy as email."""
+    now = time.time()
+    provider_ready = _sms_provider_configured()
+    for item in list(state.sms_outbox):
+        if item.get("status") not in {"queued", "retrying"} or float(item.get("next_attempt_at", 0) or 0) > now:
+            continue
+        notification = next((entry for entry in state.notifications if entry.get("id") == item.get("notification_id")), None)
+        if not notification:
+            item.update({"status": "skipped", "skip_reason": "notification_missing"})
+            continue
+        if not bool(state.notification_settings.get("sms_enabled")):
+            item.update({"status": "skipped", "skip_reason": "sms_disabled"})
+            notification.update({"sms_status": "skipped", "sms_skip_reason": item["skip_reason"]})
+            continue
+        if not provider_ready:
+            item.update({"status": "skipped", "skip_reason": "sms_provider_not_configured"})
+            notification.update({"sms_status": "setup_required", "sms_skip_reason": item["skip_reason"]})
+            continue
+        profile = state.profiles.get(notification.get("symbol"), {})
+        if not profile or not bool(profile.get("enabled", True)):
+            item.update({"status": "skipped", "skip_reason": "profile_disabled_or_deleted"})
+            notification.update({"sms_status": "skipped", "sms_skip_reason": item["skip_reason"]})
+            continue
+        recipient = normalize_screener_sms_phone(item.get("to"))
+        if not recipient:
+            item.update({"status": "skipped", "skip_reason": "valid_phone_required"})
+            notification.update({"sms_status": "setup_required", "sms_skip_reason": item["skip_reason"]})
+            continue
+        item["status"] = "sending"
+        item["lease_until"] = now + 120
+        try:
+            await asyncio.to_thread(_send_screener_sms_sync, recipient, _sms_content(notification))
+            item.update({"status": "sent", "sent_at": time.time(), "lease_until": None})
+            notification["sms_status"] = "sent"
+        except Exception as exc:
+            attempts = int(item.get("attempts", 0) or 0) + 1
+            item["attempts"] = attempts
+            if attempts >= 4:
+                item.update({"status": "failed", "failed_at": time.time(), "error": str(exc)[:160], "lease_until": None})
+                notification["sms_status"] = "failed"
+            else:
+                item.update({"status": "retrying", "next_attempt_at": now + (60, 300, 900)[attempts - 1], "error": str(exc)[:160], "lease_until": None})
+                notification["sms_status"] = "retrying"
+    state.health["sms_queued"] = sum(item.get("status") in {"queued", "sending", "retrying"} for item in state.sms_outbox)
+    state.health["sms_failed"] = sum(item.get("status") == "failed" for item in state.sms_outbox)
+    await state.save()
+
+
+async def _screener_delivery_loop() -> None:
+    while True:
+        states = list(screener_manager.states.values())
+        if states:
+            delivery_work = [
+                work
+                for state in states
+                for work in (_process_screener_email_outbox(state), _process_screener_sms_outbox(state))
+            ]
+            await asyncio.gather(*delivery_work, return_exceptions=True)
+        await asyncio.sleep(10)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await user_manager.start_all()
     generic_cards_task = asyncio.create_task(_generic_dashboard_card_cache_loop())
+    screener_task = asyncio.create_task(_screener_scheduler_loop())
+    screener_delivery_task = asyncio.create_task(_screener_delivery_loop())
     try:
         yield
     finally:
+        screener_delivery_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await screener_delivery_task
+        screener_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await screener_task
         generic_cards_task.cancel()
         with suppress(asyncio.CancelledError):
             await generic_cards_task
@@ -1735,6 +2716,17 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan
 )
+
+
+@app.get("/health", include_in_schema=False)
+async def health_check():
+    return {
+        "status": "ok",
+        "service": "bot-bulls-api",
+        "version": app.version,
+        "screener_states": len(screener_manager.states),
+        "timestamp": datetime.now(pytz.UTC).isoformat(),
+    }
 
 
 @app.get("/api/legal/acceptance")
@@ -1836,12 +2828,12 @@ async def update_alpaca_config(cfg: AlpacaConfig, eng: UserEngine = Depends(get_
         def _sync_save():
             db.collection("users").document(eng.uid).collection("settings").document("alpaca").set(data)
         await asyncio.to_thread(_sync_save)
-        
+
         # Update config module state
         eng.config.ALPACA_API_KEY = cfg.api_key
         eng.config.ALPACA_SECRET_KEY = cfg.secret_key
         eng.config.ALPACA_PAPER = cfg.paper
-        
+
         return {"status": "success", "message": "Connected to Alpaca."}
     else:
         return {"status": "error", "message": "Failed to connect to Alpaca. Check your keys."}
@@ -1855,11 +2847,11 @@ def unlink_alpaca(eng: UserEngine = Depends(get_user_engine)):
             db.collection("users").document(eng.uid).collection("settings").document("alpaca").delete(timeout=2.0)
         except Exception as e:
             print(f"[api] Error deleting alpaca settings: {e}")
-    
+
     # Reset broker to simulation
     eng.broker.simulation_mode = True
     eng.broker.client = None
-    
+
     # Clear config module state
     eng.config.ALPACA_API_KEY = ""
     eng.config.ALPACA_SECRET_KEY = ""
@@ -2079,19 +3071,112 @@ MARKET_BREADTH_UNIVERSE = (
     "NEE DUK SO PLD AMT LIN"
 )
 
+
+def _download_generic_yahoo(tickers, period):
+    """Download generic dashboard prices without letting one bad symbol fail the batch.
+
+    Yahoo occasionally logs ``possibly delisted`` when one symbol in a large
+    multi-ticker request is temporarily empty. That message is not proof that
+    the security is delisted. Keep provider diagnostics out of the request
+    log, retry missing symbols individually, and let the caller decide whether
+    a symbol should be treated as unavailable.
+    """
+    requested = list(dict.fromkeys(str(ticker).strip().upper() for ticker in (tickers or []) if str(ticker).strip()))
+    if not requested:
+        return None
+    try:
+        # ``threads=False`` avoids intermittent partial batches/rate-limit
+        # races. Explicitly keep raw OHLC values consistent across retries.
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            return yf.download(
+                requested,
+                period=period,
+                progress=False,
+                threads=False,
+                auto_adjust=False,
+                group_by="column",
+            )
+    except Exception as exc:
+        print(f"[generic-cache] Yahoo batch request failed ({period}): {type(exc).__name__}: {exc}")
+        return None
+
+
+def _generic_yahoo_series(frame, field, ticker):
+    """Extract one symbol/field from either a single- or multi-ticker frame."""
+    try:
+        if frame is None or getattr(frame, "empty", True):
+            return None
+        block = frame[field] if field in frame else None
+        # yfinance has emitted both (field, ticker) and (ticker, field)
+        # MultiIndex layouts across releases; support either shape.
+        if block is None and hasattr(frame, "columns") and getattr(frame.columns, "nlevels", 1) == 2:
+            levels = [list(frame.columns.get_level_values(index)) for index in range(2)]
+            if field in levels[1]:
+                block = frame.xs(field, axis=1, level=1)
+        if block is None:
+            return None
+        if hasattr(block, "columns"):
+            if ticker in block.columns:
+                block = block[ticker]
+            elif str(ticker).upper() in block.columns:
+                block = block[str(ticker).upper()]
+            elif len(block.columns) == 1:
+                block = block.iloc[:, 0]
+            else:
+                return None
+        series = block.dropna()
+        return series if len(series) else None
+    except Exception:
+        return None
+
+
+def _generic_yahoo_series_map(tickers, period, fields=("Close",)):
+    """Return valid Yahoo series and retry only symbols missing from the batch."""
+    requested = list(dict.fromkeys(str(ticker).strip().upper() for ticker in (tickers or []) if str(ticker).strip()))
+    batch = _download_generic_yahoo(requested, period)
+    result = {field: {} for field in fields}
+    missing = set(requested)
+    for ticker in requested:
+        extracted = {
+            field: _generic_yahoo_series(batch, field, ticker)
+            for field in fields
+        }
+        complete = True
+        for field, series in extracted.items():
+            if series is not None and len(series):
+                result[field][ticker] = series
+            else:
+                complete = False
+        if complete:
+            missing.discard(ticker)
+
+    # A single-symbol retry fixes transient Yahoo batch omissions such as HON
+    # without multiplying requests for symbols that already succeeded.
+    for ticker in sorted(missing):
+        single = _download_generic_yahoo([ticker], period)
+        recovered = False
+        for field in fields:
+            series = _generic_yahoo_series(single, field, ticker)
+            if series is not None and len(series):
+                result[field][ticker] = series
+                recovered = True
+        if not recovered:
+            print(f"[generic-cache] No Yahoo price data for {ticker} ({period}); omitting symbol")
+    return result
+
 def _fetch_market_data_sync():
     # This card data is generic market context, not user/account data.
     import yfinance as yf
 
     # 1. Fetch Sector Data
-    sector_tickers = MARKET_SECTOR_TICKERS
-    df_sector = yf.download(sector_tickers, period="5d", progress=False)
+    sector_tickers = MARKET_SECTOR_TICKERS.split()
+    sector_closes = _generic_yahoo_series_map(sector_tickers, "5d", fields=("Close",))["Close"]
 
     sector_data = {}
-    for ticker in sector_tickers.split():
+    for ticker in sector_tickers:
         try:
-            valid_closes = df_sector['Close'][ticker].dropna()
-            if len(valid_closes) >= 2:
+            valid_closes = sector_closes.get(ticker)
+            if valid_closes is not None and len(valid_closes) >= 2:
                 current_price = valid_closes.iloc[-1]
                 prev_price = valid_closes.iloc[-2]
                 pct_change = ((current_price / prev_price) - 1) * 100
@@ -2142,17 +3227,18 @@ def _fetch_market_data_sync():
     tickers_list = []
 
     if len(combined_list) > 0:
-        df_breadth = yf.download(" ".join(combined_list), period="1y", progress=False)
+        breadth_series = _generic_yahoo_series_map(
+            combined_list,
+            "1y",
+            fields=("Close", "High", "Low"),
+        )
         for ticker in combined_list:
             try:
-                if len(combined_list) == 1:
-                    valid_closes = df_breadth['Close'].dropna()
-                    valid_highs = df_breadth['High'].dropna()
-                    valid_lows = df_breadth['Low'].dropna()
-                else:
-                    valid_closes = df_breadth['Close'][ticker].dropna()
-                    valid_highs = df_breadth['High'][ticker].dropna()
-                    valid_lows = df_breadth['Low'][ticker].dropna()
+                valid_closes = breadth_series["Close"].get(ticker)
+                valid_highs = breadth_series["High"].get(ticker)
+                valid_lows = breadth_series["Low"].get(ticker)
+                if valid_closes is None or valid_highs is None or valid_lows is None:
+                    raise ValueError("no complete OHLC series")
 
                 if len(valid_closes) >= 2:
                     curr = valid_closes.iloc[-1]
@@ -2675,38 +3761,38 @@ def _build_indicator_forecast(settings, scan_data, mode="entry", is_long=True, i
     if is_option and options_type not in VALID_OPTION_DIRECTIONS:
         return "Legacy Both direction disabled. Choose CALL or PUT."
     signals = scan_data.get('signals', {})
-    
+
     # active_signals filter only those with enabled=True (set by trader.py)
     active_signals = {k: v for k, v in signals.items() if v.get('enabled', False)}
-    
+
     if not active_signals:
         return ""
-        
+
     parts = []
-    
+
     cfg = getattr(eng, "config", None)
     user_cfg = get_user_config()
     buy_default = getattr(cfg, 'MIN_BULLISH_SIGNALS', getattr(user_cfg, 'MIN_BULLISH_SIGNALS', 1))
     sell_default = getattr(cfg, 'MIN_BEARISH_SIGNALS', getattr(user_cfg, 'MIN_BEARISH_SIGNALS', 1))
     buy_threshold = _get_threshold_setting(settings, ('min_buy_signals', 'threshold', 'buy_threshold'), buy_default)
     sell_threshold = _get_threshold_setting(settings, ('min_sell_signals', 'sell_threshold'), sell_default)
-    
+
     if mode == "entry":
         target = "BULLISH"
         if is_option and options_type == "puts_only":
             target = "BEARISH"
         target_label = "PUT" if target == "BEARISH" and is_option else "CALL" if is_option else target
         entry_threshold = sell_threshold if target == "BEARISH" else buy_threshold
-            
+
         current_count = 0
         for name, data in active_signals.items():
             sig = data.get('signal', 'NEUTRAL')
             if sig == target:
                 current_count += data.get('weight', 1)
-                
+
         rem = max(0, entry_threshold - current_count)
         parts.append(f"[{target_label} ENTRY TARGET: {entry_threshold} | REMAINING: {rem}]")
-        
+
         for name, data in active_signals.items():
             sig = data.get('signal', 'NEUTRAL')
             reason = data.get('reason', '')
@@ -2721,10 +3807,10 @@ def _build_indicator_forecast(settings, scan_data, mode="entry", is_long=True, i
         for name, data in active_signals.items():
             if data.get('signal') == target:
                 current_count += data.get('weight', 1)
-                
+
         rem = max(0, sell_threshold - current_count)
         parts.append(f"[{target} EXIT TARGET: {sell_threshold} | REMAINING: {rem}]")
-        
+
         for name, data in active_signals.items():
             sig = data.get('signal', 'NEUTRAL')
             reason = data.get('reason', '')
@@ -2733,7 +3819,7 @@ def _build_indicator_forecast(settings, scan_data, mode="entry", is_long=True, i
                 parts.append(f"{icon} {name} {sig} ({reason})")
             else:
                 parts.append(f"⏳ {name} {sig} ({reason})")
-                
+
     return " | ".join(parts)
 
 
@@ -2869,8 +3955,10 @@ def _exit_strategy_label(sell_mode):
         "indicator": "Indicator",
         "custom_sltp": "Custom SL/TP",
         "custom_underlying_sltp": "Custom Underlying SL/TP",
+        "atr": "ATR",
         "sltp": "ATR Stop / Take Profit",
         "hybrid": "Hybrid (Indicator + ATR)",
+        "hybrid_atr": "Hybrid (Indicator + ATR)",
         "percentage": "Percentage",
         "hybrid_pct": "Hybrid (Indicator + Percentage)",
         "pivot_points": "Pivot Points",
@@ -3192,11 +4280,102 @@ _HYBRID_ENTRY_MODES = {
 
 _HYBRID_EXIT_MODES = {
     "hybrid",
+    "hybrid_atr",
     "hybrid_pct",
     "hybrid_pivot",
     "hybrid_high_low",
     "hybrid_swing",
 }
+
+
+def _screener_scan_interval_seconds(settings: dict) -> int:
+    default = 10 if (settings or {}).get("options_trading") else 60
+    try:
+        return max(10, min(14400, int((settings or {}).get("scan_interval_seconds", default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _screener_market_status(symbol: str, settings: dict, now=None) -> dict:
+    """Mirror Bots' session windows without constructing a trading engine.
+
+    Technical Screener scans use the same active-window rules as Bots: stocks
+    follow Regular or Extended, options use the regular session with a
+    two-minute pre-open window, and crypto remains continuously available.
+    """
+    tz = pytz.timezone("US/Eastern")
+    et_now = now.astimezone(tz) if now is not None else datetime.now(tz)
+    if _is_crypto_symbol(symbol):
+        return {
+            "is_active_window": True,
+            "is_open": True,
+            "market_session_label": "24/7",
+            "seconds_to_open": 0,
+            "seconds_to_pre_open": 0,
+            "next_open_str": "24/7",
+        }
+
+    is_options = bool((settings or {}).get("options_trading") or (settings or {}).get("is_option"))
+    if is_options:
+        open_hour, open_minute = 9, 30
+        scan_hour, scan_minute = 9, 28
+        close_hour, close_minute = 16, 0
+        session_label = "Options"
+    else:
+        session = _normalize_screener_market_session(symbol, (settings or {}).get("market_session"))
+        is_extended = session == "Extended"
+        open_hour, open_minute = (4, 0) if is_extended else (9, 30)
+        scan_hour, scan_minute = (3, 58) if is_extended else (9, 28)
+        close_hour, close_minute = (20, 0) if is_extended else (16, 0)
+        session_label = "Extended" if is_extended else "Regular"
+
+    is_weekday = et_now.weekday() < 5
+    scan_start = et_now.replace(hour=scan_hour, minute=scan_minute, second=0, microsecond=0)
+    market_open = et_now.replace(hour=open_hour, minute=open_minute, second=0, microsecond=0)
+    market_close = et_now.replace(hour=close_hour, minute=close_minute, second=0, microsecond=0)
+    is_active_window = is_weekday and scan_start <= et_now <= market_close
+    is_open = is_weekday and market_open <= et_now <= market_close
+
+    next_open = market_open
+    next_scan = scan_start
+    if not is_weekday or et_now > market_close:
+        days_add = 1
+        if et_now.weekday() == 4:
+            days_add = 3
+        elif et_now.weekday() == 5:
+            days_add = 2
+        next_open = (et_now + timedelta(days=days_add)).replace(
+            hour=open_hour, minute=open_minute, second=0, microsecond=0
+        )
+        next_scan = (et_now + timedelta(days=days_add)).replace(
+            hour=scan_hour, minute=scan_minute, second=0, microsecond=0
+        )
+    elif et_now < scan_start:
+        next_open = market_open
+        next_scan = scan_start
+
+    open_day_name = next_open.strftime("%A") if next_open.date() != et_now.date() else "Today"
+    meridiem = "AM" if open_hour < 12 else "PM"
+    hour_label = ((open_hour - 1) % 12) + 1
+    time_label = f"{hour_label}:{open_minute:02d} {meridiem} ET"
+    return {
+        "is_active_window": is_active_window,
+        "is_open": is_open,
+        "market_session_label": session_label,
+        "seconds_to_open": max(0, int((next_open - et_now).total_seconds())),
+        "seconds_to_pre_open": max(0, int((next_scan - et_now).total_seconds())),
+        "next_open_str": f"{open_day_name} at {time_label}",
+    }
+
+
+def _screener_profile_fingerprint(settings: dict) -> str:
+    """Hash persisted profile inputs while ignoring generated metadata."""
+    ignored = {"revision", "profile_revision", "started_at"}
+    clean = {
+        key: value for key, value in (settings or {}).items()
+        if key not in ignored
+    }
+    return hashlib.sha256(json.dumps(clean, sort_keys=True, default=str).encode()).hexdigest()
 
 
 def _forecast_settings_hash(settings: dict) -> str:
@@ -3306,6 +4485,24 @@ def _scan_log_strategy_context(settings: dict, position: dict) -> dict:
     }
 
 
+def _scan_log_condition_logic(strategy_context: dict) -> str:
+    """Return the explicit conjunction used by a hybrid scan setup."""
+    if not strategy_context.get("is_hybrid"):
+        return ""
+    mode = str(strategy_context.get("mode") or "").lower()
+    component = {
+        "hybrid": "ATR",
+        "hybrid_atr": "ATR",
+        "hybrid_pct": "percentage",
+        "hybrid_pivot": "pivot",
+        "hybrid_high_low": "prior-day high/low",
+        "hybrid_swing": "swing structure",
+    }.get(mode, "structural")
+    if strategy_context.get("phase") == "ENTRY":
+        return f"Hybrid entry rule: BOTH indicator and {component} conditions must be true."
+    return f"Hybrid exit rule: EITHER indicator or {component} condition can trigger the exit."
+
+
 def _signal_weight_for_direction(signals: dict, selected_indicators: list[str], direction: str) -> int:
     selected = set(selected_indicators or [])
     total = 0
@@ -3315,6 +4512,108 @@ def _signal_weight_for_direction(signals: dict, selected_indicators: list[str], 
         if str((data or {}).get("signal") or "NEUTRAL").upper() == direction:
             total += int((data or {}).get("weight", 1) or 1)
     return total
+
+
+def _screener_exit_level_status(settings: dict, scan: dict, state: dict, mode: str) -> dict:
+    """Evaluate virtual long exit levels without reading a bot or placing an order."""
+    price = _entry_forecast_float(scan.get("price_raw"), 0.0)
+    entry = _entry_forecast_float(state.get("virtual_entry_price"), 0.0)
+    atr = _entry_forecast_float(scan.get("atr"), 0.0)
+    precision = 6 if 0 < price < 1 else 2
+
+    def pending(message: str) -> dict:
+        return {"available": False, "triggered": False, "text": message}
+
+    def levels(stop: float, target: float, label: str) -> dict:
+        if price <= 0 or stop <= 0 or target <= 0:
+            return pending(f"{label} levels are unavailable until valid price data arrives.")
+        stop_distance_pct = abs(price - stop) / price * 100.0
+        target_distance_pct = abs(target - price) / price * 100.0
+        if price <= stop:
+            outcome = (
+                f"{label}: SL reached (${price:.{precision}f} <= ${stop:.{precision}f}); "
+                f"TP ${target:.{precision}f} ({target_distance_pct:.2f}% away)."
+            )
+        elif price >= target:
+            outcome = (
+                f"{label}: TP reached (${price:.{precision}f} >= ${target:.{precision}f}); "
+                f"SL ${stop:.{precision}f} ({stop_distance_pct:.2f}% away)."
+            )
+        else:
+            nearest = "SL" if stop_distance_pct <= target_distance_pct else "TP"
+            outcome = (
+                f"{label}: price ${price:.{precision}f}; "
+                f"SL ${stop:.{precision}f} ({stop_distance_pct:.2f}% away); "
+                f"TP ${target:.{precision}f} ({target_distance_pct:.2f}% away); "
+                f"nearest exit {nearest}."
+            )
+        return {
+            "available": True,
+            "triggered": price <= stop or price >= target,
+            "text": outcome,
+            "price": price,
+            "stop": stop,
+            "target": target,
+            "stop_distance_pct": stop_distance_pct,
+            "target_distance_pct": target_distance_pct,
+            "nearest_level": "SL" if stop_distance_pct <= target_distance_pct else "TP",
+        }
+
+    if mode in {"sltp", "hybrid", "atr", "hybrid_atr"}:
+        if entry <= 0 or atr <= 0:
+            return pending("Waiting for the virtual entry price and current ATR to evaluate the ATR exit.")
+        stop = entry - atr * _entry_forecast_float(settings.get("atr_stop_multiplier"), 2.0)
+        # Missing settings use the same safe default shown by the Screener
+        # card: ATR trailing is enabled unless explicitly disabled.
+        if settings.get("enable_atr_trail", True) is not False:
+            peak = max(entry, _entry_forecast_float(state.get("virtual_peak_price"), entry), price)
+            candidate_trailing_stop = peak - atr * _entry_forecast_float(settings.get("atr_trail_multiplier"), 3.0)
+            prior_trailing_stop = _entry_forecast_float(state.get("virtual_trailing_stop"), 0.0)
+            # A trailing stop may tighten as the virtual peak rises, but it
+            # must never loosen because a later ATR value expands.
+            stop = max(stop, candidate_trailing_stop, prior_trailing_stop)
+            state["virtual_trailing_stop"] = stop
+        else:
+            state["virtual_trailing_stop"] = None
+        target = entry + atr * _entry_forecast_float(settings.get("take_profit_multiplier"), 4.0)
+        return levels(stop, target, "ATR exit")
+
+    if mode in {"percentage", "hybrid_pct"}:
+        if entry <= 0:
+            return pending("Waiting for the virtual entry price to evaluate the percentage exit.")
+        stop = entry * (1 - _entry_forecast_float(settings.get("regular_stop_loss_pct"), 0.05))
+        if settings.get("enable_pct_trail"):
+            peak = max(entry, _entry_forecast_float(state.get("virtual_peak_price"), entry), price)
+            stop = max(stop, peak * (1 - _entry_forecast_float(settings.get("regular_trailing_pct"), 0.03)))
+        target = entry * (1 + _entry_forecast_float(settings.get("regular_take_profit_pct"), 0.10))
+        return levels(stop, target, "Percentage exit")
+
+    if mode in {"custom_sltp", "custom_underlying_sltp"}:
+        stop_key = "custom_underlying_stop_loss_price" if mode == "custom_underlying_sltp" else "custom_stop_loss_price"
+        target_key = "custom_underlying_take_profit_price" if mode == "custom_underlying_sltp" else "custom_take_profit_price"
+        return levels(_entry_forecast_float(settings.get(stop_key), 0.0), _entry_forecast_float(settings.get(target_key), 0.0), "Custom SL/TP")
+
+    prior = _get_prior_day_ohlc(scan.get("price_history") or [])
+    if mode in {"pivot_points", "hybrid_pivot"}:
+        if not prior or price <= 0:
+            return pending("Waiting for prior-day OHLC data to evaluate the pivot exit.")
+        level_set = _dynamic_pivot_exit_levels(prior["high"], prior["low"], prior["close"], price)
+        return levels(level_set["sl"], level_set["tp"], "Pivot exit") if level_set else pending("Pivot exit levels are unavailable.")
+    if mode in {"high_low", "hybrid_high_low"}:
+        if not prior or price <= 0:
+            return pending("Waiting for prior-day OHLC data to evaluate the high/low exit.")
+        level_set = _dynamic_high_low_exit_levels(prior["high"], prior["low"], price, resolve_high_low_buffer_pct(settings))
+        return levels(level_set["sl"], level_set["tp"], "High/low exit") if level_set else pending("High/low exit levels are unavailable.")
+    if mode in {"swing_points", "hybrid_swing"}:
+        exit_levels = build_swing_exit(scan.get("price_history") or [], current_price=price, is_long=True,
+            lookback_days=int(settings.get("swing_exit_lookback_days", settings.get("swing_lookback_days", 20)) or 20),
+            market_session=settings.get("market_session", "Regular"), is_crypto=False)
+        return levels(exit_levels.get("stop_loss") or 0, exit_levels.get("take_profit") or 0, "Swing exit")
+    if mode == "trend_rider":
+        return pending("Trend Rider has no standalone Screener exit evaluator; no exit condition is being inferred.")
+    if mode == "ai_autopilot":
+        return pending("AI Autopilot exit is evaluated by its live position workflow; the Screener remains analysis-only.")
+    return {"available": True, "triggered": False, "text": "Indicator exit is waiting for bearish confirmation."}
 
 
 def _scan_distance_text(symbol: str, current_price: float, target_price: float, label: str) -> str:
@@ -3783,52 +5082,59 @@ def _scan_log_exit_levels(ticker: str, formatted_scan: dict, settings: dict, pos
     return [line for line in lines if line]
 
 
-def _smart_reentry_blocker_text(settings: dict, formatted_scan: dict, target_direction: str, eng: UserEngine) -> str:
-    if not settings.get("enable_smart_reentry", getattr(eng.config, "ENABLE_SMART_REENTRY", False)):
+def _smart_reentry_blocker_text(settings: dict, formatted_scan: dict, target_direction: str, eng: Optional[UserEngine] = None) -> str:
+    cfg = getattr(eng, "config", None) if eng is not None else None
+    enabled = settings.get("enable_smart_reentry")
+    if enabled is None:
+        enabled = settings.get("anti_chasing_enabled")
+    if enabled is None and cfg is not None:
+        enabled = getattr(cfg, "ENABLE_SMART_REENTRY", False)
+    if not bool(enabled):
         return ""
 
     reason_text = str(formatted_scan.get("reason") or "")
-    if reason_text.startswith("Smart Re-entry"):
+    if reason_text.startswith("Smart Re-entry") or reason_text.startswith("Anti-chasing"):
         return reason_text
 
-    mode = str(settings.get("smart_reentry_type", getattr(eng.config, "SMART_REENTRY_TYPE", "RSI")) or "RSI").upper()
+    mode = str(settings.get("smart_reentry_type", getattr(cfg, "SMART_REENTRY_TYPE", "RSI") if cfg else "RSI") or "RSI").upper()
     target_direction = str(target_direction or "BULLISH").upper()
 
     if mode == "RSI":
         rsi = _entry_forecast_float(formatted_scan.get("rsi"), 0.0)
         if rsi <= 0:
-            return "Smart re-entry RSI waiting: live RSI unavailable."
+            return "Anti-chasing RSI waiting: live RSI unavailable."
         if target_direction == "BEARISH":
             min_rsi = _entry_forecast_float(
-                settings.get("smart_reentry_rsi_put_min", getattr(eng.config, "SMART_REENTRY_RSI_PUT_MIN", 30)),
+                settings.get("smart_reentry_rsi_put_min", getattr(cfg, "SMART_REENTRY_RSI_PUT_MIN", 30) if cfg else 30),
                 30.0,
             )
             if rsi < min_rsi:
-                return f"Smart re-entry RSI waiting: PUT/SELL blocked while RSI {rsi:.1f} < {min_rsi:.1f}; needs +{(min_rsi - rsi):.1f} RSI."
+                return f"Anti-chasing RSI waiting: SELL blocked while RSI {rsi:.1f} < {min_rsi:.1f} (Oversold); needs +{(min_rsi - rsi):.1f} RSI."
         else:
             max_rsi = _entry_forecast_float(
-                settings.get("smart_reentry_rsi_call_max", getattr(eng.config, "SMART_REENTRY_RSI_CALL_MAX", 70)),
+                settings.get("smart_reentry_rsi_call_max", getattr(cfg, "SMART_REENTRY_RSI_CALL_MAX", 70) if cfg else 70),
                 70.0,
             )
             if rsi > max_rsi:
-                return f"Smart re-entry RSI waiting: BUY blocked while RSI {rsi:.1f} > {max_rsi:.1f}; needs -{(rsi - max_rsi):.1f} RSI."
+                return f"Anti-chasing RSI waiting: BUY blocked while RSI {rsi:.1f} > {max_rsi:.1f} (Overbought); needs -{(rsi - max_rsi):.1f} RSI."
 
     elif mode == "VWAP":
         current = _entry_forecast_float(formatted_scan.get("price_raw"), 0.0)
         vwap = _entry_forecast_float(formatted_scan.get("vwap"), 0.0)
         if current <= 0 or vwap <= 0:
-            return "Smart re-entry AVWAP waiting: live price/AVWAP unavailable."
+            return "Anti-chasing AVWAP waiting: live price/AVWAP unavailable."
         dist_pct = abs(current - vwap) / vwap * 100.0
+        default_dist = getattr(cfg, "SMART_REENTRY_VWAP_PUT_MAX_DIST_PCT", 0.5) if (cfg and target_direction == "BEARISH") else (getattr(cfg, "SMART_REENTRY_VWAP_CALL_MAX_DIST_PCT", 0.5) if cfg else 0.5)
         max_dist = _entry_forecast_float(
             settings.get(
                 "smart_reentry_vwap_put_max_dist_pct" if target_direction == "BEARISH" else "smart_reentry_vwap_call_max_dist_pct",
-                getattr(eng.config, "SMART_REENTRY_VWAP_PUT_MAX_DIST_PCT", 0.5) if target_direction == "BEARISH" else getattr(eng.config, "SMART_REENTRY_VWAP_CALL_MAX_DIST_PCT", 0.5),
+                default_dist,
             ),
             0.5,
         )
         if dist_pct > max_dist:
-            side_label = "PUT/SELL" if target_direction == "BEARISH" else "BUY"
-            return f"Smart re-entry AVWAP waiting: {side_label} blocked while price is {dist_pct:.2f}% from AVWAP; needs <= {max_dist:.2f}%."
+            side_label = "SELL" if target_direction == "BEARISH" else "BUY"
+            return f"Anti-chasing AVWAP waiting: {side_label} blocked while price is {dist_pct:.2f}% from AVWAP; needs <= {max_dist:.2f}%."
 
     return ""
 
@@ -4108,6 +5414,7 @@ def _build_scan_log(
     show_indicator_leg = strategy_uses_indicators and has_indicator_pool
     uses_structural = bool(strategy_context["uses_structural"])
     strategy_label = strategy_context["label"]
+    condition_logic = _scan_log_condition_logic(strategy_context)
     decision = str(formatted_scan.get("action") or "HOLD").upper()
 
     if settings.get("options_trading") or settings.get("is_option"):
@@ -4306,8 +5613,10 @@ def _build_scan_log(
             elif remaining_count > prev_remaining or confirmed_weight < prev_confirmed_weight:
                 status = "MOVING_AWAY"
 
+    confirmed_marker = "🔴" if target_direction == "BEARISH" else "🟢"
+    opposing_marker = "🟢" if target_direction == "BEARISH" else "🔴"
     confirmed_text = ", ".join(
-        f"🟢 {item['name']} {item['signal']}" + (f" ({item['reason']})" if item["reason"] else "")
+        f"{confirmed_marker} {item['name']} {item['signal']}" + (f" ({item['reason']})" if item["reason"] else "")
         for item in indicators if item["status"] == "CONFIRMED"
     )
     waiting_text = ", ".join(
@@ -4315,7 +5624,7 @@ def _build_scan_log(
         for item in indicators if item["status"] == "WAITING"
     )
     opposing_text = ", ".join(
-        f"🔴 {item['name']} {item['signal']}" + (f" ({item['reason']})" if item["reason"] else "")
+        f"{opposing_marker} {item['name']} {item['signal']}" + (f" ({item['reason']})" if item["reason"] else "")
         for item in indicators if item["status"] == "OPPOSING"
     )
 
@@ -4340,6 +5649,8 @@ def _build_scan_log(
         watch_parts.extend(live_levels[:2])
     elif uses_structural:
         watch_parts.append(str(formatted_scan.get("reason") or "Waiting for next live level"))
+    if condition_logic:
+        watch_parts.append(condition_logic)
     if indicator_label:
         watch_parts.append("Signals: " + indicator_label)
     progress_label = " | ".join(watch_parts)
@@ -4373,6 +5684,7 @@ def _build_scan_log(
         "target_direction": target_direction,
         "strategy_mode": strategy_context["mode"],
         "strategy_label": strategy_label,
+        "condition_logic": condition_logic,
         "uses_indicators": strategy_uses_indicators,
         "uses_structural": uses_structural,
         "show_indicator_leg": show_indicator_leg,
@@ -4441,7 +5753,7 @@ async def get_dashboard(
     # Fallback/default timeframe logic
     if timeframe is None:
         timeframe = eng.config.TICKER_SETTINGS.get(primary_ticker, {}).get('timeframe') or eng.config.DEFAULT_TIMEFRAME
-    
+
     # Get broker data concurrently, but never let slow secondary calls mark Alpaca disconnected.
     import asyncio
     broker_cache_key = stable_cache_key(eng.uid, "dashboard_broker_snapshot", 1)
@@ -4506,7 +5818,7 @@ async def get_dashboard(
                 })
             _dashboard_broker_cache.set(broker_cache_key, cache_payload)
     total_profit, total_profit_pct = profit_data
-    
+
     account_ms = (time.perf_counter() - account_start) * 1000
     has_broker_keys = bool(eng.config.ALPACA_API_KEY)
     broker_connected = has_broker_keys and not account.get('simulation', True)
@@ -4514,10 +5826,10 @@ async def get_dashboard(
     broker_status_reason = account.get("broker_status_reason") or account.get("error") or ""
     if not broker_status_reason and not broker_connected:
         broker_status_reason = getattr(eng, "alpaca_load_error", "") or ""
-    
+
     # Active bot status check
     is_active_bot = primary_ticker in eng.config.TRADELIST
-    
+
     # The chart endpoint owns dashboard technical analysis. Callers that only
     # need the dashboard shell can opt out so this endpoint never performs the
     # same indicator calculation a second time.
@@ -4527,7 +5839,7 @@ async def get_dashboard(
         bot_tf = eng.config.TICKER_SETTINGS.get(primary_ticker, {}).get('timeframe')
         if bot_tf:
             timeframe = bot_tf
-    
+
     if include_primary_analysis:
         cached_scan = eng._pick_scan(primary_ticker, timeframe, prefer_bot=prefer_bot_for_primary)
         if cached_scan:
@@ -4596,7 +5908,7 @@ async def get_dashboard(
     else:
         # Full analysis included — format and apply the dashboard projection strip.
         formatted_primary = _format_scan_for_ui(primary_scan, use_global_settings=(not prefer_bot_for_primary))
-    
+
     # Format daily P/L (Today Only)
     daily_pl = account.get('daily_pl', 0.0)
     daily_pl_pct = account.get('daily_pl_pct', 0.0)
@@ -4645,7 +5957,7 @@ async def get_dashboard(
     # Fetch live Webull prices, caching inactive watchlist tickers for 60 seconds to save API calls
     fast_tickers = [primary_ticker] if is_dashboard_request else list(dict.fromkeys(eng.config.TRADELIST + [primary_ticker]))
     slow_tickers = [t for t in eng.config.WATCHLIST if t not in fast_tickers]
-    
+
     quote_start = time.perf_counter()
     stale_fast_prices = _get_stale_latest_prices(eng, fast_tickers, 300)
     stale_slow_prices = _get_stale_latest_prices(eng, slow_tickers, 900)
@@ -5103,7 +6415,7 @@ async def get_dashboard(
 
     if settings_dirty:
         _queue_settings_save(eng, "dashboard scan snapshots")
-        
+
     payload = {
         "simulation": account.get('simulation', True),
         "has_keys": has_broker_keys,
@@ -5619,8 +6931,10 @@ async def get_chart_data(
             raise HTTPException(status_code=504, detail=f"Chart refresh timed out for {ticker}")
         if not analysis:
             raise HTTPException(status_code=404, detail=f"Could not load chart data for {ticker}")
+        if not _has_usable_chart_history(analysis):
+            raise HTTPException(status_code=404, detail=f"No usable chart candles available for {ticker}")
         settings = eng.config.TICKER_SETTINGS.get(ticker, {}) if prefer_bot else {}
-    
+
     # --- TEMPORARY LOGGING FOR DEBUGGING ---
     print(f"[perf] /api/chart {ticker} {timeframe}: {(time.perf_counter() - started) * 1000:.1f}ms cached={cached}")
     return _build_chart_payload(
@@ -5693,6 +7007,8 @@ async def get_bot_chart_preview(data: dict, eng: UserEngine = Depends(get_user_e
 
             if not analysis:
                 raise HTTPException(status_code=404, detail=f"Could not load chart preview for {ticker}")
+            if not _has_usable_chart_history(analysis):
+                raise HTTPException(status_code=404, detail=f"No usable chart candles available for {ticker}")
 
             ai_data = {}
             ai_status = "disabled"
@@ -5982,7 +7298,7 @@ async def get_fast_signals(
         formatted_scan = _format_scan_for_ui(scan, use_global_settings=(not prefer_bot))
         if "price_history" in formatted_scan:
             del formatted_scan["price_history"]
-    return {
+    return _sanitize_json_values({
         "ticker": ticker,
         "timeframe": timeframe,
         "cached": cached,
@@ -5994,7 +7310,7 @@ async def get_fast_signals(
         "bullish_count": formatted_scan.get("bullish_count", 0),
         "bearish_count": formatted_scan.get("bearish_count", 0),
         "total_signals": formatted_scan.get("total_signals", 0),
-    }
+    })
 
 
 @app.get("/api/scan/{ticker}")
@@ -6005,7 +7321,7 @@ def scan_ticker(ticker: str, timeframe: str = "1Hour", eng: UserEngine = Depends
     account = eng.broker.get_account_info()
     if account.get('simulation', True):
         return {"error": "Alpaca connection required for scanning."}
-        
+
     now = datetime.now()
     cached_scan = eng._pick_scan(ticker.upper(), timeframe, prefer_bot=False)
     is_recent = False
@@ -6023,8 +7339,8 @@ def scan_ticker(ticker: str, timeframe: str = "1Hour", eng: UserEngine = Depends
     avail_cash = account.get('non_marginable_buying_power') or account['cash'] if is_crypto else account['cash']
 
     result = evaluate_trade(
-        ticker.upper(), 
-        account_equity=account['equity'], 
+        ticker.upper(),
+        account_equity=account['equity'],
         available_cash=avail_cash,
         timeframe=timeframe
     )
@@ -6204,7 +7520,7 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
 
     ticker = data.get("ticker", "AAPL").upper()
     active_ticker_context.set(ticker)
-    
+
     if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
         return {"status": "error", "message": "Invalid ticker format"}
     timeframe = data.get("timeframe", "1Day")
@@ -6214,17 +7530,17 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
     trade_amount = float(data.get("trade_amount", capital))
     threshold = int(data.get("threshold", 5))
     sell_threshold = int(data.get("sell_threshold", 3))
-    indicators = data.get("indicators", []) 
+    indicators = data.get("indicators", [])
     if threshold <= 0 and indicators:
         threshold = 1
     if sell_threshold <= 0 and indicators:
         sell_threshold = 1
     ext_hours = data.get("ext_hours", True)
     enable_risk = bool(data.get("enable_risk", True))
-    
+
     end_date = get_now()
     start_date = end_date - timedelta(days=days)
-    
+
     sell_mode = data.get("sell_mode", "indicator")
     risk_per_trade = 1.0 if not enable_risk else min(max(float(data.get("risk_per_trade", 0.5)), 0.0), 1.0)
     max_pos_pct = 1.0 if not enable_risk else float(data.get("max_position_pct", 1.0))
@@ -6232,7 +7548,7 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
     atr_trail_multiplier = float(data.get("atr_trail_multiplier", 3.0))
     atr_take_profit_multiplier = float(data.get("atr_take_profit_multiplier", 4.0))
     enable_atr_trail = bool(data.get("enable_atr_trail", True))
-    
+
     regular_stop_loss_pct = float(data.get("regular_stop_loss_pct", 0.05))
     regular_take_profit_pct = float(data.get("regular_take_profit_pct", 0.10))
     regular_trailing_pct = float(data.get("regular_trailing_pct", 0.03))
@@ -6246,7 +7562,7 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
     entry_pct_move = data.get("entry_pct_move")
     if entry_pct_move is None:
         entry_pct_move = max(1.0, regular_stop_loss_pct * 100.0)
-    
+
     ai_autopilot = data.get("ai_autopilot", False) or (sell_mode == "ai_autopilot")
     ai_interval = int(data.get("ai_interval", 10))
     ai_model = data.get("ai_model", "llama-3.3-70b-versatile")
@@ -6254,7 +7570,7 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
     continuous_grid_settings["amount"] = trade_amount
     continuous_grid_settings["allocation_mode"] = allocation_mode
     _normalize_continuous_grid_settings(continuous_grid_settings)
-    
+
     from backtester import Backtester
     bt = Backtester(
         ticker=ticker,
@@ -6314,7 +7630,7 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
         min_relative_volume=float(data.get("min_relative_volume", 0.10) or 0.0),
         cancel_event=global_backtest_cancel
     )
-    
+
     try:
         results = await asyncio.to_thread(bt.run)
         if "error" in results:
@@ -6341,18 +7657,18 @@ async def run_optimization_endpoint(data: dict, eng: UserEngine = Depends(get_us
 
     ticker = data.get("ticker", "AAPL").upper()
     active_ticker_context.set(ticker)
-    
+
     if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
         return {"status": "error", "message": "Invalid ticker format"}
-        
+
     timeframe = data.get("timeframe", "1Day")
     days = int(data.get("days", 90))
     capital = float(data.get("capital", 1000.0))
     split_pct = float(data.get("oos_split_pct", 30.0))
-    
+
     end_date = get_now()
     start_date = end_date - timedelta(days=days)
-    
+
     # Base kwargs for the backtester
     base_kwargs = {
         "ticker": ticker,
@@ -6405,7 +7721,7 @@ async def run_optimization_endpoint(data: dict, eng: UserEngine = Depends(get_us
     continuous_grid_settings["allocation_mode"] = base_kwargs["allocation_mode"]
     _normalize_continuous_grid_settings(continuous_grid_settings)
     base_kwargs["continuous_grid_settings"] = continuous_grid_settings
-    
+
     from optimizer import run_optimization
     try:
         results = await run_optimization(base_kwargs, split_pct)
@@ -6430,10 +7746,10 @@ async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_en
 
     ticker = data.get("ticker", "AAPL").upper()
     active_ticker_context.set(ticker)
-    
+
     if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
         return {"status": "error", "message": "Invalid ticker format"}
-        
+
     timeframe = data.get("timeframe", "1Day")
     days = int(data.get("days", 30))
     capital = float(data.get("capital", 1000.0))
@@ -6484,10 +7800,10 @@ async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_en
     entry_pct_move = data.get("entry_pct_move")
     if entry_pct_move is None:
         entry_pct_move = max(1.0, float(data.get("stop_loss_pct", stop_loss_pct)) * 100.0)
-    
+
     end_date = get_now()
     start_date = end_date - timedelta(days=days)
-    
+
     from options_backtester import OptionsBacktester
     opt_bt = OptionsBacktester(
         ticker=ticker,
@@ -6555,7 +7871,7 @@ async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_en
         options_market_open_blackout_minutes=int(data.get("options_market_open_blackout_minutes", 15) or 0),
     )
 
-    
+
     try:
         results = await asyncio.to_thread(opt_bt.run)
         if "error" in results:
@@ -6695,7 +8011,7 @@ async def deploy_backtest_as_bot(data: dict, eng: UserEngine = Depends(get_user_
             deploy_payload["ai_autopilot"] = data.get("ai_autopilot")
             deploy_payload["ai_interval"] = data.get("ai_interval")
             deploy_payload["ai_model"] = data.get("ai_model")
-            
+
     if "enable_cooldown" in data:
         deploy_payload["enable_cooldown"] = data.get("enable_cooldown")
     if "cooldown_minutes" in data:
@@ -6707,21 +8023,21 @@ async def deploy_backtest_as_bot(data: dict, eng: UserEngine = Depends(get_user_
         # Store indicator overrides and source badge (per-bot snapshot)
         if symbol not in eng.config.TICKER_SETTINGS:
             eng.config.TICKER_SETTINGS[symbol] = {}
-        
+
         # Tag as backtest source
         eng.config.TICKER_SETTINGS[symbol]["source"] = "backtest"
-        
+
         indicator_overrides = data.get("indicator_overrides", {})
         if indicator_overrides:
             eng.config.TICKER_SETTINGS[symbol]["indicator_overrides"] = indicator_overrides
-            
+
         # Robust sync fix: Ensure symbol is strictly in the tradelist memory
         if symbol not in eng.config.TRADELIST:
             eng.config.TRADELIST.insert(0, symbol)
-            
+
         await eng.save_settings()
         res["settings"] = eng.config.TICKER_SETTINGS[symbol]
-        
+
     return res
 
 
@@ -6730,7 +8046,7 @@ async def get_options_chain_api(ticker: str, expiry_days: int = 7, current_price
     """Fetches the options contract chain for a ticker from Alpaca."""
     if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker.upper()):
         return {"error": "Invalid ticker format"}
-        
+
     from option_selector import get_option_chain
     chain = get_option_chain(
         underlying=ticker,
@@ -6892,7 +8208,7 @@ async def download_all_data(data: dict, eng: UserEngine = Depends(get_user_engin
     if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", raw_ticker):
         return {"error": "Invalid ticker format"}
     ticker = raw_ticker
-    
+
     timeframes = [
         ("30Sec", 7),
         ("1Min", 7),
@@ -6907,39 +8223,39 @@ async def download_all_data(data: dict, eng: UserEngine = Depends(get_user_engin
         ("4Hour", 730),
         ("1Day", 1825)
     ]
-    
+
     log = []
     end_date = get_now()
-    
+
     # 1. Download Price History
     for tf, days in timeframes:
         start_date = end_date - timedelta(days=days)
         df = get_historical_data(ticker, tf, start_date, end_date)
         status = "Success" if df is not None and not df.empty else "No Data"
         log.append(f"{tf}: {status}")
-        
+
     # 2. Download Metadata
     try:
         t = yf.Ticker(ticker)
         info = t.info
-        
+
         clean_ticker = re.sub(r'[^A-Z0-9]', '', ticker)
         safe_ticker = os.path.basename(clean_ticker)
         data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "data"))
-        if not os.path.exists(data_dir): 
+        if not os.path.exists(data_dir):
             os.makedirs(data_dir)
-        
+
         info_path = os.path.abspath(os.path.join(data_dir, f"{safe_ticker}_info.json"))
         if not info_path.startswith(data_dir + os.sep):
             return {"error": "Invalid ticker path"}
-            
+
         with open(info_path, "w") as f:
             json.dump(info, f, indent=4)
         log.append("Metadata: Saved")
     except Exception as e:
         print(f"[api] Metadata extraction error: {e}")
         log.append("Metadata Error: Could not save metadata securely")
-        
+
     return {"ticker": ticker, "status": log}
 
 
@@ -7118,7 +8434,7 @@ async def update_risk_settings(settings: dict, context: str = "dashboard", eng: 
             normalized_settings[key] = value
     finally:
         active_evaluation_context.reset(token)
-            
+
     await eng.save_settings()
     if ctx == "bots":
         # Re-evaluate account risk immediately when the user tightens a
@@ -7172,7 +8488,7 @@ async def update_ticker_amount(data: dict, eng: UserEngine = Depends(get_user_en
     """Updates the allocated trade amount for a specific ticker."""
     ticker = data.get("ticker", "").upper()
     amount = data.get("amount")
-    
+
     if ticker:
         if amount is None or amount == "":
             if ticker in eng.config.TICKER_AMOUNTS:
@@ -7182,7 +8498,7 @@ async def update_ticker_amount(data: dict, eng: UserEngine = Depends(get_user_en
                 eng.config.TICKER_AMOUNTS[ticker] = float(amount)
             except:
                 return {"status": "error", "message": "Invalid amount"}
-        
+
         await eng.save_settings()
         print(f"[settings] {ticker}: Allocated trade amount updated for {eng.uid}")
         return {"status": "success", "ticker_amounts": eng.config.TICKER_AMOUNTS}
@@ -7216,10 +8532,10 @@ async def update_timeframe(data: dict, eng: UserEngine = Depends(get_user_engine
         clear_evaluation_cache()
         clear_ai_cache()
         _clear_chart_analysis_cache()
-        
+
         if eng.force_scan_trigger:
             eng.force_scan_trigger.set()
-        
+
         return {"status": "success", "timeframe": new_tf}
     return {"status": "error", "message": "Invalid timeframe"}
 
@@ -7269,10 +8585,10 @@ async def add_to_tradelist(data: dict, eng: UserEngine = Depends(get_user_engine
     """Add a ticker to the active trade list."""
     ticker = data.get("ticker", "").upper()
     timeframe = data.get("timeframe", eng.config.DEFAULT_TIMEFRAME)
-    
+
     if ticker and ticker not in eng.config.TRADELIST:
         eng.config.TRADELIST.insert(0, ticker)
-        
+
         if ticker not in eng.config.TICKER_SETTINGS:
             eng.config.TICKER_SETTINGS[ticker] = {}
         eng.config.TICKER_SETTINGS[ticker]['timeframe'] = timeframe
@@ -7327,7 +8643,7 @@ async def remove_from_tradelist(ticker: str, liquidate: bool = False, eng: UserE
         print(f"[settings] Removed {ticker} from active tradelist (Bot Deactivated) for {eng.uid}")
         clear_evaluation_cache(ticker, None)
         _clear_chart_analysis_cache(ticker, None)
-        
+
     res_cancel = eng.broker.cancel_orders_for_ticker(ticker)
     print(f"[tradelist] Cancelled pending orders for {ticker}: {res_cancel}")
 
@@ -7352,21 +8668,21 @@ async def reorder_bots(data: dict, eng: UserEngine = Depends(get_user_engine)):
     new_order = data.get("tradelist", [])
     if not new_order or not isinstance(new_order, list):
         return {"status": "error", "message": "Invalid tradelist format"}
-    
+
     # Verify that all provided tickers are currently active bots, preserving order and removing duplicates
     valid_tickers = []
     for t in new_order:
         if t in eng.config.TRADELIST and t not in valid_tickers:
             valid_tickers.append(t)
-    
+
     # Ensure any tickers currently active that weren't in the new order are appended to the end
     for t in eng.config.TRADELIST:
         if t not in valid_tickers:
             valid_tickers.append(t)
-            
+
     eng.config.TRADELIST = valid_tickers
     await eng.save_settings()
-    
+
     return {"status": "success", "tradelist": eng.config.TRADELIST}
 
 
@@ -7376,25 +8692,25 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
     symbol = data.get("symbol", "").upper().strip()
     if not symbol:
         return {"status": "error", "message": "Symbol is required"}
-        
+
     if symbol in eng.config.TRADELIST and not data.get("force_override", False):
         return {
             "status": "error",
             "message": f"An active bot for '{symbol}' is already deployed. Please delete the existing bot first to deploy a new one."
         }
-        
+
     # Check if the asset is tradable in Alpaca
     tradable_check = eng.broker.check_tradable(symbol)
     if not tradable_check.get("success") or not tradable_check.get("tradable"):
         return {
-            "status": "error", 
+            "status": "error",
             "message": tradable_check.get("error", f"Ticker '{symbol}' doesn't allow trading in Alpaca or does not exist.")
         }
     market_session_check = _validate_market_session_for_symbol(symbol, data.get("market_session", "Regular"), eng)
-        
+
     if symbol not in eng.config.TICKER_SETTINGS:
         eng.config.TICKER_SETTINGS[symbol] = {}
-        
+
     eng.config.TICKER_SETTINGS[symbol]["source"] = "bots"
     broker_asset_class = str(tradable_check.get("asset_class", "") or "").strip().lower()
     if broker_asset_class in {"crypto", "cryptocurrency"}:
@@ -7403,10 +8719,10 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         eng.config.TICKER_SETTINGS[symbol]["asset_class"] = "stock"
     else:
         eng.config.TICKER_SETTINGS[symbol]["asset_class"] = "crypto" if _is_crypto_symbol(symbol) else "stock"
-        
+
     if "capital" in data and data["capital"] is not None:
         eng.config.TICKER_SETTINGS[symbol]["amount"] = float(data["capital"])
-        
+
     if "threshold" in data and data["threshold"] is not None:
         eng.config.TICKER_SETTINGS[symbol]["min_buy_signals"] = int(data["threshold"])
     if "sell_threshold" in data and data["sell_threshold"] is not None:
@@ -7417,10 +8733,10 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         if max_trades < 0 or max_trades > 100:
             raise HTTPException(status_code=400, detail="max_trades must be between 0 (unlimited) and 100")
         eng.config.TICKER_SETTINGS[symbol]["max_trades"] = max_trades
-    
+
     if "timeframe" in data:
         eng.config.TICKER_SETTINGS[symbol]["timeframe"] = data["timeframe"]
-        
+
     if "sell_mode" in data:
         eng.config.TICKER_SETTINGS[symbol]["sell_mode"] = data["sell_mode"]
     else:
@@ -7506,7 +8822,7 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         eng.config.TICKER_SETTINGS[symbol]["compound_amount"] = float(eng.config.TICKER_SETTINGS[symbol].get("amount", data.get("capital", 0)) or 0)
     if allocation_mode != "compound":
         eng.config.TICKER_SETTINGS[symbol].pop("compound_amount", None)
-        
+
     if "indicators" in data and isinstance(data["indicators"], list):
         eng.config.TICKER_SETTINGS[symbol]["indicators"] = data["indicators"]
     _normalize_bot_signal_thresholds(eng.config.TICKER_SETTINGS[symbol], eng)
@@ -7589,7 +8905,7 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         eng.config.WATCHLIST.append(symbol)
     elif not add_to_watchlist and symbol in eng.config.WATCHLIST:
         eng.config.WATCHLIST.remove(symbol)
-        
+
     if symbol not in eng.config.TRADELIST:
         eng.config.TRADELIST.insert(0, symbol)
         print(f"[settings] Launched new bot for {symbol} with custom settings for {eng.uid}")
@@ -7598,14 +8914,14 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
     clear_evaluation_cache(symbol, None)
     clear_ai_cache(symbol, None)
     _clear_chart_analysis_cache(symbol, None)
-    
+
     async def _background_warmup_and_save():
         try:
             timeframe = data.get("timeframe") or eng.config.TICKER_SETTINGS.get(symbol, {}).get('timeframe') or eng.config.DEFAULT_TIMEFRAME
             is_crypto = _is_crypto_symbol(symbol)
             account = await asyncio.wait_for(asyncio.to_thread(eng.broker.get_account_info), timeout=2.5)
             avail_cash = account.get('non_marginable_buying_power') or account['cash'] if is_crypto else account['cash']
-            
+
             initial_scan = await asyncio.wait_for(
                 asyncio.to_thread(
                     evaluate_trade,
@@ -7630,7 +8946,7 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
 
         if not eng.config.TICKER_SETTINGS[symbol].get("forecast_entry_snapshot"):
             _ensure_entry_forecast_snapshot(eng.config.TICKER_SETTINGS[symbol], {}, symbol)
-            
+
         await eng.save_settings()
         if eng.force_scan_trigger:
             eng.force_scan_trigger.set()
@@ -7694,14 +9010,14 @@ async def update_indicators(updates: dict, context: str = "dashboard", ticker: s
         key: bool(requested_confluence_defaults.get(key, getattr(global_config, key, True)))
         for key in DASHBOARD_CONFLUENCE_TOGGLE_KEYS
     }
-    
+
     if ticker:
         ticker = ticker.upper()
         if ticker not in eng.config.TICKER_SETTINGS:
             eng.config.TICKER_SETTINGS[ticker] = {}
         if 'indicator_overrides' not in eng.config.TICKER_SETTINGS[ticker]:
             eng.config.TICKER_SETTINGS[ticker]['indicator_overrides'] = {}
-            
+
         for k, v in updates.items():
             if v == "" or v is None:
                 if k in eng.config.TICKER_SETTINGS[ticker]['indicator_overrides']:
@@ -7775,7 +9091,7 @@ async def update_indicators(updates: dict, context: str = "dashboard", ticker: s
     _clear_chart_analysis_cache(ticker, None)
     if eng.force_scan_trigger:
         eng.force_scan_trigger.set()
-        
+
     if reset_confluence:
         print(f"[settings] Reset dashboard confluence for {eng.uid} ({ctx})")
         return {
@@ -7868,13 +9184,13 @@ async def update_ticker_settings(data: dict, eng: UserEngine = Depends(get_user_
             eng.config.TICKER_SETTINGS[ticker]['entry_trades'] = 0
         if previously_paused or not eng.config.TICKER_SETTINGS[ticker].get('started_at'):
             eng.config.TICKER_SETTINGS[ticker]['started_at'] = get_now().isoformat()
-            
+
     add_to_watchlist = data.get("add_to_watchlist")
     if add_to_watchlist is True and ticker not in eng.config.WATCHLIST:
         eng.config.WATCHLIST.append(ticker)
     elif add_to_watchlist is False and ticker in eng.config.WATCHLIST:
         eng.config.WATCHLIST.remove(ticker)
-    
+
     clear_evaluation_cache(ticker, None)
     clear_ai_cache(ticker, None)
     _clear_chart_analysis_cache(ticker, None)
@@ -7942,7 +9258,7 @@ def _format_trade_for_ui(trade: dict) -> dict:
     if not tf:
         t_settings = getattr(uc, 'TICKER_SETTINGS', {}).get(ticker, {})
         tf = t_settings.get('timeframe', uc.DEFAULT_TIMEFRAME)
-    
+
     return {
         "time": trade.get("time", ""),
         "action": trade.get("action", ""),
@@ -8220,7 +9536,7 @@ def _format_scan_for_ui(scan: dict, use_global_settings: bool = False) -> dict:
             enabled = name in allowed_indicators
         else:
             enabled = getattr(uc, toggle_key, True) if toggle_key else True
-            
+
         all_signals[name] = {**data, 'enabled': enabled, 'toggle_key': toggle_key if name != 'Botbulls4 News AI' else 'ENABLE_AI_SENTIMENT'}
 
     bullish = scan.get('bullish_count')
@@ -8293,23 +9609,1370 @@ def _format_scan_for_ui(scan: dict, use_global_settings: bool = False) -> dict:
         "sell_mode": scan.get("sell_mode", ""),
         "structure_direction": scan.get("structure_direction", ""),
         "structure_ok": scan.get("structure_ok", False),
+        "evaluation_status": scan.get("evaluation_status", "valid"),
+        "direction": scan.get("direction", {"BUY": "BULLISH", "SELL": "BEARISH"}.get(scan.get("action"), "NEUTRAL")),
+        "candle_meta": scan.get("candle_meta", {}),
+        "atr_levels": scan.get("atr_levels", {}),
     }
+
+
+# ──────────────────────────────────────────────
+# Independent Screener API
+# ──────────────────────────────────────────────
+
+async def _dashboard_engine_for_screener(state: ScreenerUserState) -> UserEngine:
+    """Load Dashboard settings without starting the Bots trading loop."""
+    engine = user_manager.get_engine(state.uid)
+    if not getattr(engine, "loaded_from_cloud", False):
+        async with engine.load_lock:
+            if not engine.loaded_from_cloud:
+                await engine.load_from_cloud()
+    return engine
+
+
+async def _set_screener_dashboard_watchlist(
+    state: ScreenerUserState,
+    symbol: str,
+    enabled: bool,
+) -> dict:
+    """Apply the profile checkbox to the user's persisted Dashboard watchlist.
+
+    This intentionally changes only Dashboard visibility.  It never creates a
+    Bot, changes a Screener profile's alerts, or starts an execution loop.
+    """
+    engine = await _dashboard_engine_for_screener(state)
+    ticker = _normalize_quote_symbol(symbol)
+    watchlist = engine.config.WATCHLIST
+    if not isinstance(watchlist, list):
+        watchlist = []
+        engine.config.WATCHLIST = watchlist
+    normalized_watchlist = []
+    for item in watchlist:
+        item_symbol = _normalize_quote_symbol(item)
+        if item_symbol and item_symbol not in normalized_watchlist:
+            normalized_watchlist.append(item_symbol)
+    if normalized_watchlist != watchlist:
+        engine.config.WATCHLIST = normalized_watchlist
+        watchlist = normalized_watchlist
+
+    changed = False
+    if enabled and ticker not in watchlist:
+        watchlist.append(ticker)
+        changed = True
+    elif not enabled and ticker in watchlist:
+        watchlist.remove(ticker)
+        changed = True
+
+    if changed:
+        await engine.save_settings()
+        clear_evaluation_cache(ticker, None)
+        _clear_chart_analysis_cache(ticker, None)
+        print(f"[screener] Dashboard watchlist {'enabled' if enabled else 'disabled'} for {ticker}")
+    return {
+        "enabled": ticker in watchlist,
+        "changed": changed,
+        "watchlist": list(watchlist),
+    }
+
+
+def _screener_profile_from_request(data: dict, state: ScreenerUserState, symbol: str) -> dict:
+    nested = data.get("settings") if isinstance(data.get("settings"), dict) else None
+    incoming = dict(nested if nested is not None else data)
+    for key in ("symbol", "ticker", "settings", "force_override", "add_to_watchlist"):
+        incoming.pop(key, None)
+    for key in (
+        "capital", "amount", "allocation_mode", "compound_amount", "max_trades",
+        "risk_per_trade", "max_daily_drawdown", "max_position_pct", "global_hard_stop_pct",
+        "enable_risk_management", "enable_atr_trail", "enable_pct_trail", "regular_stop_loss_pct",
+        "regular_take_profit_pct", "regular_trailing_pct",
+        "options_trade_amount", "options_exit_strategy",
+        "options_stop_loss_pct", "options_take_profit_pct", "options_trailing_pct",
+    ):
+        incoming.pop(key, None)
+    settings = _normalize_draft_bot_settings(symbol, incoming, state)
+    for key in (
+        "amount", "capital", "allocation_mode", "compound_amount", "max_trades",
+        "risk_per_trade", "max_daily_drawdown", "max_position_pct", "global_hard_stop_pct",
+        "enable_risk_management", "enable_atr_trail", "enable_pct_trail", "regular_stop_loss_pct",
+        "regular_take_profit_pct", "regular_trailing_pct",
+        "options_trade_amount", "options_exit_strategy",
+        "options_stop_loss_pct", "options_take_profit_pct", "options_trailing_pct",
+        "enable_signal_reset",
+    ):
+        settings.pop(key, None)
+    for key in list(settings):
+        lowered = str(key).lower()
+        if any(token in lowered for token in ("broker", "order", "position", "execution", "account")):
+            settings.pop(key, None)
+    if "threshold" in incoming and "min_buy_signals" not in incoming:
+        settings["min_buy_signals"] = incoming["threshold"]
+    if "sell_threshold" in incoming and "min_sell_signals" not in incoming:
+        settings["min_sell_signals"] = incoming["sell_threshold"]
+    settings["source"] = "screener"
+    if "paused" in incoming and "enabled" not in incoming:
+        settings["enabled"] = not bool(incoming["paused"])
+    else:
+        settings["enabled"] = bool(settings.get("enabled", not settings.get("paused", False)))
+    settings["paused"] = not settings["enabled"]
+    settings.setdefault("started_at", datetime.now(pytz.UTC).isoformat())
+    settings.setdefault("asset_class", "crypto" if _is_crypto_symbol(symbol) else "stock")
+    default_scan_interval = 10 if settings.get("options_trading") else 60
+    try:
+        settings["scan_interval_seconds"] = max(10, min(14400, int(incoming.get("scan_interval_seconds", settings.get("scan_interval_seconds", default_scan_interval)))))
+    except (TypeError, ValueError):
+        settings["scan_interval_seconds"] = default_scan_interval
+    settings["news_watch_enabled"] = bool(incoming.get("news_watch_enabled", settings.get("news_watch_enabled", True)))
+    settings["earnings_watch_enabled"] = bool(incoming.get("earnings_watch_enabled", settings.get("earnings_watch_enabled", True)))
+    settings["fundamental_watch_enabled"] = bool(incoming.get("fundamental_watch_enabled", settings.get("fundamental_watch_enabled", True)))
+    for key in ("email_enabled", "alert_bullish_enabled", "alert_bearish_enabled"):
+        if key in incoming:
+            settings[key] = bool(incoming[key])
+        elif key in settings:
+            settings[key] = bool(settings[key])
+    if "alert_cooldown_minutes" in incoming or "alert_cooldown_minutes" in settings:
+        try:
+            settings["alert_cooldown_minutes"] = max(0, min(1440, int(incoming.get("alert_cooldown_minutes", settings.get("alert_cooldown_minutes", 60)))))
+        except (TypeError, ValueError):
+            settings["alert_cooldown_minutes"] = 60
+
+    # Anti-Chasing / Quality Guard persistence
+    for key in ("enable_smart_reentry", "anti_chasing_enabled"):
+        if key in incoming:
+            settings[key] = bool(incoming[key])
+        elif key in settings:
+            settings[key] = bool(settings[key])
+    if "enable_smart_reentry" in settings:
+        settings["anti_chasing_enabled"] = settings["enable_smart_reentry"]
+    elif "anti_chasing_enabled" in settings:
+        settings["enable_smart_reentry"] = settings["anti_chasing_enabled"]
+
+    if "smart_reentry_type" in incoming or "smart_reentry_type" in settings:
+        reentry_type = str(incoming.get("smart_reentry_type", settings.get("smart_reentry_type", "RSI"))).upper()
+        settings["smart_reentry_type"] = reentry_type if reentry_type in ("RSI", "VWAP") else "RSI"
+
+    for rsi_key, default_val in (("smart_reentry_rsi_call_max", 70.0), ("smart_reentry_rsi_put_min", 30.0)):
+        val = incoming.get(rsi_key, settings.get(rsi_key))
+        if val is not None:
+            try:
+                settings[rsi_key] = max(1.0, min(99.0, float(val)))
+            except (TypeError, ValueError):
+                settings[rsi_key] = default_val
+
+    for vwap_key, default_dist in (("smart_reentry_vwap_call_max_dist_pct", 0.5), ("smart_reentry_vwap_put_max_dist_pct", 0.5)):
+        val = incoming.get(vwap_key, settings.get(vwap_key))
+        if val is not None:
+            try:
+                settings[vwap_key] = max(0.01, min(10.0, float(val)))
+            except (TypeError, ValueError):
+                settings[vwap_key] = default_dist
+
+    # Target Options Play Settings
+    if "options_trading" in incoming:
+        settings["options_trading"] = bool(incoming["options_trading"])
+    elif "options_trading" in settings:
+        settings["options_trading"] = bool(settings["options_trading"])
+
+    if settings.get("options_trading"):
+        raw_type = str(incoming.get("options_type", settings.get("options_type", "both"))).strip().lower()
+        if raw_type in ("call", "calls", "calls_only"):
+            settings["options_type"] = "calls_only"
+            settings["alert_bullish_enabled"] = True
+            settings["alert_bearish_enabled"] = False
+        elif raw_type in ("put", "puts", "puts_only"):
+            settings["options_type"] = "puts_only"
+            settings["alert_bullish_enabled"] = False
+            settings["alert_bearish_enabled"] = True
+        else:
+            settings["options_type"] = "both"
+            settings.setdefault("alert_bullish_enabled", True)
+            settings.setdefault("alert_bearish_enabled", True)
+
+        try:
+            settings["options_expiry_days"] = max(0, min(365, int(incoming.get("options_expiry_days", settings.get("options_expiry_days", 3)))))
+        except (TypeError, ValueError):
+            settings["options_expiry_days"] = 3
+
+        strike_raw = str(incoming.get("options_strike_type", settings.get("options_strike_type", "ATM"))).strip().upper()
+        settings["options_strike_type"] = strike_raw if strike_raw in ("ATM", "OTM", "ITM") else "ATM"
+
+    settings["market_session"] = _normalize_screener_market_session(
+        symbol,
+        settings.get("market_session"),
+        bool(settings.get("options_trading")),
+    )
+    settings["revision"] = profile_revision(settings)
+    return settings
+
+
+def _empty_screener_scan(symbol: str, settings: dict) -> dict:
+    return {
+        "ticker": symbol,
+        "time": "",
+        "timeframe": settings.get("timeframe", "5Min"),
+        "price": "---",
+        "price_raw": 0.0,
+        "action": "HOLD",
+        "reason": "Waiting for the first independent Screener scan",
+        "bullish_count": 0,
+        "bearish_count": 0,
+        "total_signals": len(settings.get("indicators", []) or []),
+        "signals": {},
+        "log_type": "Screener",
+        "scan_log": {
+            "status": "WAITING_DATA",
+            "phase": "ENTRY",
+            "target_direction": "BULLISH",
+            "decision": "NEUTRAL",
+            "summary": "Waiting for the first completed-candle Screener evaluation.",
+            "detail": "No trade is placed. The independent Screener is establishing its initial signal baseline.",
+            "progress_label": "Waiting for bullish setup",
+            "indicators": [],
+            "blockers": ["Initial completed-candle evaluation pending."],
+            "refresh_rate_sec": _screener_scan_interval_seconds(settings),
+            "virtual_position": False,
+            "position_source": "virtual_signal_lifecycle",
+            "no_trade_placed": True,
+        },
+    }
+
+
+def _build_screener_scan_log(
+    symbol: str,
+    formatted_scan: dict,
+    settings: dict,
+    evaluation_state: dict,
+    alert_created: bool = False,
+    exit_event: Optional[dict] = None,
+) -> dict:
+    """Build a position-free scan log for the independent Screener card.
+
+    A bullish setup activates a virtual long-cycle watch; its next target is a
+    bearish transition. A bearish setup closes that virtual cycle and returns
+    the watch to bullish. This deliberately never reads broker positions.
+    """
+    direction = str(formatted_scan.get("direction") or "NEUTRAL").upper()
+    evaluation_status = str(formatted_scan.get("evaluation_status") or "waiting").lower()
+    last_actionable = str(evaluation_state.get("last_actionable_direction") or "").upper()
+    virtual_position = bool(evaluation_state.get("virtual_position", last_actionable == "BULLISH"))
+    exit_event_active = bool(exit_event and exit_event.get("triggered"))
+    target_direction = "BEARISH" if virtual_position or exit_event_active else "BULLISH"
+    phase = "EXIT" if virtual_position or exit_event_active else "ENTRY"
+    strategy_context = _scan_log_strategy_context(
+        settings,
+        {"screener_virtual_signal": True} if virtual_position or exit_event_active else {},
+    )
+    strategy_mode = str(strategy_context["mode"] or "indicator")
+    strategy_label = str(strategy_context["label"] or "Indicator")
+    condition_logic = _scan_log_condition_logic(strategy_context)
+    strategy_uses_indicators = bool(strategy_context["uses_indicators"])
+    strategy_uses_structural = bool(strategy_context["uses_structural"])
+    entry_levels = (
+        _scan_log_entry_levels(symbol, formatted_scan, settings, target_direction)
+        if phase == "ENTRY" and strategy_uses_structural
+        else []
+    )
+    exit_levels = (
+        exit_event
+        if exit_event_active
+        else _screener_exit_level_status(settings, formatted_scan, evaluation_state, strategy_mode)
+        if phase == "EXIT" and strategy_uses_structural
+        else None
+    )
+    threshold_keys = (
+        ("min_sell_signals", "sell_threshold")
+        if target_direction == "BEARISH"
+        else ("min_buy_signals", "threshold", "buy_threshold")
+    )
+    required_count = _get_threshold_setting(settings, threshold_keys, 1) if strategy_uses_indicators else 0
+
+    selected = settings.get("indicators")
+    selected_names = (
+        {str(name).strip() for name in selected if str(name or "").strip()}
+        if isinstance(selected, list)
+        else None
+    )
+    has_indicator_pool = selected_names is None or bool(selected_names)
+    indicators = []
+    confirmed_weight = 0
+    if strategy_uses_indicators:
+        for name, raw in (formatted_scan.get("signals") or {}).items():
+            if not isinstance(raw, dict) or raw.get("enabled") is False:
+                continue
+            if selected_names is not None and name not in selected_names:
+                continue
+            signal = str(raw.get("signal") or "NEUTRAL").upper()
+            weight = max(1, int(raw.get("weight", 1) or 1))
+            if signal == target_direction:
+                status = "CONFIRMED"
+                confirmed_weight += weight
+            elif signal == "NEUTRAL":
+                status = "WAITING"
+            else:
+                status = "OPPOSING"
+            indicators.append({
+                "name": name,
+                "signal": signal,
+                "status": status,
+                "reason": str(raw.get("reason") or ""),
+                "enabled": True,
+                "supports_target": status == "CONFIRMED",
+                "weight": weight,
+            })
+
+    remaining_count = max(0, required_count - confirmed_weight)
+    blockers = []
+    candle_meta = formatted_scan.get("candle_meta") or {}
+    if evaluation_status != "valid" or not candle_meta.get("candle_key"):
+        blockers.append(str(formatted_scan.get("reason") or "Waiting for sufficient completed-candle market data."))
+    if strategy_uses_indicators and not has_indicator_pool:
+        blockers.append("No indicators selected. Select at least one indicator to enable this setup.")
+    elif strategy_uses_indicators and not indicators:
+        blockers.append("No enabled indicators have produced a valid reading yet.")
+    elif phase == "ENTRY" and strategy_uses_structural and evaluation_status == "valid":
+        structural_reason = str(formatted_scan.get("reason") or "").strip()
+        if structural_reason:
+            blockers.append(structural_reason)
+    if settings.get("paused") or settings.get("enabled") is False:
+        blockers.insert(0, "Screener profile is paused.")
+    anti_chasing_blocked = str(formatted_scan.get("reason") or "").startswith("⚠️ Anti-chasing")
+    if anti_chasing_blocked:
+        blockers.append(str(formatted_scan.get("reason")))
+
+    if evaluation_status == "error":
+        status = "SCAN_ERROR"
+        summary = f"Scan error while monitoring for {target_direction.lower()} confirmation."
+    elif evaluation_status != "valid" or not candle_meta.get("candle_key"):
+        status = "WAITING_DATA"
+        summary = f"Waiting for completed-candle data before checking the {strategy_label.lower()} {phase.lower()} setup."
+    elif anti_chasing_blocked:
+        status = "ANTI_CHASING_BLOCKED"
+        summary = str(formatted_scan.get("reason"))
+    elif strategy_uses_indicators and not has_indicator_pool:
+        status = "NO_INDICATORS"
+        summary = f"{strategy_label} {phase.lower()} is unavailable until at least one indicator is selected."
+    elif phase == "ENTRY" and direction == "BULLISH":
+        status = "BULLISH_SIGNAL"
+        summary = "Bullish signal active. Virtual signal cycle is now watching for a bearish transition."
+    elif phase == "ENTRY" and direction == "BEARISH":
+        status = "BEARISH_SIGNAL"
+        summary = "Bearish signal active. Virtual signal cycle is now watching for the next bullish transition."
+    elif phase == "EXIT" and (
+        (strategy_uses_indicators and confirmed_weight >= required_count)
+        or bool(exit_levels and exit_levels.get("triggered"))
+    ):
+        status = "EXIT_SETUP_ACTIVE"
+        summary = f"{strategy_label} exit condition is active on the latest completed candle."
+    elif not strategy_uses_indicators:
+        status = f"WAITING_{strategy_mode.upper()}_{phase}"
+        summary = f"Waiting for {strategy_label} {phase.lower()} setup on the latest completed candle."
+    else:
+        status = "WAITING_BEARISH" if virtual_position else "WAITING_BULLISH"
+        cycle_label = "bullish cycle active" if virtual_position else "no bullish cycle active"
+        summary = f"Waiting for {target_direction.lower()} signal ({cycle_label})."
+
+    indicator_progress_label = (
+        "No indicator pool selected"
+        if strategy_uses_indicators and not has_indicator_pool
+        else f"{target_direction} {confirmed_weight}/{required_count} confirmed"
+        if strategy_uses_indicators
+        else f"{strategy_label} {phase.title()} condition"
+    )
+    if strategy_uses_indicators and remaining_count:
+        indicator_progress_label += f", needs {remaining_count}"
+    progress_label = indicator_progress_label
+    if entry_levels:
+        progress_label += " · " + " | ".join(entry_levels[:2])
+    if exit_levels and exit_levels.get("text"):
+        progress_label += f" · {exit_levels['text']}"
+    if condition_logic:
+        progress_label += f" · {condition_logic}"
+    detail_parts = [
+        f"Current completed-candle direction: {direction.title()}.",
+        f"{progress_label.rstrip('.') }.",
+        "Virtual lifecycle only; no brokerage position or order is used.",
+    ]
+    if alert_created:
+        detail_parts.insert(0, f"New {direction.title()} transition alert created.")
+    if blockers:
+        detail_parts.append("Waiting reason: " + " | ".join(blockers))
+
+    if exit_levels and exit_levels.get("triggered"):
+        trigger_text = str(exit_levels.get("text") or "configured structural exit reached").rstrip(". ")
+        if strategy_context.get("is_hybrid") and strategy_uses_indicators:
+            final_summary = (
+                f"Exit setup active — {trigger_text}. Bearish indicators: "
+                f"{confirmed_weight}/{required_count} confirmed; indicator threshold is not required "
+                "because the hybrid exit uses OR."
+            )
+        elif strategy_uses_indicators:
+            final_summary = f"Exit setup active — {trigger_text}. Bearish indicators: {confirmed_weight}/{required_count} confirmed."
+        else:
+            final_summary = f"Exit setup active — {trigger_text}."
+    elif phase == "EXIT" and strategy_uses_indicators and confirmed_weight >= required_count:
+        if strategy_context.get("is_hybrid"):
+            final_summary = (
+                f"Exit setup active — bearish indicator threshold reached "
+                f"({confirmed_weight}/{required_count} confirmed); ATR is not required "
+                "because the hybrid exit uses OR."
+            )
+        else:
+            final_summary = f"Exit setup active — bearish indicator threshold reached ({confirmed_weight}/{required_count} confirmed)."
+    elif strategy_uses_indicators and not has_indicator_pool:
+        final_summary = (
+            f"{phase.title()} unavailable — select at least one indicator before this "
+            f"{strategy_label.lower()} setup can be evaluated."
+        )
+    elif phase == "EXIT" and strategy_uses_indicators:
+        if strategy_context.get("is_hybrid"):
+            indicator_wait = (
+                f"{remaining_count} more confirmation{'s' if remaining_count != 1 else ''} needed for the indicator branch"
+                if remaining_count
+                else "indicator branch threshold met"
+            )
+            final_summary = (
+                f"Exit watch summary — Bearish indicators are {confirmed_weight}/{required_count} confirmed; "
+                f"{indicator_wait}. ATR levels are monitored in parallel, and either the bearish indicator "
+                "threshold or an ATR stop/target event can trigger this exit."
+            )
+        else:
+            final_summary = (
+                f"Exit watch summary — Bearish indicators are {confirmed_weight}/{required_count} confirmed; "
+                f"{remaining_count} more confirmation{'s' if remaining_count != 1 else ''} are needed before "
+                "the indicator exit can trigger."
+            )
+    elif phase == "ENTRY" and strategy_uses_indicators:
+        if remaining_count:
+            final_summary = (
+                f"Entry watch summary — Bullish indicators are {confirmed_weight}/{required_count} confirmed; "
+                f"{remaining_count} more confirmation{'s' if remaining_count != 1 else ''} are needed before "
+                "the entry threshold can trigger."
+            )
+        else:
+            final_summary = (
+                f"Entry watch summary — Bullish indicators met the configured threshold "
+                f"({confirmed_weight}/{required_count} confirmed); the entry condition can trigger."
+            )
+    else:
+        final_summary = summary
+
+    return {
+        "summary": summary,
+        "detail": " ".join(detail_parts),
+        "status": status,
+        "phase": phase,
+        "decision": direction,
+        "target_direction": target_direction,
+        "strategy_mode": strategy_mode,
+        "strategy_label": strategy_label,
+        "condition_logic": condition_logic,
+        "uses_indicators": strategy_uses_indicators,
+        "uses_structural": strategy_uses_structural,
+        "entry_levels": entry_levels,
+        "exit_levels": exit_levels or {},
+        "required_count": required_count,
+        "confirmed_count": sum(item["status"] == "CONFIRMED" for item in indicators),
+        "confirmed_weight": confirmed_weight,
+        "remaining_count": remaining_count,
+        "indicator_progress_label": indicator_progress_label if strategy_uses_indicators else "",
+        "progress_label": progress_label,
+        "final_summary": final_summary,
+        "indicators": indicators,
+        "blockers": blockers,
+        "updated_at": formatted_scan.get("scanned_at") or datetime.now(pytz.UTC).isoformat(),
+        "refresh_rate_sec": _screener_scan_interval_seconds(settings),
+        "next_due_at": evaluation_state.get("next_due_at"),
+        "candle_key": candle_meta.get("candle_key"),
+        "candle_open_ts": candle_meta.get("candle_open_ts"),
+        "candle_close_ts": candle_meta.get("candle_close_ts"),
+        "virtual_position": virtual_position,
+        "exit_event_active": exit_event_active,
+        "position_source": "virtual_signal_lifecycle",
+        "no_trade_placed": True,
+    }
+
+
+def _screener_summary(state: ScreenerUserState, symbols: list[str]) -> dict:
+    enabled_symbols = [
+        symbol for symbol in symbols
+        if bool(state.profiles.get(symbol, {}).get("enabled", True))
+    ]
+    valid_scans = {
+        symbol: state.latest_scans.get(symbol, {})
+        for symbol in enabled_symbols
+        if state.latest_scans.get(symbol, {}).get("evaluation_status") == "valid"
+    }
+    tz = pytz.timezone(getattr(state.config, "TIMEZONE", "America/Chicago"))
+    today = datetime.now(tz).date()
+    alerts_today = 0
+    alerts_today_by_direction = {"bullish": 0, "bearish": 0}
+    for item in state.notifications:
+        try:
+            created = item.get("created_at")
+            if isinstance(created, str):
+                created = datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()
+            if created and datetime.fromtimestamp(float(created), tz).date() == today:
+                alerts_today += 1
+                direction = str(item.get("direction") or "").lower()
+                if direction in alerts_today_by_direction:
+                    alerts_today_by_direction[direction] += 1
+        except (TypeError, ValueError, OverflowError):
+            continue
+    unread = sum(not bool(item.get("read")) for item in state.notifications)
+    email_queued = sum(item.get("status") in {"queued", "sending", "retrying"} for item in state.email_outbox)
+    email_failed = sum(item.get("status") == "failed" for item in state.email_outbox)
+    sms_queued = sum(item.get("status") in {"queued", "sending", "retrying"} for item in state.sms_outbox)
+    sms_failed = sum(item.get("status") == "failed" for item in state.sms_outbox)
+    sms_enabled = bool(state.notification_settings.get("sms_enabled"))
+    sms_phone_configured = bool(normalize_screener_sms_phone(state.notification_settings.get("sms_phone_number")))
+    health = dict(state.health)
+    health.setdefault("status", "starting")
+    return {
+        "monitoring": health,
+        "profiles": {
+            "enabled": len(enabled_symbols),
+            "total": len(symbols),
+            "paused": max(0, len(symbols) - len(enabled_symbols)),
+        },
+        "setups": {
+            "bullish": sum(scan.get("direction") == "BULLISH" for scan in valid_scans.values()),
+            "bearish": sum(scan.get("direction") == "BEARISH" for scan in valid_scans.values()),
+            "neutral": sum(scan.get("direction") == "NEUTRAL" for scan in valid_scans.values()),
+            "valid": len(valid_scans),
+        },
+        "alerts_today": alerts_today,
+        "alerts_today_by_direction": alerts_today_by_direction,
+        "unread_alerts": unread,
+        "browser_delivery": {"enabled": True},
+        "email_delivery": {
+            "enabled": bool(state.notification_settings.get("email_enabled")),
+            "queued": email_queued,
+            "failed": email_failed,
+        },
+        "sms_delivery": {
+            "enabled": sms_enabled,
+            "phone_configured": sms_phone_configured,
+            "provider_configured": _sms_provider_configured(),
+            "queued": sms_queued,
+            "failed": sms_failed,
+        },
+        "timezone": str(getattr(state.config, "TIMEZONE", "America/Chicago")),
+    }
+
+
+@app.get("/api/screener/snapshot")
+async def get_screener_snapshot(
+    response: Response,
+    partition: str = "all",
+    force: bool = False,
+    state: ScreenerUserState = Depends(get_screener_state),
+):
+    snapshot_started = time.perf_counter()
+    partition_norm = partition if partition in {"all", "regular", "options"} else "all"
+    if force:
+        await _scan_screener_state(state)
+    elif any(symbol not in state.latest_scans for symbol in state.order) and not state.scan_lock.locked():
+        asyncio.create_task(_scan_screener_state(state))
+
+    symbols = []
+    for symbol in state.order:
+        is_option = bool(state.profiles.get(symbol, {}).get("options_trading", False))
+        if partition_norm == "options" and not is_option:
+            continue
+        if partition_norm == "regular" and is_option:
+            continue
+        symbols.append(symbol)
+
+    scans = {}
+    for symbol in symbols:
+        scan = copy.deepcopy(
+            state.latest_scans.get(symbol)
+            or _empty_screener_scan(symbol, state.profiles.get(symbol, {}))
+        )
+        # Chart candles are loaded by the dedicated chart-preview endpoint.
+        # Keeping them out of the polling snapshot prevents multi-megabyte
+        # responses and repeated JSON parsing on every 60-second refresh.
+        for heavy_key in ("price_history", "priceHistory", "raw_candles", "candles", "df"):
+            scan.pop(heavy_key, None)
+        if state.profiles.get(symbol, {}).get("news_watch_enabled", True):
+            scan["news_watch"] = copy.deepcopy(state.news_watch.get(symbol) or {
+                "enabled": True,
+                "status": "waiting",
+                "ticker": symbol,
+                "poll_seconds": 60,
+                "new_count": 0,
+            })
+        else:
+            scan["news_watch"] = {"enabled": False, "status": "disabled", "ticker": symbol}
+        if state.profiles.get(symbol, {}).get("earnings_watch_enabled", True) and not _is_crypto_symbol(symbol):
+            scan["earnings_watch"] = copy.deepcopy(state.earnings_watch.get(symbol) or {
+                "enabled": True,
+                "status": "waiting",
+                "ticker": symbol,
+                "new_count": 0,
+            })
+        else:
+            scan["earnings_watch"] = {"enabled": False, "status": "disabled", "ticker": symbol}
+        if state.profiles.get(symbol, {}).get("fundamental_watch_enabled", True) and not _is_crypto_symbol(symbol):
+            report = state.fundamental_reports.get(symbol) or {}
+            report_status = report.get("status", "waiting")
+            try:
+                if report_status == "current" and float(report.get("next_check_at", 0) or 0) <= time.time():
+                    report_status = "stale"
+            except (TypeError, ValueError, OverflowError):
+                report_status = "stale" if report_status == "current" else report_status
+            scan["fundamental_watch"] = {
+                "enabled": True,
+                "status": report_status,
+                "ticker": symbol,
+                "assessment": report.get("assessment", ""),
+                "company_name": (report.get("company") or {}).get("name", symbol),
+                "checked_at": report.get("checked_at", ""),
+                "next_check_at": report.get("next_check_at"),
+                "error": report.get("error", ""),
+            }
+        else:
+            scan["fundamental_watch"] = {"enabled": False, "status": "disabled", "ticker": symbol}
+        scans[symbol] = scan
+    summary = _screener_summary(state, symbols)
+    enabled_count = summary["profiles"]["enabled"]
+    buy_count = summary["setups"]["bullish"]
+    sell_count = summary["setups"]["bearish"]
+    neutral_count = summary["setups"]["neutral"]
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    response.headers["X-Snapshot-Time-MS"] = str(round((time.perf_counter() - snapshot_started) * 1000, 1))
+    return {
+        "schema_version": "1.0",
+        "partition": partition_norm,
+        "tradelist": symbols,
+        "bot_scans": scans,
+        "botScans": scans,
+        "ticker_settings": {symbol: state.profiles[symbol] for symbol in symbols},
+        "positions": [],
+        "pendingOrders": [],
+        "open_orders": [],
+        "account": {"equity": len(symbols), "cash": enabled_count, "dailyPL": buy_count, "dailyPLPct": 0},
+        "capital": str(len(symbols)),
+        "cash": str(enabled_count),
+        "openPositions": str(sell_count),
+        "positionsList": f"{neutral_count} neutral",
+        "dailyPL": f"{buy_count} buy",
+        "totalProfit": f"{sell_count} sell",
+        "has_keys": True,
+        "simulation": False,
+        "indicator_parameters": state.config.contexts.get("screener", {}).get("parameters", {}),
+        "global_risk_status": {},
+        "page_settings": state.page_settings,
+        "screener_summary": summary,
+        "notifications": {
+            "unread_count": summary["unread_alerts"],
+            "alerts_today": summary["alerts_today"],
+        },
+        "snapshot_seq": int(time.time() * 1000),
+        "trade_event_seq": len(state.activity),
+        "generated_at": datetime.now(pytz.UTC).isoformat(),
+    }
+
+
+@app.get("/api/screener/profiles/{ticker}")
+async def get_screener_profile(ticker: str, state: ScreenerUserState = Depends(get_screener_state)):
+    symbol = normalize_screener_symbol(ticker)
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Invalid ticker format")
+    if symbol not in state.profiles:
+        raise HTTPException(status_code=404, detail=f"Screener profile not found for '{symbol}'")
+    return {"ticker": symbol, "settings": state.profiles[symbol], "fetched_at": datetime.now(pytz.UTC).isoformat()}
+
+
+@app.get("/api/screener/earnings/{ticker}")
+async def get_screener_earnings(ticker: str, force: bool = False, state: ScreenerUserState = Depends(get_screener_state)):
+    symbol = normalize_screener_symbol(ticker)
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Invalid ticker format")
+    settings = state.profiles.get(symbol)
+    if not settings:
+        raise HTTPException(status_code=404, detail=f"Screener profile not found for '{symbol}'")
+    if not settings.get("earnings_watch_enabled", True) or _is_crypto_symbol(symbol):
+        return {"enabled": False, "status": "disabled", "ticker": symbol}
+    cached = state.earnings_watch.get(symbol)
+    if force or not cached or cached.get("status") in {"waiting", "unavailable"} or cached.get("data_version") != 2:
+        cached = await asyncio.wait_for(
+            asyncio.to_thread(
+                get_earnings_watch_detail,
+                symbol,
+                None if force else cached,
+                bool(settings.get("options_trading")),
+            ),
+            timeout=50.0,
+        )
+        state.earnings_watch[symbol] = cached
+        await state.save()
+    return copy.deepcopy(cached)
+
+
+@app.get("/api/screener/fundamentals/{ticker}")
+async def get_screener_fundamentals(ticker: str, force: bool = False, state: ScreenerUserState = Depends(get_screener_state)):
+    symbol = normalize_screener_symbol(ticker)
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Invalid ticker format")
+    settings = state.profiles.get(symbol)
+    if not settings:
+        raise HTTPException(status_code=404, detail=f"Screener profile not found for '{symbol}'")
+    if not settings.get("fundamental_watch_enabled", True) or _is_crypto_symbol(symbol):
+        return {"enabled": False, "status": "not_applicable" if _is_crypto_symbol(symbol) else "disabled", "ticker": symbol}
+    cached = state.fundamental_reports.get(symbol)
+    try:
+        cache_due = not cached or float(cached.get("next_check_at", 0) or 0) <= time.time()
+    except (TypeError, ValueError, OverflowError):
+        cache_due = True
+    if force or cache_due or cached.get("status") in {"waiting", "unavailable"} or cached.get("report_version") != 1:
+        cached = await asyncio.wait_for(asyncio.to_thread(
+            get_fundamental_report_detail,
+            symbol,
+            None if force else cached,
+            bool(settings.get("options_trading")),
+        ), timeout=50.0)
+        state.fundamental_reports[symbol] = cached
+        await state.save()
+    return copy.deepcopy(cached)
+
+
+@app.post("/api/screener/profiles")
+async def save_screener_profile(data: dict, state: ScreenerUserState = Depends(get_screener_state)):
+    symbol = normalize_screener_symbol(data.get("symbol") or data.get("ticker"))
+    if not symbol:
+        raise HTTPException(status_code=400, detail="A valid symbol is required")
+    exists = symbol in state.profiles
+    enabled_profiles = sum(bool(profile.get("enabled", True)) for profile in state.profiles.values())
+    incoming_settings = data.get("settings") if isinstance(data.get("settings"), dict) else data
+    requested_enabled = bool((incoming_settings or {}).get("enabled", not bool((incoming_settings or {}).get("paused", False))))
+    if (not exists or (not bool(state.profiles.get(symbol, {}).get("enabled", False)) and requested_enabled)) and enabled_profiles >= 50:
+        raise HTTPException(status_code=400, detail="Screener supports a maximum of 50 enabled profiles")
+    if exists and data.get("settings") is None and not data.get("force_override", False):
+        return {"status": "error", "message": f"A Screener profile for '{symbol}' already exists."}
+    previous_profile = copy.deepcopy(state.profiles.get(symbol) or {})
+    previous_revision = state.profile_revision(symbol) if exists else None
+    previous_enabled = bool(previous_profile.get("enabled", False)) if exists else False
+    previous_news_enabled = bool(previous_profile.get("news_watch_enabled", True)) if exists else False
+    previous_earnings_enabled = bool(previous_profile.get("earnings_watch_enabled", True)) if exists else False
+    previous_fundamental_enabled = bool(previous_profile.get("fundamental_watch_enabled", True)) if exists else False
+    next_profile = _screener_profile_from_request(data, state, symbol)
+    dashboard_watchlist = None
+    if "add_to_watchlist" in data:
+        dashboard_watchlist = await _set_screener_dashboard_watchlist(
+            state,
+            symbol,
+            bool(data.get("add_to_watchlist")),
+        )
+    state.profiles[symbol] = next_profile
+    settings_changed = (
+        not exists
+        or _screener_profile_fingerprint(previous_profile)
+        != _screener_profile_fingerprint(state.profiles[symbol])
+    )
+    now_enabled = bool(state.profiles[symbol].get("enabled", True))
+    news_enabled = bool(state.profiles[symbol].get("news_watch_enabled", True))
+    earnings_enabled = bool(state.profiles[symbol].get("earnings_watch_enabled", True))
+    fundamental_enabled = bool(state.profiles[symbol].get("fundamental_watch_enabled", True))
+    technical_scan_changed = (
+        not exists
+        or previous_revision != state.profile_revision(symbol)
+        or (not previous_enabled and now_enabled)
+    )
+    if technical_scan_changed:
+        state.mark_profile_baseline(symbol, "profile_settings_changed" if exists else "profile_activated")
+    if symbol not in state.order:
+        state.order.append(symbol)
+    if technical_scan_changed:
+        state.latest_scans.pop(symbol, None)
+    await state.save()
+    if settings_changed:
+        # A settings save gets one immediate fresh result, even outside the
+        # selected market window. Normal scheduler passes remain session- and
+        # completed-candle-gated.
+        state.force_scan.set()
+        asyncio.create_task(_scan_screener_state(state, [symbol], force_scan=True))
+    if news_enabled and (not previous_news_enabled or symbol not in state.news_watch):
+        asyncio.create_task(_watch_screener_news_state(state, [symbol]))
+    if earnings_enabled and (not previous_earnings_enabled or symbol not in state.earnings_watch):
+        asyncio.create_task(_watch_screener_earnings_state(state, [symbol]))
+    if fundamental_enabled and (not exists or not previous_fundamental_enabled) and not _is_crypto_symbol(symbol):
+        asyncio.create_task(_watch_screener_fundamental_state(state, [symbol]))
+    return {
+        "status": "success",
+        "symbol": symbol,
+        "tradelist": state.order,
+        "settings": state.profiles[symbol],
+        "settings_changed": settings_changed,
+        "technical_scan_changed": technical_scan_changed,
+        "news_watch_enabled": news_enabled,
+        "earnings_watch_enabled": earnings_enabled,
+        "fundamental_watch_enabled": fundamental_enabled,
+        "dashboard_watchlist": dashboard_watchlist.get("watchlist", []) if dashboard_watchlist else None,
+        "dashboard_watchlist_enabled": dashboard_watchlist.get("enabled") if dashboard_watchlist else None,
+    }
+
+
+@app.get("/api/screener/dashboard-watchlist/{ticker}")
+async def get_screener_dashboard_watchlist(ticker: str, state: ScreenerUserState = Depends(get_screener_state)):
+    """Return the actual Dashboard watchlist state for a Screener profile form."""
+    symbol = normalize_screener_symbol(ticker)
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Invalid ticker format")
+    engine = await _dashboard_engine_for_screener(state)
+    watchlist = [_normalize_quote_symbol(item) for item in (engine.config.WATCHLIST or [])]
+    return {"symbol": symbol, "enabled": symbol in watchlist, "watchlist": watchlist}
+
+
+@app.delete("/api/screener/profiles/{ticker}")
+async def delete_screener_profile(ticker: str, state: ScreenerUserState = Depends(get_screener_state)):
+    symbol = normalize_screener_symbol(ticker)
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Invalid ticker format")
+    state.profiles.pop(symbol, None)
+    state.latest_scans.pop(symbol, None)
+    state.news_watch.pop(symbol, None)
+    state.earnings_watch.pop(symbol, None)
+    state.fundamental_reports.pop(symbol, None)
+    state.order = [item for item in state.order if item != symbol]
+    await state.save()
+    return {"status": "success", "symbol": symbol, "tradelist": state.order}
+
+
+@app.post("/api/screener/profiles/{ticker}/reset")
+async def reset_screener_profile(ticker: str, state: ScreenerUserState = Depends(get_screener_state)):
+    symbol = normalize_screener_symbol(ticker)
+    if not symbol or symbol not in state.profiles:
+        raise HTTPException(status_code=404, detail="Screener profile not found")
+    state.profiles[symbol] = {
+        "source": "screener",
+        "enabled": True,
+        "paused": False,
+        "timeframe": state.config.DEFAULT_TIMEFRAME,
+        "asset_class": "crypto" if _is_crypto_symbol(symbol) else "stock",
+        "indicators": [],
+        "indicator_overrides": {},
+        "min_buy_signals": 3,
+        "min_sell_signals": 3,
+        "scan_interval_seconds": 60,
+        "news_watch_enabled": True,
+        "earnings_watch_enabled": True,
+        "fundamental_watch_enabled": True,
+        "started_at": datetime.now(pytz.UTC).isoformat(),
+    }
+    state.latest_scans.pop(symbol, None)
+    state.news_watch.pop(symbol, None)
+    state.earnings_watch.pop(symbol, None)
+    state.fundamental_reports.pop(symbol, None)
+    await state.save()
+    # Resetting a profile changes its effective settings, so refresh it once
+    # immediately regardless of the selected market session.
+    state.force_scan.set()
+    asyncio.create_task(_scan_screener_state(state, [symbol], force_scan=True))
+    asyncio.create_task(_watch_screener_news_state(state, [symbol]))
+    if not _is_crypto_symbol(symbol):
+        asyncio.create_task(_watch_screener_earnings_state(state, [symbol]))
+        asyncio.create_task(_watch_screener_fundamental_state(state, [symbol]))
+    return {"status": "success", "symbol": symbol, "settings": state.profiles[symbol]}
+
+
+@app.post("/api/screener/reorder")
+async def reorder_screener_profiles(data: dict, state: ScreenerUserState = Depends(get_screener_state)):
+    requested = data.get("tradelist", data.get("order", []))
+    if not isinstance(requested, list):
+        raise HTTPException(status_code=400, detail="Invalid profile order")
+    ordered = []
+    for item in requested:
+        symbol = normalize_screener_symbol(item)
+        if symbol in state.profiles and symbol not in ordered:
+            ordered.append(symbol)
+    ordered.extend(symbol for symbol in state.order if symbol in state.profiles and symbol not in ordered)
+    state.order = ordered
+    await state.save()
+    return {"status": "success", "tradelist": state.order}
+
+
+@app.get("/api/screener/activity")
+async def get_screener_activity(kind: str = "scans", limit: int = 50, state: ScreenerUserState = Depends(get_screener_state)):
+    activity = [] if kind == "orders" else state.activity[:max(1, min(int(limit or 50), 100))]
+    return {"schema_version": "1.0", "kind": kind, "activity": activity, "count": len(activity), "generated_at": datetime.now(pytz.UTC).isoformat()}
+
+
+@app.get("/api/screener/settings")
+async def get_screener_settings(state: ScreenerUserState = Depends(get_screener_state)):
+    return {
+        "settings": dict(state.notification_settings),
+        "page_settings": dict(state.page_settings),
+        "health": _screener_summary(state, state.order),
+    }
+
+
+@app.put("/api/screener/settings")
+async def update_screener_settings(data: dict, state: ScreenerUserState = Depends(get_screener_state)):
+    updates = data.get("settings", data) if isinstance(data, dict) else {}
+    requested_sms_phone = normalize_screener_sms_phone(
+        updates.get("sms_phone_number", state.notification_settings.get("sms_phone_number"))
+    )
+    raw_requested_sms_phone = updates.get("sms_phone_number")
+    if raw_requested_sms_phone is not None and str(raw_requested_sms_phone).strip() and not requested_sms_phone:
+        raise HTTPException(status_code=400, detail="SMS phone number must use E.164 format, for example +12125551234")
+    requested_sms_enabled = bool(updates.get("sms_enabled", state.notification_settings.get("sms_enabled")))
+    if requested_sms_enabled and not requested_sms_phone:
+        raise HTTPException(status_code=400, detail="Add a valid E.164 phone number before enabling SMS alerts")
+    allowed = {
+        "email_enabled", "sms_enabled", "sms_phone_number",
+        "bullish_enabled", "bearish_enabled", "cooldown_minutes",
+    }
+    for key, value in updates.items():
+        if key not in allowed:
+            continue
+        if key == "sms_phone_number":
+            state.notification_settings[key] = requested_sms_phone
+            continue
+        if key.endswith("_enabled"):
+            state.notification_settings[key] = bool(value)
+        else:
+            try:
+                state.notification_settings[key] = max(0, min(1440, int(value)))
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="cooldown_minutes must be an integer from 0 to 1440")
+    page_updates = data.get("page_settings") if isinstance(data, dict) else None
+    if isinstance(page_updates, dict):
+        for key in ("scan_interval_seconds", "chart_timeframe", "chart_session"):
+            if key in page_updates:
+                state.page_settings[key] = page_updates[key]
+    await state.save()
+    return {"status": "success", "settings": state.notification_settings, "page_settings": state.page_settings}
+
+
+@app.get("/api/screener/notifications")
+async def list_screener_notifications(
+    limit: int = 50,
+    cursor: str = None,
+    unread_only: bool = False,
+    period: str = "all",
+    read_state: str = "all",
+    state: ScreenerUserState = Depends(get_screener_state),
+):
+    limit_value = max(1, min(int(limit or 50), 50))
+    period_value = str(period or "all").lower()
+    period_windows = {
+        "1d": 86400,
+        "1w": 7 * 86400,
+        "1m": 30 * 86400,
+        "1y": 365 * 86400,
+    }
+    items = list(state.notifications)
+    if period_value == "today":
+        tz = pytz.timezone(getattr(state.config, "TIMEZONE", "America/Chicago"))
+        today = datetime.now(tz).date()
+
+        def _is_today(item: dict) -> bool:
+            try:
+                created_at = item.get("created_at")
+                if isinstance(created_at, str):
+                    created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00")).timestamp()
+                return bool(created_at) and datetime.fromtimestamp(float(created_at), tz).date() == today
+            except (TypeError, ValueError, OverflowError):
+                return False
+
+        items = [item for item in items if _is_today(item)]
+    elif period_value in period_windows:
+        cutoff = time.time() - period_windows[period_value]
+
+        def _is_within_period(item: dict) -> bool:
+            try:
+                created_at = item.get("created_at")
+                if isinstance(created_at, str):
+                    created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00")).timestamp()
+                return float(created_at or 0) >= cutoff
+            except (TypeError, ValueError, OverflowError):
+                return False
+
+        items = [item for item in items if _is_within_period(item)]
+    elif period_value != "all":
+        period_value = "all"
+    unread_count = sum(not bool(item.get("read")) for item in items)
+    read_count = len(items) - unread_count
+    read_state_value = str(read_state or "all").lower()
+    if unread_only and read_state_value == "all":
+        read_state_value = "unread"
+    if read_state_value == "unread":
+        items = [item for item in items if not bool(item.get("read"))]
+    elif read_state_value == "read":
+        items = [item for item in items if bool(item.get("read"))]
+    else:
+        read_state_value = "all"
+    start = 0
+    if cursor:
+        for index, item in enumerate(items):
+            if item.get("id") == cursor:
+                start = index + 1
+                break
+    page = items[start:start + limit_value]
+    next_cursor = page[-1].get("id") if len(items) > start + len(page) else None
+    return {
+        "notifications": page,
+        "next_cursor": next_cursor,
+        "unread_count": unread_count,
+        "read_count": read_count,
+        "total_count": unread_count + read_count,
+        "count": len(page),
+        "period": period_value,
+        "read_state": read_state_value,
+    }
+
+
+@app.post("/api/screener/notifications/read")
+async def mark_screener_notifications_read(data: dict = None, state: ScreenerUserState = Depends(get_screener_state)):
+    payload = data or {}
+    ids = {str(value) for value in payload.get("ids", []) if value}
+    cutoff = payload.get("cutoff", time.time())
+    try:
+        cutoff_value = float(cutoff)
+    except (TypeError, ValueError):
+        cutoff_value = time.time()
+    for item in state.notifications:
+        created_at = item.get("created_at", 0)
+        try:
+            if isinstance(created_at, str):
+                created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00")).timestamp()
+            created_at = float(created_at or 0)
+        except (TypeError, ValueError, OverflowError):
+            created_at = 0
+        if (ids and item.get("id") in ids) or (not ids and created_at <= cutoff_value):
+            item["read"] = True
+            item["read_at"] = time.time()
+    await state.save()
+    return {"status": "success", "unread_count": sum(not bool(item.get("read")) for item in state.notifications)}
+
+
+@app.post("/api/screener/email/test")
+async def queue_screener_test_email(state: ScreenerUserState = Depends(get_screener_state)):
+    smtp = _smtp_settings()
+    if not smtp["host"] or not smtp["from_email"]:
+        raise HTTPException(status_code=503, detail="Screener SMTP is not configured")
+    now = time.time()
+    last_test = float(state.health.get("last_test_email_at", 0) or 0)
+    if now - last_test < 300:
+        raise HTTPException(status_code=429, detail="Test email is limited to once every five minutes")
+    test_id = hashlib.sha256(f"test|{state.uid}|{int(now // 300)}".encode()).hexdigest()
+    state.health["last_test_email_at"] = now
+    state.email_outbox = [item for item in state.email_outbox if item.get("id") != test_id]
+    state.email_outbox.append({
+        "id": test_id,
+        "status": "queued",
+        "attempts": 0,
+        "next_attempt_at": now,
+        "created_at": now,
+        "test": True,
+    })
+    await state.save()
+    return {"status": "queued", "message": "Test email queued for the verified Firebase email address."}
+
+
+@app.post("/api/screener/scan")
+async def scan_screener_now(data: dict = None, state: ScreenerUserState = Depends(get_screener_state)):
+    symbols = (data or {}).get("symbols")
+    if isinstance(symbols, list):
+        symbols = [symbol for symbol in (normalize_screener_symbol(item) for item in symbols) if symbol in state.profiles]
+    else:
+        symbols = None
+    await _scan_screener_state(state, symbols)
+    return {"status": "success", "scanned": symbols or list(state.order)}
+
+
+def _screener_chart_response(ticker: str, timeframe: str, analysis: dict, settings: dict) -> dict:
+    scan = _technical_scan_from_analysis(ticker, timeframe, analysis, use_bot_settings=True)
+    formatted = _format_scan_for_ui(scan, use_global_settings=False)
+    selected = settings.get("indicators")
+    if isinstance(selected, list):
+        formatted["signals"] = {name: formatted.get("signals", {}).get(name, {
+            "signal": "NEUTRAL", "reason": "Awaiting sufficient market data", "weight": 1, "enabled": True,
+        }) for name in selected}
+    formatted.pop("price_history", None)
+    return _sanitize_json_values({
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "primaryScan": formatted,
+        "signals": formatted.get("signals", {}),
+        "priceHistory": scan.get("price_history", []),
+        "action": formatted.get("action", "HOLD"),
+        "reason": formatted.get("reason", ""),
+        "bullish_count": formatted.get("bullish_count", 0),
+        "bearish_count": formatted.get("bearish_count", 0),
+        "total_signals": formatted.get("total_signals", 0),
+        "volumeProfile": analysis.get("volume_profile") or {},
+        "candle_meta": analysis.get("candle_meta", {}),
+        "preview_meta": {"settings_source": "screener", "candle_mode": "last_closed"},
+    })
+
+
+async def _load_screener_chart(state: ScreenerUserState, ticker: str, timeframe: str, settings: dict, force: bool = False) -> dict:
+    set_user_config(state.config)
+    overlay_token = set_draft_ticker_settings({ticker: settings})
+    try:
+        with _analysis_request_context("screener", ticker, True):
+            analysis, _cached, _age = await asyncio.wait_for(
+                asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, state, force, "screener", settings),
+                timeout=45.0,
+            )
+            if not analysis:
+                raise HTTPException(status_code=404, detail=f"Could not load chart data for {ticker}")
+            if not _has_usable_chart_history(analysis):
+                raise HTTPException(status_code=404, detail=f"No usable chart candles available for {ticker}")
+            return _screener_chart_response(ticker, timeframe, analysis, settings)
+    finally:
+        reset_draft_ticker_settings(overlay_token)
+
+
+@app.post("/api/screener/chart-preview")
+async def get_screener_chart_preview(data: dict, state: ScreenerUserState = Depends(get_screener_state)):
+    symbol = normalize_screener_symbol(data.get("ticker"))
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Invalid ticker format")
+    settings = _screener_profile_from_request({"settings": data.get("settings", {})}, state, symbol)
+    settings["_chart_preview"] = True
+    timeframe = data.get("timeframe") or settings.get("timeframe") or state.config.DEFAULT_TIMEFRAME
+    return await _load_screener_chart(state, symbol, timeframe, settings, bool(data.get("force", False)))
+
+
+@app.get("/api/screener/chart/{ticker}")
+async def get_screener_chart(ticker: str, timeframe: str = None, force: bool = False, state: ScreenerUserState = Depends(get_screener_state)):
+    symbol = normalize_screener_symbol(ticker)
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Invalid ticker format")
+    settings = dict(state.profiles.get(symbol, {}))
+    timeframe = timeframe or settings.get("timeframe") or state.page_settings.get("chart_timeframe") or state.config.DEFAULT_TIMEFRAME
+    return await _load_screener_chart(state, symbol, timeframe, settings, force)
+
+
+@app.get("/api/screener/settings/indicators")
+def get_screener_indicator_settings(state: ScreenerUserState = Depends(get_screener_state)):
+    return get_indicator_settings("screener", state)
+
+
+@app.post("/api/screener/settings/indicators")
+async def update_screener_indicator_settings(updates: dict, ticker: str = None, state: ScreenerUserState = Depends(get_screener_state)):
+    return await update_indicators(dict(updates or {}), "screener", ticker, state)
+
+
+@app.get("/api/screener/settings/ai")
+def get_screener_ai_settings(state: ScreenerUserState = Depends(get_screener_state)):
+    return get_ai_settings("screener", state)
+
+
+@app.post("/api/screener/settings/ai")
+async def update_screener_ai_settings(updates: dict, state: ScreenerUserState = Depends(get_screener_state)):
+    return await update_ai_settings(dict(updates or {}), "screener", state)
+
+
+@app.post("/api/screener/settings/risk")
+async def update_screener_risk_settings(updates: dict, state: ScreenerUserState = Depends(get_screener_state)):
+    raise HTTPException(status_code=405, detail="Screener profiles do not use trading risk or account settings")
+
+
+@app.post("/api/screener/settings/risk/reactivate")
+async def reactivate_screener_settings(state: ScreenerUserState = Depends(get_screener_state)):
+    return {"status": "success", "message": "Screener monitoring is active; no broker risk lock applies."}
+
+
+@app.get("/api/screener/search/{query}")
+def search_screener_symbols(query: str, state: ScreenerUserState = Depends(get_screener_state)):
+    if not str(query or "").strip():
+        return []
+    provider = _get_webull_market_data_broker()
+    if provider and hasattr(provider, "search_assets"):
+        try:
+            return provider.search_assets(query)
+        except Exception as exc:
+            print(f"[screener] Symbol search provider failed: {exc}")
+    symbol = normalize_screener_symbol(query)
+    return [{"symbol": symbol, "name": symbol}] if symbol else []
+
+
+@app.get("/api/screener/assets/session_eligibility/{ticker}")
+def get_screener_session_eligibility(ticker: str, market_session: str = "24h", state: ScreenerUserState = Depends(get_screener_state)):
+    """Describe sessions supported by the Screener's configured data path.
+
+    This is intentionally independent of broker trading eligibility.  A stock
+    can be tradable overnight while the Screener still lacks timely completed
+    overnight bars for indicator alerts on the free feed.
+    """
+    symbol = normalize_screener_symbol(ticker)
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Invalid ticker format")
+    if _is_crypto_symbol(symbol):
+        return {"success": True, "allowed": True, "eligible": True, "symbol": symbol, "market_session": "24h", "message": "Crypto Screener alerts use completed candles 24/7."}
+    requested = str(market_session or "Regular").strip().lower()
+    if requested in {"24h", "crypto24", "24/5", "overnight"}:
+        return {
+            "success": True,
+            "allowed": False,
+            "eligible": False,
+            "symbol": symbol,
+            "market_session": "Extended",
+            "message": "Live 24/5 stock alerts are unavailable: the configured free feed does not provide timely overnight candles for indicator analysis. Use Extended Hours (4:00 AM–8:00 PM ET).",
+        }
+    session = _normalize_screener_market_session(symbol, market_session)
+    return {"success": True, "allowed": True, "eligible": True, "symbol": symbol, "market_session": session, "message": f"{session} stock Screener alerts use completed candles."}
+
+
+@app.get("/api/screener/history")
+def get_screener_history(period: str = "ALL", timeframe: str = "1D", state: ScreenerUserState = Depends(get_screener_state)):
+    """Return time-bucketed bullish/bearish alert events for the Screener chart."""
+    central_tz = pytz.timezone("America/Chicago")
+    now_dt = datetime.now(central_tz)
+    now = now_dt.timestamp()
+    period_key = str(period or "ALL").upper()
+    window_days = {"1D": 1, "1W": 7, "1M": 30, "1Y": 365, "ALL": 90}.get(period_key, 90)
+    bucket_seconds = {"1D": 60, "1W": 900, "1M": 3600, "1Y": 86400, "ALL": 86400}.get(period_key, 3600)
+    start_dt = (now_dt - timedelta(days=window_days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    start = int(start_dt.timestamp())
+    buckets = {}
+    for item in state.notifications:
+        try:
+            created = item.get("created_at", 0)
+            if isinstance(created, str):
+                created = datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()
+            created = float(created)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if created < start:
+            continue
+        # Signal Activity is an alert timeline: place the dot when the alert
+        # was created, while retaining the candle close as audit metadata.
+        event_time = created
+        candle_close = item.get("candle_close_ts")
+        try:
+            candle_close = float(candle_close) if candle_close is not None else None
+        except (TypeError, ValueError):
+            candle_close = None
+        key = start + int((event_time - start) // bucket_seconds) * bucket_seconds
+        row = buckets.setdefault(key, {"bullish": [], "bearish": []})
+        direction = str(item.get("direction", "NEUTRAL")).lower()
+        if direction not in {"bullish", "bearish"}:
+            continue
+        row[direction].append({
+            "ticker": normalize_screener_symbol(item.get("symbol")) or str(item.get("symbol") or "Unknown"),
+            "timestamp": event_time,
+            "candle_close_ts": candle_close,
+            "candle_open_ts": item.get("candle_open_ts"),
+            "candle_key": item.get("candle_key"),
+            "event_direction": str(item.get("event_direction") or direction).upper(),
+            "title": item.get("title") or "",
+            "timeframe": item.get("timeframe") or "",
+            "price": item.get("price"),
+            "reason": item.get("reason") or item.get("scan_reason") or "",
+            "signals": item.get("signals") or {},
+            "scan_log": item.get("scan_log") or {},
+            "atr": item.get("atr"),
+            "atr_levels": item.get("atr_levels") or {},
+        })
+    current_bucket = start + int((now - start) // bucket_seconds) * bucket_seconds
+    timestamps = list(range(start, current_bucket + bucket_seconds, bucket_seconds))
+    # Keep the one-day activity timeline anchored at the actual current Central
+    # time, rather than the end of the current one-minute bucket.
+    if period_key == "1D" and int(now) > current_bucket:
+        timestamps.append(int(now))
+    bullish = [len(buckets.get(ts, {}).get("bullish", [])) for ts in timestamps]
+    bearish = [len(buckets.get(ts, {}).get("bearish", [])) for ts in timestamps]
+    alert_groups = [
+        {
+            "timestamp": ts,
+            "bullish": buckets.get(ts, {}).get("bullish", []),
+            "bearish": buckets.get(ts, {}).get("bearish", []),
+        }
+        for ts in timestamps
+    ]
+    return {
+        "history": [], "data": [], "activity": state.activity[:100],
+        "timestamp": timestamps, "bullish": bullish, "bearish": bearish,
+        "alert_groups": alert_groups, "bucket_seconds": bucket_seconds, "timezone": "America/Chicago",
+    }
+
+
+@app.get("/api/screener/provider-config")
+def get_screener_provider_config(state: ScreenerUserState = Depends(get_screener_state)):
+    return {"configured": True, "connected": True, "has_keys": True, "provider": "shared-market-data"}
+
+
+@app.post("/api/screener/provider-config")
+def save_screener_provider_config(data: dict, state: ScreenerUserState = Depends(get_screener_state)):
+    return {"status": "success", "message": "Screener market data is managed independently by the backend."}
+
+
+@app.post("/api/screener/no-trading")
+def reject_screener_trading_action(state: ScreenerUserState = Depends(get_screener_state)):
+    raise HTTPException(status_code=405, detail="Trading actions are disabled on the independent Screener page")
+
+
+@app.get("/api/screener/ollama/models")
+async def get_screener_ollama_models(state: ScreenerUserState = Depends(get_screener_state)):
+    return await get_ollama_models(state)
+
+
+@app.get("/api/screener/ai-indicator")
+async def get_screener_ai_indicator(
+    ticker: str,
+    timeframe: str = None,
+    model: str = None,
+    force: bool = False,
+    context: str = "screener",
+    state: ScreenerUserState = Depends(get_screener_state),
+):
+    symbol = normalize_screener_symbol(ticker)
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Invalid ticker format")
+    set_user_config(state.config)
+    token = active_evaluation_context.set("screener")
+    try:
+        timeframe = normalize_ai_timeframe(
+            timeframe or getattr(state.config, "AI_DECISION_TIMEFRAME", AI_CANDLE_TIMEFRAME)
+        )
+        if not getattr(state.config, "ENABLE_AI_INDICATOR", True):
+            return {"error": "AI Indicator is disabled in Screener settings", "signal": "HOLD", "confidence": 0}
+        if force:
+            clear_ai_cache(symbol, timeframe, include_news=True)
+        with _analysis_request_context("screener", symbol, True):
+            return await asyncio.wait_for(
+                asyncio.to_thread(get_ai_indicator, symbol, timeframe, 10000.0, 10000.0, model),
+                timeout=25.0,
+            )
+    except asyncio.TimeoutError:
+        return {"error": "AI indicator timed out", "signal": "HOLD", "confidence": 0, "timeframe": timeframe, "model": model}
+    except Exception as exc:
+        print(f"[screener] AI indicator error for {symbol}: {exc}")
+        return {"error": str(exc), "signal": "HOLD", "confidence": 0, "summary": "AI Indicator temporarily unavailable."}
+    finally:
+        active_evaluation_context.reset(token)
 
 @app.get("/api/debug-doge")
 async def get_debug_doge():
     if not user_manager.engines: return {"error": "no engines"}
     eng = list(user_manager.engines.values())[0]
-    
+
     from main import _format_trade_for_ui
     ui_trade_log = [_format_trade_for_ui(trade) for trade in eng.trade_log]
-    
+
     # Find DOGEUSD trade
     doge_trades = [t for t in ui_trade_log if t.get('ticker') == 'DOGEUSD' and t.get('action') == 'BUY']
     if not doge_trades:
         return {"error": "No open DOGEUSD trades found", "trades": ui_trade_log}
-    
+
     p = doge_trades[0]
-    
+
+    from main import _lookup_quote_price, _format_quote_price, fmt_val
+    scan = eng._pick_scan('DOGEUSD', '5Min', prefer_bot=True)
+    return {"trade": p, "scan_targets": {"sl": scan.get("stop_loss"), "tp": scan.get("sell_target")}}
+    ui_trade_log = [_format_trade_for_ui(trade) for trade in eng.trade_log]
+
+    # Find DOGEUSD trade
+    doge_trades = [t for t in ui_trade_log if t.get('ticker') == 'DOGEUSD' and t.get('action') == 'BUY']
+    if not doge_trades:
+        return {"error": "No open DOGEUSD trades found", "trades": ui_trade_log}
+
+    p = doge_trades[0]
+
     from main import _lookup_quote_price, _format_quote_price, fmt_val
     scan = eng._pick_scan('DOGEUSD', '5Min', prefer_bot=True)
     return {"trade": p, "scan_targets": {"sl": scan.get("stop_loss"), "tp": scan.get("sell_target")}}

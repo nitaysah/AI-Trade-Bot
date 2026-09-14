@@ -298,7 +298,7 @@ window.updateMarketSessionNotice = async function () {
         return { allowed: true };
     }
     if (session === 'Extended') {
-        setMarketSessionNotice('Extended-hours stock trades will use limit orders with extended_hours enabled.', 'warning');
+        setMarketSessionNotice('Extended hours: stock trades use limit orders with extended-hours enabled.', 'warning');
         return { allowed: true };
     }
     if (session !== '24h') {
@@ -1118,9 +1118,15 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         const scanLog = scan?.scan_log || null;
         if (scanLog) {
             const indicators = Array.isArray(scanLog.indicators) ? scanLog.indicators : [];
-            const confirmedText = formatScanIndicatorGroup('Confirmed', indicators.filter(item => item.status === 'CONFIRMED'), '🟢');
+            // Marker colors describe the signal's relationship to the direction
+            // currently being watched. A bearish setup is confirmed by bearish
+            // signals (red) and opposed by bullish signals (green).
+            const targetDirection = String(scanLog.target_direction || (scanLog.phase === 'EXIT' ? 'BEARISH' : 'BULLISH')).toUpperCase();
+            const confirmedMarker = targetDirection === 'BEARISH' ? '🔴' : '🟢';
+            const opposingMarker = targetDirection === 'BEARISH' ? '🟢' : '🔴';
+            const confirmedText = formatScanIndicatorGroup('Confirmed', indicators.filter(item => item.status === 'CONFIRMED'), confirmedMarker);
             const waitingText = formatScanIndicatorGroup('Waiting', indicators.filter(item => item.status === 'WAITING'), '🟡');
-            const opposingText = formatScanIndicatorGroup('Opposing', indicators.filter(item => item.status === 'OPPOSING'), '🔴');
+            const opposingText = formatScanIndicatorGroup('Opposing', indicators.filter(item => item.status === 'OPPOSING'), opposingMarker);
             const blockers = Array.isArray(scanLog.blockers) ? scanLog.blockers : [];
             const primaryBlocker = blockers[0] || '';
             const secondaryBlockers = blockers.slice(1);

@@ -22,6 +22,7 @@ wheels/
 *.egg
 venv/
 .env
+backend/.env
 
 # Project specific
 *.log
@@ -79,6 +80,9 @@ node_modules/
 generate_*.py
 *_diff.txt
 extracted_diffs.txt
+*.sqlite3-shm
+*.sqlite3-wal
+*.sqlite3-journal
 *.pem
 *.key
 *.cert
@@ -96,6 +100,9 @@ get_*.py
 tsla_sweep_log.txt
 
 # Backups, Patches, & Scratch
+/backups/
+/.firebase/
+/data/
 *.bak*
 *.patch
 diff.txt
@@ -108,4 +115,3 @@ backend/*_test.py
 *_validation_test.py
 *_validation.py
 backend/audit_*.py
-

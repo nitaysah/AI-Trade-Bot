@@ -24,7 +24,7 @@ The setup score is a rule-based setup-quality measure. It is not a forecast prob
 
 The settings button on the card supports 1Min, 5Min, 15Min, 30Min, 1Hour, 4Hour, and 1Day decision candles. Only completed candles are used. Dashboard, Bots, and Backtest persist separate settings and caches.
 
-News sentiment intentionally has no candle timeframe. It is classified and cached by ticker and selected AI model, then reused as limited confirmation across decision intervals. Historical backtest execution uses each replay bar's actual strategy timeframe and does not receive live news, preventing timeframe relabeling and look-ahead.
+News sentiment intentionally has no candle timeframe. Dashboard and Bots cache it by ticker and selected AI model, then reuse it as limited confirmation across decision intervals. An enabled Screener profile separately checks Yahoo Finance headline metadata every 60 seconds, uses Google News RSS when Yahoo coverage is insufficient, and reruns AI classification only when the article set changes. Historical backtest execution uses each replay bar's actual strategy timeframe and does not receive live news, preventing timeframe relabeling and look-ahead.
 
 ## Settings
 
@@ -37,7 +37,7 @@ News sentiment intentionally has no candle timeframe. It is classified and cache
 - News conflict handling: block conflicting new entries or information-only
 - Analysis cache: 1–120 minutes; default 30
 
-Saving settings clears the page-specific technical decision cache and immediately recalculates the active ticker. Manual refresh also refreshes ticker news. Technical settings changes do not otherwise invalidate the independent news cache.
+Saving settings clears the page-specific technical decision cache and immediately recalculates the active ticker. The Screener profile setting `Ticker News Watch` controls its independent 60-second watcher. Seen article identities and the last valid four-article summary are stored in local SQLite so a backend restart does not mark old headlines as new. The Quant decision cache does not delay this watcher.
 
 The AI model is selected exclusively from the settings modal to keep the card header uncluttered. Model choices are persisted independently for Dashboard, Bots, and Backtest, just like the remaining Quant AI settings.
 

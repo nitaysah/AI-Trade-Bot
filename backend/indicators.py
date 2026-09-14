@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import hashlib
 import threading
 import time
+import warnings
 import pandas as pd
 import numpy as np
 import ta as ta_lib
@@ -27,6 +28,23 @@ from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDa
 from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from broker_factory import get_alpaca_clients
+
+# The indicator engine intentionally builds a wide frame in phases. Pandas
+# emits one fragmentation warning per assigned column, which can overwhelm the
+# runtime log even though calculations remain correct. Keep actionable warnings
+# while silencing this known implementation-detail noise and a ta-library
+# positional-index deprecation outside our code.
+warnings.filterwarnings(
+    "ignore",
+    message=r"DataFrame is highly fragmented.*",
+    category=pd.errors.PerformanceWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r"Series.__setitem__ treating keys as positions is deprecated.*",
+    category=FutureWarning,
+    module=r"ta\.trend",
+)
 
 wb_data_provider = None
 
@@ -721,6 +739,82 @@ def _completed_candles_for_live_chart(df, timeframe, safety_delay_seconds=5, tic
     if completed.empty:
         return df.iloc[:-1]
     return completed
+
+
+def _evaluation_candle_metadata(chart_df, timeframe):
+    """Describe the committed candle used by live evaluation."""
+    if chart_df is None or chart_df.empty:
+        return {
+            "candle_open_ts": None,
+            "candle_close_ts": None,
+            "candle_key": None,
+            "candle_status": "waiting",
+        }
+    try:
+        candle_open_ts = _unix_timestamp(chart_df.index[-1])
+        candle_close_ts = candle_open_ts + _timeframe_seconds(timeframe)
+        if candle_close_ts > time.time():
+            return {
+                "candle_open_ts": candle_open_ts,
+                "candle_close_ts": candle_close_ts,
+                "candle_key": None,
+                "candle_status": "waiting",
+            }
+        return {
+            "candle_open_ts": candle_open_ts,
+            "candle_close_ts": candle_close_ts,
+            "candle_key": f"{str(timeframe or '').upper()}:{candle_open_ts}",
+            "candle_status": "closed",
+        }
+    except Exception:
+        return {
+            "candle_open_ts": None,
+            "candle_close_ts": None,
+            "candle_key": None,
+            "candle_status": "waiting",
+        }
+
+
+def get_latest_completed_candle_metadata(ticker, timeframe="5Min", market_session="extended"):
+    """Fetch only enough Webull data to identify the newest closed candle.
+
+    This is intentionally separate from ``get_full_analysis``. Screener can
+    poll this small probe each interval and skip the 1,200-bar indicator
+    calculation when the completed candle key is unchanged.
+    """
+    tf_map = {
+        "30Sec": "s30", "1Min": "m1", "2Min": "m2", "3Min": "m3",
+        "5Min": "m5", "10Min": "m10", "15Min": "m15", "30Min": "m30",
+        "1Hour": "m60", "2Hour": "m120", "4Hour": "m240", "1Day": "D",
+    }
+    timeframe_key = str(timeframe or "5Min")
+    is_crypto = _is_crypto_ticker(ticker)
+    requested_session = str(market_session or "extended").lower()
+    provider_sessions = "RTH" if not is_crypto and requested_session == "regular" else "RTH,PRE,ATH"
+    bars = _get_wb_data_provider().get_bars(
+        ticker,
+        timespan=tf_map.get(timeframe_key, "m5"),
+        count=3,
+        trading_sessions=provider_sessions,
+    )
+    if isinstance(bars, list) and bars and isinstance(bars[0], dict) and "result" in bars[0]:
+        bars = bars[0].get("result") or []
+    if not isinstance(bars, list) or not bars:
+        return {"candle_open_ts": None, "candle_close_ts": None, "candle_key": None, "candle_status": "unavailable"}
+    frame = pd.DataFrame(bars)
+    if frame.empty or "time" not in frame.columns:
+        return {"candle_open_ts": None, "candle_close_ts": None, "candle_key": None, "candle_status": "unavailable"}
+    try:
+        if pd.api.types.is_numeric_dtype(frame["time"]):
+            frame["timestamp"] = pd.to_datetime(frame["time"], unit="s", utc=True)
+        else:
+            frame["timestamp"] = pd.to_datetime(frame["time"], utc=True)
+        frame = frame.set_index("timestamp").sort_index()
+        frame = frame[~frame.index.duplicated(keep="last")]
+        completed = _completed_candles_for_live_chart(frame, timeframe_key, safety_delay_seconds=5, ticker=ticker)
+        return _evaluation_candle_metadata(completed, timeframe_key)
+    except Exception:
+        return {"candle_open_ts": None, "candle_close_ts": None, "candle_key": None, "candle_status": "unavailable"}
 
 
 def _live_chart_display_limit(timeframe, ticker=None):
@@ -2134,7 +2228,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
 
             from user_config import active_evaluation_context
             eval_context = active_evaluation_context.get()
-            if eval_context in ("dashboard", "bots"):
+            if eval_context in ("dashboard", "bots", "screener"):
                 chart_df = _completed_candles_for_live_chart(df, timeframe, ticker=ticker)
                 latest = chart_df.iloc[-1]
                 prev = chart_df.iloc[-2] if len(chart_df) > 1 else latest
@@ -2232,6 +2326,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
                     "calculation_bars": len(chart_df),
                     "display_bars": len(display_chart_df),
                     "display_limit": int((settings or {}).get("_chart_display_bars", 0) or 0),
+                    **_evaluation_candle_metadata(chart_df, timeframe),
                 },
                 "df": df,
             }
@@ -2973,7 +3068,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
 
         from user_config import active_evaluation_context
         eval_context = active_evaluation_context.get()
-        if eval_context in ("dashboard", "bots"):
+        if eval_context in ("dashboard", "bots", "screener"):
             chart_df = _completed_candles_for_live_chart(df, timeframe, ticker=ticker)
             latest = chart_df.iloc[-1]  # Dashboard and bots use the latest fully closed/completed candle.
             prev = chart_df.iloc[-2] if len(chart_df) > 1 else latest
@@ -2984,7 +3079,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
             prev = df.iloc[-2]
             recent_bars = df.tail(5)
 
-        signal_chart_latest = latest if eval_context in ("dashboard", "bots") else df.iloc[-1]
+        signal_chart_latest = latest if eval_context in ("dashboard", "bots", "screener") else df.iloc[-1]
         signals = _generate_signals(latest, prev, settings=settings, recent_bars=recent_bars, chart_latest=signal_chart_latest)
 
         def _safe(val):
@@ -3022,6 +3117,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
                 "calculation_bars": len(chart_df),
                 "display_bars": len(display_chart_df),
                 "display_limit": int((settings or {}).get("_chart_display_bars", 0) or 0),
+                **_evaluation_candle_metadata(chart_df, timeframe),
             },
             "price_history": [
                 _prune_chart_record({

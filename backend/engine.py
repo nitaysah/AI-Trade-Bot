@@ -1765,8 +1765,13 @@ def _print_detailed_bot_scan(ticker: str, result: dict, t_settings: dict, has_po
     confirmed_sigs = []
     waiting_sigs = []
     opposing_sigs = []
-    target_dir = "BULLISH"
-    opposing_dir = "BEARISH"
+    # Exit monitoring evaluates the direction needed to close the position.
+    # Keep marker colors tied to that target: bearish confirmations are red
+    # and bullish signals opposing a bearish target are green.
+    target_dir = str(result.get("exit_signal_direction") or ("BEARISH" if has_position else "BULLISH")).upper()
+    opposing_dir = "BEARISH" if target_dir == "BULLISH" else "BULLISH"
+    confirmed_marker = "🔴" if target_dir == "BEARISH" else "🟢"
+    opposing_marker = "🟢" if target_dir == "BEARISH" else "🔴"
     
     for name, sig_data in result.get('signals', {}).items():
         if not sig_data.get('enabled', True):
@@ -1776,9 +1781,9 @@ def _print_detailed_bot_scan(ticker: str, result: dict, t_settings: dict, has_po
         sig_desc = f" ({desc})" if desc else ""
         
         if sig_val == target_dir:
-            confirmed_sigs.append(f"🟢 {name} {sig_val}{sig_desc}")
+            confirmed_sigs.append(f"{confirmed_marker} {name} {sig_val}{sig_desc}")
         elif sig_val == opposing_dir:
-            opposing_sigs.append(f"🔴 {name} {sig_val}{sig_desc}")
+            opposing_sigs.append(f"{opposing_marker} {name} {sig_val}{sig_desc}")
         else:
             waiting_sigs.append(f"🟡 {name} {sig_val}{sig_desc}")
             
@@ -1880,6 +1885,12 @@ class UserEngine:
         self.last_scan_timestamps = {}
         self.last_bot_scan_time = {}
         self.last_history_save_ts = 0
+        self._last_cloud_settings_digest = None
+        self._last_cloud_history_digest = None
+        self._cloud_settings_retry_at = 0.0
+        self._cloud_settings_failures = 0
+        self._cloud_history_retry_at = 0.0
+        self._cloud_history_failures = 0
         self.last_global_risk_save_ts = 0
         self.last_global_risk_signature = None
         self.last_global_halt_cancel_event_id = None
@@ -1897,6 +1908,7 @@ class UserEngine:
         self.alpaca_load_error = ""
         self.load_lock = asyncio.Lock()
         self.settings_save_lock = asyncio.Lock()
+        self.history_save_lock = asyncio.Lock()
         
     def get_now(self):
         tz = pytz.timezone(self.config.TIMEZONE if hasattr(self.config, 'TIMEZONE') else 'US/Central')
@@ -2130,7 +2142,7 @@ class UserEngine:
     async def save_settings(self):
         async with self.settings_save_lock:
             try:
-                import time, json, os
+                import hashlib, time, json, os
                 data = {
                     "watchlist": self.config.WATCHLIST,
                     "tradelist": self.config.TRADELIST,
@@ -2152,56 +2164,90 @@ class UserEngine:
                     print(f"[engine-{self.uid}] Failed writing local settings backup: {ex_loc}")
 
                 if not self.db: return
+                if time.monotonic() < self._cloud_settings_retry_at:
+                    return False
+                digest_data = dict(data)
+                digest_data.pop("saved_at", None)
+                cloud_digest = hashlib.sha256(
+                    json.dumps(digest_data, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
+                if cloud_digest == self._last_cloud_settings_digest:
+                    return True
                 def _sync_save():
-                    self.db.collection("users").document(self.uid).collection("settings").document("ui").set(data)
-                await asyncio.wait_for(asyncio.to_thread(_sync_save), timeout=2.5)
+                    self.db.collection("users").document(self.uid).collection("settings").document("ui").set(
+                        data,
+                        timeout=2.5,
+                        retry=None,
+                    )
+                await asyncio.wait_for(asyncio.to_thread(_sync_save), timeout=3.0)
+                self._last_cloud_settings_digest = cloud_digest
+                self._cloud_settings_failures = 0
+                self._cloud_settings_retry_at = 0.0
+                return True
             except asyncio.TimeoutError:
-                print(f"[engine-{self.uid}] Firestore save_settings timed out (quota exceeded or network lag). Settings saved to local disk backup & active in memory.")
+                self._cloud_settings_failures += 1
+                delay = min(300.0, 30.0 * (2 ** min(self._cloud_settings_failures - 1, 3)))
+                self._cloud_settings_retry_at = time.monotonic() + delay
+                print(f"[engine-{self.uid}] Firestore save_settings timed out or was quota-limited; backing off {delay:.0f}s. Local backup remains authoritative.")
+                return False
             except Exception as e:
-                print(f"[engine-{self.uid}] Error saving settings to Firestore: {e} (Settings saved to local disk backup).")
+                self._cloud_settings_failures += 1
+                delay = min(300.0, 30.0 * (2 ** min(self._cloud_settings_failures - 1, 3)))
+                self._cloud_settings_retry_at = time.monotonic() + delay
+                print(f"[engine-{self.uid}] Error saving settings to Firestore: {e}; backing off {delay:.0f}s. Local backup remains authoritative.")
+                return False
 
     async def save_history(self):
-        if not self.db: return
-        try:
-            def _strip_heavy_data(log_list):
-                stripped = []
-                if isinstance(log_list, list):
-                    for entry in log_list[:100]:
-                        clean_entry = entry.copy()
-                        if "price_history" in clean_entry: del clean_entry["price_history"]
-                        stripped.append(clean_entry)
-                elif isinstance(log_list, dict):
-                    for k, entry in log_list.items():
-                        clean_entry = entry.copy()
-                        if "price_history" in clean_entry: del clean_entry["price_history"]
-                        stripped[k] = clean_entry
-                return stripped
+        async with self.history_save_lock:
+            try:
+                import hashlib, json
+                from local_store import save_state
+                def _strip_heavy_data(log_list):
+                    if isinstance(log_list, list):
+                        stripped = []
+                        for entry in log_list[:100]:
+                            clean_entry = entry.copy()
+                            if "price_history" in clean_entry: del clean_entry["price_history"]
+                            stripped.append(clean_entry)
+                    elif isinstance(log_list, dict):
+                        stripped = {}
+                        for k, entry in log_list.items():
+                            clean_entry = entry.copy()
+                            if "price_history" in clean_entry: del clean_entry["price_history"]
+                            stripped[k] = clean_entry
+                    else:
+                        stripped = []
+                    return stripped
 
-            cloud_scans = _strip_heavy_data(self.trade_log)
-            
-            cloud_bot_scans = {}
-            for ticker, entry in self.bot_scans.items():
-                clean_entry = entry.copy()
-                if "price_history" in clean_entry: del clean_entry["price_history"]
-                cloud_bot_scans[ticker] = clean_entry
+                cloud_scans = _strip_heavy_data(self.trade_log)
+                cloud_bot_scans = _strip_heavy_data(self.bot_scans)
+                cloud_payload = {"scans": cloud_scans, "bot_scans": cloud_bot_scans}
+                cloud_digest = hashlib.sha256(
+                    json.dumps(cloud_payload, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
+                if cloud_digest == self._last_cloud_history_digest:
+                    return True
 
-            def _sync_save():
-                ref = self.db.collection("users").document(self.uid).collection("history")
-                ref.document("scans").set({"data": cloud_scans})
-                ref.document("bot_scans").set({"data": cloud_bot_scans})
-            await asyncio.wait_for(asyncio.to_thread(_sync_save), timeout=2.5)
-        except asyncio.TimeoutError:
-            print(f"[engine-{self.uid}] Firestore save_history timed out. History active in memory.")
-        except Exception as e:
-            print(f"[engine-{self.uid}] Error saving history: {e}")
+                await asyncio.to_thread(
+                    save_state,
+                    self.uid,
+                    "bots_history",
+                    {"trade_log": cloud_scans, "bot_scans": cloud_bot_scans},
+                )
+                self._last_cloud_history_digest = cloud_digest
+                return True
+            except Exception as e:
+                print(f"[engine-{self.uid}] Local SQLite history save failed: {e}. History remains active in memory.")
+                return False
 
     async def save_history_throttled(self, force: bool = False, min_interval_seconds: int = 30):
         """Persist scan history without making fast option loops write every heartbeat."""
         now_ts = time.time()
         if not force and (now_ts - self.last_history_save_ts) < min_interval_seconds:
             return
-        await self.save_history()
-        self.last_history_save_ts = now_ts
+        saved = await self.save_history()
+        if saved:
+            self.last_history_save_ts = now_ts
 
     async def load_from_cloud(self):
         if not self.db:
@@ -2213,7 +2259,7 @@ class UserEngine:
         try:
             # Load Alpaca Settings
             try:
-                doc_alpaca = self.db.collection("users").document(self.uid).collection("settings").document("alpaca").get(timeout=2.5)
+                doc_alpaca = self.db.collection("users").document(self.uid).collection("settings").document("alpaca").get(timeout=2.5, retry=None)
                 if not doc_alpaca.exists:
                     self.alpaca_load_status = "not_configured"
                     self.alpaca_load_error = "No Alpaca settings document exists for this Firebase user."
@@ -2256,7 +2302,7 @@ class UserEngine:
                     print(f"[engine-{self.uid}] Failed reading local settings backup: {ex_loc}")
 
             try:
-                doc_ui = self.db.collection("users").document(self.uid).collection("settings").document("ui").get(timeout=2.5)
+                doc_ui = self.db.collection("users").document(self.uid).collection("settings").document("ui").get(timeout=2.5, retry=None)
                 if doc_ui.exists:
                     ui = doc_ui.to_dict()
             except Exception as ex_fs:
@@ -2294,26 +2340,30 @@ class UserEngine:
                         self.config.contexts[ctx_name]["toggles"].update(ctx_data.get("toggles", {}))
                         self.config.contexts[ctx_name]["parameters"].update(ctx_data.get("parameters", {}))
                 
-            # Load History
-            doc_scans = self.db.collection("users").document(self.uid).collection("history").document("scans").get(timeout=2.5)
-            if doc_scans.exists:
-                raw_logs = doc_scans.to_dict().get("data", [])
+            # High-frequency scan history is local-first SQLite state. It is
+            # loaded independently of Firestore so quota outages cannot erase
+            # or delay the Bots page history.
+            from local_store import load_state
+            local_history = await asyncio.to_thread(load_state, self.uid, "bots_history")
+            if local_history:
+                raw_logs = local_history.get("trade_log", [])
                 self.trade_log = []
-                for log in raw_logs:
+                for log in raw_logs if isinstance(raw_logs, list) else []:
+                    if not isinstance(log, dict):
+                        continue
                     ticker = log.get('ticker')
                     action = log.get('action')
                     reason = log.get('reason', '')
                     if ticker not in self.config.TRADELIST:
-                        # Skip ignored/skipped logs for deactivated bots
+                        # Skip ignored/skipped logs for deactivated bots.
                         if "ignored" in reason.lower() or "skipped" in reason.lower() or action == 'HOLD':
                             continue
                     if ticker in self.config.TRADELIST or action in ['BUY', 'SELL']:
                         self.trade_log.append(log)
-
-                
-            doc_bot = self.db.collection("users").document(self.uid).collection("history").document("bot_scans").get(timeout=2.5)
-            if doc_bot.exists:
-                self.bot_scans.update(doc_bot.to_dict().get("data", {}))
+                raw_bot_scans = local_history.get("bot_scans", {})
+                if isinstance(raw_bot_scans, dict):
+                    self.bot_scans.update(raw_bot_scans)
+                print(f"[engine-{self.uid}] Loaded Bots history from local SQLite.")
                 
             load_ok = self.alpaca_load_status not in {"firestore_error", "cloud_load_failed"}
             self.loaded_from_cloud = load_ok

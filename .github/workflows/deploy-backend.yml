@@ -40,6 +40,15 @@ jobs:
             cd /home/ubuntu/backend
             git fetch origin
             git reset --hard origin/main
+
+            # Keep local-first SQLite state outside the Git checkout so deploys
+            # never remove Bot/Screener history. The directory is private to
+            # the service account and persists across code updates/restarts.
+            DEPLOY_USER="$(id -un)"
+            DEPLOY_GROUP="$(id -gn)"
+            DEPLOY_HOME="$(getent passwd "$DEPLOY_USER" | cut -d: -f6)"
+            LOCAL_DATA_DIR="$DEPLOY_HOME/botbulls-data"
+            sudo install -d -m 700 -o "$DEPLOY_USER" -g "$DEPLOY_GROUP" "$LOCAL_DATA_DIR"
             
             # Setup virtual environment if missing, and install dependencies
             if [ ! -d "venv" ]; then
@@ -58,8 +67,20 @@ jobs:
             WEBULL_APP_KEY=$WEBULL_APP_KEY
             WEBULL_APP_SECRET=$WEBULL_APP_SECRET
             WEBULL_DATA_ONLY=true
+            BOTBULLS_LOCAL_DB_PATH=$LOCAL_DATA_DIR/botbulls_local.sqlite3
             EOF
             chmod 600 /home/ubuntu/backend/.env
+
+            # Make the path explicit for systemd services that do not load the
+            # repository .env file directly.
+            sudo install -d -m 755 /etc/systemd/system/botbulls.service.d
+            printf '%s\n' '[Service]' "Environment=BOTBULLS_LOCAL_DB_PATH=$LOCAL_DATA_DIR/botbulls_local.sqlite3" | sudo tee /etc/systemd/system/botbulls.service.d/local-storage.conf >/dev/null
+            sudo chmod 644 /etc/systemd/system/botbulls.service.d/local-storage.conf
+            sudo systemctl daemon-reload
+
+            # Fail the deployment early if the service account cannot write its
+            # persistent local database directory.
+            test -w "$LOCAL_DATA_DIR"
             
             # Restart the bot
             sudo systemctl restart botbulls.service

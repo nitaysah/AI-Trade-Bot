@@ -109,7 +109,7 @@ for _toggle_key in EXTENSION_INDICATOR_TOGGLE_KEYS.values():
 
 # AI Indicator (Groq Agentic)
 ENABLE_AI_INDICATOR = True
-AI_INDICATOR_MODEL = "llama-3.3-70b-versatile"
+AI_INDICATOR_MODEL = "openai/gpt-oss-120b"
 AI_INDICATOR_CACHE_MINUTES = 30
 AI_DECISION_TIMEFRAME = "1Hour"
 # Deterministic Quant AI gates.  The LLM explains the decision but does not

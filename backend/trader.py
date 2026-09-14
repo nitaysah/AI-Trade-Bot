@@ -75,6 +75,20 @@ def _analysis_settings_for_trade(uc, ticker_settings: dict, use_bot_settings: bo
                 str(indicator) for indicator in indicators
                 if str(indicator or "").strip()
             ]
+        # Keep the scanner and chart preview on the same market/session and
+        # strategy dependency inputs. Omitting market_session here made the
+        # scanner silently use extended-hours candles while the Screener chart
+        # used the profile's Regular session, which can flip a 50/200 SMA vote.
+        for key in (
+            "market_session",
+            "buy_mode",
+            "sell_mode",
+            "options_trading",
+            "options_type",
+            "_botbulls5_recent_session_only",
+        ):
+            if key in (ticker_settings or {}):
+                settings[key] = ticker_settings.get(key)
         if (
             bool((ticker_settings or {}).get("enable_smart_reentry", False))
             and str((ticker_settings or {}).get("smart_reentry_type", "RSI")).upper() == "RSI"
@@ -193,6 +207,16 @@ def get_confluence_decision(
     uc = get_user_config()
     t_settings = getattr(uc, 'TICKER_SETTINGS', {}).get(ticker, {}) if use_bot_settings else {}
     allowed_indicators = t_settings.get('indicators') if use_bot_settings else None
+    indicator_entry_modes = {
+        'indicator', 'hybrid', 'hybrid_atr', 'hybrid_pct', 'hybrid_pivot',
+        'hybrid_high_low', 'hybrid_swing',
+    }
+    if allowed_indicators is None:
+        has_indicator_pool = True  # legacy profiles use the global toggle set
+    elif isinstance(allowed_indicators, list):
+        has_indicator_pool = any(str(name or '').strip() for name in allowed_indicators)
+    else:
+        has_indicator_pool = bool(allowed_indicators)
 
     for name, data in raw_signals.items():
         # If allowed_indicators is set, only include those. Otherwise use get_user_config().ENABLE_X toggles.
@@ -297,7 +321,17 @@ def get_confluence_decision(
     bearish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BEARISH' and v.get('enabled')]
     bullish_ready = bullish_count >= min_buy
     bearish_ready = bearish_count >= min_sell
-    if bullish_ready and bearish_ready:
+    indicator_setup_blocked = (
+        use_bot_settings
+        and buy_mode in indicator_entry_modes
+        and not has_indicator_pool
+    )
+    if indicator_setup_blocked:
+        indicator_direction = "NONE"
+        indicator_reason = "no indicators selected"
+        bullish_ready = False
+        bearish_ready = False
+    elif bullish_ready and bearish_ready:
         if bullish_count > bearish_count:
             indicator_direction = "BULLISH"
             indicator_reason = f"{bullish_count} bullish signals > {bearish_count} bearish signals"
@@ -510,8 +544,10 @@ def get_confluence_decision(
             "buy_mode": buy_mode,
         }
 
-    # Evaluate Swing Points entry first so the dedicated strategy family stays deterministic.
-    if buy_mode in ('swing_points', 'hybrid_swing'):
+    # Evaluate the standalone Swing Points entry strategy here. Hybrid Swing
+    # is handled by the structural hybrid branch above so its BUY decision can
+    # require both the indicator threshold and bullish swing structure.
+    if buy_mode == 'swing_points':
         swing_decision = detect_swing_entry(
             analysis_results.get('price_history', []),
             current_price=current_price,
@@ -522,31 +558,8 @@ def get_confluence_decision(
         )
         swing_action = swing_decision.get('action', 'HOLD')
         swing_reason = swing_decision.get('reason', 'Swing Points: no setup')
-        if swing_action != 'HOLD':
-            action = swing_action
-            reason = swing_reason
-        elif buy_mode == 'swing_points':
-            action = 'HOLD'
-            reason = swing_reason
-        elif buy_mode == 'hybrid_swing':
-            if bullish_count >= min_buy and bearish_count >= min_sell:
-                if bullish_count > bearish_count:
-                    action = "BUY"
-                    bullish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BULLISH' and v.get('enabled')]
-                    reason = f"BUY Triggered (Conflict Resolved): {bullish_count}B > {bearish_count}S. Signals: {', '.join(bullish_names)}"
-                elif bearish_count > bullish_count:
-                    action = "SELL"
-                    bearish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BEARISH' and v.get('enabled')]
-                    reason = f"SELL Triggered (Conflict Resolved): {bearish_count}S > {bullish_count}B. Signals: {', '.join(bearish_names)}"
-            elif bullish_count >= min_buy:
-                action = "BUY"
-                bullish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BULLISH' and v.get('enabled')]
-                reason = f"BUY Triggered: {bullish_count} bullish signals ({', '.join(bullish_names)})"
-            elif bearish_count >= min_sell:
-                action = "SELL"
-                bearish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BEARISH' and v.get('enabled')]
-                reason = f"SELL Triggered: {bearish_count} bearish signals ({', '.join(bearish_names)})"
-
+        action = swing_action if swing_action != 'HOLD' else 'HOLD'
+        reason = swing_reason
     price_action_modes = ('custom_price', 'atr', 'hybrid_atr', 'percentage', 'hybrid_pct', 'pivot_points', 'hybrid_pivot', 'high_low', 'hybrid_high_low')
     if action == 'HOLD' and buy_mode in price_action_modes:
         entry_signal = build_entry_signal(
@@ -602,7 +615,10 @@ def get_confluence_decision(
     
     # Evaluate Standard Indicator Entry Strategy
     elif action == 'HOLD' and buy_mode not in ('swing_points', 'hybrid_swing', 'custom_price', 'atr', 'hybrid_atr', 'percentage', 'hybrid_pct', 'pivot_points', 'hybrid_pivot', 'high_low', 'hybrid_high_low'):
-        if bullish_count >= min_buy and bearish_count >= min_sell:
+        if indicator_setup_blocked:
+            action = "HOLD"
+            reason = "Indicator entry waiting: no indicators selected. Select at least one indicator to enable this setup."
+        elif bullish_count >= min_buy and bearish_count >= min_sell:
             # Both thresholds met: pick the stronger one
             if bullish_count > bearish_count:
                 action = "BUY"
@@ -786,7 +802,9 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
             "is_custom": False,
             "structure_ok": False,
             "buy_mode": "",
-            "sell_mode": ""
+            "sell_mode": "",
+            "evaluation_status": "waiting",
+            "candle_meta": {},
         }
         print(f"[perf] evaluate_trade {ticker_key} {timeframe_key}: {(time.perf_counter() - start_ts) * 1000:.1f}ms (no analysis)")
         return out
@@ -860,7 +878,9 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         "price_history": analysis.get('price_history', []),
         "risk_status": risk_mgr.get_risk_status(account_equity, ticker),
         "is_custom": (ticker.upper() in getattr(uc, 'TICKER_AMOUNTS', {})),
-        "timeframe": timeframe
+        "timeframe": timeframe,
+        "evaluation_status": "valid",
+        "candle_meta": analysis.get("candle_meta", {}),
     }
 
     # Save to cache if not ignored

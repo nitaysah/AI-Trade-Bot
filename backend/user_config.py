@@ -36,6 +36,7 @@ class UserConfig:
         self.contexts = {
             "dashboard": { "toggles": {}, "parameters": {} },
             "bots": { "toggles": {}, "parameters": {} },
+            "screener": { "toggles": {}, "parameters": {} },
             "backtest": { "toggles": {}, "parameters": {} }
         }
 

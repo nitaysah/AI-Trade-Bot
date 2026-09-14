@@ -14,6 +14,10 @@ var DASHBOARD_CHART_CONTEXT_KEY = 'dashboardChartContext';
 var GENERIC_DASHBOARD_CARDS_CACHE_KEY = 'dashboardGenericCardsCacheV1';
 var GENERIC_DASHBOARD_CARDS_CLIENT_TTL_MS = 5 * 60 * 1000;
 var GENERIC_DASHBOARD_CARDS_REFRESH_MS = GENERIC_DASHBOARD_CARDS_CLIENT_TTL_MS;
+// Coalesce identical chart refreshes. A chart calculation can take several
+// seconds on a cold provider fetch; overlapping requests waste provider/API
+// capacity and let a slower response race the current selection.
+var chartRequestInFlight = new Map();
 
 function isDashboardPageActive() {
     const path = (window.location.pathname || '').toLowerCase();
@@ -236,7 +240,13 @@ function formatTimeOnlyCT(time) {
 }
 
 function getChartDisplayOffsetSeconds(timeframe = currentBackendTf) {
-    return 0;
+    // Provider timestamps identify the candle open. Display intraday candles
+    // at their close so the axis answers "when did this completed candle
+    // finish?" (for example, 08:30–08:45 is labelled 08:45 CT). Daily bars
+    // remain date-labelled and therefore keep their original timestamp.
+    return CHART_INTERVALS[timeframe]?.seconds < 86400
+        ? (CHART_INTERVALS[timeframe]?.seconds || 0)
+        : 0;
 }
 
 function toCloseTimeDisplayBar(bar, timeframe = currentBackendTf) {
@@ -1069,7 +1079,11 @@ function updateChart(priceHistory, ticker, volumeProfile = undefined) {
     window._displayPriceHistory = sorted;
     window._confirmedPriceHistory = rawSorted;
     window._confirmedDisplayPriceHistory = sorted;
-    lastCompletedChartBarTime = Number(sorted[sorted.length - 1]?.time || 0);
+    // Scheduling is based on the provider's candle-open timestamp. The chart
+    // may display a close-time label, but using that shifted value here would
+    // delay the next completed-candle refresh by one full interval.
+    const lastDisplayedBar = sorted[sorted.length - 1];
+    lastCompletedChartBarTime = Number(lastDisplayedBar?.source_time ?? lastDisplayedBar?.time ?? 0);
     // Background highlight for Extended Hours
     if (extHoursSeries) {
         if (!isCryptoTicker(ticker) && currentChartSession === 'extended' && currentBackendTf !== '1Day') {
@@ -2305,6 +2319,33 @@ async function loadSelectedTickerChart(options = {}) {
 }
 
 async function loadTickerChartFast(ticker, options = {}) {
+    const requestedTicker = normalizeTicker(ticker);
+    if (!requestedTicker) return;
+
+    // Cached-only renders must remain synchronous with the UI and do not need
+    // coalescing. Network refreshes share a key for the active chart context
+    // and refresh class. Forced refreshes stay separate from ordinary cache
+    // refreshes so a force request can never be satisfied by a stale request.
+    if (options.fetchFresh === false) {
+        return _loadTickerChartFastImpl(requestedTicker, options);
+    }
+    const refreshClass = options.force ? 'force' : 'normal';
+    const requestKey = `${chartCacheKey(requestedTicker, currentBackendTf, currentChartSession)}|fresh|${refreshClass}`;
+    const existing = chartRequestInFlight.get(requestKey);
+    if (existing) return existing;
+
+    const request = _loadTickerChartFastImpl(requestedTicker, options);
+    chartRequestInFlight.set(requestKey, request);
+    try {
+        return await request;
+    } finally {
+        if (chartRequestInFlight.get(requestKey) === request) {
+            chartRequestInFlight.delete(requestKey);
+        }
+    }
+}
+
+async function _loadTickerChartFastImpl(ticker, options = {}) {
     const requestedTicker = normalizeTicker(ticker);
     if (!requestedTicker) return;
 
@@ -4793,6 +4834,14 @@ async function updateStrategyTf(newTf) {
 // 11. Init
 // ──────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+    // Protect against accidental duplicate script injection (for example a
+    // hot reload or a page shell that includes app.js twice). Without this,
+    // each copy creates its own auth poll, heartbeat, and refresh timers.
+    if (window.__botBullsDashboardInitStarted) {
+        console.debug('[dashboard] Initialization already started; skipping duplicate init.');
+        return;
+    }
+    window.__botBullsDashboardInitStarted = true;
     console.log('[dashboard] Initializing components...');
     setChartLoadingState(true, selectedTicker);
     clearLegacyChartLocalStorageCaches();
@@ -4825,7 +4874,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.log(`[dashboard] Phase 1 — Fetching completed candles for: ${selectedTicker}`);
                 chartWarmup = loadSelectedTickerChart({ force: true, renderCached: false, fetchFresh: true });
             }
-            startActiveChartHeartbeat();
+            // Do not let the heartbeat's immediate tick launch a second chart
+            // refresh while the Phase 1 warmup is still in flight. The backend
+            // coalesces duplicate work, but waiting here avoids the duplicate
+            // request and the transient 404 it can produce with no cache yet.
+            let chartHeartbeatStarted = false;
+            const startChartHeartbeat = () => {
+                if (chartHeartbeatStarted) return;
+                chartHeartbeatStarted = true;
+                startActiveChartHeartbeat();
+            };
+            if (chartWarmup && typeof chartWarmup.then === 'function') {
+                chartWarmup.then(startChartHeartbeat, startChartHeartbeat);
+            } else {
+                startChartHeartbeat();
+            }
             dashboardHeartbeatEnabled = shouldRunDashboardRefresh();
             if (dashboardHeartbeatEnabled) scheduleDashboardHeartbeat();
 

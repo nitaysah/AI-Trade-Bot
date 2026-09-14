@@ -65,6 +65,105 @@
     }
 }
 
+/* Keep Entry and Exit strategy controls visually connected as one panel.
+   The selected mode fields remain colored, but the outer section owns the
+   border, padding, and spacing so helpers and previews do not float apart. */
+.strategy-mode-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem !important;
+    padding: 0.7rem !important;
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    border-radius: 1rem;
+    background: rgba(255, 255, 255, 0.16);
+    box-shadow: 0 4px 16px rgba(79, 70, 229, 0.06);
+}
+
+.strategy-mode-panel > :not([hidden]) ~ :not([hidden]) {
+    margin-top: 0 !important;
+}
+
+.strategy-mode-panel > .flex.items-center.gap-3 {
+    margin-bottom: 0.05rem !important;
+    padding-bottom: 0.3rem;
+}
+
+.strategy-mode-panel > .relative,
+.strategy-mode-panel > [id^="strategyBuyHelper_"],
+.strategy-mode-panel > [id^="strategySellHelper_"] {
+    margin-top: 0 !important;
+}
+
+.strategy-mode-panel > [id^="strategyBuyHelper_"],
+.strategy-mode-panel > [id^="strategySellHelper_"] {
+    padding: 0.35rem 0.15rem !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+.strategy-mode-panel > [id^="strategyBuyFields_"],
+.strategy-mode-panel > [id^="strategyCustomBuyFields_"],
+.strategy-mode-panel > [id^="strategyEntryAtrFields_"],
+.strategy-mode-panel > [id^="strategyEntryPctFields_"],
+.strategy-mode-panel > [id^="strategyEntryPivotFields_"],
+.strategy-mode-panel > [id^="strategyEntryHighLowFields_"],
+.strategy-mode-panel > [id^="strategySwingEntrySettings_"],
+.strategy-mode-panel > [id^="exitFields"] {
+    margin-top: 0 !important;
+    padding-top: 0 !important;
+}
+
+.strategy-mode-panel > [id^="strategyEntryAtrFields_"],
+.strategy-mode-panel > [id^="strategyEntryPctFields_"],
+.strategy-mode-panel > [id^="strategySwingEntrySettings_"],
+.strategy-mode-panel > [id^="exitFields"] {
+    box-shadow: none !important;
+}
+
+.strategy-mode-panel > [id^="strategyBuyFields_"] > div,
+.strategy-mode-panel > [id^="strategyCustomBuyFields_"] > div,
+.strategy-mode-panel > [id^="strategyEntryAtrFields_"],
+.strategy-mode-panel > [id^="strategyEntryPctFields_"],
+.strategy-mode-panel > [id^="strategySwingEntrySettings_"],
+.strategy-mode-panel > [id^="exitFields"] {
+    border-radius: 0.55rem !important;
+    padding: 0.55rem !important;
+    box-shadow: none !important;
+}
+
+.strategy-mode-panel > [id^="livePreview"] {
+    margin-top: 0 !important;
+    border-radius: 0.45rem !important;
+}
+
+@media (max-width: 768px) {
+    .strategy-mode-panel {
+        gap: 0.2rem !important;
+        padding: 0.5rem !important;
+        border-radius: 0.75rem;
+    }
+
+    .strategy-mode-panel > .flex.items-center.gap-3 {
+        padding-bottom: 0.2rem;
+    }
+
+    .strategy-mode-panel > [id^="strategyBuyHelper_"],
+    .strategy-mode-panel > [id^="strategySellHelper_"] {
+        padding: 0.25rem 0 !important;
+    }
+
+    .strategy-mode-panel > [id^="strategyBuyFields_"] > div,
+    .strategy-mode-panel > [id^="strategyCustomBuyFields_"] > div,
+    .strategy-mode-panel > [id^="strategyEntryAtrFields_"],
+    .strategy-mode-panel > [id^="strategyEntryPctFields_"],
+    .strategy-mode-panel > [id^="strategySwingEntrySettings_"],
+    .strategy-mode-panel > [id^="exitFields"] {
+        padding: 0.35rem !important;
+    }
+}
+
 /* Keep regular indicator cards at four columns on desktop in Dashboard and Bots. */
 @media (min-width: 769px) {
     html body #signalGrid,
@@ -692,6 +791,60 @@
     cursor: pointer;
     position: relative;
     transition: all 0.2s ease;
+}
+
+/* Screener strategy cards use a predictable three-row layout:
+   indicator name, right-aligned controls, then category/subtext. */
+.indicator-card.indicator-card-layout {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    gap: 0.12rem;
+    min-width: 0;
+}
+
+.indicator-card-layout > .indicator-card-content {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    min-width: 0;
+}
+
+.indicator-card-layout .indicator-card-name {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: 1.1;
+}
+
+.indicator-card-layout .indicator-card-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    width: 100%;
+    min-height: 1rem;
+    margin-top: 0.08rem;
+}
+
+.indicator-card-layout .indicator-card-info {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 0;
+}
+
+.indicator-card-layout .indicator-card-subtext {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    margin-top: 0.04rem;
+    line-height: 1.1;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 .indicator-card input:checked+.indicator-card-inner {
@@ -2289,8 +2442,15 @@
 }
 
 #botStrategyModal #strategyPreviewChart {
-    height: 4.5rem !important;
+    height: 6.5rem !important;
+    min-height: 6.5rem !important;
     border-radius: 0.75rem !important;
+}
+
+#botStrategyModal #strategyMiniChartStatus {
+    font-size: 0.58rem !important;
+    line-height: 1 !important;
+    letter-spacing: 0.08em !important;
 }
 
 #botStrategyModal #modeToggleContainer {
@@ -2380,7 +2540,8 @@
 
     /* Mini Preview Chart */
     #strategyPreviewChart {
-        height: 4rem !important;
+        height: 5.75rem !important;
+        min-height: 5.75rem !important;
         border-radius: 0.65rem !important;
     }
 
@@ -2554,6 +2715,32 @@
 
 /* ── Mobile Bots Page Main UI Compact Styles ── */
 @media (max-width: 767px) {
+    /* Keep the three Screener status cards on one compact mobile row. */
+    .screener-status-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.25rem !important;
+    }
+    .card-glass.screener-status-card {
+        min-width: 0;
+        padding: 0.45rem 0.35rem !important;
+    }
+    .screener-status-card .card-label {
+        font-size: 0.45rem !important;
+        letter-spacing: 0.01em !important;
+        line-height: 1.05 !important;
+        overflow-wrap: anywhere;
+    }
+    .screener-status-card .card-value {
+        font-size: 0.7rem !important;
+        line-height: 1.05 !important;
+        overflow-wrap: anywhere;
+    }
+    .screener-status-card .card-sub {
+        font-size: 0.4rem !important;
+        line-height: 1.05 !important;
+        overflow-wrap: anywhere;
+    }
+
     /* 1. Header Top Metrics Cards Grid */
     .card-glass {
         padding: 0.35rem 0.5rem !important;
@@ -2617,14 +2804,17 @@
     #regularTradingBox label:has(+ #strategyCapital),
     #regularTradingBox label:has(+ .relative > #strategyTimeframe_regular),
     #regularTradingBox label:has(+ .relative > #strategyMarketSession_regular),
+    #regularTradingBox label:has(+ .relative > #strategyScanInterval_regular),
     #optionsTradingBox label:has(+ .relative > #strategyAllocationMode_options),
     #optionsTradingBox label:has(+ #strategyOptionsTradeAmount),
     #optionsTradingBox label:has(+ .relative > #strategyTimeframe_options),
     #optionsTradingBox label:has(+ .relative > #strategyMarketSession_options),
+    #optionsTradingBox label:has(+ .relative > #strategyScanInterval_options),
     #aiAutopilotTradingBox label:has(+ .relative > #strategyAllocationMode_ai_autopilot),
     #aiAutopilotTradingBox label:has(+ #strategyCapital_ai_autopilot),
     #aiAutopilotTradingBox label:has(+ .relative > #strategyTimeframe_ai_autopilot),
-    #aiAutopilotTradingBox label:has(+ .relative > #strategyMarketSession_ai_autopilot) {
+    #aiAutopilotTradingBox label:has(+ .relative > #strategyMarketSession_ai_autopilot),
+    #aiAutopilotTradingBox label:has(+ .relative > #strategyScanInterval_ai_autopilot) {
         font-size: 0.58rem !important;
         line-height: 1.1 !important;
     }
@@ -2644,14 +2834,17 @@
     html body #strategyCapital,
     html body #strategyTimeframe_regular,
     html body #strategyMarketSession_regular,
+    html body #strategyScanInterval_regular,
     html body #strategyAllocationMode_options,
     html body #strategyOptionsTradeAmount,
     html body #strategyTimeframe_options,
     html body #strategyMarketSession_options,
+    html body #strategyScanInterval_options,
     html body #strategyAllocationMode_ai_autopilot,
     html body #strategyCapital_ai_autopilot,
     html body #strategyTimeframe_ai_autopilot,
-    html body #strategyMarketSession_ai_autopilot {
+    html body #strategyMarketSession_ai_autopilot,
+    html body #strategyScanInterval_ai_autopilot {
         font-size: 0.55rem !important;
         line-height: 1.1 !important;
     }
@@ -2659,13 +2852,31 @@
     html body #strategyAllocationMode_regular option,
     html body #strategyTimeframe_regular option,
     html body #strategyMarketSession_regular option,
+    html body #strategyScanInterval_regular option,
     html body #strategyAllocationMode_options option,
     html body #strategyTimeframe_options option,
     html body #strategyMarketSession_options option,
+    html body #strategyScanInterval_options option,
     html body #strategyAllocationMode_ai_autopilot option,
     html body #strategyTimeframe_ai_autopilot option,
-    html body #strategyMarketSession_ai_autopilot option {
+    html body #strategyMarketSession_ai_autopilot option,
+    html body #strategyScanInterval_ai_autopilot option {
         font-size: 0.55rem !important;
+    }
+
+    /* Scan Interval has longer option labels; keep only this field slightly
+       smaller than the neighboring settings controls on narrow screens. */
+    html body #strategyScanInterval_regular,
+    html body #strategyScanInterval_options,
+    html body #strategyScanInterval_ai_autopilot {
+        font-size: 0.48rem !important;
+        line-height: 1 !important;
+    }
+    html body #strategyScanInterval_regular option,
+    html body #strategyScanInterval_options option,
+    html body #strategyScanInterval_ai_autopilot option {
+        font-size: 0.48rem !important;
+        line-height: 1 !important;
     }
 
     html body #strategyAllocationMode_regular,
@@ -3926,9 +4137,28 @@ html body #manualBtChartPreviewPremiumSignalGrid .signal-card p {
     /* Compact the active-bot scan countdown on mobile without changing its
        desktop size or the refresh behavior. */
     html body .scan-countdown {
-        font-size: 0.38rem !important;
-        line-height: 1 !important;
+        font-size: 0.52rem !important;
+        line-height: 1.375 !important;
         letter-spacing: 0 !important;
         white-space: nowrap !important;
+    }
+}
+
+/* Final mobile override for Screener Scan Interval controls. The generic
+   zoom guard uses an ID in :is(), so these element-plus-ID selectors must be
+   more specific and come after it to keep the displayed value compact. */
+@media (max-width: 768px) {
+    html body select#strategyScanInterval_regular,
+    html body select#strategyScanInterval_options,
+    html body select#strategyScanInterval_ai_autopilot {
+        font-size: 0.46rem !important;
+        line-height: 1 !important;
+    }
+
+    html body select#strategyScanInterval_regular option,
+    html body select#strategyScanInterval_options option,
+    html body select#strategyScanInterval_ai_autopilot option {
+        font-size: 0.46rem !important;
+        line-height: 1 !important;
     }
 }
