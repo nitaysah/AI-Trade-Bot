@@ -632,14 +632,19 @@ class ScreenerManager:
         # registry locally so a transient cloud/network outage cannot make the
         # independent screener scheduler lose its users.
         self._registry_cache_namespace = "screener_registry"
-        self._registry_retry_at = 0.0
-        self._registry_failures = 0
         self._registry_last_warning_at = 0.0
         self.evaluation_semaphore = asyncio.Semaphore(4)
         self.news_semaphore = asyncio.Semaphore(3)
         self.earnings_semaphore = asyncio.Semaphore(3)
 
     def get_state(self, uid: str) -> ScreenerUserState:
+        uid = str(uid or '').strip()
+        if not uid:
+            raise ValueError("Screener user id is required")
+        # A request authenticated by Firebase is the authoritative signal that
+        # this local Screener state is active. This keeps discovery independent
+        # from a separate Firestore registry query.
+        self._registry_uids.add(uid)
         if uid not in self.states:
             self.states[uid] = ScreenerUserState(uid, self.db)
         return self.states[uid]
@@ -652,61 +657,36 @@ class ScreenerManager:
             await asyncio.gather(*(state.load() for state in states), return_exceptions=True)
             return states
 
-        async def _load_cached_uids() -> set[str]:
+        async def _load_local_uids() -> set[str]:
             try:
-                from local_store import load_state
+                from local_store import list_state_users, load_state
 
-                payload = await asyncio.to_thread(
+                registry_task = asyncio.to_thread(
                     load_state, "__screener__", self._registry_cache_namespace
-                ) or {}
+                )
+                state_users_task = asyncio.to_thread(list_state_users, "screener_state")
+                payload, state_users = await asyncio.gather(registry_task, state_users_task)
+                payload = payload or {}
                 values = payload.get("uids", []) if isinstance(payload, dict) else []
-                return {str(uid).strip() for uid in values if str(uid).strip()}
+                cached_uids = {str(uid).strip() for uid in values if str(uid).strip()}
+                stored_uids = {
+                    str(uid).strip() for uid in (state_users or []) if str(uid).strip()
+                }
+                return cached_uids | stored_uids
             except Exception as exc:
                 # The in-memory registry remains a valid fallback if local
                 # persistence is unavailable as well.
                 if now - self._registry_last_warning_at >= 60:
-                    print(f"[ScreenerManager] Local registry cache unavailable: {exc}")
+                    self._registry_last_warning_at = now
+                    print(f"[ScreenerManager] Local registry unavailable; using memory: {exc}")
                 return set()
 
-        if now < self._registry_retry_at:
-            cached_uids = await _load_cached_uids()
-            fallback_uids = cached_uids or self._registry_uids
-            self._registry_uids.update(fallback_uids)
-            return await _states_for(fallback_uids)
-
-        if not self.db:
-            return await _states_for(self._registry_uids)
-
-        def _read_registry():
-            from google.cloud.firestore_v1.base_query import FieldFilter
-            query = self.db.collection("screener_users").where(
-                filter=FieldFilter("active", "==", True)
-            )
-            return list(query.stream(timeout=3.0, retry=None))
-
-        try:
-            documents = await asyncio.wait_for(asyncio.to_thread(_read_registry), timeout=4.0)
-        except Exception as exc:
-            self._registry_failures += 1
-            # Scheduler discovery runs once per minute. The bounded backoff
-            # prevents a failed Firestore transport from becoming a repeated
-            # blocking request while still retrying automatically.
-            self._registry_retry_at = now + min(60.0, 5.0 * (2 ** min(self._registry_failures - 1, 3)))
-            cached_uids = await _load_cached_uids()
-            fallback_uids = cached_uids or self._registry_uids
-            self._registry_uids.update(fallback_uids)
-            if now - self._registry_last_warning_at >= 60:
-                self._registry_last_warning_at = now
-                print(
-                    "[ScreenerManager] Registry load unavailable; keeping the last "
-                    f"known registry ({len(fallback_uids)} users), retrying in "
-                    f"{max(1, int(self._registry_retry_at - now))}s: {exc}"
-                )
-            return await _states_for(fallback_uids)
-
-        active_uids = {document.id for document in documents}
-        self._registry_failures = 0
-        self._registry_retry_at = 0.0
+        # Screener state is local-first. Discover persisted users from SQLite
+        # instead of polling Firestore every minute just to obtain document
+        # ids. This removes the 503 transport failure path from the scheduler
+        # while retaining the cached and in-memory registries as fallbacks.
+        active_uids = await _load_local_uids()
+        active_uids.update(self._registry_uids)
         for stale_uid in self._registry_uids - active_uids:
             self.states.pop(stale_uid, None)
         self._registry_uids = active_uids

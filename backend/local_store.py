@@ -78,6 +78,35 @@ def load_state(user_id: str, namespace: str) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def list_state_users(namespace: str) -> list[str]:
+    """Return users with a stored state namespace for local discovery."""
+    users: set[str] = set()
+    try:
+        with _connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT user_id FROM local_state WHERE namespace = ?",
+                (str(namespace),),
+            ).fetchall()
+        users.update(str(row[0]).strip() for row in rows if row and str(row[0]).strip())
+    except (OSError, sqlite3.Error):
+        pass
+
+    # Keep users written by the legacy JSON fallback discoverable during
+    # migration. The SQLite store remains the primary source of state.
+    if namespace == "screener_state":
+        for directory in {_DATA_DIR, Path.cwd() / "data"}:
+            try:
+                users.update(
+                    path.name[len("screener_settings_"):-len(".json")]
+                    for path in directory.glob("screener_settings_*.json")
+                    if path.name.endswith(".json")
+                    and len(path.name) > len("screener_settings_.json")
+                )
+            except OSError:
+                continue
+    return sorted(users)
+
+
 def database_path() -> str:
     """Expose the resolved path for diagnostics and backups."""
     return str(_DB_PATH)
