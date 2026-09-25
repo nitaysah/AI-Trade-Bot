@@ -31,16 +31,23 @@ else
     echo "✅ Virtual environment already exists."
 fi
 
-# 3. Upgrade pip and install dependencies
-echo "📥 Installing dependencies from requirements.txt..."
+# 3. Install the repository's hash-locked dependency graph.
+echo "📥 Installing hash-locked dependencies..."
 source venv/bin/activate
-pip install --upgrade pip setuptools wheel
-pip install -r requirements.txt
+python -m pip install --require-hashes -r requirements.lock.txt
+python -m pip install --require-hashes --no-deps -r webull-requirements.lock.txt
 
 # 4. Generate .env file if missing
 if [ ! -f ".env" ]; then
     echo "📝 Generating .env template..."
+    VAULT_KEY="$($PY_CMD -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
     cat <<EOT >> .env
+ENV=development
+
+# Local encryption key for stored broker credentials. Keep this file private.
+VAULT_SECRET_KEY=$VAULT_KEY
+VAULT_SECRET_KEY_VERSION=2
+
 # Groq API Key (Sentiment Analysis)
 GROQ_API_KEY=your_groq_api_key_here
 
@@ -53,6 +60,7 @@ ALPACA_PAPER=true
 MASSIVE_API_KEY=your_massive_api_key_here
 MASSIVE_BASE_URL=https://api.massive.com
 EOT
+    unset VAULT_KEY
     echo "✅ .env file created. Please fill in your API keys."
 else
     echo "✅ .env file already exists."

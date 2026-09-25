@@ -11,7 +11,7 @@ class UserEngine:
     def __init__(self, uid: str, db):
         self.uid = uid
         self.db = db
-        self.broker = create_broker()
+        self.broker = create_broker(uid)
         self.watchlist = []
         self.tradelist = []
         self.default_timeframe = "1Hour"

@@ -29,6 +29,7 @@ class TTLCacheStore:
         self._store: OrderedDict[Hashable, CacheEntry] = OrderedDict()
         self._lock = threading.Lock()
         self._inflight: dict[Hashable, threading.Lock] = {}
+        self._generation = 0
 
     def _purge_expired(self, ttl_seconds: int | None = None) -> None:
         if ttl_seconds is None:
@@ -71,6 +72,21 @@ class TTLCacheStore:
             while len(self._store) > self.maxsize:
                 self._store.popitem(last=False)
 
+    def generation(self) -> int:
+        with self._lock:
+            return self._generation
+
+    def set_if_generation(self, key: Hashable, value: Any, generation: int) -> bool:
+        """Reject a result that finished after the cache was invalidated."""
+        with self._lock:
+            if generation != self._generation:
+                return False
+            self._store[key] = CacheEntry(value=value, created_at=time.time())
+            self._store.move_to_end(key)
+            while len(self._store) > self.maxsize:
+                self._store.popitem(last=False)
+            return True
+
     def delete(self, key: Hashable) -> None:
         with self._lock:
             self._store.pop(key, None)
@@ -78,6 +94,7 @@ class TTLCacheStore:
     def clear(self) -> None:
         with self._lock:
             self._store.clear()
+            self._generation += 1
 
     def delete_matching(self, predicate: Callable[[Hashable], bool]) -> int:
         with self._lock:
@@ -93,6 +110,12 @@ class TTLCacheStore:
                 lock = threading.Lock()
                 self._inflight[key] = lock
             return lock
+
+    def release_inflight_lock(self, key: Hashable, lock: threading.Lock) -> None:
+        """Remove an idle request-coalescing lock so unique keys cannot grow forever."""
+        with self._lock:
+            if self._inflight.get(key) is lock and not lock.locked():
+                self._inflight.pop(key, None)
 
 
 def stable_cache_key(*parts: Any) -> tuple:

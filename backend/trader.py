@@ -29,6 +29,9 @@ import json
 
 risk_mgr = RiskManager()
 executor = ThreadPoolExecutor(max_workers=10) # Dedicated pool for parallel analysis
+# Orchestration waits on these workers. Keeping child jobs in a separate pool
+# prevents all orchestration workers from waiting on their own queued jobs.
+_calculation_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="analysis")
 
 import time
 
@@ -105,7 +108,7 @@ def _analysis_settings_for_trade(uc, ticker_settings: dict, use_bot_settings: bo
     return settings
 
 
-def _evaluation_cache_key(uc, ticker_key: str, timeframe_key: str, data_source: str, use_bot_settings: bool, account_equity, available_cash):
+def _evaluation_cache_key(uc, ticker_key: str, timeframe_key: str, data_source: str, use_bot_settings: bool, account_equity, available_cash, has_position=False):
     """Scope cached evaluations to one user and their active strategy/risk inputs."""
     ticker_settings = getattr(uc, 'TICKER_SETTINGS', {}).get(ticker_key, {})
     payload = {
@@ -117,6 +120,8 @@ def _evaluation_cache_key(uc, ticker_key: str, timeframe_key: str, data_source: 
         "ticker_amount": getattr(uc, "TICKER_AMOUNTS", {}).get(ticker_key),
         "account_equity": round(float(account_equity or 0), 2),
         "available_cash": round(float(available_cash or 0), 2),
+        "has_position": bool(has_position),
+        "evaluation_context": active_evaluation_context.get(),
     }
     settings_hash = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:16]
     return (
@@ -705,6 +710,7 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         use_bot_settings,
         account_equity,
         available_cash,
+        has_position,
     )
     
     if not ignore_cache:
@@ -725,7 +731,7 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         try:
             tech_ctx = contextvars.copy_context()
             analysis_settings = _analysis_settings_for_trade(uc, ticker_settings, use_bot_settings)
-            tech_future = executor.submit(
+            tech_future = _calculation_executor.submit(
                 tech_ctx.run,
                 get_full_analysis,
                 ticker_key,
@@ -744,7 +750,7 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
 
             if ai_enabled:
                 ai_ctx = contextvars.copy_context()
-                ai_future = executor.submit(ai_ctx.run, get_ai_sentiment, ticker_key)
+                ai_future = _calculation_executor.submit(ai_ctx.run, get_ai_sentiment, ticker_key)
                 return tech_future.result(), ai_future.result()
             else:
                 dummy_ai_data = {

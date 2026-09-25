@@ -1663,6 +1663,13 @@
 .watchlist-item.crypto-premium-card.active {
     transform: none;
     z-index: 5;
+    /* Keep crypto's pink card identity while making the selected card
+       unmistakably active, matching the stock Screener selection state. */
+    background: rgba(139, 92, 246, 0.14);
+    border-color: rgba(139, 92, 246, 0.8);
+    box-shadow:
+        0 4px 14px rgba(139, 92, 246, 0.15),
+        inset 0 0 0 1px rgba(139, 92, 246, 0.4);
 }
 
 /* Keep selection/cache re-renders from introducing a second card color. */

@@ -17,44 +17,122 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module=".*webull.
 
 import uuid
 import time
+import re
 import pandas as pd
 
 import config
 import os
 import logging
+import hashlib
+import hmac
 import threading
 import firebase_admin
-from firebase_admin import credentials, firestore
-import hashlib
+from firebase_admin import firestore
 import base64
+import tempfile
+from firebase_credentials import load_firebase_credential
 
 _token_sync_lock = threading.Lock()
 _last_token_sync_digest = None
 _token_sync_retry_at = 0.0
 _token_sync_failures = 0
+
+
+def _safe_error_type(exc: BaseException) -> str:
+    """Return diagnostics that cannot echo provider or credential material."""
+    return type(exc).__name__
+
+
+def _token_path() -> str:
+    """Return one private runtime path, never a repository-relative path."""
+    configured = os.getenv("BOTBULLS_TOKEN_DIR", "").strip()
+    token_dir = configured or os.path.join(tempfile.gettempdir(), "botbulls-secrets")
+    return os.path.join(os.path.abspath(token_dir), "token.txt")
+
+
+def _write_token_securely(token_content: str) -> None:
+    """Write the SDK token atomically with owner-only permissions."""
+    token_path = _token_path()
+    token_dir = os.path.dirname(token_path)
+    os.makedirs(token_dir, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(token_dir, 0o700)
+    except OSError:
+        pass
+    fd, tmp_path = tempfile.mkstemp(prefix=".token.", dir=token_dir, text=True)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(token_content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, token_path)
+        os.chmod(token_path, 0o600)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 try:
     from cryptography.fernet import Fernet
 except ImportError:
     pass
 
 def get_vault():
-    project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "trading-bot-engine-df3de")
-    seed = project_id.encode()
-    key_hash = hashlib.sha256(seed).digest()
-    return Fernet(base64.urlsafe_b64encode(key_hash))
+    secret_key = os.getenv("VAULT_SECRET_KEY", "").strip()
+    if not secret_key:
+        raise RuntimeError("VAULT_SECRET_KEY is required to access encrypted broker state")
+    return Fernet(secret_key.encode())
+
+
+def _load_webull_firestore_credentials(db):
+    """Read encrypted tenant credentials and migrate one legacy plaintext record."""
+    doc_ref = db.collection("system").document("webull_api")
+    doc = doc_ref.get(timeout=2.0, retry=None)
+    if not doc.exists:
+        return {}
+    data = doc.to_dict() or {}
+    vault = get_vault()
+    values = {}
+    migrated = {}
+    for field in ("app_key", "app_secret", "account_id"):
+        encrypted = str(data.get(f"{field}_enc") or "")
+        if encrypted:
+            try:
+                values[field] = vault.decrypt(encrypted.encode()).decode().strip()
+            except Exception:
+                raise RuntimeError(f"Encrypted Webull {field} could not be decrypted") from None
+            continue
+        # One-time migration for the historical schema.  The plaintext value
+        # is never written back; the legacy fields are deleted immediately.
+        legacy = str(data.get(field) or "").strip()
+        if legacy:
+            values[field] = legacy
+            migrated[f"{field}_enc"] = vault.encrypt(legacy.encode()).decode()
+    if migrated:
+        migrated["updated_at"] = firestore.SERVER_TIMESTAMP
+        for field in ("app_key", "app_secret", "account_id"):
+            migrated[field] = firestore.DELETE_FIELD
+        doc_ref.set(migrated, merge=True, timeout=2.0, retry=None)
+        print("[webull] Migrated legacy Webull credential fields to encrypted storage.")
+    return values
 
 def get_firestore_db():
     try:
         if not firebase_admin._apps:
-            cred_path = os.path.join(os.path.dirname(__file__), "serviceAccount.json")
-            if os.path.exists(cred_path):
-                cred = credentials.Certificate(cred_path)
+            cred = load_firebase_credential()
+            if cred:
                 firebase_admin.initialize_app(cred)
             else:
                 firebase_admin.initialize_app(options={'projectId': 'bot-bulls'})
         return firestore.client()
     except Exception as e:
-        print(f"[webull] Could not get Firestore client: {e}")
+        print(f"[webull] Could not get Firestore client: {_safe_error_type(e)}")
         return None
 
 def sync_token_from_firestore():
@@ -71,15 +149,13 @@ def sync_token_from_firestore():
                     f_net = get_vault()
                     token_content = f_net.decrypt(token_content_enc.encode()).decode()
                 except Exception as e:
-                    print(f"[webull] Notice: Decrypt failed, assuming plain text token (migration). Error: {e}")
-                    token_content = token_content_enc
+                    print("[webull] Could not decrypt stored token; refusing plaintext fallback")
+                    return
 
-                os.makedirs("conf", exist_ok=True)
-                with open("conf/token.txt", "w") as f:
-                    f.write(token_content)
+                _write_token_securely(token_content)
                 print("[webull] Restored Webull auth token from Firestore.")
     except Exception as e:
-        print(f"[webull] Error restoring token from Firestore: {e}")
+        print(f"[webull] Error restoring token from Firestore: {type(e).__name__}")
 
 def sync_token_to_firestore():
     def _run():
@@ -89,7 +165,7 @@ def sync_token_to_firestore():
         db = get_firestore_db()
         if not db: return
         try:
-            token_path = "conf/token.txt"
+            token_path = _token_path()
             if os.path.exists(token_path):
                 with open(token_path, "r") as f:
                     content = f.read()
@@ -102,8 +178,8 @@ def sync_token_to_firestore():
                         f_net = get_vault()
                         token_content_enc = f_net.encrypt(content.encode()).decode()
                     except Exception as e:
-                        print(f"[webull] Error encrypting token: {e}")
-                        token_content_enc = content
+                        print(f"[webull] Error encrypting token: {type(e).__name__}")
+                        return
                         
                     with _token_sync_lock:
                         if content_digest == _last_token_sync_digest:
@@ -120,7 +196,7 @@ def sync_token_to_firestore():
             _token_sync_failures += 1
             delay = min(300.0, 30.0 * (2 ** min(_token_sync_failures - 1, 3)))
             _token_sync_retry_at = time.monotonic() + delay
-            print(f"[webull] Error saving token to Firestore: {e}; backing off {delay:.0f}s.")
+            print(f"[webull] Error saving token to Firestore: {type(e).__name__}; backing off {delay:.0f}s.")
     threading.Thread(target=_run, daemon=True).start()
 
 
@@ -149,17 +225,25 @@ class WebullBroker:
 
     def __init__(self, data_only: bool = None, auto_connect: bool = True):
         self.simulation_mode = True
+        self.live_trading_armed = False
         self.api_client = None
         self.trade_client = None
         self.market_client = None
         self.account_id = None
         self._risk_account_key = "webull:simulation"
+        self.order_owner_tag = ""
 
         # Simulation state (mirrors AlpacaBroker)
         self.sim_equity = 100.0
         self.sim_cash = 100.0
         self.sim_positions = {}
         self.sim_orders = []
+        # Bounded in-process candle history.  Crypto refreshes use the newest
+        # segment after the initial load; metadata tracks when a full repair
+        # refresh is due.
+        self._bar_history_cache = {}
+        self._bar_history_meta = {}
+        self._bar_history_loaded = set()
 
         # Auto-connect if keys are configured
         app_key = getattr(config, 'WEBULL_APP_KEY', '')
@@ -173,14 +257,14 @@ class WebullBroker:
                 try:
                     doc = db.collection("system").document("webull_api").get(timeout=2.0, retry=None)
                     if doc.exists:
-                        data = doc.to_dict()
+                        data = _load_webull_firestore_credentials(db)
                         app_key = data.get("app_key", app_key)
                         app_secret = data.get("app_secret", app_secret)
                         if not account_id:
                             account_id = data.get("account_id", "")
                         print("[webull] Fetched Webull API credentials from Firestore.")
                 except Exception as e:
-                    print(f"[webull] Error fetching API credentials from Firestore: {e}")
+                    print(f"[webull] Error fetching API credentials from Firestore: {_safe_error_type(e)}")
 
         # Update config dynamically so other parts of the app know
         config.WEBULL_APP_KEY = app_key
@@ -192,6 +276,25 @@ class WebullBroker:
             if data_only is None:
                 data_only = getattr(config, 'WEBULL_DATA_ONLY', False)
             self.connect(app_key, app_secret, data_only=data_only)
+
+    def clear_credentials(self):
+        """Release SDK clients and the private Webull session token."""
+        self.api_client = None
+        self.trade_client = None
+        self.market_client = None
+        self.account_id = None
+        self.simulation_mode = True
+        self.live_trading_armed = False
+        self._risk_account_key = "webull:simulation"
+        config.WEBULL_APP_KEY = ""
+        config.WEBULL_APP_SECRET = ""
+        config.WEBULL_ACCOUNT_ID = ""
+        try:
+            token_path = _token_path()
+            if os.path.isfile(token_path):
+                os.unlink(token_path)
+        except OSError:
+            pass
 
     @staticmethod
     def _quiet_sdk_logging(api_client):
@@ -220,7 +323,7 @@ class WebullBroker:
             try:
                 sync_token_from_firestore()
             except Exception as e:
-                print(f"[webull] Firestore token restore error: {e}")
+                print(f"[webull] Firestore token restore error: {type(e).__name__}")
 
             # ── Market data client (always needed) ──────────────────────────
             market_api = ApiClient(app_key, app_secret, "us")
@@ -238,12 +341,12 @@ class WebullBroker:
                     print("[webull] Validating market data token...")
                     self.get_latest_prices(["SPY"])
                 except Exception as e:
-                    print(f"[webull] Warning during token validation: {e}")
+                    print(f"[webull] Warning during token validation: {_safe_error_type(e)}")
                     
                 try:
                     sync_token_to_firestore()
                 except Exception as e:
-                    print(f"[webull] Firestore token save error: {e}")
+                    print(f"[webull] Firestore token save error: {_safe_error_type(e)}")
                 return True
 
             # ── Trade client (only when trading is enabled) ─────────────────
@@ -263,7 +366,7 @@ class WebullBroker:
                     accounts = res.json()
                     if accounts:
                         self.account_id = accounts[0].get('account_id', '')
-                        print(f"[webull] Auto-discovered account: {self.account_id}")
+                    print("[webull] Auto-discovered an account")
 
             if not self.account_id:
                 print("[webull] WARNING: No account_id found. Set WEBULL_ACCOUNT_ID in .env")
@@ -277,24 +380,31 @@ class WebullBroker:
             if res.status_code == 200:
                 self.simulation_mode = False
                 account_fingerprint = hashlib.sha256(str(self.account_id).encode("utf-8")).hexdigest()[:16]
+                configured_fingerprint = str(
+                    getattr(config, "BROKER_LIVE_ACCOUNT_FINGERPRINT", "") or ""
+                ).strip().lower()
+                if not configured_fingerprint or not hmac.compare_digest(
+                    configured_fingerprint, account_fingerprint
+                ):
+                    print("[webull] Live connection rejected: account binding mismatch.")
+                    self.clear_credentials()
+                    return False
                 self._risk_account_key = f"webull:live:{account_fingerprint}"
                 bal = res.json()
                 equity = bal.get('total_market_value', bal.get('net_liquidation', 0))
-                print(f"[webull] SUCCESS: Connected (Account: {self.account_id}) - Equity: ${equity}")
+                print("[webull] Connected to the configured account")
                 try:
                     sync_token_to_firestore()
                 except Exception as e:
-                    print(f"[webull] Firestore token save error: {e}")
+                    print(f"[webull] Firestore token save error: {_safe_error_type(e)}")
                 return True
             else:
-                print(f"[webull] Balance check failed: {res.status_code} {res.text}")
+                print(f"[webull] Balance check failed: HTTP {res.status_code}")
                 return False
 
         except Exception as e:
-            print(f"[webull] CONNECTION FAILED: {str(e)}")
-            self.simulation_mode = True
-            self.api_client = None
-            self.trade_client = None
+            print(f"[webull] Connection failed: {type(e).__name__}")
+            self.clear_credentials()
             return False
 
     # ──────────────────────────────────────────────
@@ -368,11 +478,11 @@ class WebullBroker:
                 '_risk_account_key': self._risk_account_key,
             }
         except Exception as e:
-            print(f"[webull] Error getting account info: {e}")
+            print(f"[webull] Error getting account info: {_safe_error_type(e)}")
             return {
                 'equity': 0, 'cash': 0, 'buying_power': 0,
-                'daily_pl': 0, 'daily_pl_pct': 0, 'simulation': True,
-                'error': str(e)
+                'daily_pl': 0, 'daily_pl_pct': 0, 'simulation': False,
+                'error': 'Broker account data unavailable'
             }
 
     def _round_price(self, symbol: str, price) -> float:
@@ -436,8 +546,8 @@ class WebullBroker:
             print(f"[webull] Fetched {len(positions)} active positions")
             return positions
         except Exception as e:
-            print(f"[webull] Error getting positions: {e}")
-            return []
+            print(f"[webull] Error getting positions: {_safe_error_type(e)}")
+            raise RuntimeError("Broker positions are unavailable; trading decisions are paused.") from None
 
     def get_open_orders(self) -> list:
         """Returns list of currently open (pending) orders."""
@@ -456,7 +566,7 @@ class WebullBroker:
                 # accepts the account ID.
                 res = self._retry_request(get_open, self.account_id)
             if res.status_code != 200:
-                return []
+                raise RuntimeError("Broker open orders are unavailable; trading decisions are paused.")
 
             open_list = []
             payload = res.json()
@@ -465,6 +575,7 @@ class WebullBroker:
             for o in payload if isinstance(payload, list) else []:
                 open_list.append({
                     'id': o.get('client_order_id', ''),
+                    'client_order_id': o.get('client_order_id', ''),
                     'symbol': o.get('symbol', '').replace('/', '').upper(),
                     'side': o.get('side', '').lower(),
                     'status': o.get('status', ''),
@@ -474,33 +585,43 @@ class WebullBroker:
             print(f"[webull] Fetched {len(open_list)} open orders")
             return open_list
         except Exception as e:
-            print(f"[webull] Error getting open orders: {e}")
-            return []
+            print(f"[webull] Error getting open orders: {_safe_error_type(e)}")
+            raise RuntimeError("Broker open orders are unavailable; trading decisions are paused.") from None
 
     def cancel_order_by_id(self, order_id: str) -> dict:
         """Cancel a Webull working order by client order ID."""
         if self.simulation_mode:
             return {'success': False, 'error': 'Cannot cancel orders in simple simulation mode.'}
+        if not self.live_trading_armed:
+            return {'success': False, 'error': 'Live trading is not armed for this session.'}
         try:
+            if self.order_owner_tag:
+                owned = next((o for o in self.get_open_orders() if str(o.get('id')) == str(order_id)), None)
+                if not owned or not str(owned.get('client_order_id', '')).startswith(f"bb-{self.order_owner_tag}-"):
+                    return {'success': False, 'error': 'Order is not owned by this trading session.'}
             cancel = getattr(self.trade_client.order_v2, "cancel_order", None)
             if not callable(cancel):
                 raise AttributeError("Webull SDK does not expose order cancellation")
             res = self._retry_request(cancel, self.account_id, str(order_id))
             if res.status_code == 200:
                 return {'success': True}
-            return {'success': False, 'error': f"Webull cancellation failed ({res.status_code}): {res.text}"}
+            return {'success': False, 'error': f"Webull cancellation failed (HTTP {res.status_code})."}
         except Exception as e:
-            print(f"[webull] Error cancelling order {order_id}: {e}")
-            return {'success': False, 'error': str(e)}
+            print(f"[webull] Error cancelling order {order_id}: {_safe_error_type(e)}")
+            return {'success': False, 'error': 'Broker cancellation failed; reconcile the order before retrying.'}
 
     def cancel_orders_for_ticker(self, ticker: str, side_filter: str = None) -> dict:
         """Cancel working orders for one equity/crypto ticker or option underlying."""
+        if not self.simulation_mode and not self.live_trading_armed:
+            return {'success': False, 'error': 'Live trading is not armed for this session.'}
         import re
 
         ticker_norm = str(ticker or "").replace("/", "").upper()
         cancelled = 0
         errors = []
         for order in self.get_open_orders():
+            if self.order_owner_tag and not str(order.get('client_order_id', '')).startswith(f"bb-{self.order_owner_tag}-"):
+                continue
             order_symbol = str(order.get("symbol", "")).replace("/", "").upper()
             option_match = re.fullmatch(r"([A-Z]{1,6})\d{6}[CP]\d{8}", order_symbol)
             belongs_to_ticker = order_symbol == ticker_norm or bool(
@@ -519,10 +640,14 @@ class WebullBroker:
 
     def cancel_all_entry_orders(self) -> dict:
         """Cancel every working BUY order while preserving protective SELL exits."""
+        if not self.simulation_mode and not self.live_trading_armed:
+            return {'success': False, 'error': 'Live trading is not armed for this session.'}
         cancelled = 0
         errors = []
         for order in self.get_open_orders():
             if str(order.get("side", "")).lower() != "buy":
+                continue
+            if self.order_owner_tag and not str(order.get('client_order_id', '')).startswith(f"bb-{self.order_owner_tag}-"):
                 continue
             result = self.cancel_order_by_id(str(order.get("id", "")))
             if result.get("success"):
@@ -532,13 +657,16 @@ class WebullBroker:
         return {'success': not errors, 'cancelled': cancelled, 'errors': errors}
 
     def place_order(self, symbol: str, notional: float, side: str = 'buy',
-                    stop_loss: float = 0, take_profit: float = 0) -> dict:
+                    stop_loss: float = 0, take_profit: float = 0,
+                    client_order_id: str = None) -> dict:
         """
         Places a market order. Webull doesn't support notional orders,
         so we fetch current price and convert to quantity.
         """
         if self.simulation_mode:
             return self._sim_order(symbol, notional, side, stop_loss, take_profit)
+        if not self.live_trading_armed:
+            return {'success': False, 'error': 'Live trading is not armed for this session.'}
 
         try:
             # Step 1: Get current price to convert notional → qty
@@ -554,7 +682,7 @@ class WebullBroker:
             instrument_type = "CRYPTO" if is_crypto else "EQUITY"
 
             # Step 3: Build order payload
-            client_order_id = uuid.uuid4().hex
+            client_order_id = client_order_id or uuid.uuid4().hex
             order_payload = [{
                 "combo_type": "NORMAL",
                 "client_order_id": client_order_id,
@@ -569,10 +697,9 @@ class WebullBroker:
                 "support_trading_session": "CORE",
             }]
 
-            res = self._retry_request(
-                self.trade_client.order_v2.place_order,
+            res = self.trade_client.order_v2.place_order(
                 self.account_id,
-                order_payload
+                order_payload,
             )
 
             if res.status_code == 200:
@@ -589,15 +716,19 @@ class WebullBroker:
                     'status': 'submitted',
                 }
             else:
-                error_msg = res.text if hasattr(res, 'text') else str(res)
-                print(f"[webull] Order error: {error_msg}")
-                return {'success': False, 'error': error_msg}
+                print(f"[webull] Order error: HTTP {getattr(res, 'status_code', 'unknown')}")
+                return {'success': False, 'error': 'Broker order request was rejected.'}
 
         except Exception as e:
-            print(f"[webull] Order error: {e}")
-            return {'success': False, 'error': str(e)}
+            print(f"[webull] Order error: {_safe_error_type(e)}")
+            return {
+                'success': False,
+                'indeterminate': True,
+                'error': 'Broker order outcome is unknown; reconcile by client order ID before retrying.',
+            }
 
-    def close_position(self, symbol: str) -> dict:
+    def close_position(self, symbol: str, market_session: str = "Regular", current_price: float = None,
+                       client_order_id: str = None) -> dict:
         """Closes an entire position by placing a sell order for full qty."""
         if self.simulation_mode:
             if symbol in self.sim_positions:
@@ -617,9 +748,15 @@ class WebullBroker:
             if not pos or pos['qty'] <= 0:
                 return {'success': False, 'error': f'No position found for {symbol}'}
 
+            if not self.live_trading_armed:
+                return {'success': False, 'error': 'Live trading is not armed for this session.'}
+
             # Place a sell order for the full quantity
             is_crypto = any(clean_sym.endswith(b) for b in ["USD", "USDT", "USDC"])
-            client_order_id = uuid.uuid4().hex
+            if not client_order_id:
+                intent = f"{self._risk_account_key}|{clean_sym}|{pos['qty']}|{pos.get('avg_price', 0)}|SELL"
+                owner = f"{self.order_owner_tag}-" if self.order_owner_tag else ""
+                client_order_id = f"bb-{owner}exit-" + hashlib.sha256(intent.encode("utf-8")).hexdigest()[:20]
             order_payload = [{
                 "combo_type": "NORMAL",
                 "client_order_id": client_order_id,
@@ -634,19 +771,29 @@ class WebullBroker:
                 "support_trading_session": "CORE",
             }]
 
-            res = self._retry_request(
-                self.trade_client.order_v2.place_order,
+            res = self.trade_client.order_v2.place_order(
                 self.account_id,
-                order_payload
+                order_payload,
             )
 
             if res.status_code == 200:
-                return {'success': True, 'symbol': symbol, 'qty': pos['qty']}
+                return {
+                    'success': True,
+                    'symbol': symbol,
+                    'qty': pos['qty'],
+                    'status': 'submitted',
+                    'client_order_id': client_order_id,
+                }
             else:
-                return {'success': False, 'error': res.text}
+                print(f"[webull] Close-position request rejected: HTTP {getattr(res, 'status_code', 'unknown')}")
+                return {'success': False, 'error': 'Broker close request was rejected.'}
 
         except Exception as e:
-            return {'success': False, 'error': str(e)}
+            return {
+                'success': False,
+                'indeterminate': True,
+                'error': 'Broker close outcome is unknown; reconcile by client order ID before retrying.',
+            }
 
     def close_all_positions(self) -> dict:
         """Closes all open positions."""
@@ -655,6 +802,9 @@ class WebullBroker:
             self.sim_positions = {}
             self.sim_equity = self.sim_cash
             return {'success': True, 'count': count}
+
+        if not self.live_trading_armed:
+            return {'success': False, 'error': 'Live trading is not armed for this session.'}
 
         try:
             positions = self.get_positions()
@@ -665,7 +815,7 @@ class WebullBroker:
                     closed += 1
             return {'success': True, 'count': closed}
         except Exception as e:
-            return {'success': False, 'error': str(e)}
+            return {'success': False, 'error': 'Unable to close all broker positions; reconcile before retrying.'}
 
     def get_recent_trades(self, limit: int = 10) -> list:
         """Fetches recently filled orders for reconciliation."""
@@ -694,7 +844,7 @@ class WebullBroker:
                     })
             return trades[:limit]
         except Exception as e:
-            print(f"[webull] Error getting recent trades: {e}")
+            print(f"[webull] Error getting recent trades: {_safe_error_type(e)}")
             return []
 
     def search_assets(self, query: str) -> list:
@@ -707,13 +857,15 @@ class WebullBroker:
             results = []
             for quote in res.get('quotes', []):
                 if quote.get('quoteType') in ['EQUITY', 'CRYPTOCURRENCY', 'ETF']:
+                    raw_symbol = quote.get('symbol', '')
+                    symbol = self._normalize_symbol(raw_symbol) if quote.get('quoteType') == 'CRYPTOCURRENCY' else raw_symbol
                     results.append({
-                        "symbol": quote.get('symbol'),
-                        "name": quote.get('shortname', quote.get('longname', quote.get('symbol')))
+                        "symbol": symbol,
+                        "name": quote.get('shortname', quote.get('longname', symbol))
                     })
             return results[:10]
         except Exception as e:
-            print(f"[webull] Search error: {e}")
+            print(f"[webull] Search error: {_safe_error_type(e)}")
             return []
 
     def get_bars(
@@ -730,13 +882,13 @@ class WebullBroker:
         if self.market_client is None:
             return []
 
-        supported_timespans = ["M1", "M5", "M15", "M30", "M60", "M120", "M240", "D", "W", "M", "Y"]
+        supported_timespans = ["S30", "M1", "M2", "M3", "M5", "M10", "M15", "M30", "M60", "M120", "M240", "D", "W", "M", "Y"]
         if timespan.upper() not in supported_timespans:
             return []
 
         try:
             # Step 1: Normalize symbol and determine category
-            clean_symbol = symbol.upper().replace("/", "")
+            clean_symbol = self._normalize_symbol(symbol)
             is_crypto = any(clean_symbol.endswith(b) for b in ["USD", "USDT", "USDC"])
             category = "US_CRYPTO" if is_crypto else "US_STOCK"
 
@@ -747,7 +899,24 @@ class WebullBroker:
                 history_cache = {}
                 self._bar_history_cache = history_cache
             history_key = (clean_symbol, timespan.upper(), sessions)
+            self._load_persisted_bar_history(history_key)
             cached_history = history_cache.get(history_key, [])
+            history_meta = getattr(self, "_bar_history_meta", None)
+            if not isinstance(history_meta, dict):
+                history_meta = {}
+                self._bar_history_meta = history_meta
+            last_full_sync_at = float(
+                (history_meta.get(history_key) or {}).get("last_full_sync_at", 0) or 0
+            )
+            now_ts = time.time()
+            # A daily full refresh repairs provider corrections or a missed
+            # interval while keeping ordinary candle updates incremental.
+            full_sync_due = (
+                not cached_history
+                or len(cached_history) < min(200, requested_count)
+                or not last_full_sync_at
+                or now_ts - last_full_sync_at >= 24 * 60 * 60
+            )
 
             def _time_value(raw_time):
                 try:
@@ -763,12 +932,27 @@ class WebullBroker:
             # stock bars. Page only when a caller genuinely needs more than a
             # single response; ordinary chart refreshes remain one API call.
             if is_crypto:
+                if full_sync_due:
+                    crypto_count = min(requested_count, 1200)
+                else:
+                    latest_time = _time_value(cached_history[-1].get("time")) / 1_000_000_000
+                    tf_seconds_map = {
+                        "S30": 30, "M1": 60, "M2": 120, "M3": 180, "M5": 300, "M10": 600,
+                        "M15": 900, "M30": 1800, "M60": 3600, "M120": 7200,
+                        "M240": 14400, "D": 86400, "W": 604800, "M": 2592000,
+                    }
+                    tf_sec = tf_seconds_map.get(timespan.upper(), 300)
+                    elapsed_seconds = max(0.0, now_ts - latest_time)
+                    needed_bars = int(elapsed_seconds / tf_sec) + 20
+                    # The safety window lets the provider revise the most
+                    # recent candles while avoiding a full crypto download.
+                    crypto_count = min(1200, max(50, needed_bars))
                 res = self._retry_request(
                     self.market_client.crypto_market_data.get_crypto_history_bar,
                     [clean_symbol],
                     category,
                     timespan.upper(),
-                    count=str(min(requested_count, 1200))
+                    count=str(crypto_count)
                 )
                 responses = [res]
             else:
@@ -784,7 +968,7 @@ class WebullBroker:
                 
                 if len(cached_history) >= min(200, requested_count) and latest_time > 0:
                     tf_seconds_map = {
-                        "M1": 60, "M2": 120, "M3": 180, "M5": 300, "M10": 600,
+                        "S30": 30, "M1": 60, "M2": 120, "M3": 180, "M5": 300, "M10": 600,
                         "M15": 900, "M30": 1800, "M60": 3600, "M120": 7200,
                         "M240": 14400, "D": 86400, "W": 604800, "M": 2592000
                     }
@@ -816,7 +1000,7 @@ class WebullBroker:
                         )
                     except Exception as page_exc:
                         if responses:
-                            print(f"[webull] Older bar page unavailable; using the newest completed page: {page_exc}")
+                            print(f"[webull] Older bar page unavailable; using the newest completed page: {_safe_error_type(page_exc)}")
                             break
                         raise
                     responses.append(res)
@@ -846,8 +1030,7 @@ class WebullBroker:
             for res in responses:
                 if not hasattr(res, "status_code") or res.status_code != 200:
                     status = getattr(res, "status_code", "unknown")
-                    detail = getattr(res, "text", "")
-                    print(f"[webull] Error fetching bars: {status} {detail}")
+                    print(f"[webull] Error fetching bars: HTTP {status}")
                     continue
                 data = res.json()
 
@@ -882,11 +1065,14 @@ class WebullBroker:
             result = sorted(bars_by_time.values(), key=lambda bar: _time_value(bar.get('time')))[-requested_count:]
             history_cache.pop(history_key, None)
             history_cache[history_key] = result
+            if is_crypto and full_sync_due:
+                history_meta[history_key] = {"last_full_sync_at": now_ts}
             while len(history_cache) > 24:
                 history_cache.pop(next(iter(history_cache)))
+            self._persist_bar_history(history_key, result, history_meta.get(history_key) or {})
             return result
         except Exception as e:
-            print(f"[webull] Error fetching bars: {e}")
+            print(f"[webull] Error fetching bars: {_safe_error_type(e)}")
             return []
 
     # ──────────────────────────────────────────────
@@ -894,8 +1080,76 @@ class WebullBroker:
     # ──────────────────────────────────────────────
 
     @staticmethod
+    def _bar_cache_namespace(history_key) -> str:
+        digest = hashlib.sha256(repr(tuple(history_key)).encode("utf-8")).hexdigest()[:32]
+        return f"webull_bars_{digest}"
+
+    def _load_persisted_bar_history(self, history_key) -> None:
+        """Hydrate one market-history key once per broker process.
+
+        The SQLite store is shared by same-host workers, while the in-memory
+        cache remains the hot path. Malformed or unavailable persistence is
+        ignored so a provider refresh can still proceed.
+        """
+        loaded_keys = getattr(self, "_bar_history_loaded", None)
+        if not isinstance(loaded_keys, set):
+            loaded_keys = set()
+            self._bar_history_loaded = loaded_keys
+        if history_key in loaded_keys:
+            return
+        loaded_keys.add(history_key)
+        try:
+            from local_store import load_state
+            payload = load_state("__market_data__", self._bar_cache_namespace(history_key)) or {}
+            bars = payload.get("bars") if isinstance(payload, dict) else None
+            if not isinstance(bars, list):
+                return
+            valid_bars = [bar for bar in bars[-1200:] if isinstance(bar, dict) and bar.get("time") is not None]
+            if not valid_bars:
+                return
+            cache = getattr(self, "_bar_history_cache", None)
+            if not isinstance(cache, dict):
+                cache = {}
+                self._bar_history_cache = cache
+            cache[history_key] = valid_bars
+            metadata = getattr(self, "_bar_history_meta", None)
+            if not isinstance(metadata, dict):
+                metadata = {}
+                self._bar_history_meta = metadata
+            metadata[history_key] = {
+                "last_full_sync_at": float(payload.get("last_full_sync_at", 0) or 0)
+            }
+        except Exception as exc:
+            print(f"[webull] Persistent bar-cache load unavailable: {type(exc).__name__}")
+
+    def _persist_bar_history(self, history_key, bars: list, metadata: dict) -> None:
+        """Persist a bounded market-history snapshot for restart recovery."""
+        if not isinstance(bars, list) or not bars:
+            return
+        try:
+            from local_store import save_state
+            save_state(
+                "__market_data__",
+                self._bar_cache_namespace(history_key),
+                {
+                    "version": 1,
+                    "history_key": list(history_key),
+                    "bars": bars[-1200:],
+                    "last_full_sync_at": float((metadata or {}).get("last_full_sync_at", 0) or 0),
+                    "saved_at": time.time(),
+                },
+            )
+        except Exception as exc:
+            # Persistence is an optimization and restart safeguard; it must
+            # never turn a usable live provider response into a failed scan.
+            print(f"[webull] Persistent bar-cache save unavailable: {type(exc).__name__}")
+
+    @staticmethod
     def _normalize_symbol(symbol: str) -> str:
-        return str(symbol or "").upper().replace("/", "").strip()
+        clean = str(symbol or "").upper().replace("/", "").strip()
+        if re.fullmatch(r"[A-Z0-9]{1,12}-(?:USD|USDT|USDC)", clean):
+            clean = clean.replace("-", "")
+        return clean
 
     @staticmethod
     def _is_crypto_symbol(clean_symbol: str) -> bool:
@@ -973,7 +1227,7 @@ class WebullBroker:
         try:
             return float(prices.get(self._normalize_symbol(symbol), 0.0) or 0.0)
         except Exception as e:
-            print(f"[webull] Price fetch error for {symbol}: {e}")
+            print(f"[webull] Price fetch error for {symbol}: {_safe_error_type(e)}")
         return 0.0
 
     def get_latest_prices(self, symbols: list) -> dict:
@@ -996,7 +1250,7 @@ class WebullBroker:
 
         def _record_snapshot_response(request_symbols, res, category):
             if res.status_code != 200:
-                print(f"[webull] Snapshot error ({category}): {res.status_code} {getattr(res, 'text', '')}")
+                print(f"[webull] Snapshot error ({category}): HTTP {res.status_code}")
                 return 0
 
             found = 0
@@ -1043,7 +1297,7 @@ class WebullBroker:
             _fetch_group(crypto_symbols, "US_CRYPTO")
             _fetch_group(stock_symbols, "US_STOCK")
         except Exception as e:
-            print(f"[webull] Batch price fetch error: {e}")
+            print(f"[webull] Batch price fetch error: {_safe_error_type(e)}")
 
         return prices
 

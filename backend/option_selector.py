@@ -3,6 +3,8 @@ import datetime
 import math
 from typing import List, Dict, Any, Optional
 
+MAX_OPTION_CHAIN_CONTRACTS = 2000
+
 try:
     from alpaca.trading.client import TradingClient
     from alpaca.trading.requests import GetOptionContractsRequest
@@ -238,7 +240,7 @@ def get_option_chain(
             "status": AssetStatus.ACTIVE,
             "expiration_date_gte": today.strftime("%Y-%m-%d"),
             "expiration_date_lte": max_expiry.strftime("%Y-%m-%d"),
-            "limit": 10000,
+            "limit": MAX_OPTION_CHAIN_CONTRACTS,
         }
 
         # Apply strike filters to reduce payload if current price is known
@@ -252,7 +254,7 @@ def get_option_chain(
         res = client.get_option_contracts(req)
         
         contracts = []
-        for contract in res.option_contracts:
+        for contract in list(res.option_contracts or [])[:MAX_OPTION_CHAIN_CONTRACTS]:
             expiration = _coerce_date(contract.expiration_date)
             contracts.append({
                 "symbol": contract.symbol,
@@ -265,7 +267,7 @@ def get_option_chain(
             })
         return contracts
     except Exception as e:
-        print(f"[options] Error fetching option contracts: {e}")
+        print(f"[options] Error fetching option contracts: {type(e).__name__}")
         return []
 
 def select_contract(
@@ -383,7 +385,7 @@ def select_contract(
                 )
                 return selected
         except Exception as e:
-            print(f"[options] Error selecting by delta, falling back to strike_type: {e}")
+            print(f"[options] Error selecting by delta, falling back to strike_type: {type(e).__name__}")
 
     # Fallback to strike_type selection
     expiry_contracts.sort(key=lambda c: c["strike"])

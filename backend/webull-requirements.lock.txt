@@ -1,0 +1,2 @@
+webull-openapi-python-sdk==2.0.12 \
+    --hash=sha256:65a47dd8cf74ab06e7765c04435cea755c4d4901bbcb8a9dfca48f62dd68e0ab

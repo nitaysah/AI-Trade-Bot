@@ -10,6 +10,7 @@ Handles all communication with the Alpaca API:
 """
 
 import hashlib
+import hmac
 
 import config
 
@@ -35,10 +36,16 @@ class AlpacaBroker:
 
     def __init__(self):
         self.simulation_mode = True  # Start in simulation, only go live on successful connection
+        self.paper_mode = False
+        # Live order submission is explicitly armed by the authenticated API
+        # after a user confirms the live-trading mode.  A broker reconnect or
+        # process restart must never restore this transient permission.
+        self.live_trading_armed = False
         self.client = None
         self._api_key = ""
         self._secret_key = ""
         self._risk_account_key = "alpaca:simulation"
+        self.order_owner_tag = ""
 
         # Simulation state
         self.sim_equity = 100000.0
@@ -63,6 +70,21 @@ class AlpacaBroker:
         self._order_history_cached = None
         self._all_time_pl_cached = None
 
+    def _live_write_allowed(self) -> bool:
+        return self.simulation_mode or self.paper_mode or bool(self.live_trading_armed)
+
+    def clear_credentials(self):
+        """Drop SDK and credential state after unlink or a failed reconnect."""
+        self.client = None
+        self._api_key = ""
+        self._secret_key = ""
+        self.paper_mode = False
+        self.simulation_mode = True
+        self.live_trading_armed = False
+        self._risk_account_key = "alpaca:simulation"
+        self.order_owner_tag = ""
+        self._invalidate_caches()
+
     def _format_api_error(self, e: Exception) -> str:
         name = type(e).__name__
         text = str(e) or repr(e)
@@ -72,6 +94,9 @@ class AlpacaBroker:
 
     def connect(self, api_key: str, secret_key: str, paper: bool = True) -> bool:
         """Attempts to connect to Alpaca with provided keys."""
+        if not paper and not getattr(self, "live_tenant_authorized", False):
+            print("[broker] Live Alpaca connection rejected: tenant binding is not configured.")
+            return False
         if not ALPACA_AVAILABLE:
             print("[broker] alpaca-py not installed. Cannot connect.")
             return False
@@ -108,19 +133,29 @@ class AlpacaBroker:
                     time.sleep(2)
                     
             self.simulation_mode = False
+            self.paper_mode = bool(paper)
             account_identity = str(
                 getattr(account, "account_number", "")
                 or getattr(account, "id", "")
                 or self._api_key
             )
             account_fingerprint = hashlib.sha256(account_identity.encode("utf-8")).hexdigest()[:16]
+            if not paper:
+                configured_fingerprint = str(
+                    getattr(config, "BROKER_LIVE_ACCOUNT_FINGERPRINT", "") or ""
+                ).strip().lower()
+                if not configured_fingerprint or not hmac.compare_digest(
+                    configured_fingerprint, account_fingerprint
+                ):
+                    print("[broker] Live Alpaca connection rejected: account binding mismatch.")
+                    self.clear_credentials()
+                    return False
             self._risk_account_key = f"alpaca:{'paper' if paper else 'live'}:{account_fingerprint}"
-            print(f"[broker] SUCCESS: Connected to Alpaca ({account.account_number}) - Equity: ${account.equity}")
+            print("[broker] Connected to Alpaca")
             return True
         except Exception as e:
-            print(f"[broker] CONNECTION FAILED: {str(e)}")
-            self.simulation_mode = True
-            self.client = None
+            print(f"[broker] Connection failed: {type(e).__name__}")
+            self.clear_credentials()
             return False
 
     def get_latest_quote(self, symbol: str) -> dict:
@@ -228,8 +263,8 @@ class AlpacaBroker:
             print(f"[broker] Account info unavailable: {self._format_api_error(e)}")
             return {
                 'equity': 0, 'cash': 0, 'buying_power': 0,
-                'daily_pl': 0, 'daily_pl_pct': 0, 'simulation': True,
-                'error': str(e)
+                'daily_pl': 0, 'daily_pl_pct': 0, 'simulation': False,
+                'error': 'Broker account data unavailable'
             }
 
     def check_tradable(self, symbol: str) -> dict:
@@ -437,7 +472,7 @@ class AlpacaBroker:
             return positions
         except Exception as e:
             print(f"[broker] Positions unavailable: {self._format_api_error(e)}")
-            return []
+            raise RuntimeError("Broker positions are unavailable; trading decisions are paused.") from None
 
     def _find_matching_trade(self, symbol: str, side: str, trade_log: list) -> dict:
         if not trade_log:
@@ -598,6 +633,30 @@ class AlpacaBroker:
             print(f"[broker] Order history unavailable: {self._format_api_error(e)}")
             return []
 
+    def find_order_by_client_id(self, client_order_id: str):
+        """Reconcile one intent against broker history before any retry."""
+        wanted = str(client_order_id or "").strip()
+        if not wanted or self.simulation_mode:
+            return None
+        req = GetOrdersRequest(status=QueryOrderStatus.ALL, limit=200)
+        orders = self._retry_api_call(self.client.get_orders, filter=req)
+        for order in orders:
+            observed = str(getattr(order, "client_order_id", "") or "")
+            if observed != wanted:
+                continue
+            status = getattr(getattr(order, "status", None), "value", getattr(order, "status", ""))
+            return {
+                "success": True,
+                "order_id": str(getattr(order, "id", "")),
+                "client_order_id": wanted,
+                "status": str(status).lower(),
+                "symbol": str(getattr(order, "symbol", "") or "").replace("/", "").upper(),
+                "qty": float(getattr(order, "qty", 0) or 0),
+                "filled_qty": float(getattr(order, "filled_qty", 0) or 0),
+                "filled_avg_price": float(getattr(order, "filled_avg_price", 0) or 0),
+            }
+        return None
+
     def get_open_orders(self, trade_log: list = None) -> list:
         """Returns list of currently open (pending) orders with linked trade summaries."""
         import time
@@ -651,10 +710,17 @@ class AlpacaBroker:
             return open_list
         except Exception as e:
             print(f"[broker] Open orders unavailable: {self._format_api_error(e)}")
-            return []
+            raise RuntimeError("Broker open orders are unavailable; trading decisions are paused.") from None
 
     def _bot_exit_prefix(self, symbol: str) -> str:
-        return f"bot-exit-{symbol.upper().replace('/', '')}-"
+        owner = f"{self.order_owner_tag}-" if self.order_owner_tag else ""
+        return f"bot-exit-{owner}{symbol.upper().replace('/', '')}-"
+
+    def _is_owned_client_order(self, client_order_id: str) -> bool:
+        if not self.order_owner_tag:
+            return True
+        value = str(client_order_id or "")
+        return value.startswith(f"bb-{self.order_owner_tag}-") or value.startswith(f"bot-exit-{self.order_owner_tag}-")
 
     def get_exit_orders(self, symbol: str) -> list:
         """Returns open bot-managed exit orders for a symbol."""
@@ -681,10 +747,14 @@ class AlpacaBroker:
 
     def get_exit_order_levels(self, symbol: str) -> dict:
         """Summarizes bot-managed TP/SL levels for a symbol from open orders."""
-        levels = {"take_profit": None, "stop_loss": None, "orders": []}
+        levels = {"take_profit": None, "stop_loss": None, "qty": None, "orders": []}
         for o in self.get_exit_orders(symbol):
             levels["orders"].append(str(getattr(o, "id", "")))
             candidates = [o] + list(getattr(o, "legs", None) or [])
+            try:
+                levels["qty"] = float(getattr(o, "qty", 0) or 0)
+            except Exception:
+                pass
             for candidate in candidates:
                 limit_price = getattr(candidate, "limit_price", None)
                 stop_price = getattr(candidate, "stop_price", None)
@@ -705,6 +775,8 @@ class AlpacaBroker:
         self._invalidate_caches()
         if self.simulation_mode:
             return {'success': True, 'cancelled': 0}
+        if not self._live_write_allowed():
+            return {'success': False, 'error': 'Live trading is not armed for this session.'}
 
         cancelled = 0
         errors = []
@@ -718,11 +790,14 @@ class AlpacaBroker:
                 print(f"[broker] Failed cancelling bot exit order for {symbol}: {e}")
         return {'success': not errors, 'cancelled': cancelled, 'errors': errors}
 
-    def place_equity_oco_exit(self, symbol: str, qty: float, take_profit: float, stop_loss: float) -> dict:
+    def place_equity_oco_exit(self, symbol: str, qty: float, take_profit: float, stop_loss: float,
+                              client_order_id: str = None) -> dict:
         """Places a broker-side OCO sell exit for a regular stock/ETF position."""
         self._invalidate_caches()
         if self.simulation_mode:
             return {'success': True, 'simulated': True, 'symbol': symbol, 'qty': qty, 'take_profit': take_profit, 'stop_loss': stop_loss}
+        if not self._live_write_allowed():
+            return {'success': False, 'error': 'Live trading is not armed for this session.'}
 
         try:
             symbol_norm = symbol.upper().replace("/", "")
@@ -734,8 +809,10 @@ class AlpacaBroker:
             if tp_val <= sl_val:
                 return {'success': False, 'error': f'Invalid OCO levels: TP {tp_val} must be above SL {sl_val}.'}
 
-            import time
-            client_order_id = f"{self._bot_exit_prefix(symbol_norm)}{int(time.time() * 1000)}"
+            if not client_order_id:
+                intent = f"{self._risk_account_key}|{symbol_norm}|{qty_val}|{tp_val}|{sl_val}"
+                owner = f"{self.order_owner_tag}-" if self.order_owner_tag else ""
+                client_order_id = f"bot-exit-{owner}{symbol_norm}-" + hashlib.sha256(intent.encode("utf-8")).hexdigest()[:20]
             order_data = LimitOrderRequest(
                 symbol=symbol_norm,
                 qty=qty_val,
@@ -761,7 +838,7 @@ class AlpacaBroker:
             }
         except Exception as e:
             print(f"[broker] OCO exit order error for {symbol}: {e}")
-            return {'success': False, 'error': str(e)}
+            return {'success': False, 'indeterminate': True, 'error': 'Broker OCO outcome is unknown; reconcile by client order ID before retrying.'}
 
     def replace_equity_oco_exit(self, symbol: str, qty: float, take_profit: float, stop_loss: float) -> dict:
         """Cancel bot-managed exit orders and place a fresh OCO with updated levels."""
@@ -775,8 +852,14 @@ class AlpacaBroker:
         self._invalidate_caches()
         if self.simulation_mode:
             return {'success': False, 'error': 'Cannot cancel orders in simple simulation mode.'}
+        if not self._live_write_allowed():
+            return {'success': False, 'error': 'Live trading is not armed for this session.'}
 
         try:
+            if self.order_owner_tag:
+                owned = next((o for o in self.get_open_orders() if str(o.get('id')) == str(order_id)), None)
+                if not owned or not self._is_owned_client_order(owned.get('client_order_id')):
+                    return {'success': False, 'error': 'Order is not owned by this trading session.'}
             self.client.cancel_order_by_id(order_id)
             print(f"[broker] Cancelled order {order_id}")
             return {'success': True}
@@ -789,6 +872,8 @@ class AlpacaBroker:
         self._invalidate_caches()
         if self.simulation_mode:
             return {'success': True, 'cancelled': 0}
+        if not self._live_write_allowed():
+            return {'success': False, 'error': 'Live trading is not armed for this session.'}
 
         try:
             import re
@@ -802,6 +887,8 @@ class AlpacaBroker:
                     option_match and option_match.group(1) == ticker_norm
                 )
                 if belongs_to_ticker:
+                    if not self._is_owned_client_order(getattr(o, 'client_order_id', '')):
+                        continue
                     if side_filter and o.side.value.lower() != side_filter.lower():
                         continue
                     try:
@@ -820,6 +907,8 @@ class AlpacaBroker:
         self._invalidate_caches()
         if self.simulation_mode:
             return {'success': True, 'cancelled': 0}
+        if not self._live_write_allowed():
+            return {'success': False, 'error': 'Live trading is not armed for this session.'}
         try:
             orders = self._retry_api_call(self.client.get_orders, filter=None)
             cancelled = 0
@@ -827,6 +916,8 @@ class AlpacaBroker:
             for order in orders:
                 side = getattr(getattr(order, "side", None), "value", getattr(order, "side", ""))
                 if str(side).lower() != "buy":
+                    continue
+                if not self._is_owned_client_order(getattr(order, "client_order_id", "")):
                     continue
                 try:
                     self.client.cancel_order_by_id(str(order.id))
@@ -840,13 +931,16 @@ class AlpacaBroker:
 
     def place_order(self, symbol: str, notional: float, side: str = 'buy',
                     stop_loss: float = 0, take_profit: float = 0,
-                    market_session: str = "Regular", current_price: float = None) -> dict:
+                    market_session: str = "Regular", current_price: float = None,
+                    client_order_id: str = None) -> dict:
         """
         Places a notional (dollar-based) market order for fractional shares.
         """
         self._invalidate_caches()
         if self.simulation_mode:
             return self._sim_order(symbol, notional, side, stop_loss, take_profit)
+        if not self._live_write_allowed():
+            return {'success': False, 'error': 'Live trading is not armed for this session.'}
 
         try:
             order_side = OrderSide.BUY if side.lower() == 'buy' else OrderSide.SELL
@@ -882,14 +976,16 @@ class AlpacaBroker:
                     side=order_side,
                     time_in_force=TimeInForce.DAY,
                     limit_price=limit_price,
-                    extended_hours=True
+                    extended_hours=True,
+                    client_order_id=client_order_id,
                 )
             else:
                 order_data = MarketOrderRequest(
                     symbol=request_symbol,
                     notional=round(notional, 2),
                     side=order_side,
-                    time_in_force=tif
+                    time_in_force=tif,
+                    client_order_id=client_order_id,
                 )
             order = self.client.submit_order(order_data=order_data)
             
@@ -906,15 +1002,21 @@ class AlpacaBroker:
                 'total_cost': round(notional + fee, 2),
                 'fees': fee,
                 'status': str(order.status),
+                'client_order_id': str(getattr(order, 'client_order_id', '') or client_order_id or ''),
                 'order_type': 'limit' if use_extended_equity else 'market',
                 'limit_price': limit_price if use_extended_equity else 0.0,
                 'extended_hours': use_extended_equity,
             }
         except Exception as e:
             print(f"[broker] Order error: {e}")
-            return {'success': False, 'error': str(e)}
+            return {
+                'success': False,
+                'indeterminate': True,
+                'error': 'Broker order outcome is unknown; reconcile by client order ID before retrying.',
+            }
 
-    def close_position(self, symbol: str, market_session: str = "Regular", current_price: float = None) -> dict:
+    def close_position(self, symbol: str, market_session: str = "Regular", current_price: float = None,
+                       client_order_id: str = None) -> dict:
         """Closes an entire position for a given symbol."""
         self._invalidate_caches()
         if self.simulation_mode:
@@ -963,6 +1065,9 @@ class AlpacaBroker:
                 return {'success': True, 'symbol': symbol, 'proceeds': round(proceeds, 2)}
             return {'success': False, 'error': f'No position in {symbol}'}
 
+        if not self._live_write_allowed():
+            return {'success': False, 'error': 'Live trading is not armed for this session.'}
+
         try:
             # 1. Format crypto symbol if needed (e.g. BTCUSD -> BTC/USD)
             request_symbol = symbol.upper().replace("/", "")
@@ -989,6 +1094,10 @@ class AlpacaBroker:
                 qty = int(raw_qty)
                 if qty <= 0:
                     return {'success': False, 'error': f'Extended-hours stock exits require whole shares (held fractional {raw_qty} cannot be sold during extended hours).'}
+                if not client_order_id:
+                    intent = f"{self._risk_account_key}|{request_symbol}|{raw_qty}|{pos.get('avg_price', 0)}|SELL"
+                    owner = f"{self.order_owner_tag}-" if self.order_owner_tag else ""
+                    client_order_id = f"bb-{owner}exit-" + hashlib.sha256(intent.encode("utf-8")).hexdigest()[:20]
                 limit_price = self._round_price(request_symbol, ref_price * 0.9991)
                 order_data = LimitOrderRequest(
                     symbol=request_symbol,
@@ -996,7 +1105,8 @@ class AlpacaBroker:
                     side=OrderSide.SELL,
                     time_in_force=TimeInForce.DAY,
                     limit_price=limit_price,
-                    extended_hours=True
+                    extended_hours=True,
+                    client_order_id=client_order_id,
                 )
                 order = self.client.submit_order(order_data=order_data)
                 print(f"[broker] Submitted extended-hours limit close for {request_symbol} @ {limit_price}")
@@ -1005,22 +1115,41 @@ class AlpacaBroker:
                     'symbol': request_symbol,
                     'qty': qty,
                     'order_id': str(order.id),
+                    'status': str(getattr(order, 'status', 'submitted')),
                     'order_type': 'limit',
                     'limit_price': limit_price,
                     'extended_hours': True,
                 }
             
-            # 2. Attempt to close using available formats
+            # 2. Attempt to close using available formats while preserving the
+            # deterministic intent ID. The SDK close_position helper cannot
+            # carry client_order_id, so submit an explicit sell instead.
             last_err = "Unknown"
             for sym in formats_to_try:
                 try:
-                    order = self.client.close_position(sym)
+                    pos = next((p for p in self.get_positions() if p.get('symbol', '').replace('/', '').upper() == request_symbol), None)
+                    if not pos or float(pos.get('qty', 0) or 0) <= 0:
+                        return {'success': False, 'error': f'No position in {symbol}'}
+                    if not client_order_id:
+                        intent = f"{self._risk_account_key}|{request_symbol}|{pos.get('qty', 0)}|{pos.get('avg_price', 0)}|SELL"
+                        owner = f"{self.order_owner_tag}-" if self.order_owner_tag else ""
+                        client_order_id = f"bb-{owner}exit-" + hashlib.sha256(intent.encode("utf-8")).hexdigest()[:20]
+                    tif = TimeInForce.GTC if is_crypto else TimeInForce.DAY
+                    order_data = MarketOrderRequest(
+                        symbol=sym,
+                        qty=abs(float(pos.get('qty', 0) or 0)),
+                        side=OrderSide.SELL,
+                        time_in_force=tif,
+                        client_order_id=client_order_id,
+                    )
+                    order = self.client.submit_order(order_data=order_data)
                     print(f"[broker] Successfully closed position for {sym}")
                     return {
-                        'success': True, 
-                        'symbol': sym, 
+                        'success': True,
+                        'symbol': sym,
                         'qty': float(order.qty) if order.qty else 0,
-                        'order_id': str(order.id)
+                        'order_id': str(order.id),
+                        'status': str(getattr(order, 'status', 'submitted')),
                     }
                 except Exception as e:
                     last_err = str(e)
@@ -1031,9 +1160,14 @@ class AlpacaBroker:
             
             return {'success': False, 'error': last_err}
         except Exception as e:
-            return {'success': False, 'error': str(e)}
+            return {
+                'success': False,
+                'indeterminate': True,
+                'error': 'Broker close outcome is unknown; reconcile by client order ID before retrying.',
+            }
 
-    def place_option_order(self, option_symbol: str, qty: int, side: str = 'buy', limit_price: float = None) -> dict:
+    def place_option_order(self, option_symbol: str, qty: int, side: str = 'buy', limit_price: float = None,
+                           client_order_id: str = None) -> dict:
         """
         Places an order for an options contract.
         option_symbol: OCC format (e.g. SPY260612C00450000)
@@ -1044,6 +1178,8 @@ class AlpacaBroker:
         self._invalidate_caches()
         if self.simulation_mode:
             return self._sim_option_order(option_symbol, qty, side)
+        if not self._live_write_allowed():
+            return {'success': False, 'error': 'Live trading is not armed for this session.'}
 
         try:
             from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
@@ -1058,7 +1194,8 @@ class AlpacaBroker:
                     qty=int(qty),
                     side=order_side,
                     limit_price=rounded_limit,
-                    time_in_force=TimeInForce.DAY
+                    time_in_force=TimeInForce.DAY,
+                    client_order_id=client_order_id,
                 )
             else:
                 order_data = MarketOrderRequest(
@@ -1066,7 +1203,8 @@ class AlpacaBroker:
                     qty=int(qty),
                     side=order_side,
                     type=OrderType.MARKET,
-                    time_in_force=TimeInForce.DAY
+                    time_in_force=TimeInForce.DAY,
+                    client_order_id=client_order_id,
                 )
             order = self.client.submit_order(order_data=order_data)
             
@@ -1079,10 +1217,15 @@ class AlpacaBroker:
                 'status': str(order.status),
                 'order_type': 'limit' if rounded_limit else 'market',
                 'limit_price': rounded_limit or 0.0,
+                'client_order_id': str(getattr(order, 'client_order_id', '') or client_order_id or ''),
             }
         except Exception as e:
             print(f"[broker] Option order error: {e}")
-            return {'success': False, 'error': str(e)}
+            return {
+                'success': False,
+                'indeterminate': True,
+                'error': 'Broker option-order outcome is unknown; reconcile by client order ID before retrying.',
+            }
 
     def _sim_option_order(self, option_symbol: str, qty: int, side: str) -> dict:
         from option_selector import parse_occ_symbol
@@ -1237,6 +1380,9 @@ class AlpacaBroker:
             # Reset equity to cash if all positions closed
             self.sim_equity = self.sim_cash 
             return {'success': True, 'count': count}
+
+        if not self._live_write_allowed():
+            return {'success': False, 'error': 'Live trading is not armed for this session.'}
 
         try:
             self.client.close_all_positions(cancel_orders=True)

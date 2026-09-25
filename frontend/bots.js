@@ -37,6 +37,23 @@ const BOT_CHART_IDB_NAME = 'aiTradeBotChartCache';
 const BOT_CHART_IDB_VERSION = 1;
 const BOT_CHART_IDB_STORE = 'chartPayloads';
 
+function getBotsSnapshotCacheKey() {
+    const uid = window.auth?.currentUser?.uid || (localStorage.getItem('dev_mode') === 'true' ? 'dev-user' : 'anonymous');
+    return `botsDataCache:${uid}`;
+}
+
+function clearBotsSnapshotCaches() {
+    try {
+        sessionStorage.removeItem('botsDataCache');
+        for (let index = sessionStorage.length - 1; index >= 0; index -= 1) {
+            const key = sessionStorage.key(index);
+            if (key && key.startsWith('botsDataCache:')) sessionStorage.removeItem(key);
+        }
+    } catch (error) {
+        console.warn('[bots] Could not clear identity-scoped snapshot cache:', error);
+    }
+}
+
 let selectedTicker = null;
 let currentBackendTf = "5Min";
 let isAlpacaLinked = false;
@@ -115,6 +132,34 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
 // ──────────────────────────────────────────────
 // Auth Headers
 // ──────────────────────────────────────────────
+let developmentAuthTokenPromise = null;
+
+async function getDevelopmentAuthHeaders(baseHeaders) {
+    if (localStorage.getItem('dev_mode') !== 'true') return baseHeaders;
+    try {
+        if (!developmentAuthTokenPromise) {
+            developmentAuthTokenPromise = fetch(`${API_BASE}/api/dev-token`, {
+                cache: 'no-store',
+                headers: { 'Cache-Control': 'no-cache' }
+            }).then(async response => {
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok || typeof payload.token !== 'string' || !payload.token.trim()) {
+                    throw new Error('Development authentication is unavailable');
+                }
+                return payload.token.trim();
+            }).catch(error => {
+                developmentAuthTokenPromise = null;
+                throw error;
+            });
+        }
+        const token = await developmentAuthTokenPromise;
+        return { ...baseHeaders, 'Authorization': `Bearer ${token}` };
+    } catch (error) {
+        console.warn('[auth] Development authentication is unavailable:', error);
+        return baseHeaders;
+    }
+}
+
 async function getAuthHeaders() {
     const auth = window.auth;
     const baseHeaders = {
@@ -122,15 +167,11 @@ async function getAuthHeaders() {
         'Bypass-Tunnel-Reminder': 'true'
     };
 
-    if (!auth) return baseHeaders;
+    if (!auth) return getDevelopmentAuthHeaders(baseHeaders);
     const user = auth.currentUser;
     if (!user) {
-        if (localStorage.getItem('dev_mode') === 'true') {
-            return {
-                ...baseHeaders,
-                'Authorization': `Bearer dev-token`
-            };
-        }
+        const developmentHeaders = await getDevelopmentAuthHeaders(baseHeaders);
+        if (developmentHeaders !== baseHeaders) return developmentHeaders;
         return baseHeaders;
     }
 
@@ -479,7 +520,13 @@ window.moveBotCard = async function (ticker, direction) {
 };
 
 function sanitizePlainText(text) {
-    return String(text || '').replace(/<[^>]*>?/gm, '');
+    return String(text ?? '').replace(/[&<>"']/g, character => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+    }[character]));
 }
 
 const botLossPauseAlertQueue = [];
@@ -1097,7 +1144,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                     </div>
                     ${continuousGridForecast?.enabled
                         ? continuousGridForecastHtml
-                        : `<span class="text-[0.5rem] sm:text-[0.55rem] font-bold text-slate-500 font-mono leading-normal whitespace-normal break-words w-full min-w-0" title="${sanitizePlainText(forecastExitText)}">${forecastExitText}</span>`}
+                        : `<span class="text-[0.5rem] sm:text-[0.55rem] font-bold text-slate-500 font-mono leading-normal whitespace-normal break-words w-full min-w-0" title="${sanitizePlainText(forecastExitText)}">${sanitizePlainText(forecastExitText)}</span>`}
                 </div>
             `;
         } else {
@@ -1110,7 +1157,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                     </div>
                     ${continuousGridForecast?.enabled
                         ? continuousGridForecastHtml
-                        : `<span class="text-[0.5rem] sm:text-[0.55rem] font-bold text-slate-500 font-mono leading-normal whitespace-normal break-words w-full min-w-0" title="${forecastText.replace(/<[^>]*>?/gm, '')}">${forecastText}</span>`}
+                        : `<span class="text-[0.5rem] sm:text-[0.55rem] font-bold text-slate-500 font-mono leading-normal whitespace-normal break-words w-full min-w-0" title="${sanitizePlainText(forecastText)}">${sanitizePlainText(forecastText)}</span>`}
                 </div>
             `;
         }
@@ -1862,6 +1909,11 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
                 : (isSignalReset
                     ? 'RESET'
                     : (isWaitingEntry ? 'WAITING' : item.action));
+            const safeReason = sanitizePlainText(cleanReason);
+            const safeActionLabel = sanitizePlainText(actionLabel);
+            const safeTicker = sanitizePlainText(item.ticker);
+            const safeTimeframe = sanitizePlainText(item.timeframe || '5M');
+            const safePrice = sanitizePlainText(item.price);
 
             const actionColor = item.action === 'BUY'
                 ? 'text-emerald-600 font-bold'
@@ -1873,7 +1925,7 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
                             ? 'text-indigo-600 font-bold'
                             : (isWaitingEntry ? 'text-blue-600 font-medium' : 'text-purple-500 font-medium');
 
-            let signalBadge = item.exit_monitoring && item.exit_signal_label
+            let signalBadgeText = item.exit_monitoring && item.exit_signal_label
                 ? item.exit_signal_label.replace(/Exit\s*/gi, '').trim()
                 : item.bullish_count !== undefined
                     ? `${item.bullish_count}B / ${item.bearish_count}S`
@@ -1897,24 +1949,29 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
                     ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
                     : 'bg-purple-100 text-purple-700 border border-purple-200';
 
-                signalBadge = `<span class="px-1.5 py-0.5 rounded ${badgeColor} font-mono text-[0.58rem] sm:text-[0.62rem] whitespace-nowrap">${badgeText}</span>`;
+                signalBadgeText = `<span class="px-1.5 py-0.5 rounded ${badgeColor} font-mono text-[0.58rem] sm:text-[0.62rem] whitespace-nowrap">${sanitizePlainText(badgeText)}</span>`;
             } else {
-                signalBadge = `<span class="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-mono text-[0.6rem] whitespace-nowrap">${signalBadge}</span>`;
+                signalBadgeText = sanitizePlainText(signalBadgeText);
             }
+            const signalBadge = modeStr.includes('hybrid') && !item.exit_monitoring && item.bullish_count !== undefined
+                ? signalBadgeText
+                : `<span class="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-mono text-[0.6rem] whitespace-nowrap">${signalBadgeText}</span>`;
 
             row.innerHTML = `
                 <td class="py-2 pr-2 text-purple-600 text-[10px] sm:text-xs whitespace-normal leading-tight max-w-[65px] sm:max-w-none">${formatLocalTime(item.time)}</td>
-                <td class="py-2 pr-2 ${actionColor} text-[10px] sm:text-xs">${actionLabel}</td>
-                <td class="py-2 pr-2 text-indigo-950 font-bold text-[10px] sm:text-xs">${item.ticker}</td>
+                <td class="py-2 pr-2 ${actionColor} text-[10px] sm:text-xs">${safeActionLabel}</td>
+                <td class="py-2 pr-2 text-indigo-950 font-bold text-[10px] sm:text-xs">${safeTicker}</td>
                 <td class="py-2 pr-2 text-center">
-                    <span class="px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-500 font-black text-[0.55rem] border border-indigo-100">${item.timeframe || '5M'}</span>
+                    <span class="px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-500 font-black text-[0.55rem] border border-indigo-100">${safeTimeframe}</span>
                 </td>
-                <td class="py-2 pr-2 text-indigo-700 font-medium text-[10px] sm:text-xs">${item.price}</td>
+                <td class="py-2 pr-2 text-indigo-700 font-medium text-[10px] sm:text-xs">${safePrice}</td>
                 <td class="py-2 pr-2 text-[10px] sm:text-xs flex items-center gap-1 flex-wrap">${signalBadge}</td>
-                <td class="py-2 pr-2 text-purple-600 italic text-[10px] sm:text-xs min-w-[200px] sm:min-w-[280px] whitespace-normal leading-snug" title="${cleanReason}">${cleanReason}</td>
+                <td class="py-2 pr-2 text-purple-600 italic text-[10px] sm:text-xs min-w-[200px] sm:min-w-[280px] whitespace-normal leading-snug" title="${safeReason}">${safeReason}</td>
             `;
         } else if (currentLogTab === 'trades') {
             const sideColor = item.side === 'buy' ? 'text-emerald-600 font-bold' : 'text-rose-500 font-bold';
+            const safeSymbol = sanitizePlainText(item.symbol);
+            const safeSide = sanitizePlainText(item.side);
 
             // Dynamic precision price formatting
             const cleanSym = String(item.symbol).toUpperCase();
@@ -1940,19 +1997,22 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
             }
 
             const aiReason = item.reason || 'AI Strategy: Execution criteria satisfied.';
+            const safeAiReason = sanitizePlainText(aiReason);
 
             row.innerHTML = `
-                <td class="py-2 pr-2 text-purple-600 text-[10px] sm:text-xs whitespace-normal leading-tight max-w-[65px] sm:max-w-none">${formatLocalTime(item.created_at)}</td>
-                <td class="py-2 pr-2 text-indigo-950 font-bold text-[10px] sm:text-xs">${item.symbol}</td>
-                <td class="py-2 pr-2 text-[10px] sm:text-xs ${sideColor} uppercase">${item.side}</td>
+                <td class="py-2 pr-2 text-purple-600 text-[10px] sm:text-xs whitespace-normal leading-tight max-w-[65px] sm:max-w-none">${sanitizePlainText(formatLocalTime(item.created_at))}</td>
+                <td class="py-2 pr-2 text-indigo-950 font-bold text-[10px] sm:text-xs">${safeSymbol}</td>
+                <td class="py-2 pr-2 text-[10px] sm:text-xs ${sideColor} uppercase">${safeSide}</td>
                 <td class="py-2 pr-2 text-center text-[10px] sm:text-xs font-bold text-indigo-900">${item.filled_qty ? item.filled_qty.toFixed(4) : '0.0000'}</td>
                 <td class="py-2 pr-2 text-center text-[10px] sm:text-xs text-indigo-700 font-medium">$${avgPriceStr}</td>
                 <td class="py-2 pr-2 text-center text-[10px] sm:text-xs text-indigo-900 font-bold">$${totalCostStr}</td>
                 ${plHtml}
-                <td class="py-2 pr-2 text-purple-600 italic text-[10px] sm:text-xs min-w-[200px] sm:min-w-[280px] whitespace-normal leading-snug" title="${aiReason}">${aiReason}</td>
+                <td class="py-2 pr-2 text-purple-600 italic text-[10px] sm:text-xs min-w-[200px] sm:min-w-[280px] whitespace-normal leading-snug" title="${safeAiReason}">${safeAiReason}</td>
             `;
         } else if (currentLogTab === 'pending') {
             const sideColor = item.side === 'buy' ? 'text-emerald-600 font-bold' : 'text-rose-500 font-bold';
+            const safeSymbol = sanitizePlainText(item.symbol);
+            const safeSide = sanitizePlainText(item.side);
 
             // Dynamic precision price formatting
             const cleanSym = String(item.symbol).toUpperCase();
@@ -1963,27 +2023,32 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
             const limitPriceStr = limitPriceVal > 0 ? `$${limitPriceVal.toFixed(priceDecimals)}` : 'Market';
             const totalValueStr = item.total_cost ? `$${Number(item.total_cost).toFixed(2)}` : '—';
 
-            const tifBadge = `<span class="px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-500 font-black text-[0.55rem] border border-indigo-100 uppercase">${item.time_in_force || 'GTC'}</span>`;
+            const safeTimeInForce = sanitizePlainText(item.time_in_force || 'GTC');
+            const tifBadge = `<span class="px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-500 font-black text-[0.55rem] border border-indigo-100 uppercase">${safeTimeInForce}</span>`;
             const aiReason = item.reason || 'AI Strategy: Order pending execution.';
+            const safeAiReason = sanitizePlainText(aiReason);
+            const safeOrderId = sanitizePlainText(item.id);
 
             row.innerHTML = `
-                <td class="py-2 pr-2 text-purple-600 text-[10px] sm:text-xs whitespace-normal leading-tight max-w-[65px] sm:max-w-none">${formatLocalTime(item.created_at)}</td>
-                <td class="py-2 pr-2 text-indigo-950 font-bold text-[10px] sm:text-xs">${item.symbol}</td>
-                <td class="py-2 pr-2 text-[10px] sm:text-xs ${sideColor} uppercase">${item.side}</td>
+                <td class="py-2 pr-2 text-purple-600 text-[10px] sm:text-xs whitespace-normal leading-tight max-w-[65px] sm:max-w-none">${sanitizePlainText(formatLocalTime(item.created_at))}</td>
+                <td class="py-2 pr-2 text-indigo-950 font-bold text-[10px] sm:text-xs">${safeSymbol}</td>
+                <td class="py-2 pr-2 text-[10px] sm:text-xs ${sideColor} uppercase">${safeSide}</td>
                 <td class="py-2 pr-2 text-center">${tifBadge}</td>
                 <td class="py-2 pr-2 text-center text-[10px] sm:text-xs font-bold text-indigo-900">${item.qty ? item.qty.toFixed(4) : '0.0000'}</td>
                 <td class="py-2 pr-2 text-center text-[10px] sm:text-xs text-indigo-700 font-medium">${limitPriceStr}</td>
                 <td class="py-2 pr-2 text-center text-[10px] sm:text-xs text-indigo-900 font-bold">${totalValueStr}</td>
-                <td class="py-2 pr-2 text-purple-600 italic text-[10px] sm:text-xs min-w-[200px] sm:min-w-[280px] whitespace-normal leading-snug" title="${aiReason}">${aiReason}</td>
+                <td class="py-2 pr-2 text-purple-600 italic text-[10px] sm:text-xs min-w-[200px] sm:min-w-[280px] whitespace-normal leading-snug" title="${safeAiReason}">${safeAiReason}</td>
                 <td class="py-2 pr-2 text-center">
-                    <button onclick="cancelOrder('${item.id}')"
+                    <button type="button" data-order-id="${safeOrderId}"
                         class="px-2 py-1 bg-rose-500 text-white rounded hover:bg-rose-600 transition-all font-black text-[9px] uppercase tracking-wider">
                         Cancel
                     </button>
                 </td>
             `;
+            row.querySelector('[data-order-id]')?.addEventListener('click', () => cancelOrder(item.id));
         } else if (currentLogTab === 'positions') {
             const isCrypto = String(item.symbol).toUpperCase().includes("USD");
+            const safeSymbol = sanitizePlainText(item.symbol);
             const qtyStr = Number(item.qty) % 1 === 0 ? Number(item.qty).toString() : Number(item.qty) < 1 ? Number(item.qty).toFixed(6) : Number(item.qty).toFixed(4);
             const formatVal = (v) => formatAssetPrice(v, isCrypto);
             const avgPriceStr = `$${formatVal(item.avg_price || 0)}`;
@@ -2001,7 +2066,7 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
             const daySign = dayPlVal >= 0 ? '+' : '';
 
             row.innerHTML = `
-                <td class="py-2 pr-2 text-indigo-950 font-bold text-[10px] sm:text-xs">${item.symbol}</td>
+                <td class="py-2 pr-2 text-indigo-950 font-bold text-[10px] sm:text-xs">${safeSymbol}</td>
                 <td class="py-2 pr-2 text-center text-[10px] sm:text-xs font-bold text-indigo-900">${qtyStr}</td>
                 <td class="py-2 pr-2 text-center text-[10px] sm:text-xs text-indigo-700 font-medium">${avgPriceStr}</td>
                 <td class="py-2 pr-2 text-center text-[10px] sm:text-xs text-indigo-700 font-medium">${currentPriceStr}</td>
@@ -3532,6 +3597,8 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         tvContainer.innerHTML = '';
         const script = document.createElement('script');
         script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js';
+        script.integrity = 'sha384-Ba2Izc2WIvMY5jXj5kCAMpmZNdWsfJhtuZa/GdLHSBqLK77fn4LvhQBt/7S9/ASb';
+        script.crossOrigin = 'anonymous';
         script.async = true;
         script.innerHTML = JSON.stringify({
             "symbol": isCrypto(currentStrategySymbol) && !currentStrategySymbol.includes('^') ? `CRYPTO:${currentStrategySymbol}` : currentStrategySymbol,
@@ -3734,21 +3801,37 @@ function populateStrategyAiModelSelect() {
     if (!select) return;
     const currentValue = normalizeBotAIModel(select.value);
 
-    let html = '';
-    html += '<optgroup label="Groq AI (Cloud)">';
-    html += '  <option value="llama-3.3-70b-versatile">Llama 3.3 70B (Recommended)</option>';
-    html += '  <option value="llama-3.1-8b-instant">Llama 3.1 8B (Fast / Lightweight)</option>';
-    html += '</optgroup>';
-    html += '<optgroup label="Ollama (Local)">';
-    if (window.ollamaModels && window.ollamaModels.length > 0) {
-        window.ollamaModels.forEach(m => {
-            html += `  <option value="ollama/${m}">${m}</option>`;
+    const cloudGroup = document.createElement('optgroup');
+    cloudGroup.label = 'Groq AI (Cloud)';
+    [
+        ['llama-3.3-70b-versatile', 'Llama 3.3 70B (Recommended)'],
+        ['llama-3.1-8b-instant', 'Llama 3.1 8B (Fast / Lightweight)']
+    ].forEach(([value, label]) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        cloudGroup.appendChild(option);
+    });
+
+    const localGroup = document.createElement('optgroup');
+    localGroup.label = 'Ollama (Local)';
+    const localModels = Array.isArray(window.ollamaModels)
+        ? window.ollamaModels.map(model => String(model || '').trim()).filter(model => model && model.length <= 200)
+        : [];
+    if (localModels.length > 0) {
+        localModels.forEach(model => {
+            const option = document.createElement('option');
+            option.value = `ollama/${model}`;
+            option.textContent = model;
+            localGroup.appendChild(option);
         });
     } else {
-        html += '  <option disabled>No local models found</option>';
+        const option = document.createElement('option');
+        option.disabled = true;
+        option.textContent = 'No local models found';
+        localGroup.appendChild(option);
     }
-    html += '</optgroup>';
-    select.innerHTML = html;
+    select.replaceChildren(cloudGroup, localGroup);
 
     if (currentValue) {
         select.value = currentValue;
@@ -4516,7 +4599,7 @@ async function fetchBotsData(options = {}) {
         }
         if (partitionNorm === 'all') {
             try {
-                sessionStorage.setItem('botsDataCache', JSON.stringify({
+                sessionStorage.setItem(getBotsSnapshotCacheKey(), JSON.stringify({
                     schemaVersion: '1.0',
                     data,
                     fetchedAt: Date.now()
@@ -4749,6 +4832,11 @@ async function submitAlpacaConfig() {
     const isPaper = document.getElementById('alpacaPaper').checked;
     const btn = document.getElementById('alpacaSubmitBtn');
 
+    const liveTradingAcknowledged = isPaper || window.confirm(
+        'This connects a live Alpaca account. Live bots can submit real orders. Continue only if you explicitly authorize live trading.'
+    );
+    if (!liveTradingAcknowledged) return;
+
     if (!key || !secret) {
         alert("Please provide both API Key and Secret.");
         return;
@@ -4766,7 +4854,8 @@ async function submitAlpacaConfig() {
             body: JSON.stringify({
                 api_key: key,
                 secret_key: secret,
-                paper: isPaper
+                paper: isPaper,
+                live_trading_acknowledged: liveTradingAcknowledged
             })
         });
 
@@ -6335,11 +6424,11 @@ function renderBotChartPreviewSignals(signals = {}, settings = {}) {
         const icon = signalType === 'BULLISH' ? '▲' : signalType === 'BEARISH' ? '▼' : '●';
         const iconColor = signalType === 'BULLISH' ? 'text-emerald-600' : signalType === 'BEARISH' ? 'text-red-500' : 'text-purple-400';
         const escapedName = name.replace(/'/g, "\\'");
-        const displayName = name === 'VWAP' ? 'Session VWAP' : name;
+        const displayName = sanitizePlainText(name === 'VWAP' ? 'Session VWAP' : name);
         const displayLabelClass = name === 'VWAP' ? 'vwap-indicator-label' : (isPremium ? 'text-amber-800' : 'text-indigo-900');
         const settingAction = `openBotChartPreviewIndicatorSettings('${escapedName}')`;
         const cardClick = `onclick="toggleBotChartPreviewIndicator('${escapedName}')"`;
-        let reasonHtml = signal?.reason || 'No reason available.';
+        let reasonHtml = sanitizePlainText(signal?.reason || 'No reason available.');
 
         if (name === 'Botbulls4 News AI' && signal?.value != null && enabled) {
             const scoreVal = parseFloat(signal.value);
@@ -6358,7 +6447,7 @@ function renderBotChartPreviewSignals(signals = {}, settings = {}) {
                         ? 'text-rose-600'
                         : 'text-slate-500';
                 const reasonText = String(signal.reason || 'Evaluating market sentiment').replace(/catalysts/i, 'catalyst');
-                reasonHtml = `${reasonText}: <span class="${scoreColor} font-black">${sentPct}%</span>`;
+                reasonHtml = `${sanitizePlainText(reasonText)}: <span class="${scoreColor} font-black">${sentPct}%</span>`;
             }
         }
 
@@ -6885,13 +6974,18 @@ document.getElementById('botSearchInput')?.addEventListener('input', (e) => {
                 data.forEach(item => {
                     const div = document.createElement('div');
                     div.className = "p-3 hover:bg-indigo-50 cursor-pointer border-b border-indigo-50 last:border-0 transition-colors flex justify-between items-center";
-                    div.innerHTML = `
-                        <div>
-                            <span class="font-black text-indigo-900">${item.symbol}</span>
-                            <span class="text-xs text-indigo-400 ml-2 font-medium">${item.name}</span>
-                        </div>
-                        <span class="text-[0.6rem] bg-indigo-100 text-indigo-500 px-2 py-0.5 rounded uppercase font-bold tracking-widest">+ Add</span>
-                    `;
+                    const details = document.createElement('div');
+                    const symbol = document.createElement('span');
+                    symbol.className = 'font-black text-indigo-900';
+                    symbol.textContent = item.symbol || '';
+                    const name = document.createElement('span');
+                    name.className = 'text-xs text-indigo-400 ml-2 font-medium';
+                    name.textContent = item.name || '';
+                    details.append(symbol, name);
+                    const action = document.createElement('span');
+                    action.className = 'text-[0.6rem] bg-indigo-100 text-indigo-500 px-2 py-0.5 rounded uppercase font-bold tracking-widest';
+                    action.textContent = '+ Add';
+                    div.append(details, action);
                     div.onclick = () => selectSearchResult(item);
                     resultsContainer.appendChild(div);
                 });
@@ -7087,6 +7181,15 @@ async function unlinkAlpaca() {
 // Init
 // ──────────────────────────────────────────────
 (function init() {
+    // Never render a snapshot produced under another Firebase identity. Clear
+    // all short-lived account cache entries whenever auth changes.
+    clearBotsSnapshotCaches();
+    if (window.auth?.onAuthStateChanged) {
+        window.auth.onAuthStateChanged(() => {
+            clearBotsSnapshotCaches();
+            window.lastBotsData = null;
+        });
+    }
     // Wait for Firebase auth to be ready and currentUser to be populated before first fetch
     const waitForAuth = setInterval(() => {
         if (window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true')) {
@@ -7111,7 +7214,7 @@ async function unlinkAlpaca() {
             // INSTANT RENDER: Check for prefetched data from dashboard page
             let usedCache = false;
             try {
-                const cachedRaw = sessionStorage.getItem('botsDataCache');
+                const cachedRaw = sessionStorage.getItem(getBotsSnapshotCacheKey());
                 if (cachedRaw) {
                     const { schemaVersion, data, fetchedAt } = JSON.parse(cachedRaw);
                     const ageMs = Date.now() - fetchedAt;

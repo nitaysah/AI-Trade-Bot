@@ -1,4 +1,7 @@
 import asyncio
+import hashlib
+import os
+import tempfile
 from datetime import datetime
 import math
 import pytz
@@ -21,6 +24,12 @@ from user_config import UserConfig, set_user_config
 from trade_guards import is_stop_exit, opening_blackout_reason, quote_liquidity_reason, stabilization_reason
 
 BOT_CONSECUTIVE_LOSS_PAUSE_THRESHOLD = 3
+
+
+def _local_settings_path(uid: str) -> str:
+    """Use a stable non-identifying filename for the private local fallback."""
+    digest = hashlib.sha256(str(uid or "").encode("utf-8")).hexdigest()[:32]
+    return os.path.join("data", f"user_settings_{digest}.json")
 
 
 def _is_global_risk_entry_attempt(result: dict, has_position: bool) -> bool:
@@ -1872,8 +1881,12 @@ class UserEngine:
     def __init__(self, uid: str, db):
         self.uid = uid
         self.db = db
+        self.last_access_at = time.monotonic()
         self.config = UserConfig(uid)
-        self.broker = create_broker()
+        self.broker = create_broker(self.uid)
+        # Namespace broker orders so shared-account cancellation can be scoped
+        # to this authenticated user.
+        self.broker.order_owner_tag = hashlib.sha256(str(uid).encode("utf-8")).hexdigest()[:10]
         
         self.trade_log = []
         self.latest_scans = {}
@@ -1904,15 +1917,46 @@ class UserEngine:
         self.last_scan_time = None
         self.dashboard_primary_ticker = None
         self.loaded_from_cloud = False
+        # This is intentionally transient.  Persisted bot settings may be
+        # loaded after restart, but live order submission requires a fresh
+        # authenticated confirmation in the current process.
+        self.live_trading_armed = False
         self.alpaca_load_status = "not_loaded"
         self.alpaca_load_error = ""
         self.load_lock = asyncio.Lock()
+        self.broker_connect_lock = asyncio.Lock()
+        self.task_start_lock = asyncio.Lock()
         self.settings_save_lock = asyncio.Lock()
         self.history_save_lock = asyncio.Lock()
         
     def get_now(self):
         tz = pytz.timezone(self.config.TIMEZONE if hasattr(self.config, 'TIMEZONE') else 'US/Central')
         return datetime.now(tz)
+
+    def _order_intent_id(self, ticker: str, side: str, result: dict, instrument: str = "") -> str:
+        """Return a stable broker id for one strategy decision.
+
+        The candle identity and decision level stay constant across a retry,
+        so an uncertain network response cannot become a second broker order.
+        """
+        candle = (result or {}).get("candle_meta") or {}
+        candle_key = candle.get("candle_key") or (result or {}).get("time") or "unknown"
+        level = (result or {}).get("level") or (result or {}).get("continuous_grid_side") or "base"
+        raw = f"{self.uid}:{ticker}:{side}:{instrument}:{candle_key}:{level}"
+        owner_tag = getattr(self.broker, "order_owner_tag", "")
+        return f"bb-{owner_tag}-{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]}"
+
+    def _order_result_is_filled(self, order_result: dict) -> bool:
+        """Do not mutate strategy state from a mere broker submission receipt."""
+        if not isinstance(order_result, dict) or not order_result.get("success"):
+            return False
+        if getattr(self.broker, "simulation_mode", True):
+            return True
+        status = str(order_result.get("status") or "").lower().replace(" ", "_")
+        # A partial fill is still an outstanding intent.  Treating it as a
+        # complete fill would overstate position quantity and could submit a
+        # duplicate remainder on the next scan.
+        return status == "filled"
 
     def _normalize_signal_lock(self, value):
         direction = str(value or "").upper().strip()
@@ -2157,9 +2201,31 @@ class UserEngine:
                     "saved_at": time.time()
                 }
                 try:
-                    os.makedirs("data", exist_ok=True)
-                    with open(f"data/user_settings_{self.uid}.json", "w") as f:
-                        json.dump(data, f, indent=2)
+                    os.makedirs("data", mode=0o700, exist_ok=True)
+                    try:
+                        os.chmod("data", 0o700)
+                    except OSError:
+                        pass
+                    local_path = _local_settings_path(self.uid)
+                    fd, tmp_path = tempfile.mkstemp(prefix=".user-settings.", dir="data", text=True)
+                    try:
+                        os.fchmod(fd, 0o600)
+                        with os.fdopen(fd, "w") as handle:
+                            json.dump(data, handle, indent=2)
+                            handle.flush()
+                            os.fsync(handle.fileno())
+                        os.replace(tmp_path, local_path)
+                        os.chmod(local_path, 0o600)
+                    except Exception:
+                        try:
+                            os.close(fd)
+                        except OSError:
+                            pass
+                        try:
+                            os.unlink(tmp_path)
+                        except OSError:
+                            pass
+                        raise
                 except Exception as ex_loc:
                     print(f"[engine-{self.uid}] Failed writing local settings backup: {ex_loc}")
 
@@ -2274,14 +2340,45 @@ class UserEngine:
                         self.alpaca_load_status = "decrypt_failed"
                         self.alpaca_load_error = "Alpaca credentials were found but could not be decrypted with the current server vault key."
                     else:
+                        if vault.needs_reencrypt(api_cipher) or vault.needs_reencrypt(sec_cipher):
+                            try:
+                                rewrapped = {
+                                    "api_key": vault.reencrypt(api_cipher),
+                                    "secret_key": vault.reencrypt(sec_cipher),
+                                    "updated_at": firestore.SERVER_TIMESTAMP,
+                                }
+                                await asyncio.to_thread(
+                                    self.db.collection("users").document(self.uid).collection("settings").document("alpaca").set,
+                                    rewrapped,
+                                    merge=True,
+                                )
+                                print(f"[engine-{self.uid}] Re-encrypted stored Alpaca credentials with the active vault version.")
+                            except Exception as rewrap_exc:
+                                print(f"[engine-{self.uid}] Vault re-encryption deferred: {type(rewrap_exc).__name__}")
                         self.config.ALPACA_API_KEY = decrypted_key
                         self.config.ALPACA_SECRET_KEY = decrypted_secret
                         self.config.ALPACA_PAPER = data.get("paper", True)
-                        connected = self.broker.connect(self.config.ALPACA_API_KEY, self.config.ALPACA_SECRET_KEY, self.config.ALPACA_PAPER)
-                        if connected:
+                        try:
+                            async with self.broker_connect_lock:
+                                connected = await asyncio.wait_for(
+                                    asyncio.to_thread(
+                                        self.broker.connect,
+                                        self.config.ALPACA_API_KEY,
+                                        self.config.ALPACA_SECRET_KEY,
+                                        self.config.ALPACA_PAPER,
+                                    ),
+                                    timeout=15.0,
+                                )
+                        except asyncio.TimeoutError:
+                            connected = False
+                            self.alpaca_load_status = "connect_timeout"
+                            self.alpaca_load_error = "Alpaca connection timed out; no broker write was attempted."
+                        self.live_trading_armed = False
+                        self.broker.live_trading_armed = False
+                        if connected and self.alpaca_load_status != "connect_timeout":
                             self.alpaca_load_status = "connected"
                             self.alpaca_load_error = ""
-                        else:
+                        elif self.alpaca_load_status != "connect_timeout":
                             self.alpaca_load_status = "connect_failed"
                             self.alpaca_load_error = "Alpaca rejected the saved credentials or the broker client is unavailable."
             except Exception as alpaca_exc:
@@ -2293,7 +2390,7 @@ class UserEngine:
             ui = {}
             import json, os
             local_ui = {}
-            local_path = f"data/user_settings_{self.uid}.json"
+            local_path = _local_settings_path(self.uid)
             if os.path.exists(local_path):
                 try:
                     with open(local_path, "r") as f:
@@ -2319,6 +2416,12 @@ class UserEngine:
                 self.config.TRADELIST = ui.get("tradelist", self.config.TRADELIST)
                 self.config.DEFAULT_TIMEFRAME = ui.get("strategy_timeframe", self.config.DEFAULT_TIMEFRAME)
                 self.config.TICKER_SETTINGS = ui.get("ticker_settings", {})
+                # Live bots always retain the server-side risk policy. Older
+                # persisted settings may contain a client-supplied opt-out;
+                # normalize that state before any loop can evaluate entries.
+                for _ticker_settings in self.config.TICKER_SETTINGS.values():
+                    if isinstance(_ticker_settings, dict):
+                        _ticker_settings["enable_risk_management"] = True
                 self.config.legal_acceptance = ui.get("legal_acceptance", {}) if isinstance(ui.get("legal_acceptance", {}), dict) else {}
                 workspace = ui.get("dashboard_indicator_workspace", {})
                 self.config.dashboard_indicator_workspace = workspace.copy() if isinstance(workspace, dict) else {}
@@ -2561,6 +2664,12 @@ class UserEngine:
             return 0.01
 
     def _allocation_amount(self, t_settings: dict, mode: str = 'regular') -> float:
+        def bounded_amount(value) -> float:
+            amount = _safe_float(value, 0.0)
+            if not math.isfinite(amount) or amount <= 0 or amount > 1_000_000.0:
+                return 0.0
+            return amount
+
         if mode == 'options':
             allocation_mode = str(t_settings.get('options_allocation_mode', t_settings.get('allocation_mode', 'fixed')) or 'fixed').lower()
             base_key = 'options_trade_amount'
@@ -2571,11 +2680,11 @@ class UserEngine:
             compound_key = 'compound_amount'
 
         if allocation_mode == 'compound':
-            amount = _safe_float(t_settings.get(compound_key), 0.0)
+            amount = bounded_amount(t_settings.get(compound_key))
             if amount <= 0:
-                amount = _safe_float(t_settings.get(base_key), 0.0)
-            return max(0.0, amount)
-        return max(0.0, _safe_float(t_settings.get(base_key), 0.0))
+                amount = bounded_amount(t_settings.get(base_key))
+            return amount
+        return bounded_amount(t_settings.get(base_key))
 
     def _apply_compound_pl(self, t_settings: dict, pl: float, mode: str = 'regular'):
         if mode == 'options':
@@ -2787,10 +2896,29 @@ class UserEngine:
             option_symbol=contract['symbol'],
             qty=qty,
             side='buy',
-            limit_price=est_premium
+            limit_price=est_premium,
+            client_order_id=self._order_intent_id(ticker, "buy", result, contract['symbol']),
         )
         if not order_result.get('success'):
             result['reason'] = f"Option buy failed: {order_result.get('error')}"
+            return False, result
+
+        if not self._order_result_is_filled(order_result):
+            pending_intent = {
+                'client_order_id': order_result.get('client_order_id') or self._order_intent_id(ticker, "buy", result, contract['symbol']),
+                'order_id': order_result.get('order_id'),
+                'contract': contract['symbol'],
+                'qty': qty,
+                'side': 'buy',
+                'submitted_at': self.get_now().isoformat(),
+            }
+            t_settings['options_pending_intent'] = pending_intent
+            result['order'] = order_result
+            result['order_id'] = order_result.get('order_id')
+            result['action'] = 'PENDING'
+            result['option_intent'] = 'PENDING'
+            result['reason'] = 'Option buy submitted; awaiting broker confirmation before strategy state changes.'
+            asyncio.create_task(self.save_settings())
             return False, result
 
         result['order'] = order_result
@@ -2810,6 +2938,7 @@ class UserEngine:
         result['reason'] = f"BOUGHT {qty} {option_type} contracts ({contract['symbol']}) with limit ${est_premium:.2f}{spread_note}{selection_note}: {result['reason']}"
         t_settings['options_underlying_entry_price'] = float(result.get('price_raw') or 0.0)
         t_settings['options_active_contract'] = contract['symbol']
+        t_settings['options_active_cycle_id'] = order_result.get('client_order_id') or order_result.get('order_id')
         try:
             fresh_positions = self.broker.get_positions()
             fresh_option_pos = self._find_position(
@@ -2828,8 +2957,8 @@ class UserEngine:
             print(f"[forecast] {ticker} {option_type} snapshot deferred until position fill is visible: {snapshot_err}")
         return True, result
 
-    def _close_option_with_limit(self, pos_info, qty=None):
-        """Use a marketable limit at the live bid instead of an unbounded market exit."""
+    def _close_option_with_limit(self, pos_info, qty=None, ticker=None, result=None, t_settings=None):
+        """Submit one reconciled option-exit intent at a controlled limit."""
         option_symbol = pos_info['symbol']
         close_qty = max(1, int(float(qty if qty is not None else pos_info.get('qty', 0))))
         quote = self._get_option_exit_price(option_symbol, pos_info.get('current_price'))
@@ -2837,11 +2966,49 @@ class UserEngine:
         limit_price = bid if bid > 0 else _safe_float(quote.get('price'), 0.0)
         if limit_price <= 0:
             return {'success': False, 'error': 'No executable option bid available for controlled limit exit.'}
+
+        parsed_symbol = str(option_symbol).replace('/', '').upper()
+        position_cycle = (t_settings or {}).get('options_active_cycle_id') if isinstance(t_settings, dict) else None
+        position_identity = position_cycle or "|".join([
+            parsed_symbol,
+            str(_safe_float(pos_info.get('avg_price'), 0.0)),
+            str(_safe_float(pos_info.get('qty'), 0.0)),
+        ])
+        exit_level = str((result or {}).get('continuous_grid_level') or (result or {}).get('level') or 'full')
+        raw_intent = f"{self.uid}|{getattr(self.broker, '_risk_account_key', '')}|{position_identity}|{close_qty}|{exit_level}"
+        owner_tag = getattr(self.broker, 'order_owner_tag', '')
+        client_order_id = f"bb-{owner_tag}-opt-exit-" + hashlib.sha256(raw_intent.encode('utf-8')).hexdigest()[:20]
+
+        reconcile = getattr(self.broker, 'find_order_by_client_id', None)
+        if not callable(reconcile) and not getattr(self.broker, 'simulation_mode', True):
+            return {
+                'success': False,
+                'indeterminate': True,
+                'error': 'Broker cannot reconcile option-exit intent; no retry was submitted.',
+                'client_order_id': client_order_id,
+            }
+        if callable(reconcile) and not getattr(self.broker, 'simulation_mode', True):
+            try:
+                prior = reconcile(client_order_id)
+            except Exception as exc:
+                return {
+                    'success': False,
+                    'indeterminate': True,
+                    'error': 'Broker intent lookup failed; no retry was submitted.',
+                    'client_order_id': client_order_id,
+                    'detail': type(exc).__name__,
+                }
+            if prior:
+                prior = dict(prior)
+                prior['reconciled'] = True
+                return prior
+
         return self.broker.place_option_order(
             option_symbol=option_symbol,
             qty=close_qty,
             side='sell',
             limit_price=limit_price,
+            client_order_id=client_order_id,
         )
 
     def _build_exit_protection_targets(self, ticker: str, result: dict, pos_info: dict, t_settings: dict):
@@ -2994,9 +3161,66 @@ class UserEngine:
         if t_settings.get('exit_protection_enabled', True) is False:
             return None
 
+        # Do not cancel and recreate an unchanged broker OCO on every HOLD
+        # heartbeat.  Keeping the existing order preserves protection and
+        # avoids unnecessary broker writes/rate-limit pressure.
+        existing_levels = {}
+        get_levels = getattr(self.broker, 'get_exit_order_levels', None)
+        if callable(get_levels):
+            try:
+                existing_levels = get_levels(ticker_norm) or {}
+            except Exception as exc:
+                print(f"[exit-protect] {ticker_norm} existing OCO lookup failed: {type(exc).__name__}")
+        try:
+            level_match = (
+                bool(existing_levels.get('orders'))
+                and abs(float(existing_levels.get('take_profit')) - float(targets['take_profit'])) <= max(0.01, targets['take_profit'] * 0.0005)
+                and abs(float(existing_levels.get('stop_loss')) - float(targets['stop_loss'])) <= max(0.01, targets['stop_loss'] * 0.0005)
+                and abs(float(existing_levels.get('qty') or 0.0) - float(targets['qty'])) <= max(0.000001, float(targets['qty']) * 0.0005)
+            )
+        except (TypeError, ValueError):
+            level_match = False
+        if level_match:
+            return {
+                'status': 'Active | Broker OCO | TP ${:.2f} | SL ${:.2f}'.format(
+                    targets['take_profit'], targets['stop_loss']
+                ),
+                'active': True,
+                'protection_type': 'broker_oco',
+                **targets,
+                'order_id': (existing_levels.get('orders') or [None])[0],
+                'unchanged': True,
+            }
+
         cancel_res = self.broker.cancel_exit_orders(ticker_norm)
         if cancel_res.get('cancelled', 0) > 0:
             print(f"[exit-protect] {ticker_norm} cancelled stale broker exit order; watcher protection is active")
+
+        # Prefer broker-side OCO protection for live Alpaca equity positions.
+        # The in-process watcher remains the fallback for crypto, options, and
+        # brokers that do not expose a compatible OCO interface.
+        if (
+            not self.broker.simulation_mode
+            and not _is_crypto_symbol(ticker_norm)
+            and callable(getattr(self.broker, "place_equity_oco_exit", None))
+        ):
+            oco_result = self.broker.place_equity_oco_exit(
+                ticker_norm,
+                _safe_float(pos_info.get('qty'), 0.0),
+                targets['take_profit'],
+                targets['stop_loss'],
+            )
+            if oco_result.get('success'):
+                return {
+                    'status': 'Active | Broker OCO | TP ${:.2f} | SL ${:.2f}'.format(
+                        targets['take_profit'], targets['stop_loss']
+                    ),
+                    'active': True,
+                    'protection_type': 'broker_oco',
+                    **targets,
+                    'order_id': oco_result.get('order_id'),
+                }
+            print(f"[exit-protect] {ticker_norm} broker OCO unavailable; retaining watcher fallback")
 
         precision = 6 if _is_crypto_symbol(ticker_norm) or min(targets['take_profit'], targets['stop_loss']) < 1 else 2
         status = f"Active | Watcher | TP ${targets['take_profit']:.{precision}f} | SL ${targets['stop_loss']:.{precision}f}"
@@ -3338,12 +3562,15 @@ class UserEngine:
                                 if pos_info:
                                     print(f"[engine-{self.uid}] Liquidating active position in {ticker} due to loss limit breach...")
                                     if is_opt_bot:
-                                        close_res = self._close_option_with_limit(pos_info)
+                                        close_res = self._close_option_with_limit(
+                                            pos_info, ticker=ticker, result={"level": "loss-limit"}, t_settings=t_settings
+                                        )
                                     else:
                                         close_res = self.broker.close_position(
                                             ticker,
                                             market_session=t_settings.get('market_session', 'Regular'),
-                                            current_price=pos_info.get('current_price') if pos_info else None
+                                            current_price=pos_info.get('current_price') if pos_info else None,
+                                            client_order_id=self._order_intent_id(ticker, "sell", {"level": "loss-limit"})
                                         )
                                     if close_res.get('success'):
                                         realized_pl += unrealized_pl
@@ -3547,7 +3774,10 @@ class UserEngine:
                                 opt_stop_loss, opt_take_profit, opt_trailing_pct = self._option_pct_exit_settings(t_settings)
                                 # sell_mode is the visible UI setting. Prefer it over legacy/stale options_exit_strategy.
                                 opt_exit_strategy = t_settings.get('sell_mode') or t_settings.get('options_exit_strategy') or getattr(self.config, 'OPTIONS_EXIT_STRATEGY', 'hybrid')
-                                opt_expiry_days = t_settings.get('options_expiry_days', getattr(self.config, 'OPTIONS_EXPIRY_DAYS', 7))
+                                try:
+                                    opt_expiry_days = max(0, min(365, int(t_settings.get('options_expiry_days', getattr(self.config, 'OPTIONS_EXPIRY_DAYS', 7)))))
+                                except (TypeError, ValueError):
+                                    opt_expiry_days = 7
                                 opt_strike_type = t_settings.get('options_strike_type', getattr(self.config, 'OPTIONS_STRIKE_TYPE', 'ATM'))
                                 opt_trade_amount = self._allocation_amount(t_settings, 'options') or float(getattr(self.config, 'OPTIONS_TRADE_AMOUNT', 100.0))
                                 
@@ -4529,6 +4759,36 @@ class UserEngine:
                                     result['reason'] = f"Global risk halt active: {risk_mgr.halt_reason}"
 
                                 options_execution_handled = False
+                                pending_option_intent = t_settings.get('options_pending_intent') if is_options_enabled else None
+                                if is_options_enabled and isinstance(pending_option_intent, dict):
+                                    pending_client_id = str(pending_option_intent.get('client_order_id') or '').strip()
+                                    if has_this_pos:
+                                        # The broker position is authoritative. Promote the
+                                        # pending entry only after it is visible there.
+                                        t_settings.pop('options_pending_intent', None)
+                                        t_settings['options_active_cycle_id'] = pending_client_id or t_settings.get('options_active_cycle_id')
+                                    else:
+                                        reconcile = getattr(self.broker, 'find_order_by_client_id', None)
+                                        pending_order = None
+                                        pending_lookup_error = None
+                                        if callable(reconcile) and pending_client_id:
+                                            try:
+                                                pending_order = reconcile(pending_client_id)
+                                            except Exception as exc:
+                                                pending_lookup_error = type(exc).__name__
+                                        status = str((pending_order or {}).get('status') or '').lower()
+                                        terminal_failure = status in {'canceled', 'cancelled', 'rejected', 'expired', 'order_status_canceled'}
+                                        if terminal_failure:
+                                            t_settings.pop('options_pending_intent', None)
+                                        else:
+                                            options_execution_handled = True
+                                            result['action'] = 'PENDING'
+                                            result['option_intent'] = 'PENDING'
+                                            result['reason'] = (
+                                                'Option entry intent remains pending; broker reconciliation is required before retrying.'
+                                                if not pending_lookup_error else
+                                                'Option entry intent lookup failed; no duplicate order was submitted.'
+                                            )
                                 if is_options_enabled and not is_market_closed_skip:
                                     option_side = normalize_options_type(t_settings.get("options_type", "calls_only"), default="calls_only")
                                     option_intent = result.get("option_intent", "HOLD")
@@ -4557,7 +4817,7 @@ class UserEngine:
                                         result['reason'] = "HOLD: Both direction is disabled. Choose CALL or PUT."
                                         options_execution_handled = True
 
-                                    if option_intent in {"OPEN_CALL", "OPEN_PUT"}:
+                                    if not options_execution_handled and option_intent in {"OPEN_CALL", "OPEN_PUT"}:
                                         options_execution_handled = True
                                         expected_contract = "CALL" if option_intent == "OPEN_CALL" else "PUT"
                                         configured_contract = options_type_to_contract_type(option_side)
@@ -4616,12 +4876,18 @@ class UserEngine:
                                             sell_qty = max(1, int(total_qty * grid_sell_pct))
 
                                             if grid_sell_pct >= 0.99 or (total_qty - sell_qty) == 0:
-                                                order_result = self._close_option_with_limit(pos_info)
+                                                order_result = self._close_option_with_limit(
+                                                    pos_info, ticker=ticker, result=result, t_settings=t_settings
+                                                )
                                             else:
-                                                order_result = self._close_option_with_limit(pos_info, sell_qty)
+                                                order_result = self._close_option_with_limit(
+                                                    pos_info, sell_qty, ticker=ticker, result=result, t_settings=t_settings
+                                                )
                                         else:
-                                            order_result = self._close_option_with_limit(pos_info)
-                                        if order_result.get('success'):
+                                            order_result = self._close_option_with_limit(
+                                                pos_info, ticker=ticker, result=result, t_settings=t_settings
+                                            )
+                                        if self._order_result_is_filled(order_result):
                                             result['order'] = order_result
                                             result['order_id'] = order_result.get('order_id')
                                             trade_executed = True
@@ -4644,6 +4910,7 @@ class UserEngine:
                                             result['reason'] = f"✅ CLOSED option position ({pos_info['symbol']}) at checked premium ${exit_check_price:.2f} (est. P/L: ${pl:+.2f}): {result['reason']}"
                                             t_settings.pop('options_underlying_entry_price', None)
                                             t_settings.pop('options_active_contract', None)
+                                            t_settings.pop('options_active_cycle_id', None)
                                             from main import _clear_forecast_exit_snapshots
                                             _clear_forecast_exit_snapshots(t_settings)
                                             self.last_trailing_stops.pop(pos_info['symbol'], None)
@@ -4765,9 +5032,10 @@ class UserEngine:
                                                             option_symbol=contract['symbol'],
                                                             qty=qty,
                                                             side='buy',
-                                                            limit_price=est_premium
+                                                            limit_price=est_premium,
+                                                            client_order_id=self._order_intent_id(ticker, "buy", result, contract['symbol']),
                                                         )
-                                                        if order_result.get('success'):
+                                                        if self._order_result_is_filled(order_result):
                                                             result['order'] = order_result
                                                             result['order_id'] = order_result.get('order_id')
                                                             trade_executed = True
@@ -4788,6 +5056,7 @@ class UserEngine:
                                                             result['reason'] = f"✅ BOUGHT {qty} CALL contracts ({contract['symbol']}) with limit ${est_premium:.2f}{spread_note}{selection_note}: {result['reason']}"
                                                             t_settings['options_underlying_entry_price'] = float(result.get('price_raw') or 0.0)
                                                             t_settings['options_active_contract'] = contract['symbol']
+                                                            t_settings['options_active_cycle_id'] = order_result.get('client_order_id') or order_result.get('order_id')
                                                             try:
                                                                 fresh_positions = self.broker.get_positions()
                                                                 fresh_option_pos = self._find_position(
@@ -4834,9 +5103,10 @@ class UserEngine:
                                                 symbol=ticker, notional=sizing['notional'], side='buy',
                                                 stop_loss=sizing['stop_loss'], take_profit=sizing['take_profit'],
                                                 market_session=t_settings.get('market_session', 'Regular'),
-                                                current_price=result.get('price_raw')
+                                                current_price=result.get('price_raw'),
+                                                client_order_id=self._order_intent_id(ticker, "buy", result),
                                             )
-                                            if order_result.get('success'):
+                                            if self._order_result_is_filled(order_result):
                                                 result['order'] = order_result
                                                 result['order_id'] = order_result.get('order_id')
                                                 trade_executed = True
@@ -4918,8 +5188,10 @@ class UserEngine:
                                                 result['reason'] = 'Options exit order pending; duplicate close suppressed.'
                                                 continue
                                             # Close active option position
-                                            order_result = self._close_option_with_limit(pos_info)
-                                            if order_result.get('success'):
+                                            order_result = self._close_option_with_limit(
+                                                pos_info, ticker=ticker, result=result, t_settings=t_settings
+                                            )
+                                            if self._order_result_is_filled(order_result):
                                                 result['order'] = order_result
                                                 result['order_id'] = order_result.get('order_id')
                                                 trade_executed = True
@@ -4941,6 +5213,7 @@ class UserEngine:
                                                 result['reason'] = f"✅ CLOSED option position ({pos_info['symbol']}) at checked premium ${exit_check_price:.2f} (est. P/L: ${pl:+.2f}): {result['reason']}"
                                                 t_settings.pop('options_underlying_entry_price', None)
                                                 t_settings.pop('options_active_contract', None)
+                                                t_settings.pop('options_active_cycle_id', None)
                                                 from main import _clear_forecast_exit_snapshots
                                                 _clear_forecast_exit_snapshots(t_settings)
                                                 self.last_trailing_stops.pop(pos_info['symbol'], None)
@@ -5055,9 +5328,10 @@ class UserEngine:
                                                                 option_symbol=contract['symbol'],
                                                                 qty=qty,
                                                                 side='buy',
-                                                                limit_price=est_premium
+                                                                limit_price=est_premium,
+                                                                client_order_id=self._order_intent_id(ticker, "buy", result, contract['symbol']),
                                                             )
-                                                            if order_result.get('success'):
+                                                            if self._order_result_is_filled(order_result):
                                                                 result['order'] = order_result
                                                                 result['order_id'] = order_result.get('order_id')
                                                                 trade_executed = True
@@ -5078,6 +5352,7 @@ class UserEngine:
                                                                 result['reason'] = f"✅ BOUGHT {qty} PUT contracts ({contract['symbol']}) with limit ${est_premium:.2f}{spread_note}{selection_note}: {result['reason']}"
                                                                 t_settings['options_underlying_entry_price'] = float(result.get('price_raw') or 0.0)
                                                                 t_settings['options_active_contract'] = contract['symbol']
+                                                                t_settings['options_active_cycle_id'] = order_result.get('client_order_id') or order_result.get('order_id')
                                                                 try:
                                                                     fresh_positions = self.broker.get_positions()
                                                                     fresh_option_pos = self._find_position(
@@ -5131,16 +5406,18 @@ class UserEngine:
                                                     order_result = self.broker.close_position(
                                                         ticker,
                                                         market_session=t_settings.get('market_session', 'Regular'),
-                                                        current_price=result.get('price_raw')
+                                                        current_price=result.get('price_raw'),
+                                                        client_order_id=self._order_intent_id(ticker, "sell", result)
                                                     )
                                                 else:
                                                     sell_notional = sell_qty * float(result.get('price_raw', 0.0))
                                                     order_result = self.broker.place_order(
                                                         symbol=ticker, notional=sell_notional, side='sell',
                                                         market_session=t_settings.get('market_session', 'Regular'),
-                                                        current_price=result.get('price_raw')
+                                                        current_price=result.get('price_raw'),
+                                                        client_order_id=self._order_intent_id(ticker, "sell", result)
                                                     )
-                                                if order_result.get('success'):
+                                                if self._order_result_is_filled(order_result):
                                                     result['order'] = order_result
                                                     result['order_id'] = order_result.get('order_id')
                                                     trade_executed = True
@@ -5301,20 +5578,48 @@ class UserEngine:
 
 
 class UserManager:
+    MAX_ENGINES = 1024
+    ENGINE_IDLE_SECONDS = 3600.0
+
     def __init__(self, db):
         self.db = db
         self.engines = {}
-        
+
+    def _evict_idle_engines(self):
+        now = time.monotonic()
+        stale = sorted(
+            (getattr(engine, "last_access_at", 0.0), uid, engine)
+            for uid, engine in self.engines.items()
+            if not getattr(engine, "bot_running", False)
+            and not (getattr(engine, "task", None) and not engine.task.done())
+            and now - getattr(engine, "last_access_at", 0.0) > self.ENGINE_IDLE_SECONDS
+        )
+        for _, uid, engine in stale:
+            self.engines.pop(uid, None)
+            clear_credentials = getattr(getattr(engine, "broker", None), "clear_credentials", None)
+            if callable(clear_credentials):
+                clear_credentials()
+
     def get_engine(self, uid: str) -> UserEngine:
+        uid = str(uid or "").strip()
+        if not uid:
+            raise ValueError("Authenticated user id is required")
+        self._evict_idle_engines()
         if uid not in self.engines:
+            if len(self.engines) >= self.MAX_ENGINES:
+                raise RuntimeError("User engine capacity is temporarily full; retry shortly.")
             print(f"[UserManager] Spawning engine for {uid}")
             engine = UserEngine(uid, self.db)
             self.engines[uid] = engine
-        return self.engines[uid]
+        engine = self.engines[uid]
+        engine.last_access_at = time.monotonic()
+        return engine
 
     async def start_user(self, uid: str):
         engine = self.get_engine(uid)
-        if not engine.bot_running:
+        async with engine.task_start_lock:
+            if engine.bot_running or (engine.task and not engine.task.done()):
+                return
             await engine.load_from_cloud()
             engine.task = asyncio.create_task(engine.trading_loop())
             
@@ -5325,7 +5630,10 @@ class UserManager:
             users_ref = self.db.collection("users").stream(timeout=3.0)
             for doc in users_ref:
                 uid = doc.id
-                await self.start_user(uid)
+                engine = self.get_engine(uid)
+                async with engine.load_lock:
+                    if not engine.loaded_from_cloud:
+                        await engine.load_from_cloud()
         except Exception as e:
             print(f"[UserManager] Error streaming users from Firestore: {e}")
         print(f"[UserManager] Started {len(self.engines)} user engines.")

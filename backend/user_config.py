@@ -30,7 +30,24 @@ class UserConfig:
         
         # Load all ENABLE_ toggles and indicator parameters from global config as defaults
         self.toggles = {k: getattr(global_config, k) for k in dir(global_config) if k.startswith("ENABLE_")}
-        self.parameters = {k: getattr(global_config, k) for k in dir(global_config) if k.isupper() and not k.startswith("_") and not isinstance(getattr(global_config, k), (list, dict)) and k not in ["ALPACA_API_KEY", "ALPACA_SECRET_KEY", "GROQ_API_KEY", "FERNET_KEY"]}
+        # Only copy non-sensitive tuning parameters into a per-user config.
+        # Secrets and infrastructure endpoints must remain server-owned; putting
+        # them here makes accidental persistence/serialization much more likely.
+        _server_only = {
+            "ALPACA_API_KEY", "ALPACA_SECRET_KEY", "GROQ_API_KEY", "FERNET_KEY",
+            "WEBULL_APP_KEY", "WEBULL_APP_SECRET", "WEBULL_ACCOUNT_ID",
+            "VAULT_SECRET_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "FIREBASE_SERVICE_ACCOUNT",
+            "OLLAMA_HOST", "ENV",
+        }
+        self.parameters = {
+            k: getattr(global_config, k)
+            for k in dir(global_config)
+            if k.isupper()
+            and not k.startswith("_")
+            and not isinstance(getattr(global_config, k), (list, dict))
+            and k not in _server_only
+            and not any(marker in k for marker in ("KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL"))
+        }
         
         # Isolated context-specific settings
         self.contexts = {
@@ -167,6 +184,12 @@ class UserConfig:
             return default
 
     def set(self, key, value):
+        if str(key or "").upper() in {
+            "OLLAMA_HOST", "GROQ_API_KEY", "ALPACA_API_KEY", "ALPACA_SECRET_KEY",
+            "WEBULL_APP_KEY", "WEBULL_APP_SECRET", "WEBULL_ACCOUNT_ID", "VAULT_SECRET_KEY",
+            "FIREBASE_SERVICE_ACCOUNT", "GOOGLE_APPLICATION_CREDENTIALS", "ENV",
+        }:
+            raise ValueError(f"{key} is server-managed and cannot be changed by a user setting")
         if isinstance(value, str) and value.strip() != "":
             val_str = value.strip()
             try:

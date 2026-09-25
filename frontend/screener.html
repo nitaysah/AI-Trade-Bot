@@ -226,8 +226,8 @@
         <div id="screenerEmailModal" class="hidden fixed inset-0 z-[310] bg-slate-950/40 backdrop-blur-sm items-center justify-center p-4 flex" role="dialog" aria-modal="true" aria-labelledby="screenerEmailTitle">
             <div class="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-3xl bg-white shadow-2xl border border-purple-100 p-6">
                 <div class="flex items-center justify-between mb-4"><h2 id="screenerEmailTitle" class="text-lg font-black text-indigo-950">Alert Delivery</h2><button type="button" onclick="closeScreenerEmailSettings()" class="text-slate-400 text-xl">×</button></div>
-                <div class="mb-3 flex items-center justify-between rounded-xl border border-emerald-100 bg-emerald-50/60 px-3 py-2 text-sm font-bold text-emerald-900"><span>Browser / in-app alerts</span><span id="screenerBrowserDeliveryModalStatus" class="text-emerald-600">On by default</span></div>
-                <p id="screenerEmailAddress" class="text-xs text-slate-500 mb-4">Browser alerts are recorded in this Screener by default. Enable Email or Phone/SMS to receive an additional delivery channel for the same alert.</p>
+                <label class="mb-3 flex items-center justify-between gap-3 rounded-xl border border-emerald-100 bg-emerald-50/60 px-3 py-2 text-sm font-bold text-emerald-900"><span>Browser / in-app alerts <span id="screenerBrowserDeliveryModalStatus" class="font-semibold text-emerald-600">On by default</span></span><input id="screenerBrowserEnabled" type="checkbox" class="h-5 w-5 accent-emerald-600" checked></label>
+                <p id="screenerEmailAddress" class="text-xs text-slate-500 mb-4">Browser alerts are recorded in this Screener by default. Turn this off to hide new alerts here; Email or Phone/SMS can remain enabled as separate delivery channels.</p>
                 <label class="flex items-center justify-between gap-3 py-2 text-sm font-bold text-indigo-900"><span>Enable email alerts</span><input id="screenerEmailEnabled" type="checkbox" class="h-5 w-5 accent-indigo-600"></label>
                 <label class="flex items-center justify-between gap-3 py-2 text-sm font-bold text-indigo-900"><span>Enable phone/SMS alerts</span><input id="screenerSmsEnabled" type="checkbox" class="h-5 w-5 accent-fuchsia-600"></label>
                 <label class="block py-2 text-sm font-bold text-indigo-900">Phone number <span class="font-normal text-slate-400">(E.164)</span><input id="screenerSmsPhoneNumber" type="tel" inputmode="tel" autocomplete="tel" placeholder="+12125551234" class="mt-1 w-full rounded-xl border border-indigo-100 px-3 py-2 font-mono text-sm"></label>
@@ -407,11 +407,12 @@
                                 Crypto
                             </button>
                         </div>
-                        <div id="signalFilterContainer" class="flex bg-emerald-50/60 p-1 rounded-xl border border-emerald-100 w-full sm:w-auto">
+                        <div id="signalFilterContainer" class="flex flex-wrap bg-emerald-50/60 p-1 rounded-xl border border-emerald-100 w-full sm:w-auto">
                             <button type="button" data-screener-filter="all" onclick="setScreenerFilter('all')" class="screener-filter-btn flex-1 sm:flex-none px-2.5 py-1.5 text-[0.6rem] font-black uppercase rounded-lg bg-white text-indigo-600 shadow-sm">All</button>
                             <button type="button" data-screener-filter="bullish" onclick="setScreenerFilter('bullish')" class="screener-filter-btn flex-1 sm:flex-none px-2.5 py-1.5 text-[0.6rem] font-black uppercase rounded-lg text-indigo-400">Bullish</button>
                             <button type="button" data-screener-filter="bearish" onclick="setScreenerFilter('bearish')" class="screener-filter-btn flex-1 sm:flex-none px-2.5 py-1.5 text-[0.6rem] font-black uppercase rounded-lg text-indigo-400">Bearish</button>
                             <button type="button" data-screener-filter="neutral" onclick="setScreenerFilter('neutral')" class="screener-filter-btn flex-1 sm:flex-none px-2.5 py-1.5 text-[0.6rem] font-black uppercase rounded-lg text-indigo-400">Neutral</button>
+                            <button type="button" data-screener-filter="attention" onclick="setScreenerFilter('attention')" class="screener-filter-btn flex-1 sm:flex-none px-2.5 py-1.5 text-[0.6rem] font-black uppercase rounded-lg text-indigo-400">Needs attention</button>
                         </div>
                     </div>
                     <div id="tradelistContainer" class="space-y-2">
@@ -420,7 +421,7 @@
                 </div>
 
                 <!-- 3. AI ANALYSIS -->
-                <div id="aiIndicatorSection" class="mb-4">
+                <div id="aiIndicatorSection" class="hidden mb-4" aria-hidden="true">
                     <div id="aiIndicatorCard"
                         class="ai-indicator-card p-4 rounded-xl border border-amber-200/60 bg-gradient-to-br from-amber-50/50 to-orange-50/30 relative overflow-hidden transition-all duration-300">
                         <div class="flex flex-wrap items-center justify-between gap-y-2 mb-3 relative z-10">
@@ -726,12 +727,12 @@
                                         onchange="if(window.fetchLiveAtrForPreview && window.currentStrategySymbol) window.fetchLiveAtrForPreview(window.currentStrategySymbol, this.value)"
                                         class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none cursor-pointer appearance-none transition-all">
                                         <option value="1Min">1 Minute (Scalp)</option>
-                                        <option value="5Min" selected>5 Minutes (Intraday)</option>
+                                        <option value="5Min">5 Minutes (Intraday)</option>
                                         <option value="15Min">15 Minutes (Active)</option>
                                         <option value="30Min">30 Minutes (Active)</option>
                                         <option value="1Hour">1 Hour (Swing)</option>
                                         <option value="4Hour">4 Hour (Macro)</option>
-                                        <option value="1Day">1 Day (Long Term)</option>
+                                        <option value="1Day" selected>1 Day (Swing)</option>
                                     </select>
                                     <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
                                         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-indigo-500"
@@ -772,10 +773,10 @@
                                     class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none cursor-pointer appearance-none transition-all">
                                     <option value="10">10 seconds</option>
                                     <option value="30">30 seconds</option>
-                                    <option value="60" selected>60 seconds</option>
+                                    <option value="60">60 seconds</option>
                                     <option value="300">5 minutes</option>
                                     <option value="600">10 minutes</option>
-                                    <option value="900">15 minutes</option>
+                                    <option value="900" selected>15 minutes</option>
                                     <option value="1800">30 minutes</option>
                                     <option value="3600">1 hour</option>
                                     <option value="14400">4 hours</option>
@@ -786,8 +787,36 @@
                                     </svg>
                                 </div>
                             </div>
-                            <p class="text-[0.5rem] text-indigo-500 mt-1 pl-1">seconds · default 60s for stocks and crypto</p>
+                            <p class="text-[0.5rem] text-indigo-500 mt-1 pl-1">15-minute refresh is suitable for daily swing screening</p>
                         </div>
+                        </div>
+                    </div>
+
+                    <!-- Independent Screener policy: technical, event, or both. -->
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3 rounded-2xl border border-emerald-200/70 bg-emerald-50/40 shadow-sm">
+                        <div class="sm:col-span-2 space-y-1.5">
+                            <label class="block text-[0.65rem] font-black text-indigo-900 uppercase tracking-widest">Screener Qualification Mode</label>
+                            <select id="strategyScreeningMode_regular"
+                                onchange="window.syncScreenerNewsWatchForMode?.(this.value)"
+                                class="w-full bg-white/70 backdrop-blur-md border border-white/60 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/90 focus:border-emerald-400 outline-none cursor-pointer">
+                                <option value="combined" selected>Combined · Require Both Technical + Event</option>
+                                <option value="technical">Technical Only</option>
+                                <option value="event">Event-Driven Only</option>
+                                <option value="discovery">Discovery · Either Qualifies</option>
+                            </select>
+                            <p class="text-[0.55rem] text-indigo-600 font-semibold">Combined is the default. Discovery surfaces either leg, but blocks an explicit technical/event conflict.</p>
+                        </div>
+                        <div class="space-y-1.5">
+                            <label class="block text-[0.65rem] font-black text-indigo-900 uppercase tracking-widest">Catalyst Age</label>
+                            <select id="strategyEventMaxAgeDays_regular"
+                                class="w-full bg-white/70 backdrop-blur-md border border-white/60 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/90 focus:border-emerald-400 outline-none cursor-pointer">
+                                <option value="1">1 day</option>
+                                <option value="3">3 days</option>
+                                <option value="5">5 days</option>
+                                <option value="10" selected>10 days</option>
+                                <option value="30">30 days</option>
+                            </select>
+                            <p class="text-[0.55rem] text-indigo-600 font-semibold">Older headlines cannot qualify a new event setup.</p>
                         </div>
                     </div>
 
@@ -3625,15 +3654,15 @@
 
             <!-- Per-profile ticker news watcher -->
             <div class="mt-4 mb-4">
-                <label
-                    class="flex items-center justify-between gap-3 p-4 bg-white/25 backdrop-blur-md rounded-2xl border border-white/50 shadow-sm cursor-pointer hover:bg-white/35 transition-colors">
+                <div
+                    class="flex items-center justify-between gap-3 p-4 bg-white/25 backdrop-blur-md rounded-2xl border border-white/50 shadow-sm">
                     <div class="flex flex-col pr-3">
                         <span class="text-[0.7rem] font-black text-indigo-950 uppercase tracking-widest">Ticker News Watch</span>
-                        <span class="text-[0.6rem] text-indigo-600 font-bold mt-0.5">Check Yahoo Finance every 60s, use Google News as fallback, and summarize only when headlines change</span>
+                        <span class="text-[0.6rem] text-indigo-600 font-bold mt-0.5">Controlled automatically by the qualification mode; headlines are checked every 60s and summarized only when they change.</span>
                     </div>
-                    <input type="checkbox" id="strategyNewsWatchEnabled" checked
-                        class="w-5 h-5 accent-indigo-600 rounded cursor-pointer shrink-0">
-                </label>
+                    <span id="strategyNewsWatchStatus"
+                        class="px-2 py-1 rounded-lg border text-[0.58rem] font-black uppercase tracking-widest shrink-0 border-emerald-200 bg-emerald-50 text-emerald-700">Enabled</span>
+                </div>
             </div>
 
             <!-- Per-profile structured earnings watcher -->
@@ -4185,11 +4214,12 @@
         </div>
     </div>
 
-    <script src="screener-ai-indicator-card.js?v=1"></script>
+    <script src="screener-ai-indicator-card.js?v=2"></script>
     <script src="indicator-catalog.js?v=17"></script>
     <script src="indicator-subcharts.js?v=15"></script>
     <script src="volume-profile-overlay.js?v=4"></script>
-    <script src="screener.js?v=54"></script>
+    <script src="screener-snapshot-state.js?v=1"></script>
+    <script src="screener.js?v=56"></script>
     <script src="screener-indicator-workspace.js?v=1"></script>
 
     <!-- Info Modal -->
@@ -4240,7 +4270,7 @@
             'BotBulls1': `<b>BotBulls 1 (Premium Confirmed WaveTrend + MFI Reclaim)</b><br><br><b class="text-slate-800">What it is:</b><br>BotBulls 1 is a reversal indicator. It looks for price to become stretched too far down or too far up, then waits for momentum and money flow to start turning back before it gives a signal. The goal is to avoid buying just because price is oversold. It waits for confirmation first.<br><br><b class="text-slate-800">Simple meaning:</b><br><b class="text-emerald-500">BUY</b> means price was recently washed out, WaveTrend started turning up, MFI started recovering, and the candle showed bullish follow-through.<br><b class="text-rose-500">SELL</b> means price was recently overheated, WaveTrend started turning down, MFI started weakening, and the candle showed bearish follow-through.<br><br><b class="text-slate-800">How the signal is built:</b><br>1. <b>WaveTrend</b> finds the stretched zone. Think of this like RSI, but smoother and more cycle-based.<br>2. <b>WT1 crossing WT2</b> shows momentum is trying to turn.<br>3. <b>MFI</b> checks whether money flow is confirming the turn.<br>4. <b>Candle confirmation</b> checks whether the current candle agrees with the signal direction.<br><br><b class="text-slate-800">Default Balanced Preset:</b><br>WT Channel 10, WT Average 21, WT Oversold -55, WT Overbought 55, MFI Buy Reclaim 35, MFI Sell Reject 65, Extreme Lookback 3 candles, Require MFI Confirmation 1, Require Candle Confirmation 1.<br><br><b class="text-slate-800">Settings Guide:</b><br>• <b>WaveTrend Channel Period (Default 10):</b> Controls how fast BB1 reacts to price swings. Lower values create faster/more signals but more noise. Higher values create slower/cleaner signals. Suggested range: 8-14.<br>• <b>WaveTrend Average Period (Default 21):</b> Smooths the WaveTrend line. Lower values react faster. Higher values reduce false flips. Suggested range: 14-28.<br>• <b>WT Oversold Level (Default -55):</b> BUY signals only qualify if WaveTrend recently reached this low area. More negative, like -60, means fewer but cleaner BUYs. Less negative, like -50, means earlier but noisier BUYs.<br>• <b>WT Overbought Level (Default 55):</b> SELL signals only qualify if WaveTrend recently reached this high area. Higher, like 60, means fewer but cleaner SELLs. Lower, like 50, means earlier but noisier SELLs.<br>• <b>MFI Buy Reclaim Level (Default 35):</b> BUY requires MFI to rise back above this level and be higher than the prior candle. Lower values trigger earlier. Higher values wait for stronger money-flow recovery.<br>• <b>MFI Sell Reject Level (Default 65):</b> SELL requires MFI to fall back below this level and be lower than the prior candle. Higher values trigger earlier. Lower values wait for stronger bearish money-flow weakness.<br>• <b>WT Extreme Lookback Candles (Default 3):</b> How recently the oversold/overbought zone must have happened. 1 is strict and immediate. 3 is balanced. 5 allows later confirmation after the extreme.<br>• <b>Require MFI Confirmation (Default 1):</b> 1 means ON and BB1 waits for money flow confirmation. 0 means OFF and signals become more aggressive. For screeners, keep this ON.<br>• <b>Require Candle Confirmation (Default 1):</b> 1 means ON and BB1 requires the candle to close in the signal direction. 0 means OFF and signals trigger faster. For screeners, keep this ON.<br><br><b class="text-slate-800">Recommended presets:</b><br>• <b>Conservative:</b> Channel 12, Average 28, Oversold -60, Overbought 60, MFI 40/60, Lookback 3-5, confirmations ON. Best for fewer false signals.<br>• <b>Balanced:</b> Channel 10, Average 21, Oversold -55, Overbought 55, MFI 35/65, Lookback 3, confirmations ON. Best default for screeners.<br>• <b>Aggressive:</b> Channel 8, Average 14, Oversold -50, Overbought 50, MFI 30/70, Lookback 2-3, MFI ON, candle confirmation optional. Best for scalping but more false signals.<br><br><b class="text-slate-800">Important:</b><br>BB1 is a reversal signal, not a full strategy by itself. For signal alerts, use it with trend or structure confirmation such as AVWAP, Supertrend, Pivot Points, Swing Points, or Volume Profile.`,
             'BotBulls2': `<b>BotBulls 2 (UT Screener — Universal Trailing Stop + Trend Tracer)</b><br><br><b class="text-amber-700">UT</b> stands for <b>Universal Trailing Stop</b> — a dynamic ATR-based trailing stop band that adapts to market volatility in real time, generating high-probability buy/sell signals when price crosses it.<br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 2 is a comprehensive multi-confluence trend and dynamic alert suite. It tracks price volatility while filtering out choppy false breakouts through institutional momentum confirmation.<br><br><b class="text-slate-800">How it works:</b><br>It combines an adaptive Universal Trailing (UT) stop band, an institutional double-smoothed Trend Tracer EMA, and extreme statistical Reversal Zones.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>ATR Multiplier (Sensitivity):</b> Controls how tightly the trailing stop hugs price action. Lower values (e.g., 1.5–2.0) react faster for scalping; higher values (e.g., 2.5–3.0) give signal alerts breathing room to ride extended trend swings without early shakeouts.<br>• <b>Trend Tracer Period:</b> Lookback window (default 50) for double-smoothed exponential trend alignment.<br>• <b>Reversal Zone Period:</b> Lookback window (default 50) for statistical deviation bands identifying overstretched extremes.`,
             'BotBulls3': `<b>BotBulls 3 (HA + UT — Heikin-Ashi Filtered Trail)</b><br><br><b class="text-amber-700">HA</b> stands for <b>Heikin-Ashi</b> (Japanese for “Average Bar”) — a technique that mathematically smooths candlestick data to eliminate market noise, making true trend direction far clearer.<br><br><b class="text-amber-700">UT</b> stands for <b>Universal Trailing Stop</b> — an adaptive ATR-based trailing stop band that tracks volatility and signals momentum flips.<br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 3 is a pure volatility breakout momentum engine designed for fast scalping and intraday momentum. By running an adaptive Universal Trailing stop directly on noise-filtered Heikin-Ashi candles, it eliminates false whipsaws seen on standard price action charts.<br><br><b class="text-slate-800">How it works:</b><br>It converts standard price action into Heikin-Ashi smoothed candles, then applies a hyper-sensitive Universal Trailing stop band. When volatility expands and price breaks above the trailing channel on the HA chart, a high-probability breakout signal is generated.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>ATR Period (Default 10):</b> Lookback window for measuring true range volatility on Heikin-Ashi candles.<br>• <b>ATR Multiplier / Sensitivity (Default 1.0):</b> Trailing stop sensitivity threshold. Lower values (e.g., 1.0) react immediately to breakout momentum for scalping; higher values (e.g., 1.5–2.0) provide a wider buffer against intraday noise.`,
-            'Botbulls4 News AI': `<b>BotBulls 4 News AI (Premium AI News Sentiment)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 4 is an AI-powered fundamental sentiment intelligence engine. While technical indicators analyze price action, BotBulls 4 reads market news, macro catalysts, and earnings reports in real time, acting as a crucial fundamental guardrail against signals trending into negative news.<br><br><b class="text-slate-800">How it works:</b><br>It continuously fetches live financial headlines and macro-economic data, processing them through large language models (LLMs) to calculate an objective sentiment score (0–100%). When news is overwhelmingly positive, it fires a bullish sentiment confirmation.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Sentiment Bullish Percentage (Default 70%):</b> Minimum AI confidence threshold required to confirm a bullish news catalyst. Higher values (e.g., 75–80%) require overwhelmingly positive news before signaling.<br>• <b>Sentiment Bearish Percentage (Default 30%):</b> Score threshold below which news is classified as bearish. Values below this trigger defensive alerts or short confirmation.`,
+            'Botbulls4 News AI': `<b>BotBulls 4 News AI (Premium AI News Sentiment)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 4 is an AI-powered fundamental sentiment intelligence engine. While technical indicators analyze price action, BotBulls 4 reads market news, macro catalysts, and earnings reports in real time, acting as a crucial fundamental guardrail against signals trending into negative news.<br><br><b class="text-slate-800">How it works:</b><br>It continuously fetches live financial headlines and macro-economic data, processing them through large language models (LLMs) to calculate an objective sentiment score (0–100%). When news is overwhelmingly positive, it fires a bullish sentiment confirmation. In the Screener, this is event evidence—not a second technical vote—and its use is controlled by the selected qualification mode.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Sentiment Bullish Percentage (Default 70%):</b> Minimum AI confidence threshold required to confirm a bullish news catalyst. Higher values (e.g., 75–80%) require overwhelmingly positive news before signaling.<br>• <b>Sentiment Bearish Percentage (Default 30%):</b> Score threshold below which news is classified as bearish. Values below this trigger defensive alerts or short confirmation.`,
             'Screener Setup Guide': `
 <div class="space-y-6 text-slate-700 leading-relaxed text-xs sm:text-sm">
     <!-- Header Banner -->
@@ -4251,7 +4281,7 @@
             <h4 class="text-base sm:text-lg font-black tracking-tight text-indigo-950">Screener Profile Guide</h4>
             <span class="px-2 py-0.5 text-[0.6rem] font-black uppercase tracking-widest bg-purple-600 text-white border border-purple-500 rounded-full shadow-2xs">Market Intelligence</span>
         </div>
-        <p class="text-xs sm:text-[0.8rem] text-indigo-950/80 font-medium leading-relaxed relative z-10">Real-time market scanning and multi-confluence technical alert engine. Monitor stocks, crypto, and options under custom indicator strategies and receive instant BUY/SELL signal alerts without risking capital.</p>
+        <p class="text-xs sm:text-[0.8rem] text-indigo-950/80 font-medium leading-relaxed relative z-10">Completed-candle market scanning with selectable technical and event-driven qualification. Monitor stocks, crypto, and options under independent signal-only profiles and receive auditable BUY/SELL alerts without placing broker orders.</p>
     </div>
 
     <!-- Section 1: Architecture Overview -->
@@ -4261,7 +4291,8 @@
             <li><b class="text-slate-900">One Profile Per Ticker:</b> Each symbol operates with its own independent Screener profile configuring timeframe, indicator settings, and signal thresholds.</li>
             <li><b class="text-slate-900">Candle-Closed Evaluation:</b> Signals evaluate strictly on closed candles to eliminate repaint risk and avoid false intra-bar noise.</li>
             <li><b class="text-slate-900">Per-Profile Parameter Overrides:</b> Clicking the gear icon (<code>⚙</code>) next to any indicator lets you customize calculation parameters (e.g., RSI period, EMA lengths) specifically for that profile.</li>
-            <li><b class="text-slate-900">Dynamic Confluence Scoring:</b> Every active indicator confirming a setup contributes <code>+1</code> to the confluence score. A BUY or SELL alert fires when <code>Live Score &gt;= Signal Threshold</code>.</li>
+            <li><b class="text-slate-900">Technical Leg:</b> Active indicators contribute to the completed-candle technical score. In the default Combined policy, this is only one required leg; a technical score alone does not qualify a new setup.</li>
+            <li><b class="text-slate-900">Data Quality:</b> Missing, stale, degraded, or insufficient candle/news evidence blocks a new qualification instead of being treated as a neutral pass.</li>
         </ul>
     </div>
 
@@ -4270,15 +4301,28 @@
         <h5 class="font-black text-emerald-950 text-sm flex items-center gap-1.5"><span class="text-emerald-600">2.</span> Stocks &amp; Crypto Scanning</h5>
         <ol class="space-y-2 list-decimal list-inside text-slate-700 text-xs">
             <li><b class="text-slate-900">Search &amp; Add Symbol:</b> Search any stock or crypto symbol (e.g., <code>SPY</code>, <code>AAPL</code>, <code>BTCUSD</code>) in the search bar.</li>
-            <li><b class="text-slate-900">Select Timeframe:</b> Choose an evaluation timeframe (e.g., 1Min, 5Min, 15Min, 1H, 1D). Crypto scans 24/7 continuously.</li>
-            <li><b class="text-slate-900">Configure Technical Indicators:</b> Select your preferred indicator pool (EMAs, VWAP, Supertrend, RSI, MACD, BotBulls suites).</li>
-            <li><b class="text-slate-900">Save Profile:</b> Click <code>Save Screener Profile</code> to begin active background monitoring.</li>
+            <li><b class="text-slate-900">Select Timeframe:</b> Stocks default to <code>1Day</code> and crypto defaults to <code>4Hour</code> for swing-oriented screening; other completed-candle timeframes remain available. Crypto scans 24/7 continuously.</li>
+            <li><b class="text-slate-900">Configure Technical Indicators:</b> The new-profile starting pool is EMA Cross, SMA, RSI, and ADX Trend with a threshold of 3. You may change this pool, but these are starting settings—not optimized performance claims.</li>
+            <li><b class="text-slate-900">Set Refresh:</b> Stock/crypto swing profiles default to a 15-minute scan interval. A new headline can request an immediate re-evaluation when the event leg is enabled.</li>
+            <li><b class="text-slate-900">Save Profile:</b> Click <code>Save Screener Profile</code> to begin independent background monitoring.</li>
         </ol>
     </div>
 
-    <!-- Section 3: Options Analysis -->
+    <!-- Section 3: Qualification Policy -->
+    <div class="p-4 bg-emerald-50/40 border border-emerald-200/80 rounded-xl space-y-2.5">
+        <h5 class="font-black text-emerald-950 text-sm flex items-center gap-1.5"><span class="text-emerald-600">3.</span> Technical + Event Qualification</h5>
+        <ul class="space-y-2 list-disc list-inside text-slate-700 text-xs">
+            <li><b class="text-slate-900">Combined · Require Both:</b> The default mode requires technical confirmation and a recent directly relevant catalyst in the same direction. News Watch is automatically <code>Enabled</code>.</li>
+            <li><b class="text-slate-900">Technical Only:</b> Uses only completed-candle technical evidence. News Watch is automatically <code>Disabled</code>; the status is informational and has no checkbox.</li>
+            <li><b class="text-slate-900">Event-Driven Only:</b> Uses the event leg without requiring technical confirmation. News Watch is automatically <code>Enabled</code>.</li>
+            <li><b class="text-slate-900">Discovery · Either Qualifies:</b> Either leg may surface a candidate, but an explicit qualifying conflict between technical and event directions is blocked.</li>
+            <li><b class="text-slate-900">Catalyst freshness:</b> The default catalyst window is 10 days. Event qualification also requires current news data, relevant headline evidence, acceptable impact, and sufficient sentiment confidence.</li>
+        </ul>
+    </div>
+
+    <!-- Section 4: Options Analysis -->
     <div class="p-4 bg-purple-50/40 border border-purple-200/80 rounded-xl space-y-2.5">
-        <h5 class="font-black text-purple-950 text-sm flex items-center gap-1.5"><span class="text-purple-600">3.</span> Options Strategy Scanning</h5>
+        <h5 class="font-black text-purple-950 text-sm flex items-center gap-1.5"><span class="text-purple-600">4.</span> Options Strategy Scanning</h5>
         <ol class="space-y-2 list-decimal list-inside text-slate-700 text-xs">
             <li><b class="text-slate-900">Directional Bias:</b> Configure CALL (bullish signals) or PUT (bearish signals) setups on underlying equities/ETFs.</li>
             <li><b class="text-slate-900">Strike &amp; Expiration Preferences:</b> Filter ATM/ITM/OTM strikes and target days to expiration for alert notifications.</li>
@@ -4288,7 +4332,7 @@
 
     <!-- Pro Tips -->
     <div class="p-3.5 bg-slate-100 border border-slate-300/80 rounded-xl text-slate-800 text-xs font-medium">
-        <b>💡 Signal-Only Guarantee:</b> Screener profiles are 100% signal-only and do not execute broker orders or risk account capital.
+        <b>💡 Signal-Only Boundary:</b> Screener profiles are analysis and notification only. They do not execute broker orders, manage broker positions, or risk account capital. A qualification is not a forecast probability or a guarantee of profit.
     </div>
 </div>`.trim()
         };

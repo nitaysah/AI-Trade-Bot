@@ -118,7 +118,10 @@ async function loadAIIndicatorSettings(force = false) {
             let headers = {};
             if (typeof getAuthHeaders === 'function') headers = await getAuthHeaders();
             const apiBase = typeof API_BASE !== 'undefined' ? API_BASE : (window.BACKTEST_API_BASE || '');
-            const response = await fetch(`${apiBase}/api/settings/ai?context=${encodeURIComponent(context)}`, { headers });
+            const settingsUrl = `${apiBase}/api/settings/ai?context=${encodeURIComponent(context)}`;
+            const response = typeof fetchWithTimeout === 'function'
+                ? await fetchWithTimeout(settingsUrl, { headers }, 5000)
+                : await fetch(settingsUrl, { headers });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const settings = setLocalAIIndicatorSettings(await response.json(), context);
             _aiSettingsLoadedAt = Date.now();
@@ -207,7 +210,7 @@ function _showAIIndicatorLoading(ticker) {
         <div class="flex flex-col gap-1.5 mb-3 relative z-10">
             <div class="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
                 <img src="assets/bot_bulls_logo.png" alt="BotBulls" class="h-4 w-4 sm:h-5 sm:w-5 rounded-md border border-amber-200/80 bg-white/80 object-cover shadow-sm shrink-0">
-                <span class="flex-1 min-w-0 overflow-hidden text-ellipsis font-black text-xs text-amber-900 tracking-wide uppercase whitespace-nowrap">BotBulls AI Analysis - ${ticker || '---'}</span>
+                <span class="flex-1 min-w-0 overflow-hidden text-ellipsis font-black text-xs text-amber-900 tracking-wide uppercase whitespace-nowrap">BotBulls AI Analysis - ${escapeAIHtml(ticker || '---')}</span>
                 <div class="ai-analysis-actions flex items-center gap-1.5 sm:gap-2 relative z-30 shrink-0">
                     <button onclick="openAISettingsModal()" title="Quant AI decision settings" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[11px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm shrink-0">⚙</button>
                     <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm shrink-0">ℹ</button>
@@ -246,7 +249,7 @@ function _showAIIndicatorError(err, ticker) {
         <div class="flex flex-col gap-1.5 mb-3 relative z-10">
             <div class="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
                 <img src="assets/bot_bulls_logo.png" alt="BotBulls" class="h-4 w-4 sm:h-5 sm:w-5 rounded-md border border-red-200/80 bg-white/80 object-cover shadow-sm shrink-0">
-                <span class="flex-1 min-w-0 overflow-hidden text-ellipsis font-black text-xs text-red-800 tracking-wide uppercase whitespace-nowrap">BotBulls AI Analysis - ${ticker || '---'}</span>
+                <span class="flex-1 min-w-0 overflow-hidden text-ellipsis font-black text-xs text-red-800 tracking-wide uppercase whitespace-nowrap">BotBulls AI Analysis - ${escapeAIHtml(ticker || '---')}</span>
                 <div class="ai-analysis-actions flex items-center gap-1.5 sm:gap-2 relative z-30 shrink-0">
                     <button onclick="openAISettingsModal()" title="Quant AI decision settings" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[11px] font-bold text-red-600 bg-red-100/50 hover:bg-red-100 border border-red-300/30 shrink-0">⚙</button>
                     <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-red-500 hover:text-red-700 bg-red-100/50 hover:bg-red-100 transition-colors border border-red-300/30 shrink-0">ℹ</button>
@@ -260,7 +263,7 @@ function _showAIIndicatorError(err, ticker) {
                 </div>
             </div>
         </div>
-        <p class="text-[0.6rem] text-red-500 relative z-10">${err || 'Could not load AI analysis'}</p>
+        <p class="text-[0.6rem] text-red-500 relative z-10">${escapeAIHtml(err || 'Could not load AI analysis')}</p>
     `;
 }
 window._showAIIndicatorError = _showAIIndicatorError;
@@ -426,7 +429,7 @@ function renderAIIndicatorCard(data, fromCache = false) {
         <div class="flex flex-col gap-1.5 mb-3 relative z-10">
             <div class="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
                 <img src="assets/bot_bulls_logo.png" alt="BotBulls" class="h-4 w-4 sm:h-5 sm:w-5 rounded-md border border-amber-200/80 bg-white/80 object-cover shadow-sm shrink-0">
-                <span class="flex-1 min-w-0 overflow-hidden text-ellipsis font-black text-xs text-amber-900 tracking-wide uppercase whitespace-nowrap" id="aiIndicatorHeader">BotBulls Quant AI — ${ticker}</span>
+                <span class="flex-1 min-w-0 overflow-hidden text-ellipsis font-black text-xs text-amber-900 tracking-wide uppercase whitespace-nowrap" id="aiIndicatorHeader">BotBulls Quant AI — ${escapeAIHtml(ticker)}</span>
                 <div class="ai-analysis-actions flex items-center gap-1.5 sm:gap-2 relative z-30 shrink-0">
                     <button onclick="openAISettingsModal()" title="Quant AI decision settings" class="w-5 h-5 sm:w-6 sm:h-6 flex items-center justify-center rounded-full text-[11px] sm:text-[12px] font-bold text-amber-700 bg-amber-100 hover:bg-amber-200 border border-amber-300 shrink-0">⚙</button>
                     <button onclick="openAIInfoModal()" title="How Quant AI works" class="w-5 h-5 sm:w-6 sm:h-6 flex items-center justify-center rounded-full text-[10px] font-bold text-amber-700 bg-amber-100 hover:bg-amber-200 border border-amber-300 shrink-0">ℹ</button>
@@ -689,9 +692,9 @@ window.saveAIIndicatorSettings = async function (event) {
         const savedSettings = setLocalAIIndicatorSettings(payload.settings || updates, context);
         setSelectedAIModelForContext(savedSettings.AI_INDICATOR_MODEL, context);
         Object.keys(localStorage).forEach(key => {
-            if (key.startsWith(`ai_cache_${context}|`)) localStorage.removeItem(key);
+            if (key.startsWith(`ai_cache_${getAIStorageScope()}|${context}|`)) localStorage.removeItem(key);
         });
-        localStorage.removeItem(`latest_ai_analysis:${context}`);
+        localStorage.removeItem(getAILatestStorageKey(context));
         message.className = 'text-xs rounded-lg px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200';
         message.textContent = 'Settings saved. Recalculating the current ticker…';
         const ticker = getAIActiveTicker('SPY');
@@ -707,6 +710,24 @@ window.saveAIIndicatorSettings = async function (event) {
 };
 
 var AI_INDICATOR_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+function getAIStorageScope() {
+    try {
+        const uid = window.auth?.currentUser?.uid
+            || (localStorage.getItem('dev_mode') === 'true' ? 'dev-user' : 'anonymous');
+        return encodeURIComponent(String(uid).slice(0, 128));
+    } catch (error) {
+        return 'anonymous';
+    }
+}
+
+function getAICacheStorageKey(key) {
+    return `ai_cache_${getAIStorageScope()}|${key}`;
+}
+
+function getAILatestStorageKey(context = getAIIndicatorPageContext()) {
+    return `latest_ai_analysis:${getAIStorageScope()}:${context}`;
+}
+
 var _aiIndicatorFetchId = window._aiIndicatorFetchId || 0; // prevents stale response rendering
 var aiIndicatorInFlightKey = window.aiIndicatorInFlightKey || null;
 var aiIndicatorInFlightPromise = window.aiIndicatorInFlightPromise || null;
@@ -797,19 +818,18 @@ function getAICache(key) {
                 const crossPageKey = `${context}|${ticker}|${timeframe}|${model}|${version}`;
                 if (!candidateKeys.includes(crossPageKey)) candidateKeys.push(crossPageKey);
             });
-            candidateKeys.push(...getLegacyAIIndicatorCacheKeys(ticker, timeframe, model));
         }
         for (const candidateKey of candidateKeys) {
-            const cachedStr = localStorage.getItem(`ai_cache_${candidateKey}`);
+            const cachedStr = localStorage.getItem(getAICacheStorageKey(candidateKey));
             if (!cachedStr) continue;
             const cached = JSON.parse(cachedStr);
             if (!isAICacheFresh(cached)) {
-                if (candidateKey === key) localStorage.removeItem(`ai_cache_${candidateKey}`);
+                if (candidateKey === key) localStorage.removeItem(getAICacheStorageKey(candidateKey));
                 continue;
             }
             if (candidateKey !== key) {
                 const migrated = { ...cached, key };
-                localStorage.setItem(`ai_cache_${key}`, JSON.stringify(migrated));
+                localStorage.setItem(getAICacheStorageKey(key), JSON.stringify(migrated));
                 return migrated;
             }
             return cached;
@@ -823,11 +843,8 @@ function getStaleAICache(key) {
     try {
         const candidateKeys = [key];
         const parts = String(key).split('|');
-        if (parts.length === 4) {
-            candidateKeys.push(...getLegacyAIIndicatorCacheKeys(parts[0], parts[1], parts[2]));
-        }
         for (const candidateKey of candidateKeys) {
-            const cachedStr = localStorage.getItem(`ai_cache_${candidateKey}`);
+            const cachedStr = localStorage.getItem(getAICacheStorageKey(candidateKey));
             if (!cachedStr) continue;
             const cached = JSON.parse(cachedStr);
             if (cached?.data) return { ...cached, key };
@@ -847,8 +864,8 @@ function setAICache(key, data, meta = {}) {
             timeframe: meta.timeframe,
             model: normalizeAIModel(meta.model)
         };
-        localStorage.setItem(`ai_cache_${key}`, JSON.stringify(payload));
-        localStorage.setItem(`latest_ai_analysis:${getAIIndicatorPageContext()}`, JSON.stringify(payload));
+        localStorage.setItem(getAICacheStorageKey(key), JSON.stringify(payload));
+        localStorage.setItem(getAILatestStorageKey(), JSON.stringify(payload));
     } catch (e) { console.error('Cache write error', e); }
 }
 window.setAICache = setAICache;
@@ -893,7 +910,7 @@ function getCachedAIAnalysisForTicker(ticker, timeframe) {
     if (exact?.data?.sentiment_score != null) return exact;
 
     try {
-        const globalAi = JSON.parse(localStorage.getItem(`latest_ai_analysis:${getAIIndicatorPageContext()}`) || 'null');
+        const globalAi = JSON.parse(localStorage.getItem(getAILatestStorageKey()) || 'null');
         if (
             globalAi?.data?.sentiment_score != null &&
             isAICacheForContext(globalAi, normalizedTicker, tf, selectedModel)
@@ -903,7 +920,7 @@ function getCachedAIAnalysisForTicker(ticker, timeframe) {
     } catch (e) {}
 
     try {
-        const prefix = `ai_cache_${getAIIndicatorPageContext()}|${normalizedTicker}|`;
+        const prefix = `ai_cache_${getAIStorageScope()}|${getAIIndicatorPageContext()}|${normalizedTicker}|`;
         for (let i = localStorage.length - 1; i >= 0; i -= 1) {
             const key = localStorage.key(i);
             if (!key || !key.startsWith(prefix)) continue;
@@ -974,9 +991,16 @@ window.renderCachedAIIndicatorForTicker = renderCachedAIIndicatorForTicker;
 
 async function fetchAIIndicator(ticker, timeframe, force = false) {
     if (!ticker) return;
+    const normalizedTicker = normalizeAIIndicatorTicker(ticker);
+    const pageContext = getAIIndicatorPageContext();
+    // BTCUSD is intentionally supported by Screener only. The Screener has
+    // its own endpoint/card; Dashboard, Bots, and Backtest must not start a
+    // second AI/news scan for the same crypto symbol.
+    if (normalizedTicker === 'BTCUSD' && pageContext !== 'screener') {
+        return { skipped: true, ticker: normalizedTicker, reason: 'BTCUSD is Screener-only.' };
+    }
     const aiSettings = await loadAIIndicatorSettings(false);
     const tf = normalizeAIIndicatorTimeframe(aiSettings.AI_DECISION_TIMEFRAME || timeframe || '1Hour');
-    const normalizedTicker = normalizeAIIndicatorTicker(ticker);
     const selectedModel = getSelectedAIModelForContext();
     const key = getAIIndicatorCacheKey(normalizedTicker, tf, selectedModel);
 
@@ -1013,7 +1037,7 @@ async function fetchAIIndicator(ticker, timeframe, force = false) {
             try { headers = await getAuthHeaders(); } catch(e) {}
         }
         const apiBase = typeof API_BASE !== 'undefined' ? API_BASE : '';
-        const context = getAIIndicatorPageContext();
+        const context = pageContext;
         const url = `${apiBase}/api/ai-indicator?ticker=${encodeURIComponent(normalizedTicker)}&timeframe=${encodeURIComponent(tf)}&model=${encodeURIComponent(selectedModel)}&context=${encodeURIComponent(context)}${force ? '&force=true' : ''}`;
         
         let res;

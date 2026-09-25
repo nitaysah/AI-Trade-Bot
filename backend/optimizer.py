@@ -7,6 +7,9 @@ from indicators import calculate_indicators_for_df
 from backtester import Backtester
 import concurrent.futures
 
+MAX_OPTIMIZER_COMBINATIONS = 128
+MAX_OPTIMIZER_CONCURRENCY = 4
+
 def run_single_backtest(params):
     """Runs a single backtest and returns its sharpe ratio or a fallback score."""
     kwargs, precomputed_df, df_len = params
@@ -156,6 +159,8 @@ async def run_optimization(base_kwargs, split_pct=30):
     # Generate all combinations
     keys, values = zip(*grid.items())
     combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
+    if len(combinations) > MAX_OPTIMIZER_COMBINATIONS:
+        return {"error": f"Optimization grid is limited to {MAX_OPTIMIZER_COMBINATIONS} combinations."}
     
     print(f"[optimizer] Grid: {num_inds} indicators -> buy thresholds {thresholds}, sell thresholds {sell_thresholds}")
     print(f"[optimizer] Testing {len(combinations)} parameter combinations...")
@@ -173,10 +178,13 @@ async def run_optimization(base_kwargs, split_pct=30):
         
     # 5. Execute Grid Search
     # Using to_thread (ThreadPool) to avoid pickling issues with threading.Event in kwargs and DataFrame overhead
-    results = await asyncio.gather(*[
-        asyncio.to_thread(run_single_backtest, task) 
-        for task in tasks
-    ])
+    semaphore = asyncio.Semaphore(MAX_OPTIMIZER_CONCURRENCY)
+
+    async def _run_bounded(task):
+        async with semaphore:
+            return await asyncio.to_thread(run_single_backtest, task)
+
+    results = await asyncio.gather(*[_run_bounded(task) for task in tasks])
         
     # 6. Find Best Parameter Set
     best_score = -9999.0

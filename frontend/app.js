@@ -35,6 +35,12 @@ function normalizeTicker(ticker) {
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
     const controller = new AbortController();
+    const externalSignal = options.signal;
+    const requestOptions = { ...options };
+    delete requestOptions.signal;
+    const abortFromCaller = () => controller.abort();
+    if (externalSignal?.aborted) controller.abort();
+    else externalSignal?.addEventListener('abort', abortFromCaller, { once: true });
     let didTimeout = false;
     const timeoutId = setTimeout(() => {
         didTimeout = true;
@@ -42,7 +48,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
     }, timeoutMs);
     try {
         return await fetch(url, {
-            ...options,
+            ...requestOptions,
             signal: controller.signal
         });
     } catch (error) {
@@ -55,6 +61,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
         throw error;
     } finally {
         clearTimeout(timeoutId);
+        externalSignal?.removeEventListener('abort', abortFromCaller);
     }
 }
 
@@ -475,6 +482,8 @@ const LIVE_PRICE_HEARTBEAT_MS = 10000;
 const DASHBOARD_FETCH_TIMEOUT_MS = 20000;
 const CHART_FETCH_TIMEOUT_MS = 30000;
 const QUOTE_FETCH_TIMEOUT_MS = 4500;
+const GENERIC_CARDS_FETCH_TIMEOUT_MS = 5000;
+const OLLAMA_MODELS_FETCH_TIMEOUT_MS = 2000;
 const DASHBOARD_VISIBILITY_REFRESH_MIN_AGE_MS = 15000;
 const DASHBOARD_CHART_BG_REGULAR = '#ffffff';
 const DASHBOARD_CHART_EXTENDED_FILL = 'rgba(100, 116, 139, 0.12)';
@@ -532,6 +541,34 @@ function resetCompletedCandleState() {
 /**
  * Retrieves the current Firebase ID token and prepares headers.
  */
+let developmentAuthTokenPromise = null;
+
+async function getDevelopmentAuthHeaders(baseHeaders) {
+    if (localStorage.getItem('dev_mode') !== 'true') return baseHeaders;
+    try {
+        if (!developmentAuthTokenPromise) {
+            developmentAuthTokenPromise = fetch(`${API_BASE}/api/dev-token`, {
+                cache: 'no-store',
+                headers: { 'Cache-Control': 'no-cache' }
+            }).then(async response => {
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok || typeof payload.token !== 'string' || !payload.token.trim()) {
+                    throw new Error('Development authentication is unavailable');
+                }
+                return payload.token.trim();
+            }).catch(error => {
+                developmentAuthTokenPromise = null;
+                throw error;
+            });
+        }
+        const token = await developmentAuthTokenPromise;
+        return { ...baseHeaders, 'Authorization': `Bearer ${token}` };
+    } catch (error) {
+        console.warn('[auth] Development authentication is unavailable:', error);
+        return baseHeaders;
+    }
+}
+
 async function getAuthHeaders() {
     const auth = window.auth;
     const baseHeaders = {
@@ -541,16 +578,12 @@ async function getAuthHeaders() {
 
     if (!auth) {
         console.warn('[auth] window.auth is NOT defined yet');
-        return baseHeaders;
+        return getDevelopmentAuthHeaders(baseHeaders);
     }
     const user = auth.currentUser;
     if (!user) {
-        if (localStorage.getItem('dev_mode') === 'true') {
-            return {
-                ...baseHeaders,
-                'Authorization': `Bearer dev-token`
-            };
-        }
+        const developmentHeaders = await getDevelopmentAuthHeaders(baseHeaders);
+        if (developmentHeaders !== baseHeaders) return developmentHeaders;
         console.warn('[auth] No current user found in auth instance');
         return baseHeaders;
     }
@@ -2773,9 +2806,11 @@ function _showSearchResults(query) {
     if (combined.length === 0) { container.classList.add('hidden'); return; }
     container.innerHTML = combined.map(t => {
         const inWl = (window._currentWatchlist || []).includes(t);
+        const safeTicker = escapeDashboardHtml(t);
+        const safeTickerArgument = escapeDashboardHtml(JSON.stringify(String(t)));
         return `<div class="flex items-center justify-between px-4 py-2.5 hover:bg-indigo-50 cursor-pointer text-sm font-bold text-indigo-900 border-b border-slate-50 last:border-0 transition-colors"
-                    onclick="selectTickerFromSearch('${t}')">
-                    <span>${t}</span>
+                    onclick="selectTickerFromSearch(${safeTickerArgument})">
+                    <span>${safeTicker}</span>
                     ${inWl ? '<span class="text-yellow-500 text-xs">★</span>' : ''}
                 </div>`;
     }).join('');
@@ -3564,7 +3599,11 @@ window.ollamaModels = [];
 async function loadOllamaModels() {
     try {
         const headers = await getAuthHeaders();
-        const res = await fetch(`${API_BASE}/api/ollama/models`, { headers });
+        const res = await fetchWithTimeout(
+            `${API_BASE}/api/ollama/models`,
+            { headers },
+            OLLAMA_MODELS_FETCH_TIMEOUT_MS,
+        );
         if (res.ok) {
             const data = await res.json();
             if (data.status === 'online') {
@@ -3760,8 +3799,10 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
 
         const cacheKey = `${isEnabled}-${data.signal}-${data.reason}-${data.value ?? ''}-${data.baseline ?? ''}-${data.period ?? ''}-${data.percentage ?? data.sentiment_pct ?? ''}`;
         if (card.dataset.cacheKey !== cacheKey) {
-            let reasonHtml = isEnabled ? data.reason : 'Disabled — click to enable';
+            let reasonHtml = isEnabled ? escapeDashboardHtml(data.reason) : 'Disabled — click to enable';
             const isNewsSentiment = name === 'Botbulls4 News AI';
+            const safeIndicatorName = escapeDashboardHtml(name);
+            const encodedIndicatorName = encodeURIComponent(String(name));
 
             if (isNewsSentiment && data.value != null && isEnabled) {
                 const scoreVal = parseFloat(data.value);
@@ -3792,7 +3833,7 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
                     reasonText = "evaluating market sentiment";
                 }
                 reasonText = reasonText.charAt(0).toUpperCase() + reasonText.slice(1);
-                reasonHtml = `${reasonText}: <span class="${scoreColor} font-black">${sentPct}%</span>`;
+                reasonHtml = `${escapeDashboardHtml(reasonText)}: <span class="${scoreColor} font-black">${sentPct}%</span>`;
             }
 
             if (isPremium) {
@@ -3800,9 +3841,9 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
                 card.innerHTML = `
                     <div class="flex items-start justify-between">
                         <div class="flex items-start gap-1">
-                            <span class="font-bold text-amber-800 ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${name}</span>
+                            <span class="font-bold text-amber-800 ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${safeIndicatorName}</span>
                             <div class="group/tooltip relative inline-flex items-center">
-                                <svg onclick="event.stopPropagation(); event.preventDefault(); typeof openInfoModal === 'function' ? openInfoModal('${name}') : null" xmlns="http://www.w3.org/2000/svg" class="text-amber-400 hover:text-amber-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <svg onclick="event.stopPropagation(); event.preventDefault(); typeof openInfoModal === 'function' ? openInfoModal(decodeURIComponent('${encodedIndicatorName}')) : null" xmlns="http://www.w3.org/2000/svg" class="text-amber-400 hover:text-amber-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                 </svg>
                                 <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
@@ -3811,7 +3852,7 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
                                 </div>
                             </div>
                             <button class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-100/50" 
-                                    onclick="event.stopPropagation(); openIndicatorSettings('${name}')"
+                                    onclick="event.stopPropagation(); openIndicatorSettings(decodeURIComponent('${encodedIndicatorName}'))"
                                     title="Indicator Settings">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
@@ -3826,13 +3867,14 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
             } else {
                 // Standard signal card
                 const displayName = name === 'VWAP' ? 'Session VWAP' : name;
+                const safeDisplayName = escapeDashboardHtml(displayName);
                 const labelClass = name === 'VWAP' ? 'vwap-indicator-label' : 'text-indigo-900';
                 card.innerHTML = `
                     <div class="flex items-start justify-between">
                         <div class="flex items-start gap-1">
-                            <span class="font-bold ${labelClass} ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${displayName}</span>
+                            <span class="font-bold ${labelClass} ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${safeDisplayName}</span>
                             <div class="group/tooltip relative inline-flex items-center">
-                                <svg onclick="event.stopPropagation(); event.preventDefault(); typeof openInfoModal === 'function' ? openInfoModal('${name}') : null" xmlns="http://www.w3.org/2000/svg" class="text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <svg onclick="event.stopPropagation(); event.preventDefault(); typeof openInfoModal === 'function' ? openInfoModal(decodeURIComponent('${encodedIndicatorName}')) : null" xmlns="http://www.w3.org/2000/svg" class="text-indigo-300 hover:text-indigo-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                 </svg>
                                 <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-indigo-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
@@ -3843,7 +3885,7 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
                         </div>
                         <div class="flex items-center gap-1">
                             <button class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" 
-                                    onclick="event.stopPropagation(); openIndicatorSettings('${name}')"
+                                    onclick="event.stopPropagation(); openIndicatorSettings(decodeURIComponent('${encodedIndicatorName}'))"
                                     title="Indicator Settings">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
@@ -3980,7 +4022,7 @@ function renderWatchlist(scans, watchlist) {
         item.innerHTML = `
                 <div class="flex items-center justify-between">
                     <div class="flex items-center gap-2">
-                        <span class="font-black text-sm text-indigo-950 tracking-tight">${ticker}</span>
+                        <span class="font-black text-sm text-indigo-950 tracking-tight">${escapeDashboardHtml(ticker)}</span>
                     </div>
                     
                     <div class="flex items-center gap-3">
@@ -3988,7 +4030,7 @@ function renderWatchlist(scans, watchlist) {
                         <div class="opacity-0 group-hover:opacity-100 transition-opacity">
                             <button class="p-1 rounded hover:bg-rose-50 text-rose-300 hover:text-rose-400 transition-all"
                                 title="Remove from Watchlist"
-                                onclick="event.stopPropagation(); removeFromWatchlist('${ticker}')">
+                                onclick="event.stopPropagation(); removeFromWatchlist(decodeURIComponent('${encodeURIComponent(String(ticker))}'))">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" />
                                 </svg>
@@ -4225,22 +4267,29 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders) {
 
         const row = document.createElement('tr');
         row.className = 'border-b border-purple-100 fade-in';
+        const safeTradeAction = escapeDashboardHtml(trade.action);
+        const safeTradeTicker = escapeDashboardHtml(trade.ticker);
+        const safeTradePrice = escapeDashboardHtml(trade.price);
+        const safeTradeTime = escapeDashboardHtml(formatLocalTime(trade.time));
+        const safeTradeTimeframe = escapeDashboardHtml(trade.timeframe || '5M');
+        const safeTradeReason = escapeDashboardHtml(trade.reason);
+        const safeSignalBadge = escapeDashboardHtml(signalBadge);
         row.innerHTML = `
-            <td class="py-2.5 pr-4 text-purple-600 text-xs">${formatLocalTime(trade.time)}</td>
-            <td class="py-2.5 pr-4 ${actionColor} text-xs">${trade.action}</td>
-            <td class="py-2.5 pr-4 text-indigo-950 font-semibold text-xs">${trade.ticker}</td>
+            <td class="py-2.5 pr-4 text-purple-600 text-xs">${safeTradeTime}</td>
+            <td class="py-2.5 pr-4 ${actionColor} text-xs">${safeTradeAction}</td>
+            <td class="py-2.5 pr-4 text-indigo-950 font-semibold text-xs">${safeTradeTicker}</td>
             <td class="py-2.5 pr-4 text-center">
-                <span class="px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-500 font-black text-[0.55rem] border border-indigo-100">${trade.timeframe || '5M'}</span>
+                <span class="px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-500 font-black text-[0.55rem] border border-indigo-100">${safeTradeTimeframe}</span>
             </td>
-            <td class="py-2.5 pr-4 text-indigo-700 font-medium text-xs">${trade.price}</td>
+            <td class="py-2.5 pr-4 text-indigo-700 font-medium text-xs">${safeTradePrice}</td>
             <td class="py-2.5 pr-4 text-center text-[0.65rem] font-bold text-indigo-900">${trade.qty && !isNaN(trade.qty) ? Number(trade.qty).toFixed(4) : (trade.qty || '—')}</td>
             <td class="py-2.5 pr-4 text-center text-[0.65rem] font-bold text-emerald-600">$${trade.total_cost ? Number(trade.total_cost).toFixed(2) : '—'}</td>
             <td class="py-2.5 pr-4 text-center text-[0.65rem] text-purple-400 font-mono">$${trade.fees ? Number(trade.fees).toFixed(2) : '0.00'}</td>
             ${plHtml}
             <td class="py-2.5 pr-4 text-xs">
-                <span class="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-mono text-[0.6rem]">${signalBadge}</span>
+                <span class="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-mono text-[0.6rem]">${safeSignalBadge}</span>
             </td>
-            <td class="py-2.5 pr-4 text-purple-500 italic text-xs max-w-xs truncate" title="${trade.reason}">${trade.reason}</td>
+            <td class="py-2.5 pr-4 text-purple-500 italic text-xs max-w-xs truncate" title="${safeTradeReason}">${safeTradeReason}</td>
         `;
         tbody.appendChild(row);
     });
@@ -4439,15 +4488,15 @@ async function fetchDashboard(mode = 'heavy', options = {}) {
                 summaryEl.innerHTML = `
                     <div class="mb-3">
                         <span class="text-[10px] uppercase tracking-wider text-amber-600 font-black block mb-1">🔥 Key Market Factor</span>
-                        <p class="text-amber-950 font-bold not-italic text-sm leading-snug">${data.sentiment_key_factor || 'Mixed Catalysts'}</p>
+                        <p class="text-amber-950 font-bold not-italic text-sm leading-snug">${escapeDashboardHtml(data.sentiment_key_factor || 'Mixed Catalysts')}</p>
                     </div>
                     <div class="space-y-2">
                         <span class="text-[10px] uppercase tracking-wider text-orange-600 font-black block mb-1">📰 AI News Briefing & Catalyst Summary</span>
-                        <p class="text-amber-900 font-medium not-italic leading-relaxed text-xs">${data.sentiment_summary}</p>
+                        <p class="text-amber-900 font-medium not-italic leading-relaxed text-xs">${escapeDashboardHtml(data.sentiment_summary)}</p>
                     </div>
                     <div class="mt-4 pt-3 border-t border-amber-200/50 flex justify-between items-center text-[10px] font-black uppercase text-amber-700">
                          <span>Analysis Confidence Index</span>
-                         <span class="font-extrabold text-xs text-orange-600 bg-orange-100 px-2 py-0.5 rounded border border-orange-200 shadow-sm">${Math.round(data.sentiment_confidence * 100)}%</span>
+                        <span class="font-extrabold text-xs text-orange-600 bg-orange-100 px-2 py-0.5 rounded border border-orange-200 shadow-sm">${Math.max(0, Math.min(100, Math.round(Number(data.sentiment_confidence) * 100) || 0))}%</span>
                     </div>
                 `;
                 summaryEl.classList.remove('italic');
@@ -4671,13 +4720,19 @@ function attachEventListeners() {
                         data.forEach(item => {
                             const div = document.createElement('div');
                             div.className = "p-3 hover:bg-indigo-50 cursor-pointer border-b border-indigo-50 last:border-0 transition-colors flex justify-between items-center";
-                            div.innerHTML = `
-                                <div class="flex flex-col">
-                                    <span class="font-black text-indigo-900">${item.symbol}</span>
-                                    <span class="text-[0.65rem] text-indigo-400 font-medium truncate w-40">${item.name}</span>
-                                </div>
-                                <span class="text-[0.6rem] bg-indigo-100 text-indigo-500 px-2 py-0.5 rounded uppercase font-bold tracking-widest">+ View</span>
-                            `;
+                            const details = document.createElement('div');
+                            details.className = 'flex flex-col';
+                            const symbol = document.createElement('span');
+                            symbol.className = 'font-black text-indigo-900';
+                            symbol.textContent = item.symbol || '';
+                            const name = document.createElement('span');
+                            name.className = 'text-[0.65rem] text-indigo-400 font-medium truncate w-40';
+                            name.textContent = item.name || '';
+                            details.append(symbol, name);
+                            const action = document.createElement('span');
+                            action.className = 'text-[0.6rem] bg-indigo-100 text-indigo-500 px-2 py-0.5 rounded uppercase font-bold tracking-widest';
+                            action.textContent = '+ View';
+                            div.append(details, action);
                             div.onclick = () => {
                                 selectTickerFromSearch(item.symbol);
                             };
@@ -4865,14 +4920,20 @@ document.addEventListener('DOMContentLoaded', () => {
             clearInterval(checkAuth);
             console.log('[dashboard] Auth ready. Starting phased data stream.');
 
-            console.log('[dashboard] Phase 0.5 — Synchronizing Dashboard indicator workspace...');
-            await hydrateDashboardIndicatorWorkspace();
+            // The workspace controls the visible indicator grid, not the
+            // provider fetch. Start chart loading while the settings sync is
+            // in flight so a cold login does not wait on a settings round trip.
+            console.log('[dashboard] Phase 0.5 — Synchronizing Dashboard indicator workspace in parallel...');
+            const workspaceWarmup = hydrateDashboardIndicatorWorkspace();
 
             // PHASE 1: Chart candles first — highest priority
             let chartWarmup = null;
             if (selectedTicker) {
                 console.log(`[dashboard] Phase 1 — Fetching completed candles for: ${selectedTicker}`);
-                chartWarmup = loadSelectedTickerChart({ force: true, renderCached: false, fetchFresh: true });
+                // A startup refresh is still a network request, but it may
+                // reuse the backend's short-lived chart cache. Explicit user
+                // refreshes and timeframe changes continue to use force=true.
+                chartWarmup = loadSelectedTickerChart({ force: false, renderCached: false, fetchFresh: true });
             }
             // Do not let the heartbeat's immediate tick launch a second chart
             // refresh while the Phase 1 warmup is still in flight. The backend
@@ -4892,21 +4953,27 @@ document.addEventListener('DOMContentLoaded', () => {
             dashboardHeartbeatEnabled = shouldRunDashboardRefresh();
             if (dashboardHeartbeatEnabled) scheduleDashboardHeartbeat();
 
-            // PHASE 2: Dashboard shell/watchlist — give chart candles the first network lane.
-            console.log('[dashboard] Phase 2 — Scheduling fast dashboard scan after chart priority window...');
+            // PHASE 2: Dashboard shell/watchlist. Fast mode does not calculate
+            // primary technical analysis, so it can start while the chart is
+            // waiting on a cold provider response.
+            console.log('[dashboard] Phase 2 — Scheduling fast dashboard scan...');
             let dashboardWarmupStarted = false;
             const startDashboardWarmup = () => {
                 if (dashboardWarmupStarted || !shouldRunDashboardRefresh()) return;
                 dashboardWarmupStarted = true;
                 fetchDashboard('fast');
             };
-            const dashboardWarmupTimer = setTimeout(startDashboardWarmup, chartWarmup ? 1200 : 0);
+            const dashboardWarmupTimer = setTimeout(startDashboardWarmup, chartWarmup ? 250 : 0);
             if (chartWarmup && typeof chartWarmup.finally === 'function') {
                 chartWarmup.finally(() => {
                     clearTimeout(dashboardWarmupTimer);
                     startDashboardWarmup();
                 });
             }
+
+            workspaceWarmup.catch(error => {
+                console.warn('[indicator-workspace] Parallel startup sync failed; local preferences remain active.', error);
+            });
 
             // We intentionally do NOT await the warmups so the UI does not block if one of them hangs.
             // PHASE 3: Remaining background data. The fast Dashboard response
@@ -5151,22 +5218,32 @@ function renderBtTradesPage() {
         const isWin = t.pl >= 0;
         const plColor = isWin ? 'text-emerald-600' : 'text-rose-600';
         const plBg = isWin ? 'bg-emerald-50' : 'bg-rose-50';
+        const safeEntryTime = escapeDashboardHtml(t.entry_time);
+        const safeExitTime = escapeDashboardHtml(t.exit_time);
+        const safeEntryPrice = escapeDashboardHtml(t.entry_price);
+        const safeExitPrice = escapeDashboardHtml(t.exit_price);
+        const safeQty = escapeDashboardHtml(t.qty || '—');
+        const safePlPct = escapeDashboardHtml(t.pl_pct);
+        const safeEntryCost = escapeDashboardHtml(t.entry_cost ? Number(t.entry_cost).toFixed(2) : '—');
+        const safeExitValue = escapeDashboardHtml(t.exit_value ? Number(t.exit_value).toFixed(2) : '—');
+        const safeFees = escapeDashboardHtml(t.fees ? Number(t.fees).toFixed(2) : '0.00');
+        const safeReason = escapeDashboardHtml(t.reason);
 
         return `
             <tr class="hover:bg-indigo-50/30 transition-colors">
-                <td class="p-4 font-medium text-indigo-900">${t.entry_time}</td>
-                <td class="p-4 font-medium text-indigo-400">${t.exit_time}</td>
-                <td class="p-4 font-black text-indigo-900 tracking-tight">$${t.entry_price} → $${t.exit_price}</td>
-                <td class="p-4 text-center text-indigo-900 font-bold">${t.qty || '—'}</td>
-                <td class="p-4 text-center text-indigo-600 font-medium">$${t.entry_cost ? Number(t.entry_cost).toFixed(2) : '—'}</td>
-                <td class="p-4 text-center text-emerald-600 font-bold">$${t.exit_value ? Number(t.exit_value).toFixed(2) : '—'}</td>
-                <td class="p-4 text-center text-purple-400 font-mono text-[0.6rem]">$${t.fees ? Number(t.fees).toFixed(2) : '0.00'}</td>
+                <td class="p-4 font-medium text-indigo-900">${safeEntryTime}</td>
+                <td class="p-4 font-medium text-indigo-400">${safeExitTime}</td>
+                <td class="p-4 font-black text-indigo-900 tracking-tight">$${safeEntryPrice} → $${safeExitPrice}</td>
+                <td class="p-4 text-center text-indigo-900 font-bold">${safeQty}</td>
+                <td class="p-4 text-center text-indigo-600 font-medium">$${safeEntryCost}</td>
+                <td class="p-4 text-center text-emerald-600 font-bold">$${safeExitValue}</td>
+                <td class="p-4 text-center text-purple-400 font-mono text-[0.6rem]">$${safeFees}</td>
                 <td class="p-4 text-center">
                     <span class="inline-block px-2 py-1 rounded-md ${plBg} ${plColor} font-black text-[0.7rem] min-w-[60px]">
-                        ${isWin ? '+' : ''}${t.pl_pct}%
+                        ${isWin ? '+' : ''}${safePlPct}%
                     </span>
                 </td>
-                <td class="p-4 text-[0.65rem] font-bold text-indigo-400 uppercase tracking-tighter">${t.reason}</td>
+                <td class="p-4 text-[0.65rem] font-bold text-indigo-400 uppercase tracking-tighter">${safeReason}</td>
             </tr>
         `;
     }).join('');
@@ -5701,7 +5778,11 @@ async function fetchGenericDashboardCards(options = {}) {
     const requestPromise = (async () => {
         try {
             const headers = await getAuthHeaders();
-            const req = await fetch(`${API_BASE}/api/generic-dashboard-cards`, { headers });
+            const req = await fetchWithTimeout(
+                `${API_BASE}/api/generic-dashboard-cards`,
+                { headers },
+                GENERIC_CARDS_FETCH_TIMEOUT_MS,
+            );
             if (!req.ok) throw new Error(`Generic card cache request failed (${req.status})`);
             const payload = await req.json();
             writeCachedGenericDashboardCards(payload);
@@ -5806,11 +5887,11 @@ function openFngModal() {
                     <div class="card-glow"></div>
                     <div class="relative z-10">
                         <div class="flex items-center justify-between mb-3">
-                            <h4 class="font-black text-slate-700 text-[13px] tracking-wide">${comp.name}</h4>
+                        <h4 class="font-black text-slate-700 text-[13px] tracking-wide">${escapeDashboardHtml(comp.name)}</h4>
                             <span class="${color} text-white text-[10px] px-2.5 py-1 rounded-md font-bold uppercase tracking-widest shadow-sm">${label}</span>
                         </div>
-                        <p class="text-xs text-slate-500 mb-2 leading-relaxed">${comp.desc}</p>
-                        <p class="text-[10px] text-slate-400 font-mono bg-slate-50/50 backdrop-blur-sm px-2 py-1 rounded border border-slate-200 inline-block truncate max-w-full">${comp.raw}</p>
+                        <p class="text-xs text-slate-500 mb-2 leading-relaxed">${escapeDashboardHtml(comp.desc)}</p>
+                        <p class="text-[10px] text-slate-400 font-mono bg-slate-50/50 backdrop-blur-sm px-2 py-1 rounded border border-slate-200 inline-block truncate max-w-full">${escapeDashboardHtml(comp.raw)}</p>
                     </div>
                     <div class="mt-5 relative z-10">
                         <div class="flex justify-between items-end text-[10px] text-slate-400 font-bold mb-1.5">
@@ -5992,9 +6073,9 @@ async function fetchMarketData(cachedData = null) {
                 return `
                     <div class="col-span-full rounded-xl border border-slate-200 bg-white/90 px-2.5 py-1.5 sm:px-3 sm:py-2 shadow-sm">
                         <div class="flex items-center justify-between gap-1 sm:gap-2">
-                            <p class="text-[10px] sm:text-[11px] font-black text-slate-800 uppercase tracking-wide leading-tight truncate mr-1">${summary.label || 'Sector'} Summary</p>
+                            <p class="text-[10px] sm:text-[11px] font-black text-slate-800 uppercase tracking-wide leading-tight truncate mr-1">${escapeDashboardHtml(summary.label || 'Sector')} Summary</p>
                             <div class="flex items-center gap-1 sm:gap-1.5 shrink-0">
-                                <span class="text-[8.5px] sm:text-[9.5px] font-bold text-slate-400 uppercase tracking-widest">Proxy: <strong class="text-slate-700 font-black">${summary.benchmark || '--'}</strong></span>
+                                <span class="text-[8.5px] sm:text-[9.5px] font-bold text-slate-400 uppercase tracking-widest">Proxy: <strong class="text-slate-700 font-black">${escapeDashboardHtml(summary.benchmark || '--')}</strong></span>
                                 <span class="px-1.5 py-0.5 rounded border text-[8.5px] sm:text-[9.5px] font-black leading-none ${moveClass}">${moveText}</span>
                             </div>
                         </div>
@@ -6200,6 +6281,21 @@ async function fetchMarketData(cachedData = null) {
     }
 }
 
+function escapeDashboardHtml(value) {
+    return String(value ?? '').replace(/[&<>\"']/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', "'": '&#39;'
+    })[char]);
+}
+
+function safeDashboardUrl(value) {
+    try {
+        const url = new URL(String(value || ''), window.location.origin);
+        return ['http:', 'https:'].includes(url.protocol) ? url.href : '';
+    } catch (_) {
+        return '';
+    }
+}
+
 function macroEventActualDisplay(event, isPast) {
     const hasActual = event.actual !== undefined && event.actual !== null && String(event.actual).trim() !== '';
     if (hasActual) {
@@ -6263,31 +6359,32 @@ async function fetchMacroEvents(cachedData = null) {
                 let newsHtml = '';
                 if (ind.recent_news && ind.recent_news.length > 0) {
                     const topNews = ind.recent_news[0];
-                    newsHtml = `
+                    const newsUrl = safeDashboardUrl(topNews.link);
+                    newsHtml = newsUrl ? `
                     <div class="mt-3 pt-3 border-t border-slate-100">
-                        <a href="${topNews.link}" target="_blank" class="block group">
-                            <span class="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">${topNews.publisher}</span>
-                            <p class="text-xs text-slate-600 font-medium group-hover:text-indigo-600 transition-colors line-clamp-2">${topNews.title}</p>
+                        <a href="${escapeDashboardHtml(newsUrl)}" target="_blank" rel="noopener noreferrer" class="block group">
+                            <span class="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">${escapeDashboardHtml(topNews.publisher)}</span>
+                            <p class="text-xs text-slate-600 font-medium group-hover:text-indigo-600 transition-colors line-clamp-2">${escapeDashboardHtml(topNews.title)}</p>
                         </a>
-                    </div>`;
+                    </div>` : '';
                 }
 
                 html += `
                 <div class="bg-slate-50 border border-slate-100 rounded-xl p-5 hover:shadow-md transition-all hover:border-indigo-100">
                     <div class="flex justify-between items-start mb-2">
                         <div>
-                            <span class="text-[10px] font-black text-slate-400 uppercase tracking-widest">${ind.ticker}</span>
-                            <h4 class="text-sm font-bold text-slate-800 leading-tight">${ind.name}</h4>
+                            <span class="text-[10px] font-black text-slate-400 uppercase tracking-widest">${escapeDashboardHtml(ind.ticker)}</span>
+                            <h4 class="text-sm font-bold text-slate-800 leading-tight">${escapeDashboardHtml(ind.name)}</h4>
                         </div>
                         <span class="px-2 py-1 rounded text-xs font-bold ${bgClass} ${colorClass}">
-                            ${arrow} ${Math.abs(ind.change_pct)}%
+                            ${arrow} ${escapeDashboardHtml(Math.abs(ind.change_pct))}%
                         </span>
                     </div>
                     <div class="flex items-end gap-2 mb-2">
-                        <span class="text-2xl font-black text-slate-800">${ind.current_value}</span>
-                        <span class="text-xs font-bold text-slate-400 mb-1">${ind.unit}</span>
+                        <span class="text-2xl font-black text-slate-800">${escapeDashboardHtml(ind.current_value)}</span>
+                        <span class="text-xs font-bold text-slate-400 mb-1">${escapeDashboardHtml(ind.unit)}</span>
                     </div>
-                    <p class="text-[10px] text-slate-500 mb-2 leading-relaxed">${ind.description}</p>
+                    <p class="text-[10px] text-slate-500 mb-2 leading-relaxed">${escapeDashboardHtml(ind.description)}</p>
                     ${newsHtml}
                 </div>`;
             });
@@ -6344,13 +6441,13 @@ async function fetchMacroEvents(cachedData = null) {
                     const actualDisplay = macroEventActualDisplay(e, isPast);
                     const surpriseDisplay = macroEventSurpriseDisplay(e);
                     const sourceHtml = e.actual_source
-                        ? `<p class="mt-2 text-[9px] font-bold text-slate-400 uppercase tracking-wide">Actual source: ${e.actual_source}${e.actual_period ? ` • ${e.actual_period}` : ''}</p>`
+                        ? `<p class="mt-2 text-[9px] font-bold text-slate-400 uppercase tracking-wide">Actual source: ${escapeDashboardHtml(e.actual_source)}${e.actual_period ? ` • ${escapeDashboardHtml(e.actual_period)}` : ''}</p>`
                         : '';
                     const actualNoteHtml = actualDisplay.note
-                        ? `<p class="mt-1 text-[9px] font-medium text-slate-400 leading-snug">${actualDisplay.note}</p>`
+                        ? `<p class="mt-1 text-[9px] font-medium text-slate-400 leading-snug">${escapeDashboardHtml(actualDisplay.note)}</p>`
                         : '';
                     const macroReadHtml = e.macro_read
-                        ? `<div class="mt-3 rounded-lg border border-indigo-100 bg-indigo-50/70 px-3 py-2 text-[10px] font-bold text-indigo-800 leading-snug">Quant read: ${e.macro_read}</div>`
+                        ? `<div class="mt-3 rounded-lg border border-indigo-100 bg-indigo-50/70 px-3 py-2 text-[10px] font-bold text-indigo-800 leading-snug">Quant read: ${escapeDashboardHtml(e.macro_read)}</div>`
                         : '';
 
                     html += `
@@ -6359,17 +6456,17 @@ async function fetchMacroEvents(cachedData = null) {
                         <div class="border rounded-xl p-4 transition-all ${cardBg}">
                             <div class="flex items-center justify-between mb-1.5">
                                 <div class="flex items-center">
-                                    <span class="text-xs font-black text-slate-500 uppercase tracking-wider">${timeStr} • ${e.country || 'USD'}</span>
+                                    <span class="text-xs font-black text-slate-500 uppercase tracking-wider">${escapeDashboardHtml(timeStr)} • ${escapeDashboardHtml(e.country || 'USD')}</span>
                                     ${statusBadge}
                                 </div>
-	                                <span class="px-2 py-0.5 rounded text-[10px] font-black ${impactColor} uppercase">${e.impact || 'High'}</span>
+                                <span class="px-2 py-0.5 rounded text-[10px] font-black ${impactColor} uppercase">${escapeDashboardHtml(e.impact || 'High')}</span>
 	                            </div>
-	                            <h4 class="text-base font-bold text-slate-800 mb-2">${e.title}</h4>
+                            <h4 class="text-base font-bold text-slate-800 mb-2">${escapeDashboardHtml(e.title)}</h4>
 	                            <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs font-medium bg-slate-50/80 p-2.5 rounded-lg border border-slate-100/80">
-	                                <div><span class="text-slate-400 font-bold block text-[10px] uppercase">Previous</span><span class="text-slate-700 font-semibold">${e.previous || 'N/A'}</span></div>
-	                                <div><span class="text-slate-400 font-bold block text-[10px] uppercase">Forecast</span><span class="text-slate-700 font-semibold">${e.forecast || 'N/A'}</span></div>
-	                                <div><span class="text-slate-400 font-bold block text-[10px] uppercase">Actual</span><span class="${actualDisplay.cls}">${actualDisplay.text}</span>${actualNoteHtml}</div>
-	                                <div><span class="text-slate-400 font-bold block text-[10px] uppercase">Surprise</span><span class="${surpriseDisplay.cls}">${surpriseDisplay.text}</span></div>
+                                <div><span class="text-slate-400 font-bold block text-[10px] uppercase">Previous</span><span class="text-slate-700 font-semibold">${escapeDashboardHtml(e.previous || 'N/A')}</span></div>
+                                <div><span class="text-slate-400 font-bold block text-[10px] uppercase">Forecast</span><span class="text-slate-700 font-semibold">${escapeDashboardHtml(e.forecast || 'N/A')}</span></div>
+                                <div><span class="text-slate-400 font-bold block text-[10px] uppercase">Actual</span><span class="${actualDisplay.cls}">${escapeDashboardHtml(actualDisplay.text)}</span>${actualNoteHtml}</div>
+                                <div><span class="text-slate-400 font-bold block text-[10px] uppercase">Surprise</span><span class="${surpriseDisplay.cls}">${escapeDashboardHtml(surpriseDisplay.text)}</span></div>
 	                            </div>
                                 ${sourceHtml}
                                 ${macroReadHtml}
@@ -6416,11 +6513,11 @@ async function fetchMacroEvents(cachedData = null) {
                             <div class="flex items-center justify-between text-[8.5px] text-slate-500 font-bold uppercase tracking-wider">
                                 <span class="flex items-center gap-1.5 truncate">
                                     <span class="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse shrink-0"></span>
-                                    <span>${dayStr} • ${timeStr} • ${country}</span>
+                                    <span>${escapeDashboardHtml(dayStr)} • ${escapeDashboardHtml(timeStr)} • ${escapeDashboardHtml(country)}</span>
                                 </span>
-                                <span class="px-1.5 py-0.1 rounded-[2.5px] text-[7px] font-black ${badgeColor} uppercase shrink-0">${e.impact || 'High'}</span>
+                                <span class="px-1.5 py-0.1 rounded-[2.5px] text-[7px] font-black ${badgeColor} uppercase shrink-0">${escapeDashboardHtml(e.impact || 'High')}</span>
                             </div>
-                            <span class="font-bold text-slate-800 text-[11px] truncate w-full group-hover:text-indigo-600 transition-colors" title="${e.title}">${e.title}</span>
+                            <span class="font-bold text-slate-800 text-[11px] truncate w-full group-hover:text-indigo-600 transition-colors" title="${escapeDashboardHtml(e.title)}">${escapeDashboardHtml(e.title)}</span>
                         </div>
                     `;
                 });
@@ -6436,10 +6533,10 @@ async function fetchMacroEvents(cachedData = null) {
                     miniHtml += `
                         <div class="flex flex-col gap-0.5 w-full py-0.5 border-b border-slate-100/60 last:border-0 opacity-75">
                             <div class="flex items-center justify-between text-[8px] text-slate-400 font-bold uppercase tracking-wider">
-                                <span class="truncate">[Done] ${dayStr} • ${timeStr}</span>
-                                <span class="px-1.5 py-0.1 rounded-[2.5px] text-[7px] font-black ${badgeColor} uppercase shrink-0">${e.impact || 'High'}</span>
+                                <span class="truncate">[Done] ${escapeDashboardHtml(dayStr)} • ${escapeDashboardHtml(timeStr)}</span>
+                                <span class="px-1.5 py-0.1 rounded-[2.5px] text-[7px] font-black ${badgeColor} uppercase shrink-0">${escapeDashboardHtml(e.impact || 'High')}</span>
                             </div>
-                            <span class="font-bold text-slate-600 text-[10.5px] truncate w-full" title="${e.title}">${e.title}</span>
+                            <span class="font-bold text-slate-600 text-[10.5px] truncate w-full" title="${escapeDashboardHtml(e.title)}">${escapeDashboardHtml(e.title)}</span>
                         </div>
                     `;
                 });

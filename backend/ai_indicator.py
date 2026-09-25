@@ -13,9 +13,11 @@ import concurrent.futures
 import copy
 import hashlib
 import html as html_lib
+import http.client
 import ipaddress
 import re
 import socket
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -28,6 +30,7 @@ import yfinance as yf
 import config as global_config
 from user_config import get_user_config
 from earnings_service import build_earnings_watch
+from instrument_types import is_known_etf
 
 # ---------------------------------------------------------------------------
 # In-memory cache: { (ticker, timeframe): {"data": {...}, "timestamp": float} }
@@ -355,17 +358,28 @@ def _clean_news_text(value: str, maximum: int = 400) -> str:
 
 def _is_public_news_url(url: str) -> bool:
     """Allow article previews only from publicly routable HTTP(S) hosts."""
+    return _resolve_public_news_endpoint(url) is not None
+
+
+def _resolve_public_news_endpoint(url: str):
+    """Resolve once and return a validated endpoint for an SSRF-safe request."""
     try:
         parsed = urllib.parse.urlparse(str(url or ""))
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            return False
-        addresses = socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80))
-        return bool(addresses) and all(
-            ipaddress.ip_address(address[4][0].split("%", 1)[0]).is_global
-            for address in addresses
+            return None
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        addresses = socket.getaddrinfo(
+            parsed.hostname,
+            port,
+            type=socket.SOCK_STREAM,
         )
+        for address in addresses:
+            ip = ipaddress.ip_address(address[4][0].split("%", 1)[0])
+            if ip.is_global:
+                return parsed, str(ip), int(port)
+        return None
     except (OSError, ValueError, TypeError):
-        return False
+        return None
 
 
 class _PublicNewsRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -377,12 +391,8 @@ class _PublicNewsRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 def _article_preview(url: str) -> str:
     """Read only a page's short public metadata description, never its full body."""
-    if not _is_public_news_url(url):
-        return ""
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        opener = urllib.request.build_opener(_PublicNewsRedirectHandler())
-        raw = opener.open(req, timeout=5).read(350_000).decode("utf-8", "ignore")
+        raw = _fetch_public_url(url, max_bytes=350_000).decode("utf-8", "ignore")
         patterns = (
             r'<meta[^>]+(?:name|property)=["\'](?:description|og:description|twitter:description)["\'][^>]+content=["\']([^"\']+)',
             r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:name|property)=["\'](?:description|og:description|twitter:description)["\']',
@@ -396,6 +406,61 @@ def _article_preview(url: str) -> str:
     except Exception:
         pass
     return ""
+
+
+def _fetch_public_url(url: str, max_bytes: int = 350_000, max_redirects: int = 3) -> bytes:
+    """Fetch a public news URL while pinning each connection to its validated IP.
+
+    urllib resolves the hostname again after validation, which permits a DNS
+    rebinding race. This small bounded client uses the resolved IP for the TCP
+    connection and preserves the original hostname for Host/SNI validation.
+    Every redirect repeats the same validation and connection pinning.
+    """
+    current_url = str(url or "")
+    for _ in range(max_redirects + 1):
+        endpoint = _resolve_public_news_endpoint(current_url)
+        if endpoint is None:
+            raise urllib.error.URLError("Blocked non-public news URL")
+        parsed, validated_ip, port = endpoint
+        target = parsed.path or "/"
+        if parsed.query:
+            target += f"?{parsed.query}"
+        sock = socket.create_connection((validated_ip, port), timeout=5)
+        response = None
+        try:
+            if parsed.scheme == "https":
+                context = ssl.create_default_context()
+                sock = context.wrap_socket(sock, server_hostname=parsed.hostname)
+            sock.sendall(
+                (
+                    f"GET {target} HTTP/1.1\r\n"
+                    f"Host: {parsed.hostname}\r\n"
+                    "User-Agent: BotBullsNewsPreview/1.0\r\n"
+                    "Accept: text/html,application/xhtml+xml\r\n"
+                    "Connection: close\r\n\r\n"
+                ).encode("ascii", "strict")
+            )
+            response = http.client.HTTPResponse(sock)
+            response.begin()
+            if 300 <= response.status < 400:
+                location = response.getheader("Location")
+                if not location:
+                    return b""
+                current_url = urllib.parse.urljoin(current_url, location)
+                continue
+            if response.status < 200 or response.status >= 300:
+                return b""
+            content_length = response.getheader("Content-Length")
+            if content_length and int(content_length) > max_bytes:
+                return b""
+            body = response.read(max_bytes + 1)
+            return body if len(body) <= max_bytes else b""
+        finally:
+            if response is not None:
+                response.close()
+            else:
+                sock.close()
+    raise urllib.error.URLError("Too many news redirects")
 
 
 def _ticker_news_terms(ticker: str, company_name: str = "") -> set[str]:
@@ -422,6 +487,14 @@ def _title_mentions_ticker(title: str, terms: set[str]) -> bool:
     )
 
 
+def _is_crypto_news_ticker(ticker: str) -> bool:
+    """Use the RSS provider for crypto symbols whose Yahoo feed is rate-limited."""
+    normalized = str(ticker or "").upper().replace("/", "").replace("-", "")
+    return normalized.endswith(("USD", "USDT", "USDC")) or normalized in {
+        "BTC", "ETH", "XRP", "DOGE", "LTC", "ADA", "SOL"
+    }
+
+
 def _fetch_yahoo_news_articles(ticker: str, max_articles: int = 8) -> list[dict]:
     params = urllib.parse.urlencode({
         "q": str(ticker).upper(),
@@ -432,8 +505,7 @@ def _fetch_yahoo_news_articles(ticker: str, max_articles: int = 8) -> list[dict]
         "enableNavLinks": "false",
     })
     url = f"https://query2.finance.yahoo.com/v1/finance/search?{params}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    payload = json.load(urllib.request.urlopen(req, timeout=12))
+    payload = json.loads(_fetch_public_url(url, max_bytes=256_000).decode("utf-8", "ignore"))
     quotes = payload.get("quotes") or []
     company_name = ""
     for quote in quotes:
@@ -486,8 +558,7 @@ def _fetch_google_news_articles(ticker: str, max_articles: int = 8) -> list[dict
     query_text = f'"{str(ticker).upper()}" {company_term} stock when:7d'.strip()
     query = urllib.parse.quote(query_text)
     url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    root = ET.parse(urllib.request.urlopen(req, timeout=12)).getroot()
+    root = ET.fromstring(_fetch_public_url(url, max_bytes=256_000))
     terms = _ticker_news_terms(ticker, company_name)
     now_ts = time.time()
     cutoff = now_ts - 10 * 24 * 60 * 60
@@ -535,6 +606,22 @@ def _fetch_news_article_metadata(ticker: str, max_articles: int = 8) -> tuple[li
     """Fetch lightweight article metadata and report provider health."""
     articles = []
     provider_status = {"yahoo": "not_checked", "google": "not_checked", "errors": []}
+
+    # Yahoo's search JSON endpoint currently returns HTTP 429 for crypto
+    # symbols. Google News RSS provides the same recent headline evidence and
+    # is already the normal fallback for stocks, so use it as the primary
+    # crypto provider and avoid a guaranteed JSON parse failure.
+    if _is_crypto_news_ticker(ticker):
+        try:
+            articles = _fetch_google_news_articles(ticker, max_articles)
+            provider_status["google"] = "ok" if articles else "empty"
+        except Exception as exc:
+            provider_status["google"] = "error"
+            provider_status["errors"].append(f"Google: {type(exc).__name__}")
+            print(f"[ai_indicator] Google news fetch error for {ticker}: {exc}")
+        articles.sort(key=lambda item: int(item.get("published_ts") or 0), reverse=True)
+        return articles[:max_articles], provider_status
+
     try:
         articles = _fetch_yahoo_news_articles(ticker, max_articles)
         provider_status["yahoo"] = "ok" if articles else "empty"
@@ -571,9 +658,10 @@ def _fetch_news_article_metadata_cached(ticker: str, max_articles: int = 8) -> t
     with _NEWS_METADATA_CACHE.with_inflight_lock(cache_key):
         cached = _NEWS_METADATA_CACHE.get(cache_key, 50)
         if cached is None:
+            cache_generation = _NEWS_METADATA_CACHE.generation()
             articles, provider_status = _fetch_news_article_metadata(ticker, max_articles)
             cached = {"articles": articles, "provider_status": provider_status}
-            _NEWS_METADATA_CACHE.set(cache_key, cached)
+            _NEWS_METADATA_CACHE.set_if_generation(cache_key, cached, cache_generation)
         return copy.deepcopy(cached["articles"]), copy.deepcopy(cached["provider_status"])
 
 
@@ -836,29 +924,32 @@ def gather_market_context(ticker: str, timeframe: str = "1Hour") -> dict:
             else:
                 ticker_returns = None
 
-        # Info (may fail for crypto)
-        try:
-            info = t.fast_info
-            ctx["market_cap"] = getattr(info, "market_cap", None)
-            ctx["sector"] = getattr(info, "sector", None)
-            ctx["industry"] = getattr(info, "industry", None)
-        except Exception:
-            pass
+        # Yahoo's company-only quoteSummary modules return noisy 404s for ETFs.
+        # Their price/volume technicals remain valid, but company market cap,
+        # beta, sector, industry, and earnings are not meaningful enrichment.
+        if not is_known_etf(yf_ticker):
+            try:
+                info = t.fast_info
+                ctx["market_cap"] = getattr(info, "market_cap", None)
+                ctx["sector"] = getattr(info, "sector", None)
+                ctx["industry"] = getattr(info, "industry", None)
+            except Exception:
+                pass
 
-        # Beta remains part of general ticker info.  Earnings dates use the
-        # shared validated calendar service so Quant AI and Screener agree.
-        try:
-            full_info = t.info
-            ctx["beta"] = full_info.get("beta")
-        except Exception:
-            pass
-        try:
-            earnings = build_earnings_watch(ticker)
-            if earnings.get("event_date"):
-                ctx["next_earnings"] = earnings["event_date"]
-                ctx["days_to_earnings"] = earnings.get("days_to_event")
-        except Exception:
-            pass
+            # Beta remains part of general ticker info.  Earnings dates use the
+            # shared validated calendar service so Quant AI and Screener agree.
+            try:
+                full_info = t.info
+                ctx["beta"] = full_info.get("beta")
+            except Exception:
+                pass
+            try:
+                earnings = build_earnings_watch(ticker)
+                if earnings.get("event_date"):
+                    ctx["next_earnings"] = earnings["event_date"]
+                    ctx["days_to_earnings"] = earnings.get("days_to_event")
+            except Exception:
+                pass
 
     except Exception as e:
         print(f"[ai_indicator] yfinance error for {ticker}: {e}")
@@ -1730,6 +1821,7 @@ def get_ai_indicator(
         getattr(cfg, "AI_NEWS_ALIGNMENT_MODE", "veto_conflicting_entries"),
     )
     cache_key = (
+        str(getattr(cfg, "uid", "default")),
         ticker.upper(),
         decision_timeframe,
         model_to_use,
@@ -2223,6 +2315,7 @@ def get_ai_decision_for_bar(
         # Determine the model string for the cache key to avoid cross-model cache hits
         cache_model = normalize_ai_model_name(model or getattr(cfg, "AI_INDICATOR_MODEL", "llama-3.3-70b-versatile"))
         cache_key = (
+            str(getattr(cfg, "uid", "default")),
             ticker.upper(),
             f"autopilot_{decision_timeframe}_{AI_CONTEXT_CACHE_VERSION}",
             cache_model,
@@ -2671,8 +2764,8 @@ def clear_ai_cache(ticker: str = None, timeframe: str = None, include_news: bool
     else:
         ticker_key = ticker.upper()
         _AI_CACHE.delete_matching(
-            lambda k: k[0] == ticker_key and (
-                timeframe is None or str(timeframe) in str(k[1])
+            lambda k: len(k) > 1 and str(k[1]).upper() == ticker_key and (
+                timeframe is None or str(timeframe) in str(k[2:])
             )
         )
     if include_news:

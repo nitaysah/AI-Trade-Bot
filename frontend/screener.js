@@ -128,7 +128,7 @@ function markScreenerForceScanPending(ticker) {
 }
 
 window.setScreenerFilter = function (filter = "all") {
-    currentScreenerFilter = ["all", "bullish", "bearish", "neutral"].includes(filter) ? filter : "all";
+    currentScreenerFilter = ["all", "bullish", "bearish", "neutral", "attention"].includes(filter) ? filter : "all";
     document.querySelectorAll("[data-screener-filter]").forEach((button) => {
         const selected = button.dataset.screenerFilter === currentScreenerFilter;
         button.classList.toggle("bg-white", selected);
@@ -144,6 +144,7 @@ const SCREENER_ALERT_READ_STATES = new Set(['all', 'unread', 'read']);
 let screenerNotificationPeriod = 'all';
 let screenerNotificationReadState = 'all';
 let screenerNotificationFetchId = 0;
+let screenerNotificationRequestPromise = null;
 
 function alertPeriodLabel(period) {
     return ({ '1d': '1D', '1w': '1W', '1m': '1M', '1y': '1Y', all: 'All saved (90d)' })[period] || 'All saved (90d)';
@@ -270,8 +271,15 @@ function openScreenerAlertDetail(item) {
     };
     const scanLog = item.scan_log && typeof item.scan_log === 'object' ? item.scan_log : {};
     const direction = String(item.event_direction || item.direction || 'SIGNAL').toUpperCase();
+    const priceEventType = String(item.event_type || item.alert_kind || '').toUpperCase();
+    const isPriceEvent = priceEventType === 'PRICE_EXIT' || priceEventType === 'PRICE_ENTRY';
+    const priceEventLabel = priceEventType === 'PRICE_ENTRY' ? 'PRICE ENTRY' : 'PRICE EXIT';
     const isBearish = direction === 'BEARISH';
-    const directionClass = isBearish
+    const symbolLabel = String(item.symbol || 'Unknown').trim();
+    const normalizedTitle = String(item.title || '').trim().replace(/\s+/g, ' ').toUpperCase();
+    const genericTitle = `${symbolLabel} ${direction.replace(/_/g, ' ')} SETUP`.toUpperCase();
+    const secondaryTitle = normalizedTitle && normalizedTitle !== genericTitle ? item.title : '';
+    const directionClass = isBearish || priceEventType === 'PRICE_EXIT'
         ? 'text-rose-700 bg-rose-50 border-rose-200'
         : 'text-emerald-700 bg-emerald-50 border-emerald-200';
     const reason = item.reason || item.scan_reason || scanLog.detail || scanLog.summary || 'Signal transition detected.';
@@ -307,13 +315,34 @@ function openScreenerAlertDetail(item) {
         ? (typeof item.created_at === 'string' ? Date.parse(item.created_at) : Number(item.created_at) * 1000)
         : Number(item.timestamp) * 1000;
     const createdAt = Number.isFinite(createdValue) ? new Date(createdValue).toLocaleString('en-US', { timeZone: 'America/Chicago', dateStyle: 'medium', timeStyle: 'medium' }) : '';
+    const finalSummaryText = String(scanLog.final_summary || '').trim();
+    const isExitWatchSummary = /^Exit watch summary\s*[—-]/i.test(finalSummaryText);
+    const isEntryWatchSummary = /^Entry watch summary\s*[—-]/i.test(finalSummaryText);
+    const finalSummaryLabel = isExitWatchSummary
+        ? 'Exit watch summary:'
+        : isEntryWatchSummary
+            ? 'Entry watch summary:'
+            : 'Final scan assessment:';
+    const finalSummaryBody = (isExitWatchSummary || isEntryWatchSummary)
+        ? finalSummaryText.replace(/^(?:Exit|Entry) watch summary\s*[—-]\s*/i, '')
+        : finalSummaryText;
+    const finalSummaryClass = isExitWatchSummary
+        ? 'border-red-300 bg-red-100 text-red-950'
+        : isEntryWatchSummary
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-950'
+            : 'border-purple-200 bg-purple-50 text-purple-900';
+    const legacySnapshotWarning = item.historical_snapshot_status === 'legacy_snapshot_unavailable'
+        ? '<div class="mt-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs font-semibold text-amber-900">This legacy alert predates saved settings snapshots. Its original explanation is shown unchanged and cannot be recalculated reliably.</div>'
+        : '';
 
-    title.textContent = `${item.symbol || 'Ticker'} ${direction} Alert`;
+    title.textContent = isPriceEvent
+        ? `${item.symbol || 'Ticker'} ${priceEventType === 'PRICE_ENTRY' ? 'Price Entry' : 'Price Exit'} Alert`
+        : `${item.symbol || 'Ticker'} ${direction} Alert`;
     content.innerHTML = `
         <div class="flex flex-wrap items-center gap-2">
-            <span class="rounded-lg border px-2 py-1 text-xs font-black uppercase ${directionClass}">${text(direction)}</span>
+            <span class="rounded-lg border px-2 py-1 text-xs font-black uppercase ${directionClass}">${text(isPriceEvent ? priceEventLabel : direction)}</span>
             <span class="text-sm font-black text-indigo-950">${text(item.symbol || 'Unknown')}</span>
-            ${item.title ? `<span class="text-xs font-semibold text-slate-500">${text(item.title)}</span>` : ''}
+            ${secondaryTitle ? `<span class="text-xs font-semibold text-slate-500">${text(secondaryTitle)}</span>` : ''}
         </div>
         <div class="mt-3 rounded-2xl border border-amber-200 bg-amber-50/80 p-3 text-sm leading-relaxed text-amber-950">
             <div class="font-black">Why this alert was sent</div>
@@ -323,11 +352,12 @@ function openScreenerAlertDetail(item) {
             <div class="rounded-xl border border-indigo-100 bg-indigo-50/60 p-2"><div class="text-[0.58rem] font-black uppercase text-indigo-500">Alert created</div><div class="mt-1 text-xs font-bold text-indigo-950">${text(createdAt || '—')}</div></div>
             <div class="rounded-xl border border-indigo-100 bg-indigo-50/60 p-2"><div class="text-[0.58rem] font-black uppercase text-indigo-500">Price</div><div class="mt-1 text-xs font-bold text-indigo-950">${item.price != null ? `$${metric(item.price)}` : '—'}</div></div>
             <div class="rounded-xl border border-indigo-100 bg-indigo-50/60 p-2"><div class="text-[0.58rem] font-black uppercase text-indigo-500">Timeframe</div><div class="mt-1 text-xs font-bold text-indigo-950">${text(item.timeframe || '—')}</div></div>
-            <div class="rounded-xl border border-indigo-100 bg-indigo-50/60 p-2"><div class="text-[0.58rem] font-black uppercase text-indigo-500">Candle close</div><div class="mt-1 text-xs font-bold text-indigo-950">${item.candle_close_ts ? text(signalActivityExactLabel(item.candle_close_ts)) : '—'}</div></div>
+            <div class="rounded-xl border border-indigo-100 bg-indigo-50/60 p-2"><div class="text-[0.58rem] font-black uppercase text-indigo-500">${isPriceEvent ? 'Quote observed' : 'Candle close'}</div><div class="mt-1 text-xs font-bold text-indigo-950">${isPriceEvent && item.price_event?.observed_at ? text(new Date(item.price_event.observed_at).toLocaleString()) : item.candle_close_ts ? text(signalActivityExactLabel(item.candle_close_ts)) : '—'}</div></div>
         </div>
         ${scanLog.summary ? `<div class="mt-3 rounded-xl border border-indigo-100 bg-white p-3 text-xs leading-relaxed text-indigo-900"><span class="font-black">Scan summary:</span> ${text(scanLog.summary)}</div>` : ''}
         ${scanLog.detail ? `<div class="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-700"><span class="font-black">Scan detail:</span> ${text(scanLog.detail)}</div>` : ''}
-        ${scanLog.final_summary ? `<div class="mt-2 rounded-xl border border-purple-200 bg-purple-50 p-3 text-xs leading-relaxed text-purple-900"><span class="font-black">Final scan assessment:</span> ${text(scanLog.final_summary)}</div>` : ''}
+        ${legacySnapshotWarning}
+        ${finalSummaryText ? `<div class="mt-2 rounded-xl border ${finalSummaryClass} p-3 text-xs leading-relaxed"><span class="font-black">${finalSummaryLabel}</span> ${text(finalSummaryBody)}</div>` : ''}
         ${scanLog.progress_label || scanLog.indicator_progress_label ? `<div class="mt-2 text-xs leading-relaxed text-slate-700"><span class="font-black">Confirmation progress:</span> ${text(scanLog.progress_label || scanLog.indicator_progress_label)}</div>` : ''}
         ${levelText ? `<div class="mt-2 text-xs leading-relaxed text-slate-700"><span class="font-black">Rule and levels:</span> ${text(levelText)}</div>` : ''}
         <div class="mt-3"><h3 class="mb-2 text-xs font-black uppercase tracking-wider text-indigo-800">Indicator evidence</h3><div class="grid gap-2 sm:grid-cols-2">${indicatorsHtml}</div></div>
@@ -366,18 +396,34 @@ function renderScreenerNotifications(
     }
     list.innerHTML = items.map((item) => {
         const direction = String(item.direction || "NEUTRAL").toUpperCase();
-        const color = direction === "BULLISH" ? "emerald" : direction === "BEARISH" ? "rose" : "slate";
+        const priceEventType = String(item.event_type || item.alert_kind || '').toUpperCase();
+        const isPriceEvent = priceEventType === 'PRICE_EXIT' || priceEventType === 'PRICE_ENTRY';
+        const priceEventLabel = priceEventType === 'PRICE_ENTRY' ? 'PRICE ENTRY' : 'PRICE EXIT';
+        const color = priceEventType === 'PRICE_EXIT' || direction === "BEARISH" ? "rose" : direction === "BULLISH" ? "emerald" : "slate";
+        const eventLabel = isPriceEvent ? priceEventLabel : direction;
         const createdValue = typeof item.created_at === 'string' ? Date.parse(item.created_at) : Number(item.created_at) * 1000;
         const created = item.created_at ? new Date(createdValue).toLocaleString() : "";
         return `<button type="button" onclick="openScreenerNotification('${String(item.id || '').replace(/'/g, "\\'")}')" class="w-full text-left rounded-2xl border border-${color}-200 bg-${color}-50/50 p-3 ${item.read ? 'opacity-70' : 'shadow-sm'} focus:outline-none focus:ring-2 focus:ring-indigo-400">
-            <div class="flex items-center justify-between gap-2"><span class="text-xs font-black text-${color}-700">${escapeScreenerNewsText(item.symbol || '')} · ${escapeScreenerNewsText(direction)}</span><span class="text-[10px] text-slate-400">${escapeScreenerNewsText(created)}</span></div>
+            <div class="flex items-center justify-between gap-2"><span class="text-xs font-black text-${color}-700">${escapeScreenerNewsText(item.symbol || '')} · ${escapeScreenerNewsText(eventLabel)}</span><span class="text-[10px] text-slate-400">${escapeScreenerNewsText(created)}</span></div>
             <p class="mt-1 text-xs font-semibold text-slate-700">${escapeScreenerNewsText(item.reason || 'Signal transition detected')}</p>
             <p class="mt-1 text-[10px] text-slate-500">Price ${escapeScreenerNewsText(item.price ?? 'Unavailable')} · ${escapeScreenerNewsText(item.email_status || 'in-app')}</p>
         </button>`;
     }).join('');
 }
 
-async function fetchScreenerNotifications() {
+function fetchScreenerNotifications() {
+    if (screenerNotificationRequestPromise) return screenerNotificationRequestPromise;
+    const request = performScreenerNotificationsFetch();
+    const tracked = request.finally(() => {
+        if (screenerNotificationRequestPromise === tracked) {
+            screenerNotificationRequestPromise = null;
+        }
+    });
+    screenerNotificationRequestPromise = tracked;
+    return tracked;
+}
+
+async function performScreenerNotificationsFetch() {
     const fetchId = ++screenerNotificationFetchId;
     try {
         const headers = await getAuthHeaders();
@@ -437,12 +483,14 @@ async function loadScreenerEmailSettings() {
         if (!response.ok) return;
         const payload = await response.json();
         const settings = payload.settings || {};
+        const browserEnabled = document.getElementById('screenerBrowserEnabled');
         const emailEnabled = document.getElementById('screenerEmailEnabled');
         const smsEnabled = document.getElementById('screenerSmsEnabled');
         const smsPhoneNumber = document.getElementById('screenerSmsPhoneNumber');
         const bullish = document.getElementById('screenerBullishEnabled');
         const bearish = document.getElementById('screenerBearishEnabled');
         const cooldown = document.getElementById('screenerCooldownMinutes');
+        if (browserEnabled) browserEnabled.checked = settings.browser_enabled !== false;
         if (emailEnabled) emailEnabled.checked = Boolean(settings.email_enabled);
         if (smsEnabled) smsEnabled.checked = Boolean(settings.sms_enabled);
         if (smsPhoneNumber) smsPhoneNumber.value = settings.sms_phone_number || '';
@@ -451,8 +499,9 @@ async function loadScreenerEmailSettings() {
         if (cooldown) cooldown.value = settings.cooldown_minutes ?? 60;
         const browserStatus = document.getElementById('screenerBrowserDeliveryModalStatus');
         if (browserStatus) {
-            browserStatus.textContent = 'On by default';
-            browserStatus.className = 'text-emerald-600';
+            const enabled = settings.browser_enabled !== false;
+            browserStatus.textContent = enabled ? 'On' : 'Off';
+            browserStatus.className = enabled ? 'font-semibold text-emerald-600' : 'font-semibold text-slate-500';
         }
         const smsProviderStatus = document.getElementById('screenerSmsProviderStatus');
         if (smsProviderStatus) {
@@ -478,6 +527,7 @@ window.saveScreenerEmailSettings = async function () {
             method: 'PUT',
             headers,
             body: JSON.stringify({ settings: {
+                browser_enabled: Boolean(document.getElementById('screenerBrowserEnabled')?.checked),
                 email_enabled: Boolean(document.getElementById('screenerEmailEnabled')?.checked),
                 sms_enabled: Boolean(document.getElementById('screenerSmsEnabled')?.checked),
                 sms_phone_number: String(document.getElementById('screenerSmsPhoneNumber')?.value || '').trim(),
@@ -511,6 +561,34 @@ window.sendScreenerTestEmail = async function () {
 // ──────────────────────────────────────────────
 // Auth Headers
 // ──────────────────────────────────────────────
+let developmentAuthTokenPromise = null;
+
+async function getDevelopmentAuthHeaders(baseHeaders) {
+    if (localStorage.getItem('dev_mode') !== 'true') return baseHeaders;
+    try {
+        if (!developmentAuthTokenPromise) {
+            developmentAuthTokenPromise = fetch(`${API_BASE}/api/dev-token`, {
+                cache: 'no-store',
+                headers: { 'Cache-Control': 'no-cache' }
+            }).then(async response => {
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok || typeof payload.token !== 'string' || !payload.token.trim()) {
+                    throw new Error('Development authentication is unavailable');
+                }
+                return payload.token.trim();
+            }).catch(error => {
+                developmentAuthTokenPromise = null;
+                throw error;
+            });
+        }
+        const token = await developmentAuthTokenPromise;
+        return { ...baseHeaders, 'Authorization': `Bearer ${token}` };
+    } catch (error) {
+        console.warn('[auth] Development authentication is unavailable:', error);
+        return baseHeaders;
+    }
+}
+
 async function getAuthHeaders() {
     const auth = window.auth;
     const baseHeaders = {
@@ -518,15 +596,11 @@ async function getAuthHeaders() {
         'Bypass-Tunnel-Reminder': 'true'
     };
 
-    if (!auth) return baseHeaders;
+    if (!auth) return getDevelopmentAuthHeaders(baseHeaders);
     const user = auth.currentUser;
     if (!user) {
-        if (localStorage.getItem('dev_mode') === 'true') {
-            return {
-                ...baseHeaders,
-                'Authorization': `Bearer dev-token`
-            };
-        }
+        const developmentHeaders = await getDevelopmentAuthHeaders(baseHeaders);
+        if (developmentHeaders !== baseHeaders) return developmentHeaders;
         return baseHeaders;
     }
 
@@ -1384,7 +1458,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
     if (countEl) countEl.textContent = `${runningCount} / ${totalCount}`;
     if (subEl) {
         if (totalCount > 0) {
-            subEl.innerHTML = `<span class="text-emerald-500">${runningCount} Monitoring</span> • <span class="text-amber-500">${pausedCount} Paused</span>`;
+            subEl.textContent = `${runningCount} enabled • ${pausedCount} paused • ${Number(summary.setups?.attention || 0)} need attention`;
         } else {
             subEl.textContent = 'No profiles monitoring';
         }
@@ -1405,8 +1479,11 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
     }
     if (currentScreenerFilter !== 'all') {
         filteredTradelist = filteredTradelist.filter(ticker => {
-            const direction = String((scans || {})[ticker]?.direction || 'NEUTRAL').toLowerCase();
-            return direction === currentScreenerFilter;
+            const scan = (scans || {})[ticker];
+            const settings = window.lastBotsData?.ticker_settings?.[ticker];
+            if (currentScreenerFilter === 'attention') return ScreenerSnapshotState.needsAttention(scan, settings);
+            return ScreenerSnapshotState.enabled(settings) && ScreenerSnapshotState.isCurrent(scan) &&
+                String(scan.direction).toLowerCase() === currentScreenerFilter;
         });
     }
 
@@ -1423,7 +1500,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         const premiumCardClass = isCryptoFlag ? 'crypto-premium-card' : (isOptions ? 'options-premium-card' : '');
 
         const item = document.createElement('div');
-        item.className = `watchlist-item group active-bot ${premiumCardClass} ${selectedTicker === ticker ? 'active' : ''} ${botArrangeMode ? 'ring-1 ring-emerald-200 bg-emerald-50/30' : ''} p-2.5 mb-1.5 flex flex-col gap-1.5 transition-transform duration-200`;
+        item.className = `watchlist-item group active-bot ${premiumCardClass} ${selectedTicker === ticker ? 'active' : ''} ${botArrangeMode ? 'ring-1 ring-emerald-200 bg-emerald-50/30' : ''} p-2 mb-1 flex flex-col gap-1 transition-transform duration-200`;
         item.dataset.ticker = ticker;
         item.dataset.ticker = ticker;
 
@@ -1558,14 +1635,17 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             }
             return false;
         });
-        const decisionLabel = direction;
+        const currentSignal = ScreenerSnapshotState.isCurrent(scan) && !isPaused;
+        const decisionLabel = scan?.evaluation_status === 'valid' ? direction : 'WAITING';
         const scanTargetDirection = String(scan?.scan_log?.target_direction || '').toUpperCase();
-        const decisionContextLabel = scanTargetDirection && scanTargetDirection !== direction ? 'Current' : 'Signal';
+        const decisionContextLabel = !currentSignal
+            ? (isPaused ? 'Paused' : scan?.evaluation_status !== 'valid' ? 'Analysis' : scan?.data_status === 'session_closed' ? 'Last session' : 'Historical')
+            : scanTargetDirection && scanTargetDirection !== direction ? 'Current' : 'Signal';
         const decisionTitle = scanTargetDirection && scanTargetDirection !== direction
             ? `Latest completed-candle signal is ${direction}; the scan log is watching for ${scanTargetDirection}. No order is placed.`
             : 'Independent Screener signal based on the selected indicator profile; no order is placed.';
         const decisionBadgeHtml = `
-            <span class="px-1.5 py-0.5 rounded border ${actionColor} font-black text-[0.5rem] tracking-widest uppercase" title="${decisionTitle}">
+            <span class="px-1.5 py-0.5 rounded border ${currentSignal ? actionColor : 'text-slate-500 bg-slate-50 border-slate-200'} font-black text-[0.5rem] tracking-widest uppercase" title="${currentSignal ? decisionTitle : 'Not a current signal. Waiting for fresh completed-candle analysis.'}">
                 <span class="opacity-60">${decisionContextLabel}</span> ${decisionLabel}
             </span>
         `;
@@ -1708,7 +1788,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         let pauseReasonHtml = '';
         if (isPaused && pauseReason) {
             pauseReasonHtml = `
-                <div class="mt-1 px-2.5 py-1.5 bg-amber-500/10 border border-amber-500/20 rounded-xl text-[0.58rem] font-black text-amber-700 flex items-center gap-1.5 leading-snug">
+                <div class="mt-0.5 px-2 py-1 bg-amber-500/10 border border-amber-500/20 rounded-xl text-[0.58rem] font-black text-amber-700 flex items-center gap-1 leading-snug">
                     <span>⚠️</span>
                     <span>${pauseReason}</span>
                 </div>
@@ -1718,6 +1798,10 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         let positionHtml = '';
         let scanLogHtml = '';
         const scanLog = scan?.scan_log || null;
+        const scanDataStatus = String(scan?.data_status || '').toLowerCase();
+        const scanDataWarningHtml = ['degraded', 'stale_reference'].includes(scanDataStatus)
+            ? `<div class="mt-0.5 rounded-lg border border-rose-200 bg-rose-50 px-1.5 py-1 text-[0.58rem] font-bold leading-snug text-rose-800">⚠ Market data needs attention. ${sanitizePlainText(scan?.stale_reason || 'The last valid scan is being retained until a current completed candle is available.')}</div>`
+            : '';
         const forceScanRefreshing = isForceScanPending(ticker, scanLog);
         const forceScanBadge = forceScanRefreshing
             ? '<span class="px-1.5 py-0.5 rounded-md border border-indigo-200 bg-indigo-50 text-indigo-700 font-black text-[0.48rem] uppercase tracking-wide inline-flex items-center gap-0.5"><span class="animate-spin">⟳</span> Refreshing scan results...</span>'
@@ -1733,7 +1817,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         }
         let lastTradeText = 'First completed-candle scan pending';
         if (scanLog?.updated_at) {
-            lastTradeText = `Last scan: ${formatChicagoDateTime(scanLog.updated_at)}`;
+            lastTradeText = `Last closed-candle scan at ${formatChicagoDateTime(scanLog.updated_at)}`;
         }
         const scanRuntimeLabel = runtimeText.startsWith('Running for ') ? runtimeText : runtimeText;
         const scanRuntimeHtml = `<div class="flex items-center gap-1 flex-wrap text-[0.52rem] text-slate-500 font-semibold leading-snug"><span class="${isPaused ? 'text-slate-400' : 'text-slate-600'}">${scanRuntimeLabel}</span><span class="text-slate-300">•</span><span class="text-slate-500 font-normal">${lastTradeText}</span></div>`;
@@ -1769,7 +1853,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             const rawForecastExitText = scan?.forecast_exit_static || activePosition.exit_forecast_static || activePosition.exit_forecast || 'Checking exit criteria...';
             const forecastExitText = String(rawForecastExitText).replace(/\[(Entry|Exit) Strategy\]\s*/gi, '');
             positionHtml = `
-                <div class="mt-2 pt-2 border-t border-slate-50 grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-1.5 cursor-pointer" onclick="selectTicker('${ticker}')">
+                <div class="mt-1.5 pt-1.5 border-t border-slate-50 grid grid-cols-2 sm:grid-cols-4 gap-1 sm:gap-0.5 cursor-pointer" onclick="selectTicker('${ticker}')">
                     <div class="flex flex-col">
                         <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Holding</span>
                         <span class="text-[0.62rem] font-black text-indigo-950 font-mono tracking-tight">${qtyDisp} @ $${avgCost}</span>
@@ -1782,7 +1866,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Market Val</span>
                         <span class="text-[0.62rem] font-black text-indigo-950 font-mono tracking-tight">$${mktValue}</span>
                     </div>
-                    <div class="flex flex-col gap-1 justify-center">
+                    <div class="flex flex-col gap-0.5 justify-center">
                         <div class="flex items-center justify-between px-1.5 py-0.5 rounded ${dailyColorClass} w-full leading-none">
                             <span class="text-[0.45rem] font-bold uppercase opacity-85">1D</span>
                             <span class="text-[0.55rem] font-black font-mono tracking-tight ml-1">${dailyPlStr} <span class="opacity-75 text-[0.45rem] font-medium ml-0.5">${dailyPlPcStr}</span></span>
@@ -1793,8 +1877,8 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         </div>
                     </div>
                 </div>
-                <div class="mt-1.5 pt-1.5 border-t border-slate-50 flex flex-col justify-center cursor-pointer w-full min-w-0" onclick="selectTicker('${ticker}')">
-                    <div class="flex items-center gap-1.5 mb-1 flex-wrap">
+                <div class="mt-1 pt-1 border-t border-slate-50 flex flex-col justify-center cursor-pointer w-full min-w-0" onclick="selectTicker('${ticker}')">
+                    <div class="flex items-center gap-1 mb-0.5 flex-wrap">
                         <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">${continuousGridForecast?.enabled ? 'Live Adaptive Grid Watch' : 'Bearish Reversal Watch'}</span>
                     </div>
                     ${continuousGridForecast?.enabled
@@ -1969,18 +2053,18 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             const buyDescriptionsHtml = renderSetupDescriptions('entry', buyMode, buyIndicatorsHtml);
             const sellDescriptionsHtml = renderSetupDescriptions('exit', sellMode, sellIndicatorsHtml);
             positionHtml = `
-                <div class="mt-2 pt-2 border-t border-slate-50 flex flex-col gap-1.5 cursor-pointer w-full min-w-0" onclick="selectTicker('${ticker}')">
+                <div class="mt-1.5 pt-1.5 border-t border-slate-50 flex flex-col gap-0.5 cursor-pointer w-full min-w-0" onclick="selectTicker('${ticker}')">
                     <div class="flex items-center gap-1.5 flex-wrap">
                         <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Entry &amp; Exit Setup Watch</span>
                         <span class="px-1.5 py-0.5 rounded border ${virtualPosition ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'} text-[0.48rem] font-black uppercase">${outlookTitle}</span>
                         <span class="px-1.5 py-0.5 rounded border ${marketHoursClass} text-[0.48rem] font-black uppercase">${marketHoursLabel}</span>
                     </div>
-                    <div class="grid grid-cols-1 gap-1">
-                        <div class="rounded-lg border border-emerald-100 bg-emerald-50/50 px-2 py-1 min-w-0" title="${sanitizePlainText(buySettingsText)}">
+                    <div class="grid grid-cols-1 gap-0.5">
+                        <div class="rounded-lg border border-emerald-100 bg-emerald-50/50 px-1.5 py-0.5 min-w-0" title="${sanitizePlainText(buySettingsText)}">
                             <span class="block text-[0.46rem] font-black uppercase tracking-wider text-emerald-700">Bullish / Buy Setup - <span class="text-indigo-700">${buySettingsText}</span></span>
                             ${buyDescriptionsHtml}
                         </div>
-                        <div class="rounded-lg border border-rose-100 bg-rose-50/50 px-2 py-1 min-w-0" title="${sanitizePlainText(sellSettingsText)}">
+                        <div class="rounded-lg border border-rose-100 bg-rose-50/50 px-1.5 py-0.5 min-w-0" title="${sanitizePlainText(sellSettingsText)}">
                             <span class="block text-[0.46rem] font-black uppercase tracking-wider text-rose-700">Bearish / Sell Setup - <span class="text-indigo-700">${sellSettingsText}</span></span>
                             ${sellDescriptionsHtml}
                         </div>
@@ -2011,6 +2095,19 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 isCryptoAsset
             );
             const statusText = String(scanLog.status || 'WAITING_ENTRY').replace(/_/g, ' ');
+            const screeningPolicyLabel = String(scanLog.screening_strategy_label || (
+                String(scanLog.screening_strategy_mode || tickerSettings.strategy_mode || 'combined').toLowerCase() === 'discovery'
+                    ? 'Discovery · Either Qualifies'
+                    : String(scanLog.screening_strategy_mode || tickerSettings.strategy_mode || 'combined').toLowerCase() === 'technical'
+                        ? 'Technical Only'
+                        : String(scanLog.screening_strategy_mode || tickerSettings.strategy_mode || 'combined').toLowerCase() === 'event'
+                            ? 'Event-Driven Only'
+                            : 'Combined · Require Both'
+            ));
+            const screeningQualification = scanLog.strategy_qualification && typeof scanLog.strategy_qualification === 'object'
+                ? scanLog.strategy_qualification
+                : {};
+            const screeningPolicyHtml = `<span class="px-1.5 py-0.5 rounded border border-emerald-200 bg-emerald-50 text-emerald-700 font-black text-[0.48rem] tracking-widest uppercase" title="Technical and event qualification policy">${sanitizePlainText(screeningPolicyLabel)}</span>`;
             const indicatorLines = [confirmedText, waitingText, opposingText].filter(Boolean);
             const strategyMode = String(scanLog.strategy_mode || '').toLowerCase();
             const structuralTitle = ({
@@ -2054,10 +2151,14 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                     ${structuralLines.map(line => `<span>${sanitizePlainText(line)}</span>`).join('')}
                 </div>`
                 : '';
-            const detailHtml = indicatorSectionHtml || structuralSectionHtml || blockers.length
+            const screeningEvidenceHtml = screeningQualification.reason
+                ? `<span>Qualification: ${sanitizePlainText(screeningQualification.reason)}</span>`
+                : '';
+            const detailHtml = indicatorSectionHtml || structuralSectionHtml || screeningEvidenceHtml || blockers.length
                 ? `<div class="flex flex-col gap-0.5 text-[0.58rem] sm:text-[0.65rem] text-slate-500 font-medium leading-snug whitespace-normal break-words w-full min-w-0">
                     ${indicatorSectionHtml}
                     ${structuralSectionHtml}
+                    ${screeningEvidenceHtml}
                     ${blockers.length ? `<span>Waiting reason: ${blockers.map(item => sanitizePlainText(item)).join(' | ')}</span>` : ''}
                 </div>`
                 : '';
@@ -2067,8 +2168,8 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             const finalSummaryIsEntry = !finalSummaryIsExit && String(scanLog.phase || '').toUpperCase() === 'ENTRY';
             const finalSummaryTheme = finalSummaryIsExit
                 ? {
-                    panel: 'border-amber-200 bg-amber-50/80',
-                    body: 'text-amber-950',
+                    panel: 'border-red-300 bg-red-100/80',
+                    body: 'text-red-950',
                 }
                 : finalSummaryIsEntry
                     ? {
@@ -2080,7 +2181,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         body: 'text-indigo-950',
                     };
             const finalSummaryHtml = finalSummaryText
-                ? `<div class="rounded-lg border ${finalSummaryTheme.panel} px-2 py-1 flex flex-col gap-0.5 text-[0.58rem] sm:text-[0.65rem] leading-snug whitespace-normal break-words w-full min-w-0">
+                ? `<div class="rounded-lg border ${finalSummaryTheme.panel} px-1.5 py-0.5 flex flex-col gap-0 text-[0.58rem] sm:text-[0.65rem] leading-snug whitespace-normal break-words w-full min-w-0">
                             <span class="font-bold ${finalSummaryTheme.body}">${sanitizePlainText(finalSummaryText)}</span>
                         </div>`
                 : '';
@@ -2088,49 +2189,45 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             const isOptBot = scanLog.is_option || tickerSettings.options_trading || tickerSettings.is_option;
             const configuredRefreshSeconds = Number(tickerSettings.scan_interval_seconds || scanLog.refresh_rate_sec || (isOptBot ? 10 : 60));
             const refreshSeconds = Number.isFinite(configuredRefreshSeconds) && configuredRefreshSeconds >= 10 ? configuredRefreshSeconds : (isOptBot ? 10 : 60);
-            const scanRefreshBadge = `<span class="px-1.5 py-0.5 rounded-md ${isOptBot ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-indigo-50 text-indigo-700 border-indigo-200'} border font-black text-[0.48rem] uppercase tracking-wide inline-flex items-center gap-0.5" title="Screener refresh interval">◷ ${refreshSeconds}s Refresh</span>`;
+            const refreshLabel = refreshSeconds >= 60
+                ? `${Number.isInteger(refreshSeconds / 60) ? refreshSeconds / 60 : (refreshSeconds / 60).toFixed(1)}MIN`
+                : `${refreshSeconds}SEC`;
+            const scanRefreshBadge = `<span class="px-1.5 py-0.5 rounded-md ${isOptBot ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-indigo-50 text-indigo-700 border-indigo-200'} border font-black text-[0.48rem] uppercase tracking-wide inline-flex items-center gap-0.5" title="Screener refresh interval">◷ ${refreshLabel} Refresh</span>`;
+            const priceWatch = scan?.price_watch && typeof scan.price_watch === 'object'
+                ? scan.price_watch
+                : (scanLog?.price_watch && typeof scanLog.price_watch === 'object' ? scanLog.price_watch : null);
+            const priceWatchStatus = String(priceWatch?.status || '').toUpperCase();
+            const priceWatchTone = priceWatchStatus === 'ENTRY_TRIGGERED'
+                ? 'border-emerald-200 bg-emerald-50/70 text-emerald-900'
+                : priceWatchStatus === 'TRIGGERED'
+                    ? 'border-rose-200 bg-rose-50/70 text-rose-900'
+                    : priceWatchStatus === 'WATCHING' || priceWatchStatus === 'WAITING_FOR_ENTRY'
+                    ? 'border-amber-200 bg-amber-50/70 text-amber-900'
+                    : priceWatchStatus === 'STALE' || priceWatchStatus === 'UNAVAILABLE'
+                        ? 'border-rose-200 bg-rose-50/70 text-rose-900'
+                        : 'border-slate-200 bg-slate-50 text-slate-700';
+            const priceWatchHtml = priceWatch && priceWatchStatus && priceWatchStatus !== 'IDLE'
+                ? `<div class="rounded-md border ${priceWatchTone} px-1.5 py-0.5 text-[0.55rem] leading-snug"><span class="font-black uppercase">Price watch ${sanitizePlainText(priceWatchStatus)}</span>${priceWatch.price != null ? ` · ${sanitizePlainText(formatAssetPrice(priceWatch.price, isCryptoAsset))}` : ''}${priceWatch.entry_target != null ? ` · Entry target ${sanitizePlainText(formatAssetPrice(priceWatch.entry_target, isCryptoAsset))}` : ''}${priceWatch.levels?.stop != null ? ` · SL ${sanitizePlainText(formatAssetPrice(priceWatch.levels.stop, isCryptoAsset))}` : ''}${priceWatch.levels?.target != null ? ` · TP ${sanitizePlainText(formatAssetPrice(priceWatch.levels.target, isCryptoAsset))}` : ''}${priceWatch.source ? ` · ${sanitizePlainText(priceWatch.source)}` : ''}${priceWatch.quote_age_seconds != null ? ` · ${Number(priceWatch.quote_age_seconds).toFixed(1)}s old` : ''}</div>`
+                : '';
             const lastScanLogHtml = `
-                <div class="rounded-lg border border-slate-200 bg-slate-50/80 px-2 py-1 flex flex-col gap-0.5 text-[0.58rem] sm:text-[0.65rem] leading-snug text-slate-700 whitespace-normal break-words w-full min-w-0">
+                <div class="rounded-lg border border-slate-200 bg-slate-50/80 px-1.5 py-0.5 flex flex-col gap-0 text-[0.58rem] sm:text-[0.65rem] leading-snug text-slate-700 whitespace-normal break-words w-full min-w-0">
                     <div class="flex items-center gap-1.5 flex-wrap">
                         <span class="font-black uppercase tracking-wider text-slate-600">Last scan result</span>
                         <span class="px-1.5 py-0.5 rounded border ${scanLogStatusClass(scanLog.status)} font-black text-[0.48rem] tracking-widest uppercase">${statusText}</span>
+                        ${screeningPolicyHtml}
                         ${decisionBadgeHtml}
+                        ${scanRefreshBadge}
                     </div>
+                    ${priceWatchHtml}
+                    ${scanRuntimeHtml}
                     ${scanLog.summary ? `<span>${sanitizePlainText(scanLog.summary)}</span>` : ''}
                     ${detailHtml}
                     ${finalSummaryHtml}
                 </div>`;
             const isMarketClosed = scanLog.is_options_market_closed || scanLog.is_stock_market_closed || scanLog.status === 'MARKET_CLOSED';
             if (isMarketClosed) {
-                const secToPre = Number(scanLog.seconds_to_pre_open || 0);
-                const secToOpen = Number(scanLog.seconds_to_open || 0);
-                const nextOpenStr = scanLog.next_open_str || 'Market Open';
-                const countdownText = forceScanRefreshing
-                    ? '⏸ Scan timer paused while market is closed'
-                    : secToPre > 0
-                        ? `◷ Starts scanning in ${formatDurationCompactJs(secToPre)} (2m prior to Market Open)`
-                        : `🔥 Pre-Market Active! Scanning started (${formatDurationCompactJs(secToOpen)} until Open)`;
-
-                const sessionTag = isOptBot ? 'Options' : (scanLog.market_session || (tickerSettings.market_session && tickerSettings.market_session.toLowerCase() === 'extended' ? 'Extended' : 'Regular'));
-
                 scanLogHtml = `
-                    <div class="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800 flex flex-col gap-1.5 cursor-pointer w-full min-w-0" onclick="selectTicker('${ticker}')">
-                        <div class="w-full p-2.5 rounded-xl bg-gradient-to-r from-red-500/15 via-rose-500/20 to-red-500/15 border-2 border-red-500/60 dark:border-red-500/50 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
-                            <div class="flex items-center gap-1.5 font-black text-red-600 dark:text-red-400 text-[0.65rem] sm:text-[0.7rem] uppercase tracking-widest">
-                                <span class="text-base leading-none">🛑</span>
-                                <span>MARKET CLOSED</span>
-                                <span class="px-1.5 py-0.5 rounded bg-red-600 dark:bg-red-500 text-white font-mono font-bold text-[0.5rem] uppercase tracking-normal">${sessionTag}</span>
-                                ${scanRefreshBadge}
-                                ${forceScanBadge}
-                            </div>
-                            <span class="options-market-countdown font-mono font-bold text-[0.55rem] sm:text-[0.6rem] bg-red-500/10 px-2 py-1 rounded-lg border border-red-500/30" style="color: #991b1b !important;" data-rendered-at="${Date.now()}" data-initial-pre-open="${secToPre}" data-initial-open="${secToOpen}">
-                                ${countdownText}
-                            </span>
-                        </div>
-                        ${scanRuntimeHtml}
-                        <span class="text-[0.5rem] sm:text-[0.55rem] font-medium text-slate-500 dark:text-slate-400 leading-normal whitespace-normal break-words w-full min-w-0">
-                            ⚡ Scanning resumes automatically 2 minutes prior to ${nextOpenStr}.
-                        </span>
+                    <div class="mt-0.5 pt-0 flex flex-col gap-0.5 cursor-pointer w-full min-w-0" onclick="selectTicker('${ticker}')">
                         ${lastScanLogHtml}
                         ${gridScanForecastHtml}
                     </div>
@@ -2147,25 +2244,28 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                                 ? Math.max(0, Math.ceil((nextDueMs - Date.now()) / 1000))
                                 : refreshRate;
                             const timeStr = dt.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'America/Chicago', timeZoneName: 'short' });
-                            timeAgoText = `<span class="scan-countdown px-1.5 py-0.5 rounded-md border border-slate-200 bg-slate-50 text-slate-600 font-sans font-black text-[0.52rem] leading-snug ml-auto inline-flex items-center gap-0.5 whitespace-nowrap" data-rendered-at="${Date.now()}" data-initial-remaining="${initialRemaining}" title="Last scan at ${timeStr}; next server scan uses the next completed candle.">◷ Next scan in ${initialRemaining}s</span>`;
+                            timeAgoText = `<span class="scan-countdown px-1.5 py-0.5 rounded-md border border-slate-200 bg-slate-50 text-slate-600 font-sans font-black text-[0.52rem] leading-snug ml-auto inline-flex items-center gap-0.5 whitespace-nowrap" data-rendered-at="${Date.now()}" data-initial-remaining="${initialRemaining}" title="Last closed-candle scan at ${timeStr}; next server scan uses the next completed candle.">◷ Next scan in ${initialRemaining}s</span>`;
                         }
                     } catch (e) { }
                 }
 
                 scanLogHtml = `
-                    <div class="mt-1.5 pt-1.5 border-t border-slate-50 flex flex-col gap-0.5 cursor-pointer w-full min-w-0" onclick="selectTicker('${ticker}')">
-                        <div class="flex items-center gap-1.5 flex-wrap">
-                            <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Scan Log</span>
-                            <span class="px-1.5 py-0.5 rounded border ${scanLogStatusClass(scanLog.status)} font-black text-[0.48rem] tracking-widest uppercase">${statusText}</span>
-                            ${decisionBadgeHtml}
-                            ${scanRefreshBadge}
-                            ${forceScanBadge}
+                    <div class="mt-0.5 pt-0 flex flex-col gap-0 cursor-pointer w-full min-w-0" onclick="selectTicker('${ticker}')">
+                        <div class="rounded-lg border border-slate-200 bg-slate-50/80 px-1.5 py-0.5 flex flex-col gap-0 text-[0.58rem] sm:text-[0.65rem] leading-snug text-slate-700 whitespace-normal break-words w-full min-w-0">
+                            <div class="flex items-center gap-1.5 flex-wrap">
+                                <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Scan Log</span>
+                                <span class="px-1.5 py-0.5 rounded border ${scanLogStatusClass(scanLog.status)} font-black text-[0.48rem] tracking-widest uppercase">${statusText}</span>
+                                ${decisionBadgeHtml}
+                                ${scanRefreshBadge}
+                                ${forceScanBadge}
+                            </div>
+                            <div class="flex items-center justify-between gap-2 min-w-0">${scanRuntimeHtml}${timeAgoText}</div>
+                            ${priceWatchHtml}
+                            ${gridScanForecastHtml}
+                            ${protectionBoxHtml}
+                            ${detailHtml}
+                            ${finalSummaryHtml}
                         </div>
-                        <div class="flex items-center justify-between gap-2 min-w-0">${scanRuntimeHtml}${timeAgoText}</div>
-                        ${gridScanForecastHtml}
-                        ${protectionBoxHtml}
-                        ${detailHtml}
-                        ${finalSummaryHtml}
                     </div>
                 `;
             }
@@ -2212,13 +2312,13 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
 
             if (newsStatus === 'waiting' && !newsWatch.initialized) {
                 newsWatchHtml = `
-                    <div class="mt-1.5 pt-1.5 border-t border-slate-100 flex items-center justify-between gap-2 text-[0.58rem] text-slate-500">
+                    <div class="mt-0.5 pt-0 border-t border-slate-100 flex items-center justify-between gap-1 text-[0.58rem] text-slate-500">
                         <span class="font-black uppercase tracking-wider text-sky-700">News Summary · ${escapeScreenerNewsText(ticker)}</span>
                         <span class="font-mono">Checking Yahoo Finance…</span>
                     </div>`;
             } else {
                 newsWatchHtml = `
-                    <div class="mt-1.5 pt-1.5 border-t border-slate-100 rounded-lg border ${statusClass} px-2 py-1.5 flex flex-col gap-0.5 text-[0.58rem] sm:text-[0.65rem] leading-snug text-slate-600 w-full min-w-0">
+                    <div class="mt-0.5 pt-0 border-t border-slate-100 rounded-lg border ${statusClass} px-1.5 py-1 flex flex-col gap-0 text-[0.58rem] sm:text-[0.65rem] leading-snug text-slate-600 w-full min-w-0">
                         <div class="flex items-center gap-1.5 flex-wrap">
                             <span class="font-black uppercase tracking-wider text-sky-800">News Summary · ${escapeScreenerNewsText(ticker)}${checkedTime ? ` · Checked ${escapeScreenerNewsText(checkedTime)}` : ''}</span>
                             ${newCount > 0 ? `<span class="rounded border border-sky-300 bg-sky-100 px-1.5 py-0.5 text-[0.48rem] font-black text-sky-700 uppercase">${newCount} New</span>` : ''}
@@ -2274,6 +2374,13 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             : '';
         const incubatorBadge = '';
         const isOpt = tickerSettings.options_trading || tickerSettings.is_option || (scan && scan.scan_log && scan.scan_log.is_option);
+        const screeningMode = String(tickerSettings.strategy_mode || scan?.scan_log?.screening_strategy_mode || 'combined').toLowerCase();
+        const screeningLabel = {
+            technical: 'Technical',
+            event: 'Event-Driven',
+            combined: 'Combined · Both',
+            discovery: 'Discovery · Either',
+        }[screeningMode] || 'Combined · Both';
         const arrangeControlsHtml = botArrangeMode ? `
                         <div class="flex items-center gap-1 mr-1">
                             <button class="h-7 w-7 flex items-center justify-center rounded-lg bg-white/80 border border-emerald-200 text-emerald-600 disabled:opacity-30 disabled:text-slate-300 disabled:border-slate-200"
@@ -2315,6 +2422,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 : (isCryptoFlag
                     ? `<span class="px-1.5 py-0.5 rounded bg-fuchsia-500/10 text-fuchsia-700 font-black text-[0.5rem] border border-fuchsia-500/20 uppercase tracking-widest">Crypto</span>`
                     : `<span class="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-700 font-black text-[0.5rem] border border-indigo-500/20 uppercase tracking-widest">Stocks</span>`)}
+            <span class="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-700 font-black text-[0.5rem] border border-emerald-500/20 uppercase tracking-widest" title="Screener qualification policy">${screeningLabel}</span>
             <span class="px-1.5 py-0.5 rounded bg-indigo-50/50 text-indigo-500 font-mono font-black text-[0.55rem] border border-indigo-100/50 uppercase">${tfLabel}</span>`;
 
         item.innerHTML = `
@@ -2371,6 +2479,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 </div>
 
                 ${pauseReasonHtml}
+                ${scanDataWarningHtml}
 
                 <!-- 3rd Line: Position Details or Standing By Message -->
                 ${positionHtml}
@@ -2875,15 +2984,15 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
             }
 
             row.innerHTML = `
-                <td class="py-2 pr-2 text-purple-600 text-[10px] sm:text-xs whitespace-normal leading-tight max-w-[65px] sm:max-w-none">${formatLocalTime(item.time)}</td>
-                <td class="py-2 pr-2 ${actionColor} text-[10px] sm:text-xs">${actionLabel}</td>
-                <td class="py-2 pr-2 text-indigo-950 font-bold text-[10px] sm:text-xs">${item.ticker}</td>
+                <td class="py-2 pr-2 text-purple-600 text-[10px] sm:text-xs whitespace-normal leading-tight max-w-[65px] sm:max-w-none">${escapeScreenerNewsText(formatLocalTime(item.time))}</td>
+                <td class="py-2 pr-2 ${actionColor} text-[10px] sm:text-xs">${escapeScreenerNewsText(actionLabel)}</td>
+                <td class="py-2 pr-2 text-indigo-950 font-bold text-[10px] sm:text-xs">${escapeScreenerNewsText(item.ticker)}</td>
                 <td class="py-2 pr-2 text-center">
-                    <span class="px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-500 font-black text-[0.55rem] border border-indigo-100">${item.timeframe || '5M'}</span>
+                    <span class="px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-500 font-black text-[0.55rem] border border-indigo-100">${escapeScreenerNewsText(item.timeframe || '5M')}</span>
                 </td>
-                <td class="py-2 pr-2 text-indigo-700 font-medium text-[10px] sm:text-xs">${item.price}</td>
+                <td class="py-2 pr-2 text-indigo-700 font-medium text-[10px] sm:text-xs">${escapeScreenerNewsText(item.price)}</td>
                 <td class="py-2 pr-2 text-[10px] sm:text-xs flex items-center gap-1 flex-wrap">${signalBadge}</td>
-                <td class="py-2 pr-2 text-purple-600 italic text-[10px] sm:text-xs min-w-[200px] sm:min-w-[280px] whitespace-normal leading-snug" title="${cleanReason}">${cleanReason}</td>
+                <td class="py-2 pr-2 text-purple-600 italic text-[10px] sm:text-xs min-w-[200px] sm:min-w-[280px] whitespace-normal leading-snug" title="${escapeScreenerNewsText(cleanReason)}">${escapeScreenerNewsText(cleanReason)}</td>
             `;
         } else if (currentLogTab === 'trades') {
             const sideColor = item.side === 'buy' ? 'text-emerald-600 font-bold' : 'text-rose-500 font-bold';
@@ -2914,14 +3023,14 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
             const aiReason = item.reason || 'AI Strategy: Execution criteria satisfied.';
 
             row.innerHTML = `
-                <td class="py-2 pr-2 text-purple-600 text-[10px] sm:text-xs whitespace-normal leading-tight max-w-[65px] sm:max-w-none">${formatLocalTime(item.created_at)}</td>
-                <td class="py-2 pr-2 text-indigo-950 font-bold text-[10px] sm:text-xs">${item.symbol}</td>
-                <td class="py-2 pr-2 text-[10px] sm:text-xs ${sideColor} uppercase">${item.side}</td>
+                <td class="py-2 pr-2 text-purple-600 text-[10px] sm:text-xs whitespace-normal leading-tight max-w-[65px] sm:max-w-none">${escapeScreenerNewsText(formatLocalTime(item.created_at))}</td>
+                <td class="py-2 pr-2 text-indigo-950 font-bold text-[10px] sm:text-xs">${escapeScreenerNewsText(item.symbol)}</td>
+                <td class="py-2 pr-2 text-[10px] sm:text-xs ${sideColor} uppercase">${escapeScreenerNewsText(item.side)}</td>
                 <td class="py-2 pr-2 text-center text-[10px] sm:text-xs font-bold text-indigo-900">${item.filled_qty ? item.filled_qty.toFixed(4) : '0.0000'}</td>
                 <td class="py-2 pr-2 text-center text-[10px] sm:text-xs text-indigo-700 font-medium">$${avgPriceStr}</td>
                 <td class="py-2 pr-2 text-center text-[10px] sm:text-xs text-indigo-900 font-bold">$${totalCostStr}</td>
                 ${plHtml}
-                <td class="py-2 pr-2 text-purple-600 italic text-[10px] sm:text-xs min-w-[200px] sm:min-w-[280px] whitespace-normal leading-snug" title="${aiReason}">${aiReason}</td>
+                <td class="py-2 pr-2 text-purple-600 italic text-[10px] sm:text-xs min-w-[200px] sm:min-w-[280px] whitespace-normal leading-snug" title="${escapeScreenerNewsText(aiReason)}">${escapeScreenerNewsText(aiReason)}</td>
             `;
         } else if (currentLogTab === 'pending') {
             const sideColor = item.side === 'buy' ? 'text-emerald-600 font-bold' : 'text-rose-500 font-bold';
@@ -2935,25 +3044,28 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
             const limitPriceStr = limitPriceVal > 0 ? `$${limitPriceVal.toFixed(priceDecimals)}` : 'Market';
             const totalValueStr = item.total_cost ? `$${Number(item.total_cost).toFixed(2)}` : '—';
 
-            const tifBadge = `<span class="px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-500 font-black text-[0.55rem] border border-indigo-100 uppercase">${item.time_in_force || 'GTC'}</span>`;
+            const safeTimeInForce = escapeScreenerNewsText(item.time_in_force || 'GTC');
+            const tifBadge = `<span class="px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-500 font-black text-[0.55rem] border border-indigo-100 uppercase">${safeTimeInForce}</span>`;
             const aiReason = item.reason || 'AI Strategy: Order pending execution.';
+            const safeOrderId = escapeScreenerNewsText(item.id);
 
             row.innerHTML = `
-                <td class="py-2 pr-2 text-purple-600 text-[10px] sm:text-xs whitespace-normal leading-tight max-w-[65px] sm:max-w-none">${formatLocalTime(item.created_at)}</td>
-                <td class="py-2 pr-2 text-indigo-950 font-bold text-[10px] sm:text-xs">${item.symbol}</td>
-                <td class="py-2 pr-2 text-[10px] sm:text-xs ${sideColor} uppercase">${item.side}</td>
+                <td class="py-2 pr-2 text-purple-600 text-[10px] sm:text-xs whitespace-normal leading-tight max-w-[65px] sm:max-w-none">${escapeScreenerNewsText(formatLocalTime(item.created_at))}</td>
+                <td class="py-2 pr-2 text-indigo-950 font-bold text-[10px] sm:text-xs">${escapeScreenerNewsText(item.symbol)}</td>
+                <td class="py-2 pr-2 text-[10px] sm:text-xs ${sideColor} uppercase">${escapeScreenerNewsText(item.side)}</td>
                 <td class="py-2 pr-2 text-center">${tifBadge}</td>
                 <td class="py-2 pr-2 text-center text-[10px] sm:text-xs font-bold text-indigo-900">${item.qty ? item.qty.toFixed(4) : '0.0000'}</td>
                 <td class="py-2 pr-2 text-center text-[10px] sm:text-xs text-indigo-700 font-medium">${limitPriceStr}</td>
                 <td class="py-2 pr-2 text-center text-[10px] sm:text-xs text-indigo-900 font-bold">${totalValueStr}</td>
-                <td class="py-2 pr-2 text-purple-600 italic text-[10px] sm:text-xs min-w-[200px] sm:min-w-[280px] whitespace-normal leading-snug" title="${aiReason}">${aiReason}</td>
+                <td class="py-2 pr-2 text-purple-600 italic text-[10px] sm:text-xs min-w-[200px] sm:min-w-[280px] whitespace-normal leading-snug" title="${escapeScreenerNewsText(aiReason)}">${escapeScreenerNewsText(aiReason)}</td>
                 <td class="py-2 pr-2 text-center">
-                    <button onclick="cancelOrder('${item.id}')"
+                    <button type="button" data-order-id="${safeOrderId}"
                         class="px-2 py-1 bg-rose-500 text-white rounded hover:bg-rose-600 transition-all font-black text-[9px] uppercase tracking-wider">
                         Cancel
                     </button>
                 </td>
             `;
+            row.querySelector('[data-order-id]')?.addEventListener('click', () => cancelOrder(item.id));
         } else if (currentLogTab === 'positions') {
             const isCrypto = String(item.symbol).toUpperCase().includes("USD");
             const qtyStr = Number(item.qty) % 1 === 0 ? Number(item.qty).toString() : Number(item.qty) < 1 ? Number(item.qty).toFixed(6) : Number(item.qty).toFixed(4);
@@ -4217,12 +4329,15 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyBuyThreshold_options').value = 0;
         document.getElementById('strategySellThreshold_regular').value = 0;
         document.getElementById('strategySellThreshold_options').value = 0;
-        document.getElementById('strategyTimeframe_regular').value = "1Hour";
+        document.getElementById('strategyTimeframe_regular').value = "1Day";
         document.getElementById('strategyTimeframe_options').value = "5Min";
         if (document.getElementById('strategyTimeframe_ai_autopilot')) document.getElementById('strategyTimeframe_ai_autopilot').value = "1Hour";
         if (document.getElementById('strategyAiModel')) document.getElementById('strategyAiModel').value = "llama-3.3-70b-versatile";
         if (document.getElementById('strategyBuyMode_regular')) document.getElementById('strategyBuyMode_regular').value = "indicator";
         if (document.getElementById('strategyBuyMode_options')) document.getElementById('strategyBuyMode_options').value = "indicator";
+        if (document.getElementById('strategyScreeningMode_regular')) document.getElementById('strategyScreeningMode_regular').value = "combined";
+        if (document.getElementById('strategyEventMaxAgeDays_regular')) document.getElementById('strategyEventMaxAgeDays_regular').value = "10";
+        if (document.getElementById('strategyScanInterval_regular')) document.getElementById('strategyScanInterval_regular').value = "900";
         if (document.getElementById('strategyCustomBuyPrice_regular')) document.getElementById('strategyCustomBuyPrice_regular').value = "";
         if (document.getElementById('strategyCustomBuyPrice_options')) document.getElementById('strategyCustomBuyPrice_options').value = "";
         if (document.getElementById('strategyCustomStopLossPrice_regular')) document.getElementById('strategyCustomStopLossPrice_regular').value = "";
@@ -4353,6 +4468,16 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         document.querySelectorAll('.strategy-indicator-check').forEach(chk => {
             chk.checked = false;
         });
+        // Conservative swing defaults for a new Combined profile. These are
+        // starting settings, not optimized performance claims; users can
+        // change the pool and thresholds before saving.
+        const recommendedSwingIndicators = new Set(['EMA Cross', 'SMA', 'RSI', 'ADX Trend']);
+        document.querySelectorAll('.strategy-indicator-check-regular').forEach(chk => {
+            chk.checked = recommendedSwingIndicators.has(chk.value);
+        });
+        if (document.getElementById('strategyBuyThreshold_regular')) document.getElementById('strategyBuyThreshold_regular').value = 3;
+        if (document.getElementById('strategySellThreshold_regular')) document.getElementById('strategySellThreshold_regular').value = 3;
+        updateStrategySignalLabels('regular');
 
         const addWatchlistEl = document.getElementById('strategyAddWatchlist');
         if (addWatchlistEl) {
@@ -4361,8 +4486,7 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         }
         const dashboardWatchlistStatus = document.getElementById('strategyDashboardWatchlistStatus');
         if (dashboardWatchlistStatus) dashboardWatchlistStatus.textContent = 'New profiles are added to the Dashboard Watchlist by default.';
-        const newsWatchEl = document.getElementById('strategyNewsWatchEnabled');
-        if (newsWatchEl) newsWatchEl.checked = true;
+        window.syncScreenerNewsWatchForMode?.('combined');
         const earningsWatchEl = document.getElementById('strategyEarningsWatchEnabled');
         if (earningsWatchEl) earningsWatchEl.checked = true;
         const fundamentalWatchEl = document.getElementById('strategyFundamentalWatchEnabled');
@@ -4399,11 +4523,11 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         const sellSignals = settings.min_sell_signals !== undefined ? settings.min_sell_signals : (INDICATOR_DEFAULTS['MIN_BEARISH_SIGNALS'] || 4);
         document.getElementById('strategySellThreshold_regular').value = sellSignals;
         document.getElementById('strategySellThreshold_options').value = sellSignals;
-        document.getElementById('strategyTimeframe_regular').value = settings.timeframe || '1Hour';
+        document.getElementById('strategyTimeframe_regular').value = settings.timeframe || '1Day';
         document.getElementById('strategyTimeframe_options').value = settings.timeframe || '1Hour';
         const configuredScanInterval = Number(settings.scan_interval_seconds);
         if (document.getElementById('strategyScanInterval_regular')) {
-            document.getElementById('strategyScanInterval_regular').value = !settings.options_trading && configuredScanInterval >= 10 ? configuredScanInterval : 60;
+            document.getElementById('strategyScanInterval_regular').value = !settings.options_trading && configuredScanInterval >= 10 ? configuredScanInterval : 900;
         }
         if (document.getElementById('strategyScanInterval_options')) {
             document.getElementById('strategyScanInterval_options').value = settings.options_trading && configuredScanInterval >= 10 ? configuredScanInterval : 10;
@@ -4411,12 +4535,13 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         if (document.getElementById('strategyScanInterval_ai_autopilot')) {
             document.getElementById('strategyScanInterval_ai_autopilot').value = !settings.options_trading && configuredScanInterval >= 10 ? configuredScanInterval : 60;
         }
-        const newsWatchEl = document.getElementById('strategyNewsWatchEnabled');
-        if (newsWatchEl) newsWatchEl.checked = settings.news_watch_enabled !== false;
+        window.syncScreenerNewsWatchForMode?.(settings.strategy_mode || 'combined');
         const earningsWatchEl = document.getElementById('strategyEarningsWatchEnabled');
         if (earningsWatchEl) earningsWatchEl.checked = settings.earnings_watch_enabled !== false;
         const fundamentalWatchEl = document.getElementById('strategyFundamentalWatchEnabled');
         if (fundamentalWatchEl) fundamentalWatchEl.checked = settings.fundamental_watch_enabled !== false;
+        if (document.getElementById('strategyScreeningMode_regular')) document.getElementById('strategyScreeningMode_regular').value = settings.strategy_mode || 'combined';
+        if (document.getElementById('strategyEventMaxAgeDays_regular')) document.getElementById('strategyEventMaxAgeDays_regular').value = String(settings.event_max_age_days || 10);
         if (document.getElementById('strategyTimeframe_ai_autopilot')) document.getElementById('strategyTimeframe_ai_autopilot').value = settings.timeframe || '1Hour';
         if (document.getElementById('strategyBuyMode_regular')) document.getElementById('strategyBuyMode_regular').value = settings.buy_mode || 'indicator';
         if (document.getElementById('strategyBuyMode_options')) document.getElementById('strategyBuyMode_options').value = settings.buy_mode || 'indicator';
@@ -4869,21 +4994,37 @@ function populateStrategyAiModelSelect() {
     if (!select) return;
     const currentValue = normalizeBotAIModel(select.value);
 
-    let html = '';
-    html += '<optgroup label="Groq AI (Cloud)">';
-    html += '  <option value="llama-3.3-70b-versatile">Llama 3.3 70B (Recommended)</option>';
-    html += '  <option value="llama-3.1-8b-instant">Llama 3.1 8B (Fast / Lightweight)</option>';
-    html += '</optgroup>';
-    html += '<optgroup label="Ollama (Local)">';
-    if (window.ollamaModels && window.ollamaModels.length > 0) {
-        window.ollamaModels.forEach(m => {
-            html += `  <option value="ollama/${m}">${m}</option>`;
+    const cloudGroup = document.createElement('optgroup');
+    cloudGroup.label = 'Groq AI (Cloud)';
+    [
+        ['llama-3.3-70b-versatile', 'Llama 3.3 70B (Recommended)'],
+        ['llama-3.1-8b-instant', 'Llama 3.1 8B (Fast / Lightweight)']
+    ].forEach(([value, label]) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        cloudGroup.appendChild(option);
+    });
+
+    const localGroup = document.createElement('optgroup');
+    localGroup.label = 'Ollama (Local)';
+    const localModels = Array.isArray(window.ollamaModels)
+        ? window.ollamaModels.map(model => String(model || '').trim()).filter(model => model && model.length <= 200)
+        : [];
+    if (localModels.length > 0) {
+        localModels.forEach(model => {
+            const option = document.createElement('option');
+            option.value = `ollama/${model}`;
+            option.textContent = model;
+            localGroup.appendChild(option);
         });
     } else {
-        html += '  <option disabled>No local models found</option>';
+        const option = document.createElement('option');
+        option.disabled = true;
+        option.textContent = 'No local models found';
+        localGroup.appendChild(option);
     }
-    html += '</optgroup>';
-    select.innerHTML = html;
+    select.replaceChildren(cloudGroup, localGroup);
 
     if (currentValue) {
         select.value = currentValue;
@@ -5339,7 +5480,13 @@ async function saveTickerSettings() {
             amount: mode === 'regular' ? (parseFloat(document.getElementById('strategyCapital')?.value || '') || null) : mode === 'ai_autopilot' ? (parseFloat(document.getElementById('strategyCapital_ai_autopilot')?.value || '') || null) : undefined,
             timeframe: document.getElementById(`strategyTimeframe_${mode}`)?.value || null,
             scan_interval_seconds: Math.max(10, Math.min(14400, parseInt(document.getElementById(`strategyScanInterval_${mode}`)?.value || (mode === 'options' ? 10 : 60), 10) || (mode === 'options' ? 10 : 60))),
-            news_watch_enabled: document.getElementById('strategyNewsWatchEnabled')?.checked !== false,
+            ...(mode === 'regular' ? {
+                strategy_mode: document.getElementById('strategyScreeningMode_regular')?.value || 'combined',
+                event_max_age_days: Math.max(1, Math.min(30, parseInt(document.getElementById('strategyEventMaxAgeDays_regular')?.value || 10, 10) || 10)),
+            } : {}),
+            news_watch_enabled: mode === 'regular'
+                ? String(document.getElementById('strategyScreeningMode_regular')?.value || 'combined').toLowerCase() !== 'technical'
+                : true,
             earnings_watch_enabled: document.getElementById('strategyEarningsWatchEnabled')?.checked !== false,
             fundamental_watch_enabled: document.getElementById('strategyFundamentalWatchEnabled')?.checked !== false,
             min_buy_signals: mode === 'ai_autopilot' ? 4 : buyThresholdVal,
@@ -5495,6 +5642,34 @@ window.toggleWatchlist = async function (ticker) {
 // Main Fetch Loop
 // ──────────────────────────────────────────────
 let botsSnapshotFailCount = 0;
+let botsSnapshotUid = null;
+
+function screenerSnapshotUser() {
+    return window.auth?.currentUser?.uid || (localStorage.getItem('dev_mode') === 'true' ? 'local-development' : null);
+}
+
+function resetScreenerSnapshotUser(uid) {
+    if (uid === botsSnapshotUid) return;
+    botsSnapshotUid = uid;
+    for (const state of Object.values(botsFetchState)) {
+        state.controller?.abort();
+        state.fetchId++;
+        state.promise = null;
+        state.controller = null;
+    }
+    botsPartitionSnapshots.regular = botsPartitionSnapshots.options = null;
+    botsSharedSnapshot = null;
+    botsMasterTradelist = [];
+    lastObservedTradeEventSeq = null;
+    selectedTicker = null;
+    window.lastBotsData = window.lastDashboardData = null;
+    const cards = document.getElementById('tradelistContainer');
+    if (cards) cards.textContent = 'Waiting for your Screener profiles…';
+    for (const id of ['activeBotCount', 'bullishSetupCount', 'bearishSetupCount', 'alertsTodayCount', 'alertsUnreadCount']) {
+        const element = document.getElementById(id);
+        if (element) element.textContent = '—';
+    }
+}
 
 function isOptionSnapshotItem(item = {}) {
     const assetClass = String(item.asset_class || '').toLowerCase();
@@ -5543,6 +5718,7 @@ function projectBotsPartition(snapshot, partition) {
         ...snapshot,
         partition,
         tradelist: symbols,
+        bot_scans: Object.fromEntries(Object.entries(snapshot.botScans).filter(([ticker]) => symbolSet.has(ticker))),
         botScans: Object.fromEntries(Object.entries(snapshot.botScans).filter(([ticker]) => symbolSet.has(ticker))),
         ticker_settings: Object.fromEntries(Object.entries(snapshot.ticker_settings).filter(([ticker]) => symbolSet.has(ticker))),
         positions: snapshot.positions.filter(item => isOptionSnapshotItem(item) === wantsOptions),
@@ -5581,7 +5757,7 @@ function composeBotsSnapshot() {
         available.flatMap(item => item.pendingOrders || item.open_orders || []),
         item => `${item.id || ''}:${item.symbol || ''}:${item.side || ''}`
     );
-    return {
+    const composed = {
         ...shared,
         partition: 'all',
         tradelist: botsMasterTradelist.slice(),
@@ -5591,6 +5767,9 @@ function composeBotsSnapshot() {
         pendingOrders,
         open_orders: pendingOrders
     };
+    composed.screener_summary = ScreenerSnapshotState.summary(composed);
+    composed.bot_scans = composed.botScans;
+    return composed;
 }
 
 function scheduleCrossPartitionRefresh(sourcePartition) {
@@ -5605,8 +5784,11 @@ function scheduleCrossPartitionRefresh(sourcePartition) {
 function ingestBotsSnapshot(rawData) {
     const data = normalizeBotsSnapshot(rawData);
     const partition = data.partition || 'all';
+    if (!ScreenerSnapshotState.accepts(data, botsPartitionSnapshots)) return null;
     const previousTradeSeq = lastObservedTradeEventSeq;
-    botsSharedSnapshot = data;
+    if (!botsSharedSnapshot || ScreenerSnapshotState.sequence(data) >= ScreenerSnapshotState.sequence(botsSharedSnapshot)) {
+        botsSharedSnapshot = data;
+    }
 
     if (partition === 'all') {
         botsMasterTradelist = data.tradelist.slice();
@@ -5642,6 +5824,9 @@ function hasOptionsSnapshotInterest() {
 
 async function fetchBotsData(options = {}) {
     const { force = false, partition = 'all' } = options;
+    const requestUid = screenerSnapshotUser();
+    resetScreenerSnapshotUser(requestUid);
+    if (!requestUid) return false;
     const partitionNorm = ['all', 'options', 'regular'].includes(partition) ? partition : 'all';
     if (!force && !shouldRunBotsCardRefresh()) return false;
     const state = botsFetchState[partitionNorm];
@@ -5651,18 +5836,22 @@ async function fetchBotsData(options = {}) {
     }
 
     const fetchId = ++state.fetchId;
-    state.controller = new AbortController();
+    const controller = new AbortController();
+    state.controller = controller;
+    const isCurrentRequest = () => fetchId === state.fetchId && requestUid === screenerSnapshotUser();
     state.promise = (async () => {
         const fetchStartTime = performance.now();
         const headers = await getAuthHeaders();
+        if (!isCurrentRequest()) return false;
         const url = `${API_BASE}/api/screener/snapshot?partition=${partitionNorm}`;
         const response = await fetchWithTimeout(
             url,
-            { headers, cache: 'no-store', controller: state.controller },
+            { headers, cache: 'no-store', controller },
             DASHBOARD_FETCH_TIMEOUT_MS
         );
         if (!response.ok) throw new Error(`Snapshot HTTP ${response.status}`);
         const data = await response.json();
+        if (!isCurrentRequest()) return false;
 
         // ── Phase 4 Telemetry Metrics ──
         const fetchMs = Math.round(performance.now() - fetchStartTime);
@@ -5679,10 +5868,11 @@ async function fetchBotsData(options = {}) {
 
         botsSnapshotFailCount = 0;
         const composed = ingestBotsSnapshot(data);
-        if (partitionNorm === 'all') {
+        if (composed && partitionNorm === 'all') {
             try {
-                sessionStorage.setItem('screenerDataCache', JSON.stringify({
+                sessionStorage.setItem(ScreenerSnapshotState.cacheKey(requestUid), JSON.stringify({
                     schemaVersion: '1.0',
+                    uid: requestUid,
                     data,
                     fetchedAt: Date.now()
                 }));
@@ -5696,6 +5886,7 @@ async function fetchBotsData(options = {}) {
     try {
         return await state.promise;
     } catch (error) {
+        if (!isCurrentRequest()) return false;
         if (error.name === 'AbortError') {
             // A forced refresh intentionally superseded this request.
         } else if (error.name === 'TimeoutError') {
@@ -5703,11 +5894,19 @@ async function fetchBotsData(options = {}) {
         } else {
             botsSnapshotFailCount++;
             console.error(`[bots] Fetch error (attempt ${botsSnapshotFailCount}):`, error);
-            // Self-Healing Fallback: If network stutters, maintain UI state using latest cached snapshot
-            if (botsSnapshotFailCount >= 2 && window.lastBotsData) {
-                console.warn('[bots] Self-healing activated: Rendering cached snapshot data.');
-                applyBotsData(window.lastBotsData);
+        }
+        if (error.name !== 'AbortError') {
+            const targets = partitionNorm === 'all' ? ['regular', 'options'] : [partitionNorm];
+            for (const target of targets) {
+                if (botsPartitionSnapshots[target]) botsPartitionSnapshots[target] = ScreenerSnapshotState.asReference(botsPartitionSnapshots[target]);
             }
+            const retained = composeBotsSnapshot();
+            if (retained) {
+                window.lastBotsData = window.lastDashboardData = retained;
+                applyBotsData(retained);
+            }
+            const status = document.getElementById('monitoringStatus');
+            if (status) status.textContent = 'Needs attention';
         }
         return false;
     } finally {
@@ -5747,14 +5946,17 @@ function applyBotsData(data) {
     const health = summary.monitoring || {};
     const setText = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value; };
     const lastScan = health.last_scan_at ? new Date(Number(health.last_scan_at) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Waiting for first scan';
-    setText('monitoringStatus', health.status === 'error' || health.status === 'degraded' ? 'Needs attention' : health.status === 'healthy' ? 'Monitoring' : 'Starting');
-    setText('monitoringLastScan', health.last_scan_at ? `Last scan ${lastScan}` : 'Waiting for first scan');
+    const monitoringNeedsAttention = health.status === 'error' || health.status === 'degraded' || health.persistence_status === 'degraded';
+    setText('monitoringStatus', monitoringNeedsAttention ? 'Needs attention' : health.status === 'healthy' ? 'Monitoring' : 'Starting');
+    setText('monitoringLastScan', health.persistence_status === 'degraded'
+        ? 'State storage needs attention'
+        : health.last_scan_at ? `Last closed-candle scan at ${lastScan}` : 'Waiting for first scan');
     const profiles = summary.profiles || {};
     const setups = summary.setups || {};
     const emailDelivery = summary.email_delivery || {};
     const smsDelivery = summary.sms_delivery || {};
     setText('activeBotCount', `${Number(profiles.enabled || 0)} / ${Number(profiles.total || 0)}`);
-    setText('botStatusSub', `${Number(profiles.paused || 0)} paused`);
+    setText('botStatusSub', `${Number(profiles.paused || 0)} paused • ${Number(setups.attention || 0)} need attention`);
     setText('bullishSetupCount', Number(setups.bullish || 0));
     setText('bearishSetupCount', Number(setups.bearish || 0));
     const alertDirections = summary.alerts_today_by_direction || {};
@@ -5764,7 +5966,7 @@ function applyBotsData(data) {
     if (alertsDirectionSub) {
         alertsDirectionSub.innerHTML = `<span class="text-emerald-600">${Number(alertDirections.bullish || 0)} bullish</span> • <span class="text-rose-600">${Number(alertDirections.bearish || 0)} bearish</span>`;
     }
-    setText('browserDeliveryStatus', 'Browser: On');
+    setText('browserDeliveryStatus', `Browser: ${summary.browser_delivery?.enabled === false ? 'Off' : 'On'}`);
     let smsStatus = 'Phone/SMS: Off';
     if (smsDelivery.enabled && !smsDelivery.phone_configured) smsStatus = 'Phone/SMS: Add phone';
     else if (smsDelivery.enabled && !smsDelivery.provider_configured) smsStatus = 'Phone/SMS: Setup required';
@@ -5774,7 +5976,7 @@ function applyBotsData(data) {
     const deliveryFailures = Number(smsDelivery.failed || 0) + Number(emailDelivery.failed || 0);
     setText('deliveryQueueSub', `SMS ${Number(smsDelivery.queued || 0)} queued • Email ${Number(emailDelivery.queued || 0)} queued${deliveryFailures ? ` • ${deliveryFailures} failed` : ''}`);
 
-    // Last scan time
+    // Last closed-candle scan time
 
     // Strategy timeframe sync
     if (data.strategyTimeframe) {
@@ -5889,6 +6091,11 @@ async function submitAlpacaConfig() {
     const isPaper = document.getElementById('alpacaPaper').checked;
     const btn = document.getElementById('alpacaSubmitBtn');
 
+    const liveTradingAcknowledged = isPaper || window.confirm(
+        'This connects a live Alpaca account. Live bots can submit real orders. Continue only if you explicitly authorize live trading.'
+    );
+    if (!liveTradingAcknowledged) return;
+
     if (!key || !secret) {
         alert("Please provide both API Key and Secret.");
         return;
@@ -5906,7 +6113,8 @@ async function submitAlpacaConfig() {
             body: JSON.stringify({
                 api_key: key,
                 secret_key: secret,
-                paper: isPaper
+                paper: isPaper,
+                live_trading_acknowledged: liveTradingAcknowledged
             })
         });
 
@@ -8086,13 +8294,18 @@ document.getElementById('botSearchInput')?.addEventListener('input', (e) => {
                 data.forEach(item => {
                     const div = document.createElement('div');
                     div.className = "p-3 hover:bg-indigo-50 cursor-pointer border-b border-indigo-50 last:border-0 transition-colors flex justify-between items-center";
-                    div.innerHTML = `
-                        <div>
-                            <span class="font-black text-indigo-900">${item.symbol}</span>
-                            <span class="text-xs text-indigo-400 ml-2 font-medium">${item.name}</span>
-                        </div>
-                        <span class="text-[0.6rem] bg-indigo-100 text-indigo-500 px-2 py-0.5 rounded uppercase font-bold tracking-widest">+ Add</span>
-                    `;
+                    const details = document.createElement('div');
+                    const symbol = document.createElement('span');
+                    symbol.className = 'font-black text-indigo-900';
+                    symbol.textContent = item.symbol || '';
+                    const name = document.createElement('span');
+                    name.className = 'text-xs text-indigo-400 ml-2 font-medium';
+                    name.textContent = item.name || '';
+                    details.append(symbol, name);
+                    const action = document.createElement('span');
+                    action.className = 'text-[0.6rem] bg-indigo-100 text-indigo-500 px-2 py-0.5 rounded uppercase font-bold tracking-widest';
+                    action.textContent = '+ Add';
+                    div.append(details, action);
                     div.onclick = () => selectSearchResult(item);
                     resultsContainer.appendChild(div);
                 });
@@ -8113,6 +8326,21 @@ document.addEventListener('click', (e) => {
         document.getElementById('botSearchResults')?.classList.add('hidden');
     }
 });
+
+window.syncScreenerNewsWatchForMode = function (mode = 'combined') {
+    const normalizedMode = String(mode || 'combined').toLowerCase();
+    const usesEventLeg = normalizedMode !== 'technical';
+    const statusEl = document.getElementById('strategyNewsWatchStatus');
+    if (!statusEl) return;
+
+    statusEl.textContent = usesEventLeg ? 'Enabled' : 'Disabled';
+    statusEl.className = usesEventLeg
+        ? 'px-2 py-1 rounded-lg border text-[0.58rem] font-black uppercase tracking-widest shrink-0 border-emerald-200 bg-emerald-50 text-emerald-700'
+        : 'px-2 py-1 rounded-lg border text-[0.58rem] font-black uppercase tracking-widest shrink-0 border-slate-300 bg-slate-100 text-slate-600';
+    statusEl.title = usesEventLeg
+        ? 'News watch is required by this qualification mode.'
+        : 'News watch is disabled for Technical Only mode.';
+};
 
 function selectSearchResult(item) {
     document.getElementById('botSearchResults').classList.add('hidden');
@@ -8208,7 +8436,13 @@ window.confirmAndDeployBot = async function () {
             indicator_overrides: mode === 'ai_autopilot' ? {} : draftOverrides,
             timeframe: timeframe,
             scan_interval_seconds: scanIntervalSeconds,
-            news_watch_enabled: document.getElementById('strategyNewsWatchEnabled')?.checked !== false,
+            ...(mode === 'regular' ? {
+                strategy_mode: document.getElementById('strategyScreeningMode_regular')?.value || 'combined',
+                event_max_age_days: Math.max(1, Math.min(30, parseInt(document.getElementById('strategyEventMaxAgeDays_regular')?.value || 10, 10) || 10)),
+            } : {}),
+            news_watch_enabled: mode === 'regular'
+                ? String(document.getElementById('strategyScreeningMode_regular')?.value || 'combined').toLowerCase() !== 'technical'
+                : true,
             earnings_watch_enabled: document.getElementById('strategyEarningsWatchEnabled')?.checked !== false,
             fundamental_watch_enabled: document.getElementById('strategyFundamentalWatchEnabled')?.checked !== false,
             paused: window._strategyPaused || false,
@@ -8308,6 +8542,8 @@ async function unlinkAlpaca() {
     const waitForAuth = setInterval(() => {
         if (window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true')) {
             clearInterval(waitForAuth);
+            resetScreenerSnapshotUser(screenerSnapshotUser());
+            window.auth.onAuthStateChanged?.(() => resetScreenerSnapshotUser(screenerSnapshotUser()));
 
             // Prioritize loading the dashboard layout and chart first!
             const dashContent = document.getElementById('dashboardContent');
@@ -8328,13 +8564,14 @@ async function unlinkAlpaca() {
             // INSTANT RENDER: Check for prefetched data from dashboard page
             let usedCache = false;
             try {
-                const cachedRaw = sessionStorage.getItem('screenerDataCache');
+                const uid = screenerSnapshotUser();
+                const cachedRaw = uid && sessionStorage.getItem(ScreenerSnapshotState.cacheKey(uid));
                 if (cachedRaw) {
-                    const { schemaVersion, data, fetchedAt } = JSON.parse(cachedRaw);
+                    const { schemaVersion, data, fetchedAt, uid: cachedUid } = JSON.parse(cachedRaw);
                     const ageMs = Date.now() - fetchedAt;
-                    if (schemaVersion === '1.0' && data?.schema_version === '1.0' && ageMs < 60000) {
+                    if (cachedUid === uid && schemaVersion === '1.0' && data?.schema_version === '1.0' && ageMs >= 0 && ageMs < 60000) {
                         console.log(`[bots] Using prefetched cache (${Math.round(ageMs / 1000)}s old) for instant render.`);
-                        usedCache = Boolean(ingestBotsSnapshot(data));
+                        usedCache = Boolean(ingestBotsSnapshot(ScreenerSnapshotState.asReference(data)));
                     }
                 }
             } catch (e) {
@@ -8983,7 +9220,10 @@ function renderSignalActivityBucket(group, directionFilter = 'all') {
     const eventCard = item => {
         const scanLog = item.scan_log && typeof item.scan_log === 'object' ? item.scan_log : {};
         const direction = String(item.event_direction || item.direction || '').toUpperCase();
-        const directionClass = direction === 'BEARISH' ? 'text-rose-700 bg-rose-50 border-rose-200' : 'text-emerald-700 bg-emerald-50 border-emerald-200';
+        const priceEventType = String(item.event_type || item.alert_kind || '').toUpperCase();
+        const isPriceEvent = priceEventType === 'PRICE_EXIT' || priceEventType === 'PRICE_ENTRY';
+        const priceEventLabel = priceEventType === 'PRICE_ENTRY' ? 'PRICE ENTRY' : 'PRICE EXIT';
+        const directionClass = priceEventType === 'PRICE_EXIT' || direction === 'BEARISH' ? 'text-rose-700 bg-rose-50 border-rose-200' : 'text-emerald-700 bg-emerald-50 border-emerald-200';
         const reason = item.reason || item.scan_reason || scanLog.detail || scanLog.summary || 'Signal transition detected.';
         const exitLevels = scanLog.exit_levels && typeof scanLog.exit_levels === 'object' ? scanLog.exit_levels : (item.atr_levels || {});
         const atrText = item.atr != null || exitLevels.stop != null || exitLevels.target != null
@@ -8991,7 +9231,7 @@ function renderSignalActivityBucket(group, directionFilter = 'all') {
             : '';
         const metadata = [
             Number.isFinite(Number(item.price)) && Number(item.price) !== 0 ? `Price $${metric(item.price)}` : '',
-            item.candle_key ? `Candle ${item.candle_key}` : '',
+            isPriceEvent && item.price_event?.observed_at ? `Quote observed ${new Date(item.price_event.observed_at).toLocaleString()}` : item.candle_key ? `Candle ${item.candle_key}` : '',
             item.candle_close_ts ? `Closed ${signalActivityExactLabel(item.candle_close_ts)}` : '',
             scanLog.strategy_label ? `Strategy ${scanLog.strategy_label}` : '',
         ].filter(Boolean);
@@ -9006,7 +9246,7 @@ function renderSignalActivityBucket(group, directionFilter = 'all') {
             <article class="rounded-xl border border-indigo-100 bg-white/80 p-2.5 shadow-sm">
                 <div class="flex flex-wrap items-center gap-1.5">
                     <span class="font-black text-indigo-950">${text(item.ticker || 'Unknown')}</span>
-                    <span class="rounded-md border px-1.5 py-0.5 text-[0.55rem] font-black uppercase ${directionClass}">${text(direction || 'SIGNAL')}</span>
+                    <span class="rounded-md border px-1.5 py-0.5 text-[0.55rem] font-black uppercase ${directionClass}">${text(isPriceEvent ? priceEventLabel : (direction || 'SIGNAL'))}</span>
                     <span class="text-[0.58rem] font-semibold text-slate-500">Alert created ${text(signalActivityExactLabel(item.timestamp))}</span>
                 </div>
                 <div class="mt-1 rounded-lg border border-amber-200 bg-amber-50/70 px-2 py-1.5 text-[0.65rem] leading-snug text-amber-950">

@@ -11,35 +11,44 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
 
 
       - name: Native Git Pull and Restart
-        uses: appleboy/ssh-action@master
+        uses: appleboy/ssh-action@2ead5e36573f08b82fbfce1504f1a4b05a647c6f # v1.2.2
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
-          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           WEBULL_APP_KEY: ${{ secrets.WEBULL_APP_KEY }}
           WEBULL_APP_SECRET: ${{ secrets.WEBULL_APP_SECRET }}
+          VAULT_SECRET_KEY: ${{ secrets.VAULT_SECRET_KEY }}
+          VAULT_SECRET_KEY_PREVIOUS: ${{ secrets.VAULT_SECRET_KEY_PREVIOUS }}
+          VAULT_SECRET_KEY_PREVIOUS_VERSION: ${{ secrets.VAULT_SECRET_KEY_PREVIOUS_VERSION }}
+          BROKER_LIVE_TENANT_UID: ${{ secrets.BROKER_LIVE_TENANT_UID }}
+          BROKER_LIVE_ACCOUNT_FINGERPRINT: ${{ secrets.BROKER_LIVE_ACCOUNT_FINGERPRINT }}
+          GITHUB_SHA: ${{ github.sha }}
         with:
           host: ${{ secrets.ORACLE_HOST }}
           username: ${{ secrets.ORACLE_USER }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
-          envs: GROQ_API_KEY,ALPACA_API_KEY,ALPACA_SECRET_KEY,WEBULL_APP_KEY,WEBULL_APP_SECRET
+          envs: GROQ_API_KEY,WEBULL_APP_KEY,WEBULL_APP_SECRET,VAULT_SECRET_KEY,VAULT_SECRET_KEY_PREVIOUS,VAULT_SECRET_KEY_PREVIOUS_VERSION,BROKER_LIVE_TENANT_UID,BROKER_LIVE_ACCOUNT_FINGERPRINT,GITHUB_SHA
           script: |
-            # Clone if doesn't exist, otherwise fetch and reset
+            # Clone if it does not exist, otherwise fetch the exact triggering
+            # commit. Never deploy a moving branch after the workflow starts.
             if [ ! -d "/home/ubuntu/backend/.git" ]; then
               rm -rf /home/ubuntu/backend
-              git clone git@github.com:nitaysah/AI-Trade-Bot.git /home/ubuntu/backend
+              git clone --no-checkout git@github.com:nitaysah/AI-Trade-Bot.git /home/ubuntu/backend
             fi
             
             cd /home/ubuntu/backend
-            git fetch origin
-            git reset --hard origin/main
+            test -n "$GITHUB_SHA"
+            git fetch --no-tags origin "$GITHUB_SHA"
+            git cat-file -e "$GITHUB_SHA^{commit}"
+            git reset --hard "$GITHUB_SHA"
 
             # Keep local-first SQLite state outside the Git checkout so deploys
             # never remove Bot/Screener history. The directory is private to
@@ -49,32 +58,47 @@ jobs:
             DEPLOY_HOME="$(getent passwd "$DEPLOY_USER" | cut -d: -f6)"
             LOCAL_DATA_DIR="$DEPLOY_HOME/botbulls-data"
             sudo install -d -m 700 -o "$DEPLOY_USER" -g "$DEPLOY_GROUP" "$LOCAL_DATA_DIR"
+            sudo install -d -m 700 -o "$DEPLOY_USER" -g "$DEPLOY_GROUP" "$LOCAL_DATA_DIR/secrets"
             
             # Setup virtual environment if missing, and install dependencies
             if [ ! -d "venv" ]; then
               python3 -m venv venv
             fi
             source venv/bin/activate
-            pip install -r backend/requirements.txt
+            python -m pip install --require-hashes -r backend/requirements.lock.txt
+            python -m pip install --require-hashes --no-deps -r backend/webull-requirements.lock.txt
             
-            # Recreate environment variables from individual secrets
-            cat <<EOF > /home/ubuntu/backend/.env
-            GROQ_API_KEY=$GROQ_API_KEY
-            ALPACA_API_KEY=$ALPACA_API_KEY
-            ALPACA_SECRET_KEY=$ALPACA_SECRET_KEY
-            ALPACA_PAPER=true
-            BROKER_TYPE=alpaca
-            WEBULL_APP_KEY=$WEBULL_APP_KEY
-            WEBULL_APP_SECRET=$WEBULL_APP_SECRET
-            WEBULL_DATA_ONLY=true
-            BOTBULLS_LOCAL_DB_PATH=$LOCAL_DATA_DIR/botbulls_local.sqlite3
-            EOF
-            chmod 600 /home/ubuntu/backend/.env
+            # Inject secrets through a root-owned systemd environment file,
+            # never into the Git checkout. The application deliberately does
+            # not load checkout .env files in production.
+            sudo install -d -m 700 /etc/botbulls
+            DEPLOY_ENV_FILE="$(mktemp)"
+            umask 077
+            {
+              printf 'GROQ_API_KEY=%s\n' "$GROQ_API_KEY"
+              printf 'WEBULL_APP_KEY=%s\n' "$WEBULL_APP_KEY"
+              printf 'WEBULL_APP_SECRET=%s\n' "$WEBULL_APP_SECRET"
+              printf 'WEBULL_DATA_ONLY=true\n'
+              printf 'WEBULL_LIVE_TRADING_ENABLED=false\n'
+              printf 'WEBULL_SINGLE_TENANT_MODE=false\n'
+              printf 'BROKER_LIVE_TENANT_UID=%s\n' "$BROKER_LIVE_TENANT_UID"
+              printf 'BROKER_LIVE_ACCOUNT_FINGERPRINT=%s\n' "$BROKER_LIVE_ACCOUNT_FINGERPRINT"
+              printf 'BROKER_TYPE=alpaca\n'
+              printf 'VAULT_SECRET_KEY=%s\n' "$VAULT_SECRET_KEY"
+              printf 'VAULT_SECRET_KEY_VERSION=2\n'
+              printf 'VAULT_SECRET_KEY_PREVIOUS=%s\n' "$VAULT_SECRET_KEY_PREVIOUS"
+              printf 'VAULT_SECRET_KEY_PREVIOUS_VERSION=%s\n' "$VAULT_SECRET_KEY_PREVIOUS_VERSION"
+              printf 'ENV=production\n'
+              printf 'BOTBULLS_LOCAL_DB_PATH=%s\n' "$LOCAL_DATA_DIR/botbulls_local.sqlite3"
+              printf 'BOTBULLS_TOKEN_DIR=%s\n' "$LOCAL_DATA_DIR/secrets"
+            } > "$DEPLOY_ENV_FILE"
+            sudo install -o root -g root -m 600 "$DEPLOY_ENV_FILE" /etc/botbulls/botbulls.env
+            rm -f "$DEPLOY_ENV_FILE"
 
             # Make the path explicit for systemd services that do not load the
             # repository .env file directly.
             sudo install -d -m 755 /etc/systemd/system/botbulls.service.d
-            printf '%s\n' '[Service]' "Environment=BOTBULLS_LOCAL_DB_PATH=$LOCAL_DATA_DIR/botbulls_local.sqlite3" | sudo tee /etc/systemd/system/botbulls.service.d/local-storage.conf >/dev/null
+            printf '%s\n' '[Service]' 'EnvironmentFile=/etc/botbulls/botbulls.env' "Environment=BOTBULLS_LOCAL_DB_PATH=$LOCAL_DATA_DIR/botbulls_local.sqlite3" | sudo tee /etc/systemd/system/botbulls.service.d/local-storage.conf >/dev/null
             sudo chmod 644 /etc/systemd/system/botbulls.service.d/local-storage.conf
             sudo systemctl daemon-reload
 

@@ -14,11 +14,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
+          cache: npm
 
       - name: Configure Firebase service account
         env:
@@ -30,8 +31,9 @@ jobs:
       - name: Deploy to Firebase Hosting
         shell: bash
         run: |
+          npm ci --ignore-scripts --no-audit --no-fund
           set +e
-          npx --yes firebase-tools@latest deploy --only hosting --project bot-bulls --non-interactive > firebase-deploy.log 2>&1
+          ./node_modules/.bin/firebase deploy --only hosting --project bot-bulls --non-interactive > firebase-deploy.log 2>&1
           status=$?
           cat firebase-deploy.log
 

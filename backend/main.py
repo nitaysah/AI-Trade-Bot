@@ -24,10 +24,11 @@ from typing import Optional, Any
 import asyncio
 import copy
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 import pytz
 import firebase_admin
-from firebase_admin import auth, credentials, firestore
+from firebase_admin import auth, firestore
 import time
 import os
 import re
@@ -37,11 +38,21 @@ import yfinance as yf
 from cryptography.fernet import Fernet
 import base64
 import hashlib
+import hmac
 import math
 import numbers
+import secrets
+from urllib.parse import urlparse
 
 LEGAL_TERMS_VERSION = "BB-2026.07"
 TERMS_REQUIRED_STATUS = 428
+
+# Development authentication is intentionally loopback-only and uses a fresh,
+# process-scoped token.  The browser obtains it from the loopback endpoint
+# below; no predictable bearer value is shipped in frontend assets.
+_DEV_AUTH_TOKEN = os.getenv("DEV_AUTH_TOKEN", "").strip()
+if os.getenv("ENV", "").lower() == "development" and not _DEV_AUTH_TOKEN:
+    _DEV_AUTH_TOKEN = secrets.token_urlsafe(32)
 
 from trader import evaluate_trade, get_risk_manager, clear_evaluation_cache, get_confluence_decision
 from indicators import calculate_indicators_for_df, get_full_analysis, get_latest_completed_candle_metadata
@@ -61,12 +72,14 @@ from indicator_catalog import (
     STANDARD_INDICATOR_NAMES,
 )
 import config as global_config
+from firebase_credentials import load_firebase_credential
 from user_config import (
     set_user_config,
     get_user_config,
     set_draft_ticker_settings,
     reset_draft_ticker_settings,
     active_evaluation_context,
+    _active_user_config,
 )
 from screener_service import (
     ScreenerManager,
@@ -75,6 +88,12 @@ from screener_service import (
     normalize_screener_sms_phone,
     normalize_screener_symbol,
     profile_revision,
+)
+from screener_strategy import (
+    assess_event_catalyst,
+    assess_swing_technical,
+    combine_strategy_qualification,
+    normalize_screening_strategy_mode,
 )
 from ai_indicator import (
     build_screener_news_watch,
@@ -97,62 +116,244 @@ from fundamental_service import (
 from cache_manager import TTLCacheStore, stable_cache_key
 from macro_actuals import enrich_macro_calendar_events
 
-# Global threading event for cancelling backtests on page reload
-global_backtest_cancel = threading.Event()
+# Backtest cancellation is scoped to the authenticated user.  A process-global
+# event would let one caller cancel another user's simulation (and, if exposed
+# without auth, would provide a trivial denial-of-service endpoint).
+_backtest_cancel_events = {}
+_backtest_cancel_events_lock = threading.Lock()
+_backtest_cancel_last_seen = {}
+_BACKTEST_CANCEL_MAX_USERS = 1024
+_BACKTEST_CANCEL_IDLE_SECONDS = 3600.0
+_MONTE_CARLO_MAX_CONCURRENT = 2
+_MONTE_CARLO_QUEUE_TIMEOUT_SECONDS = 0.25
+_monte_carlo_semaphore = asyncio.Semaphore(_MONTE_CARLO_MAX_CONCURRENT)
+_BACKTEST_MAX_CONCURRENT = 2
+_BACKTEST_QUEUE_TIMEOUT_SECONDS = 0.25
+_backtest_semaphore = asyncio.Semaphore(_BACKTEST_MAX_CONCURRENT)
+_ANALYSIS_MAX_CONCURRENT = 8
+_ANALYSIS_MAX_PER_USER = 2
+_ANALYSIS_QUEUE_TIMEOUT_SECONDS = 0.25
+_analysis_semaphore = asyncio.Semaphore(_ANALYSIS_MAX_CONCURRENT)
+_analysis_user_semaphores = {}
+_analysis_user_last_seen = {}
+_ANALYSIS_USER_MAX = 1024
+_ANALYSIS_USER_IDLE_SECONDS = 3600.0
+_analysis_rate_lock = threading.Lock()
+_analysis_rate_windows = {}
+_ANALYSIS_RATE_WINDOW_SECONDS = 60.0
+_ANALYSIS_RATE_MAX_REQUESTS = 30
+_ticker_warmup_tasks = {}
+_symbol_search_rate_lock = threading.Lock()
+_symbol_search_rate_windows = {}
+_SYMBOL_SEARCH_MAX_USERS = 1024
+_SYMBOL_SEARCH_WINDOW_SECONDS = 10.0
+_SYMBOL_SEARCH_MAX_REQUESTS = 20
+_SYMBOL_SEARCH_IDLE_SECONDS = 3600.0
+_PROVIDER_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="provider")
+_PROVIDER_CALL_TIMEOUT_SECONDS = 8.0
+
+
+def _enforce_symbol_search_rate_limit(uid: str):
+    """Bound upstream symbol-search work per authenticated tenant."""
+    user_key = str(uid or "").strip()
+    if not user_key:
+        raise HTTPException(status_code=401, detail="Authenticated user required")
+    now = time.monotonic()
+    with _symbol_search_rate_lock:
+        if user_key not in _symbol_search_rate_windows and len(_symbol_search_rate_windows) >= _SYMBOL_SEARCH_MAX_USERS:
+            stale_keys = [
+                key for key, (last_seen, _) in _symbol_search_rate_windows.items()
+                if now - last_seen > _SYMBOL_SEARCH_IDLE_SECONDS
+            ]
+            for stale_key in stale_keys:
+                _symbol_search_rate_windows.pop(stale_key, None)
+                if len(_symbol_search_rate_windows) < _SYMBOL_SEARCH_MAX_USERS:
+                    break
+        if user_key not in _symbol_search_rate_windows and len(_symbol_search_rate_windows) >= _SYMBOL_SEARCH_MAX_USERS:
+            raise HTTPException(status_code=429, detail="Symbol-search capacity is temporarily full; retry shortly.")
+        _, prior_events = _symbol_search_rate_windows.get(user_key, (now, []))
+        recent_events = [
+            event_time for event_time in prior_events
+            if now - event_time < _SYMBOL_SEARCH_WINDOW_SECONDS
+        ]
+        if len(recent_events) >= _SYMBOL_SEARCH_MAX_REQUESTS:
+            raise HTTPException(status_code=429, detail="Too many symbol-search requests; retry shortly.")
+        recent_events.append(now)
+        _symbol_search_rate_windows[user_key] = (now, recent_events)
+
+
+def _consume_provider_future(future):
+    """Observe late provider failures after a request-level timeout."""
+    try:
+        future.result()
+    except Exception:
+        pass
+
+
+def _safe_exception_type(exc: BaseException) -> str:
+    """Return diagnostic class information without exposing provider payloads."""
+    return type(exc).__name__
+
+
+async def _run_bounded_provider_call(uid: str, operation: str, func, timeout: float = _PROVIDER_CALL_TIMEOUT_SECONDS):
+    """Run blocking provider work in a bounded pool with per-user admission."""
+    async with _bounded_analysis_work(uid, operation):
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(_PROVIDER_EXECUTOR, func)
+        future.add_done_callback(_consume_provider_future)
+        return await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
+
+
+@asynccontextmanager
+async def _bounded_analysis_work(uid: str, operation: str):
+    """Bound expensive analysis/provider work globally and per authenticated user."""
+    user_key = str(uid or "").strip()
+    if not user_key:
+        raise HTTPException(status_code=401, detail="Authenticated user required")
+    now = time.monotonic()
+    with _analysis_rate_lock:
+        if user_key not in _analysis_rate_windows and len(_analysis_rate_windows) >= _ANALYSIS_USER_MAX:
+            stale_keys = [
+                key for key, (last_seen, _) in _analysis_rate_windows.items()
+                if now - last_seen > _ANALYSIS_USER_IDLE_SECONDS
+            ]
+            for stale_key in stale_keys:
+                _analysis_rate_windows.pop(stale_key, None)
+                if len(_analysis_rate_windows) < _ANALYSIS_USER_MAX:
+                    break
+        if user_key not in _analysis_rate_windows and len(_analysis_rate_windows) >= _ANALYSIS_USER_MAX:
+            raise HTTPException(status_code=429, detail="Analysis request capacity is temporarily full; retry shortly.")
+        _, prior_requests = _analysis_rate_windows.get(user_key, (now, []))
+        recent_requests = [
+            request_time for request_time in prior_requests
+            if now - request_time < _ANALYSIS_RATE_WINDOW_SECONDS
+        ]
+        if len(recent_requests) >= _ANALYSIS_RATE_MAX_REQUESTS:
+            raise HTTPException(status_code=429, detail=f"Too many {operation} requests; retry shortly.")
+        recent_requests.append(now)
+        _analysis_rate_windows[user_key] = (now, recent_requests)
+    if user_key not in _analysis_user_semaphores and len(_analysis_user_semaphores) >= _ANALYSIS_USER_MAX:
+        stale = sorted(
+            (seen, key) for key, seen in _analysis_user_last_seen.items()
+            if now - seen > _ANALYSIS_USER_IDLE_SECONDS
+        )
+        for _, stale_key in stale:
+            _analysis_user_semaphores.pop(stale_key, None)
+            _analysis_user_last_seen.pop(stale_key, None)
+            if len(_analysis_user_semaphores) < _ANALYSIS_USER_MAX:
+                break
+    if user_key not in _analysis_user_semaphores and len(_analysis_user_semaphores) >= _ANALYSIS_USER_MAX:
+        raise HTTPException(status_code=429, detail="Analysis user capacity is temporarily full; retry shortly.")
+    user_semaphore = _analysis_user_semaphores.setdefault(
+        user_key,
+        asyncio.Semaphore(_ANALYSIS_MAX_PER_USER),
+    )
+    _analysis_user_last_seen[user_key] = now
+    try:
+        await asyncio.wait_for(
+            _analysis_semaphore.acquire(),
+            timeout=_ANALYSIS_QUEUE_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=429, detail=f"Too much {operation} work is already running; retry shortly.")
+    try:
+        try:
+            await asyncio.wait_for(
+                user_semaphore.acquire(),
+                timeout=_ANALYSIS_QUEUE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=429, detail=f"Too much {operation} work is already running for this account; retry shortly.")
+        try:
+            yield
+        finally:
+            user_semaphore.release()
+    finally:
+        _analysis_semaphore.release()
+
+
+def _get_backtest_cancel_event(uid: str) -> threading.Event:
+    key = str(uid or "").strip()
+    if not key:
+        raise ValueError("Backtest cancellation requires an authenticated user id")
+    with _backtest_cancel_events_lock:
+        now = time.monotonic()
+        if key not in _backtest_cancel_events and len(_backtest_cancel_events) >= _BACKTEST_CANCEL_MAX_USERS:
+            stale = sorted(
+                (seen, stale_key) for stale_key, seen in _backtest_cancel_last_seen.items()
+                if now - seen > _BACKTEST_CANCEL_IDLE_SECONDS
+            )
+            for _, stale_key in stale:
+                _backtest_cancel_events.pop(stale_key, None)
+                _backtest_cancel_last_seen.pop(stale_key, None)
+                if len(_backtest_cancel_events) < _BACKTEST_CANCEL_MAX_USERS:
+                    break
+        if key not in _backtest_cancel_events and len(_backtest_cancel_events) >= _BACKTEST_CANCEL_MAX_USERS:
+            raise HTTPException(status_code=429, detail="Backtest cancellation capacity is temporarily full; retry shortly.")
+        event = _backtest_cancel_events.get(key)
+        if event is None:
+            event = threading.Event()
+            _backtest_cancel_events[key] = event
+        _backtest_cancel_last_seen[key] = now
+        return event
 
 # ──────────────────────────────────────────────
 # Secret Encryption Vault
 # ──────────────────────────────────────────────
 class Vault:
-    """Handles bank-grade encryption for sensitive API keys."""
+    """Versioned envelope encryption with an explicit previous-key rotation window."""
     def __init__(self):
-        # Keep the deterministic project-derived key available so credentials
-        # written before VAULT_SECRET_KEY was configured remain readable. New
-        # writes continue using the explicit production key when present.
-        self.legacy_fernet = self._derive_fallback_fernet()
-        secret_key = os.getenv("VAULT_SECRET_KEY")
-        if secret_key:
-            try:
-                self.fernet = Fernet(secret_key.encode())
-                print("[vault] Running in HIGH-SECURITY mode (VAULT_SECRET_KEY loaded)")
-            except Exception as e:
-                print(f"[vault] ERROR: Invalid VAULT_SECRET_KEY format ({e}). Falling back to project ID.")
-                self._load_fallback()
-        else:
-            print("[vault] WARNING: Running in fallback mode. Set VAULT_SECRET_KEY for production.")
-            self._load_fallback()
-
-    def _load_fallback(self):
-        self.fernet = self.legacy_fernet
-
-    def _derive_fallback_fernet(self):
-        project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "trading-bot-engine-df3de")
-        seed = project_id.encode()
-        key_hash = hashlib.sha256(seed).digest()
-        self.fernet = Fernet(base64.urlsafe_b64encode(key_hash))
-        return self.fernet
+        active_key = os.getenv("VAULT_SECRET_KEY", "").strip()
+        previous_key = os.getenv("VAULT_SECRET_KEY_PREVIOUS", "").strip()
+        self.active_version = os.getenv("VAULT_SECRET_KEY_VERSION", "2").strip()
+        self.previous_version = os.getenv("VAULT_SECRET_KEY_PREVIOUS_VERSION", "1").strip()
+        if not active_key:
+            raise RuntimeError("VAULT_SECRET_KEY is required in every environment")
+        try:
+            self.fernet = Fernet(active_key.encode())
+            self.previous_fernet = Fernet(previous_key.encode()) if previous_key else None
+        except Exception as exc:
+            raise RuntimeError("VAULT_SECRET_KEY is invalid") from exc
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", self.active_version):
+            raise RuntimeError("VAULT_SECRET_KEY_VERSION is invalid")
+        if self.previous_fernet and not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", self.previous_version):
+            raise RuntimeError("VAULT_SECRET_KEY_PREVIOUS_VERSION is invalid")
+        print(f"[vault] Versioned encryption key loaded (active={self.active_version})")
 
     def encrypt(self, plain_text: str) -> str:
         if not plain_text: return ""
-        return self.fernet.encrypt(plain_text.encode()).decode()
+        token = self.fernet.encrypt(plain_text.encode()).decode()
+        return f"v{self.active_version}:{token}"
 
     def decrypt(self, cipher_text: str) -> str:
         if not cipher_text: return ""
-        try:
-            decrypted = self.fernet.decrypt(cipher_text.encode()).decode()
-            return decrypted.strip()
-        except Exception as e:
-            # Backward compatibility for credentials encrypted before the
-            # explicit VAULT_SECRET_KEY was configured on the server.
-            if self.legacy_fernet is not self.fernet:
-                try:
-                    decrypted = self.legacy_fernet.decrypt(cipher_text.encode()).decode()
-                    print("[vault] Decrypted a legacy credential; migrate it on the next credential save.")
-                    return decrypted.strip()
-                except Exception:
-                    pass
-            print(f"[vault] DECRYPTION FAILED: {e}")
-            return ""
+        raw = str(cipher_text)
+        version = None
+        token = raw
+        match = re.fullmatch(r"v([A-Za-z0-9._-]{1,32}):(.*)", raw)
+        if match:
+            version, token = match.groups()
+        candidates = []
+        if version in (None, self.active_version):
+            candidates.append(self.fernet)
+        if self.previous_fernet and version in (None, self.previous_version):
+            candidates.append(self.previous_fernet)
+        for key in candidates:
+            try:
+                return key.decrypt(token.encode()).decode().strip()
+            except Exception:
+                continue
+        print("[vault] Decryption failed for stored credential material")
+        return ""
+
+    def needs_reencrypt(self, cipher_text: str) -> bool:
+        raw = str(cipher_text or "")
+        match = re.fullmatch(r"v([A-Za-z0-9._-]{1,32}):.*", raw)
+        return not match or match.group(1) != self.active_version
+
+    def reencrypt(self, cipher_text: str) -> str:
+        plain_text = self.decrypt(cipher_text)
+        return self.encrypt(plain_text) if plain_text else ""
 
     def self_test(self):
         test_str = "alpaca_test_123"
@@ -169,15 +370,23 @@ vault.self_test()
 # Initialize Firebase Admin
 if not firebase_admin._apps:
     try:
-        cred_path = os.path.join(os.path.dirname(__file__), "serviceAccount.json")
-        if os.path.exists(cred_path):
-            cred = credentials.Certificate(cred_path)
+        cred = load_firebase_credential()
+        if cred:
             firebase_admin.initialize_app(cred)
+        elif os.getenv("ENV", "production").strip().lower() == "test":
+            # Tests must never depend on a copied service-account key. The
+            # Firestore emulator/mocks can use anonymous credentials while
+            # production continues to require managed credential injection.
+            from google.auth.credentials import AnonymousCredentials
+            firebase_admin.initialize_app(
+                AnonymousCredentials(),
+                options={"projectId": "bot-bulls"},
+            )
         else:
             firebase_admin.initialize_app(options={'projectId': 'bot-bulls'})
         print("[main] Firebase Admin initialized.")
     except Exception as e:
-        print(f"[main] Firebase Admin init error: {e}")
+        print(f"[main] Firebase Admin init error: {_safe_exception_type(e)}")
 
 db = firestore.client()
 user_manager = UserManager(db)
@@ -237,6 +446,14 @@ DASHBOARD_SIGNAL_TO_TOGGLE = {
 }
 DASHBOARD_SIGNAL_TO_TOGGLE.update(EXTENSION_INDICATOR_TOGGLE_KEYS)
 DASHBOARD_INDICATOR_DISPLAY_LIMIT = 12
+MAX_WATCHLIST_ITEMS = 100
+MAX_ACTIVE_BOTS = 50
+MAX_TRADE_ALLOCATION = 1_000_000.0
+MAX_SCREENER_PROFILES = 100
+MAX_BACKTEST_DAYS = 1825
+MAX_OPTIMIZATION_DAYS = 365
+MAX_OPTIONS_BACKTEST_DAYS = 365
+MAX_REPLAY_CANDLES = 10000
 DASHBOARD_DEFAULT_DISPLAYED_INDICATORS = [
     "RSI", "EMA Cross", "SMA", "VWAP", "ADX Trend", "Supertrend",
     "ATR Volatility", "Volume Profile", "Candle Patterns", "Prior Day High/Low",
@@ -617,6 +834,36 @@ def _grid_bool(value) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def _normalize_risk_management_setting(value):
+    """Normalize only explicit boolean forms; reject false-like numerics."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, numbers.Number) and not isinstance(value, bool):
+        if value in (0, 1):
+            return bool(value)
+        raise HTTPException(status_code=400, detail="enable_risk_management must be true or false")
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise HTTPException(status_code=400, detail="enable_risk_management must be true or false")
+
+
+def _validate_trade_allocation(value, field_name: str = "trade allocation") -> float:
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{field_name} must be numeric")
+    if not math.isfinite(normalized) or not 0 < normalized <= MAX_TRADE_ALLOCATION:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} must be finite and between 0 and {int(MAX_TRADE_ALLOCATION)}",
+        )
+    return normalized
 
 
 def _normalize_percentage_strategy_settings(settings: dict) -> dict:
@@ -1018,7 +1265,7 @@ def _log_background_task_result(task: asyncio.Task, reason: str):
         return
     exc = task.exception()
     if exc:
-        print(f"[settings] Background save failed ({reason}): {exc}")
+        print(f"[settings] Background save failed ({reason}): {_safe_exception_type(exc)}")
 
 
 def _queue_settings_save(eng: UserEngine, reason: str = "settings"):
@@ -1077,7 +1324,7 @@ def _get_chart_analysis_fallback(
             analysis["chart_data_source"] = "yahoo_fallback"
         return analysis
     except Exception as exc:
-        print(f"[chart] Historical fallback failed for {ticker} {timeframe_key}: {exc}")
+        print(f"[chart] Historical fallback failed for {ticker} {timeframe_key}: {_safe_exception_type(exc)}")
         return None
 
 
@@ -1164,6 +1411,7 @@ def _get_cached_chart_analysis(ticker: str, timeframe: str, eng: UserEngine, for
         return analysis, False, 0.0
     finally:
         fetch_lock.release()
+        _chart_analysis_cache.release_inflight_lock(stable_cache_key("chart_fetch", cache_key), fetch_lock)
 
 
 
@@ -1271,7 +1519,7 @@ def _format_exit_protection_status(
     try:
         targets = eng._build_exit_protection_targets(symbol, scan, position, settings)
     except Exception as exc:
-        print(f"[dashboard] Exit protection target check failed for {symbol}: {exc}")
+        print(f"[dashboard] Exit protection target check failed for {symbol}: {_safe_exception_type(exc)}")
         targets = None
     if not targets:
         return {"label": "Exit Protection", "status": "Pending | Watcher | awaiting TP/SL targets", "active": False, "protection_type": "watcher"}
@@ -1614,7 +1862,7 @@ def _get_cached_latest_prices(eng: UserEngine, tickers: list, max_age: int = 3, 
                         _quote_cache.set(cache_key, price)
                         result[_normalize_quote_symbol(ticker)] = price
                 except Exception as e:
-                    print(f"[dashboard] Live quote fetch failed for {provider_misses}: {type(e).__name__}: {e!r}")
+                    print(f"[dashboard] Live quote fetch failed for {provider_misses}: {_safe_exception_type(e)}")
                 if provider_source == "webull":
                     for ticker in provider_misses:
                         if ticker not in result:
@@ -1727,7 +1975,7 @@ def _get_cached_quote_detail(eng: UserEngine, symbol: str, max_age: int = 10, st
             except Exception as e:
                 if source == "webull":
                     _webull_unavailable_quote_cache.set(clean, True)
-                print(f"[dashboard] Live quote fetch failed for {clean} via {source}: {type(e).__name__}: {e!r}")
+                print(f"[dashboard] Live quote fetch failed for {clean} via {source}: {_safe_exception_type(e)}")
 
         yahoo_price = _get_yahoo_latest_price(clean)
         if yahoo_price is not None:
@@ -1774,7 +2022,7 @@ def _get_webull_market_data_broker():
             _webull_market_data_broker = broker
             return broker
     except Exception as e:
-        print(f"[dashboard] Webull quote client unavailable: {e}")
+        print(f"[dashboard] Webull quote client unavailable: {type(e).__name__}")
     return None
 
 
@@ -1798,22 +2046,37 @@ def _fetch_latest_watchlist_prices(eng: UserEngine, tickers: list) -> dict:
     try:
         return provider.get_latest_prices(clean_tickers) or {}
     except Exception as e:
-        print(f"[dashboard] Live Webull price fetch failed: {e}")
+        print(f"[dashboard] Live Webull price fetch failed: {type(e).__name__}")
         return {}
 
-async def verify_token(authorization: str = Header(None)):
+async def verify_token(request: Request, authorization: str = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing Authorization header")
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Invalid Authorization format")
-    token = authorization.split("Bearer ")[1]
-    if token == "dev-token":
-        if os.getenv("ENV") == "development":
+    token = authorization[len("Bearer "):].strip()
+    if not token or len(token) > 4096 or " " in token:
+        raise HTTPException(status_code=401, detail="Invalid Authorization format")
+    if _DEV_AUTH_TOKEN and hmac.compare_digest(token, _DEV_AUTH_TOKEN):
+        client_host = request.client.host if request.client else ""
+        if os.getenv("ENV", "").lower() == "development" and client_host in {"127.0.0.1", "::1", "localhost"}:
             return {"uid": "dev-user", "email": "dev@example.com"}
         else:
-            raise HTTPException(status_code=401, detail="Development backdoor is disabled in production")
+            raise HTTPException(status_code=401, detail="Development authentication is loopback-only")
     try:
-        return auth.verify_id_token(token)
+        claims = auth.verify_id_token(token)
+        sign_in_provider = ((claims.get("firebase") or {}).get("sign_in_provider"))
+        if sign_in_provider == "password" and claims.get("email_verified") is not True:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "EMAIL_VERIFICATION_REQUIRED",
+                    "message": "Verify your email before accessing protected platform features.",
+                },
+            )
+        return claims
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=401, detail="Invalid or expired authentication credentials")
 
@@ -1856,10 +2119,11 @@ async def get_user_engine(request: Request, user: dict = Depends(verify_token)) 
         or path.startswith("/api/quote/")
         or path == "/api/market-data"
     )
+    is_debug_endpoint = path == "/api/debug-doge"
 
-    if not eng.bot_running and not is_backtest_status and not is_backtest_execution and not is_chart_only_request:
-        async with eng.load_lock:
-            if not eng.bot_running:
+    if not eng.bot_running and not is_backtest_status and not is_backtest_execution and not is_chart_only_request and not is_debug_endpoint:
+        async with eng.task_start_lock:
+            if not eng.bot_running and not (eng.task and not eng.task.done()):
                 eng.task = asyncio.create_task(eng.trading_loop())
     set_user_config(eng.config)
     return eng
@@ -1881,6 +2145,7 @@ class AlpacaConfig(BaseModel):
     api_key: str
     secret_key: str
     paper: bool = True
+    live_trading_acknowledged: bool = False
 
 
 class LegalAcceptance(BaseModel):
@@ -1893,16 +2158,27 @@ async def _scan_screener_state(
     symbols: list[str] = None,
     force_scan: bool = False,
 ) -> None:
-    """Refresh Screener analysis only; a settings save may force one run."""
+    """Refresh Screener analysis only; explicit requests may force one run."""
     if state.scan_lock.locked():
         return
     async with state.scan_lock:
+        if not await state.try_acquire_process_scan_lock():
+            # Another backend worker owns this user's scan lease. Its result
+            # will be persisted for the next scheduler/read cycle.
+            return
+        # The file lock only serializes workers. Reloading here makes the
+        # durable notification and candle ledger authoritative for dedupe.
+        try:
+            await state.refresh_from_persistence()
+        except BaseException:
+            await state.release_process_scan_lock()
+            raise
         # The event is a pending-request marker. Clear it only after the lock
         # is acquired so a settings save that races an in-flight normal scan
         # is retried by the scheduler instead of being lost.
         if force_scan:
             state.force_scan.clear()
-        requested_symbols = symbols or list(state.order)
+        requested_symbols = list(state.order) if symbols is None else symbols
         selected = []
         seen_symbols = set()
         for raw_symbol in requested_symbols:
@@ -1910,19 +2186,25 @@ async def _scan_screener_state(
             if symbol and symbol in state.profiles and symbol not in seen_symbols:
                 selected.append(symbol)
                 seen_symbols.add(symbol)
-        set_user_config(state.config)
+        user_token = set_user_config(state.config)
         context_token = active_evaluation_context.set("screener")
         cycle_error = False
+        valid_scan_completed = False
         try:
             for raw_symbol in selected:
                 symbol = normalize_screener_symbol(raw_symbol)
-                settings = state.profiles.get(symbol, {})
+                settings = copy.deepcopy(state.profiles.get(symbol, {}))
                 if not symbol or not settings or not bool(settings.get("enabled", not settings.get("paused", False))):
                     continue
+                scan_profile_revision = state.profile_revision(symbol)
                 timeframe = settings.get("timeframe") or state.page_settings.get("chart_timeframe") or state.config.DEFAULT_TIMEFRAME
                 evaluation_state = state.evaluation_state.setdefault(symbol, {})
+                scan_generation = evaluation_state.get("generation")
                 scan_interval = _screener_scan_interval_seconds(settings)
+                # Failure paths must also respect the configured cadence.
+                evaluation_state["next_due_at"] = time.time() + scan_interval
                 session_status = _screener_market_status(symbol, settings)
+                probe_key = ""
                 if not session_status["is_active_window"] and not force_scan:
                     # Match Bots: do not fetch candles or run technical
                     # evaluation while the configured market session is shut.
@@ -1965,22 +2247,41 @@ async def _scan_screener_state(
                     # A repeated completed-candle key must not trigger another
                     # 1,200-bar fetch and full indicator calculation.
                     try:
-                        async with screener_manager.evaluation_semaphore:
-                            latest_meta = await asyncio.wait_for(
-                                asyncio.to_thread(
-                                    get_latest_completed_candle_metadata,
-                                    symbol,
-                                    timeframe,
-                                    settings.get("market_session", "extended"),
-                                ),
-                                timeout=8.0,
-                            )
+                        state.health["candle_probe_count"] = int(state.health.get("candle_probe_count", 0) or 0) + 1
+                        latest_meta = await screener_manager.work_tracker.run(
+                            (state.uid, symbol, "technical"),
+                            screener_manager.evaluation_semaphore,
+                            get_latest_completed_candle_metadata,
+                            symbol, timeframe, settings.get("market_session", "extended"),
+                            timeout=8.0,
+                        )
                     except Exception as exc:
                         latest_meta = {"candle_key": None, "candle_status": "unavailable"}
-                        print(f"[screener] Candle probe failed for {symbol}: {exc}")
+                        print(f"[screener] Candle probe failed for {symbol}: {_safe_exception_type(exc)}")
+                    if not _screener_profile_is_current(state, symbol, scan_profile_revision, scan_generation):
+                        continue
                     probe_key = str(latest_meta.get("candle_key") or "")
                     next_due_at = time.time() + scan_interval
-                    if probe_key == previous_candle_key or not probe_key:
+                    if probe_key and not _screener_candle_is_usable(
+                        latest_meta, timeframe, session_status["is_active_window"]
+                    ):
+                        cycle_error = True
+                        cached_scan = copy.deepcopy(
+                            state.latest_scans.get(symbol) or _empty_screener_scan(symbol, settings)
+                        )
+                        cached_scan["data_status"] = "degraded"
+                        cached_scan["stale_reason"] = "The market-data provider returned a stale completed candle."
+                        state.latest_scans[symbol] = cached_scan
+                        evaluation_state["next_due_at"] = next_due_at
+                        evaluation_state["last_data_check_at"] = datetime.now(pytz.UTC).isoformat()
+                        state.health["last_error"] = (
+                            f"Stale completed-candle probe for {symbol}; retained last valid analysis"
+                        )
+                        continue
+                    if not probe_key or (
+                        probe_key == previous_candle_key
+                        and state.latest_scans.get(symbol, {}).get("data_status") in {None, "current"}
+                    ):
                         cached_scan = state.latest_scans.get(symbol)
                         if isinstance(cached_scan, dict) and isinstance(cached_scan.get("scan_log"), dict):
                             cached_scan = copy.deepcopy(cached_scan)
@@ -2001,22 +2302,90 @@ async def _scan_screener_state(
                         if not probe_key:
                             cycle_error = True
                             state.health["last_error"] = f"Completed-candle probe unavailable for {symbol}; retained last valid analysis"
+                            _mark_screener_scan_degraded(state, symbol, settings, "Completed-candle probe unavailable; showing the last valid analysis.")
                         else:
+                            state.health["same_candle_skips"] = int(state.health.get("same_candle_skips", 0) or 0) + 1
                             print(f"[screener] Skip: {symbol} no new completed candle (candle_key={previous_candle_key})")
                         continue
                 try:
-                    async with screener_manager.evaluation_semaphore:
-                        scan = await asyncio.wait_for(
-                            asyncio.to_thread(
-                                evaluate_screener_profile,
-                                state.uid,
-                                {**copy.deepcopy(settings), "symbol": symbol},
-                                copy.deepcopy(state.config.contexts.get("screener", {})),
-                            ),
-                            timeout=45.0,
+                    state.health["full_evaluation_count"] = int(state.health.get("full_evaluation_count", 0) or 0) + 1
+                    scan = await screener_manager.work_tracker.run(
+                        (state.uid, symbol, "technical"),
+                        screener_manager.evaluation_semaphore,
+                        evaluate_screener_profile,
+                        state.uid,
+                        {**copy.deepcopy(settings), "symbol": symbol},
+                        copy.deepcopy(state.config.contexts.get("screener", {})),
+                        timeout=45.0,
+                    )
+                    if not isinstance(scan, dict):
+                        scan = {"evaluation_status": "error", "reason": "Screener evaluation returned no result."}
+                    # A settings save or profile disable may race an in-flight
+                    # provider call. Never publish that obsolete result.
+                    if not _screener_profile_is_current(state, symbol, scan_profile_revision, scan_generation):
+                        print(f"[screener] Discarded obsolete result for {symbol}")
+                        continue
+                    evaluation_status = str(scan.get("evaluation_status") or "waiting").lower()
+                    raw_candle_meta = scan.get("candle_meta") if isinstance(scan.get("candle_meta"), dict) else {}
+                    candle_key = str(raw_candle_meta.get("candle_key") or "")
+                    if evaluation_status != "valid" or not candle_key:
+                        cycle_error = True
+                        state.health["last_error"] = (
+                            f"Screener data unavailable for {symbol}; retained last valid analysis"
                         )
+                        _mark_screener_scan_degraded(state, symbol, settings, "Evaluation did not produce valid completed-candle analysis.")
+                        state.health["data_quality_rejections"] = int(state.health.get("data_quality_rejections", 0) or 0) + 1
+                        continue
+                    stale_candle = not _screener_candle_is_usable(
+                        raw_candle_meta, timeframe, session_status["is_active_window"]
+                    )
+                    if stale_candle:
+                        cycle_error = True
+                        state.health["last_error"] = (
+                            f"Stale or invalid completed candle for {symbol}; retained last valid analysis"
+                        )
+                        _mark_screener_scan_degraded(state, symbol, settings, "Completed candle is outside the freshness window.")
+                        state.health["data_quality_rejections"] = int(state.health.get("data_quality_rejections", 0) or 0) + 1
+                        continue
+                    if probe_key:
+                        probe_ts = _screener_candle_key_timestamp(probe_key)
+                        evaluation_ts = _screener_candle_key_timestamp(candle_key)
+                        if probe_ts > 0 and (evaluation_ts <= 0 or evaluation_ts < probe_ts):
+                            cycle_error = True
+                            cached_scan = copy.deepcopy(
+                                state.latest_scans.get(symbol) or _empty_screener_scan(symbol, settings)
+                            )
+                            cached_scan["data_status"] = "degraded"
+                            cached_scan["stale_reason"] = "Full analysis returned an older candle than the completed-candle probe."
+                            state.latest_scans[symbol] = cached_scan
+                            state.health["data_quality_rejections"] = int(state.health.get("data_quality_rejections", 0) or 0) + 1
+                            state.health["last_error"] = (
+                                f"Probe/full-analysis candle mismatch for {symbol}; retained last valid analysis"
+                            )
+                            continue
+                    current_candle_ts = _screener_candle_key_timestamp(candle_key)
+                    previous_observed_key = str(
+                        evaluation_state.get("last_observed_candle_key")
+                        or evaluation_state.get("last_candle_key")
+                        or ""
+                    )
+                    previous_candle_ts = _screener_candle_key_timestamp(previous_observed_key)
+                    if current_candle_ts <= 0 or (
+                        previous_candle_ts > 0 and current_candle_ts < previous_candle_ts
+                    ):
+                        cycle_error = True
+                        cached_scan = copy.deepcopy(
+                            state.latest_scans.get(symbol) or _empty_screener_scan(symbol, settings)
+                        )
+                        cached_scan["data_status"] = "degraded"
+                        cached_scan["stale_reason"] = "An older completed candle arrived after a newer scan."
+                        state.latest_scans[symbol] = cached_scan
+                        state.health["last_error"] = (
+                            f"Out-of-order completed candle for {symbol}; retained last valid analysis"
+                        )
+                        continue
                     formatted = _format_scan_for_ui(scan or {}, use_global_settings=False)
-                    formatted["evaluation_status"] = scan.get("evaluation_status", "waiting")
+                    formatted["evaluation_status"] = evaluation_status
                     direction = scan.get("direction", "NEUTRAL")
                     formatted["candle_meta"] = scan.get("candle_meta", {})
                     formatted["atr_levels"] = scan.get("atr_levels", {})
@@ -2031,7 +2400,61 @@ async def _scan_screener_state(
                             formatted["reason"] = f"⚠️ {blocker}" + (f" | {existing_reason}" if existing_reason else "")
                             scan["reason"] = formatted["reason"]
 
+                    # The Screener can now use the existing technical scan as
+                    # one leg of an explicit policy. News is refreshed by the
+                    # independent watcher and is read here only; this path
+                    # never fetches news or places an order as a side effect.
+                    screening_mode = normalize_screening_strategy_mode(
+                        settings.get("strategy_mode", "combined")
+                    )
+                    technical_assessment = assess_swing_technical(scan, settings)
+                    event_assessment = assess_event_catalyst(
+                        state.news_watch.get(symbol) or {},
+                        max_age_days=settings.get("event_max_age_days", 10),
+                        min_confidence=settings.get("event_min_confidence", 0.55),
+                    )
+                    strategy_qualification = combine_strategy_qualification(
+                        screening_mode,
+                        technical_assessment,
+                        event_assessment,
+                    )
+                    # Entry policy must not disable an already active virtual
+                    # lifecycle's technical exit monitoring. The event gate
+                    # applies to opening a new Screener cycle; bearish exits
+                    # remain visible when the catalyst later becomes stale.
+                    if evaluation_state.get("virtual_position") and direction in {"BULLISH", "BEARISH"}:
+                        strategy_qualification = {
+                            **strategy_qualification,
+                            "qualified": True,
+                            "direction": direction,
+                            "reason": (
+                                "Existing virtual cycle: technical exit monitoring remains active; "
+                                "event policy applies to new entries."
+                            ),
+                        }
+                    raw_technical_direction = direction
+                    direction = strategy_qualification.get("direction", "NEUTRAL")
+                    scan.update({
+                        "technical_direction": raw_technical_direction,
+                        "screening_strategy_mode": screening_mode,
+                        "technical_qualification": technical_assessment,
+                        "event_qualification": event_assessment,
+                        "strategy_qualification": strategy_qualification,
+                        "direction": direction,
+                        "action": {"BULLISH": "BUY", "BEARISH": "SELL"}.get(direction, "HOLD"),
+                    })
+                    if direction != raw_technical_direction:
+                        combined_reason = str(strategy_qualification.get("reason") or "Strategy policy is waiting.")
+                        original_reason = str(formatted.get("reason") or scan.get("reason") or "")
+                        scan["reason"] = f"{combined_reason} | Technical: {original_reason}" if original_reason else combined_reason
+                        formatted["reason"] = scan["reason"]
+                    formatted["screening_strategy_mode"] = screening_mode
+                    formatted["technical_direction"] = raw_technical_direction
+                    formatted["technical_qualification"] = technical_assessment
+                    formatted["event_qualification"] = event_assessment
+                    formatted["strategy_qualification"] = strategy_qualification
                     formatted["direction"] = direction
+                    formatted["action"] = {"BULLISH": "BUY", "BEARISH": "SELL"}.get(direction, "HOLD")
                     bullish = int(formatted.get("bullish_count", 0) or 0)
                     bearish = int(formatted.get("bearish_count", 0) or 0)
                     formatted["ticker"] = symbol
@@ -2050,6 +2473,38 @@ async def _scan_screener_state(
                         or settings.get("options_exit_strategy")
                         or "indicator"
                     ).strip().lower()
+                    current_candle_key = str((formatted.get("candle_meta") or {}).get("candle_key") or "")
+                    if direction == "BULLISH" and not bool(evaluation_state.get("virtual_position")):
+                        # Freeze structural levels at the candle that starts
+                        # the virtual cycle. Later quote checks may move only
+                        # the live price and an explicitly configured trailing
+                        # stop; they do not recompute the target from a new
+                        # candle or a changed profile.
+                        entry_price = _entry_forecast_float(formatted.get("price_raw"), 0.0)
+                        entry_state = copy.deepcopy(evaluation_state)
+                        entry_state.update({
+                            "virtual_position": True,
+                            "virtual_entry_price": entry_price,
+                            "virtual_entry_atr": _entry_forecast_float(formatted.get("atr"), 0.0),
+                            "virtual_entry_candle_key": current_candle_key,
+                            "virtual_exit_mode": sell_mode,
+                            "virtual_exit_settings": copy.deepcopy(settings),
+                            "virtual_peak_price": entry_price,
+                        })
+                        snapshot_levels = _screener_exit_level_status(
+                            settings,
+                            formatted,
+                            entry_state,
+                            sell_mode,
+                            price_override=entry_price,
+                        )
+                        scan["screener_exit_snapshot"] = {
+                            "mode": sell_mode,
+                            "stop": snapshot_levels.get("stop"),
+                            "target": snapshot_levels.get("target"),
+                            "atr": entry_state.get("virtual_entry_atr"),
+                            "available": bool(snapshot_levels.get("available")),
+                        }
                     stored_exit_key = str(evaluation_state.get("last_exit_event_candle_key") or "")
                     current_candle_key = str((formatted.get("candle_meta") or {}).get("candle_key") or "")
                     stored_exit_event = evaluation_state.get("last_exit_event")
@@ -2071,7 +2526,10 @@ async def _scan_screener_state(
                             new_exit_event = candidate_exit
                             exit_event = candidate_exit
                     if settings.get("options_trading"):
-                        exp_days = settings.get("options_expiry_days", 3)
+                        try:
+                            exp_days = max(0, min(365, int(settings.get("options_expiry_days", 3))))
+                        except (TypeError, ValueError):
+                            exp_days = 3
                         strike_type = settings.get("options_strike_type", "ATM")
                         opt_side = "CALL" if direction == "BULLISH" else ("PUT" if direction == "BEARISH" else None)
                         formatted["options_play"] = {
@@ -2080,7 +2538,6 @@ async def _scan_screener_state(
                             "strike_type": strike_type,
                             "summary": f"{symbol} ~{exp_days}D {strike_type} {opt_side}" if opt_side else f"~{exp_days}D {strike_type} (Pending Setup)",
                         }
-                    state.latest_scans[symbol] = formatted
                     evaluation_for_commit = scan
                     if new_exit_event:
                         evaluation_for_commit = copy.deepcopy(scan)
@@ -2093,8 +2550,20 @@ async def _scan_screener_state(
                             or evaluation_for_commit.get("reason")
                             or "Configured structural exit reached."
                         )
+                    # Keep the lifecycle state from before this transition for
+                    # the historical alert explanation. commit_evaluation
+                    # advances a bullish cycle into bearish exit-watch (and a
+                    # bearish cycle back into bullish entry-watch), which is
+                    # correct for the live card but wrong for the alert that
+                    # just fired.
+                    alert_snapshot_state = copy.deepcopy(evaluation_state)
+                    alert_event_direction = "BEARISH" if exit_event else direction
+                    alert_snapshot_state["virtual_position"] = alert_event_direction == "BEARISH"
+                    alert_snapshot_state["last_actionable_direction"] = (
+                        "BULLISH" if alert_event_direction == "BEARISH" else ""
+                    )
                     notification = state.commit_evaluation(symbol, evaluation_for_commit)
-                    event_direction = "BEARISH" if exit_event else direction
+                    event_direction = alert_event_direction
                     print(
                         f"[screener] Scan: {symbol} direction={direction} "
                         f"candle_close_ts={(scan.get('candle_meta') or {}).get('candle_close_ts')} "
@@ -2102,6 +2571,14 @@ async def _scan_screener_state(
                         f" event_direction={event_direction}"
                     )
                     evaluation_state["next_due_at"] = time.time() + scan_interval
+                    alert_scan_log = _build_screener_scan_log(
+                        symbol,
+                        formatted,
+                        settings,
+                        alert_snapshot_state,
+                        alert_created=bool(notification),
+                        exit_event=exit_event,
+                    )
                     formatted["scan_log"] = _build_screener_scan_log(
                         symbol,
                         formatted,
@@ -2118,7 +2595,7 @@ async def _scan_screener_state(
                         notification.update({
                             "event_direction": event_direction,
                             "timeframe": timeframe,
-                            "scan_log": copy.deepcopy(formatted["scan_log"]),
+                            "scan_log": copy.deepcopy(alert_scan_log),
                             "scan_reason": str(formatted.get("reason") or ""),
                             "candle_meta": copy.deepcopy(formatted.get("candle_meta") or {}),
                             "atr_levels": copy.deepcopy(
@@ -2143,6 +2620,9 @@ async def _scan_screener_state(
                             "session_paused": True,
                             "force_scan_completed": True,
                         })
+                    formatted["data_status"] = "current"
+                    state.latest_scans[symbol] = formatted
+                    valid_scan_completed = True
                     if notification:
                         state.health["email_queued"] = sum(item.get("status") == "queued" for item in state.email_outbox)
                         state.health["sms_queued"] = sum(item.get("status") == "queued" for item in state.sms_outbox)
@@ -2164,24 +2644,482 @@ async def _scan_screener_state(
                     })
                     state.activity = state.activity[:100]
                 except asyncio.TimeoutError:
+                    if not _screener_profile_is_current(state, symbol, scan_profile_revision, scan_generation):
+                        continue
                     cycle_error = True
                     print(f"[screener] Scan timed out for {symbol}")
                     state.health["last_error"] = f"Scan timed out for {symbol}"
+                    _mark_screener_scan_degraded(state, symbol, settings, "Analysis timed out; showing the last valid scan until a retry succeeds.")
                 except Exception as exc:
+                    if not _screener_profile_is_current(state, symbol, scan_profile_revision, scan_generation):
+                        continue
                     cycle_error = True
-                    print(f"[screener] Scan failed for {symbol}: {exc}")
-                    state.health["last_error"] = str(exc)
+                    print(f"[screener] Scan failed for {symbol}: {_safe_exception_type(exc)}")
+                    state.health["last_error"] = _safe_exception_type(exc)
+                    _mark_screener_scan_degraded(state, symbol, settings, "Analysis is unavailable; showing the last valid scan until a retry succeeds.")
             state.health.update({
                 "status": "degraded" if cycle_error else "healthy",
                 "last_scan_at": time.time(),
-                "last_success_at": time.time() if not cycle_error else state.health.get("last_success_at"),
-                "consecutive_failures": 0,
+                "last_success_at": time.time() if valid_scan_completed else state.health.get("last_success_at"),
+                "consecutive_failures": 0 if not cycle_error else int(state.health.get("consecutive_failures", 0) or 0) + 1,
             })
-            if not cycle_error:
+            if not cycle_error and valid_scan_completed:
                 state.health["last_error"] = ""
             await state.save()
         finally:
             active_evaluation_context.reset(context_token)
+            _active_user_config.reset(user_token)
+            await state.release_process_scan_lock()
+
+
+def _screener_price_watch_interval_seconds(settings: dict) -> int:
+    """Return a bounded quote-watch cadence independent of candle cadence."""
+    try:
+        return max(2, min(60, int((settings or {}).get("price_watch_interval_seconds", 5))))
+    except (TypeError, ValueError):
+        return 5
+
+
+def _screener_quote_age_label(value: Any) -> str:
+    """Format provider/cache age without letting malformed metadata break a scan."""
+    try:
+        age = float(value)
+        return f"{age:.1f}s"
+    except (TypeError, ValueError, OverflowError):
+        return "unavailable"
+
+
+_SCREENER_PRICE_EXIT_MODES = {
+    "atr",
+    "sltp",
+    "hybrid",
+    "hybrid_atr",
+    "percentage",
+    "hybrid_pct",
+    "pivot_points",
+    "hybrid_pivot",
+    "high_low",
+    "hybrid_high_low",
+    "swing_points",
+    "hybrid_swing",
+    "custom_sltp",
+    "custom_underlying_sltp",
+}
+_SCREENER_PRICE_ENTRY_MODES = {"custom_price"}
+
+
+def _screener_price_event_key(state: dict, symbol: str, mode: str, level_name: str) -> str:
+    """Create a stable event identity for one virtual entry and level."""
+    payload = "|".join([
+        str(state.get("generation") or "1"),
+        normalize_screener_symbol(symbol),
+        str(state.get("virtual_entry_candle_key") or state.get("last_candle_key") or ""),
+        str(mode or ""),
+        str(level_name or ""),
+    ])
+    return hashlib.sha256(payload.encode()).hexdigest()[:32]
+
+
+def _screener_price_entry_event_key(
+    state: dict,
+    symbol: str,
+    mode: str,
+    direction: str,
+    target_price: float,
+) -> str:
+    """Create a stable identity for one custom-price entry opportunity."""
+    payload = "|".join([
+        str(state.get("generation") or "1"),
+        normalize_screener_symbol(symbol),
+        str(state.get("last_observed_candle_key") or state.get("last_candle_key") or "live"),
+        str(mode or ""),
+        str(direction or ""),
+        f"{float(target_price):.10f}",
+    ])
+    return hashlib.sha256(payload.encode()).hexdigest()[:32]
+
+
+async def _watch_screener_price_levels_state(
+    state: ScreenerUserState,
+    symbols: Optional[list] = None,
+    force_scan: bool = False,
+) -> None:
+    """Check virtual exit levels from fresh quotes between candle scans.
+
+    This watcher is analysis-only. It never submits orders and never changes
+    the completed-candle direction. A valid quote may close the virtual cycle
+    through ``commit_price_event`` when a configured stop/target is reached.
+    """
+    if state.scan_lock.locked() or state.price_watch_lock.locked():
+        state.health["price_watch_skips"] = int(state.health.get("price_watch_skips", 0) or 0) + 1
+        return
+    async with state.price_watch_lock:
+        if not await state.try_acquire_process_scan_lock():
+            state.health["price_watch_skips"] = int(state.health.get("price_watch_skips", 0) or 0) + 1
+            return
+        context_token = active_evaluation_context.set("screener")
+        changed = False
+        try:
+            await state.refresh_from_persistence()
+            selected = symbols or list(state.order)
+            now_ts = time.time()
+            now_iso = datetime.now(pytz.UTC).isoformat()
+            for raw_symbol in selected:
+                symbol = normalize_screener_symbol(raw_symbol)
+                settings = copy.deepcopy(state.profiles.get(symbol, {}))
+                if not symbol or not settings or not bool(settings.get("enabled", not settings.get("paused", False))):
+                    continue
+                evaluation_state = state.evaluation_state.setdefault(symbol, {})
+                interval = _screener_price_watch_interval_seconds(settings)
+                if now_ts < float(evaluation_state.get("next_price_watch_at", 0) or 0):
+                    continue
+                evaluation_state["next_price_watch_at"] = now_ts + interval
+                evaluation_state["last_price_watch_at"] = now_ts
+                state.health["price_probe_count"] = int(state.health.get("price_probe_count", 0) or 0) + 1
+                state.health["last_price_watch_at"] = now_ts
+                changed = True
+
+                sell_mode = str(
+                    settings.get("sell_mode")
+                    or settings.get("options_exit_strategy")
+                    or "indicator"
+                ).strip().lower()
+                buy_mode = str(settings.get("buy_mode") or "indicator").strip().lower()
+                watch_custom_entry = (
+                    buy_mode in _SCREENER_PRICE_ENTRY_MODES
+                    and not bool(evaluation_state.get("virtual_position"))
+                )
+                watch_price_exit = (
+                    bool(evaluation_state.get("virtual_position"))
+                    and sell_mode in _SCREENER_PRICE_EXIT_MODES
+                )
+                session_status = _screener_market_status(symbol, settings)
+                if not watch_custom_entry and not watch_price_exit:
+                    evaluation_state["last_price_watch"] = {
+                        "status": "IDLE",
+                        "checked_at": now_iso,
+                        "reason": "No custom-price entry or active price-based exit to monitor.",
+                        "interval_seconds": interval,
+                    }
+                    latest_scan = copy.deepcopy(state.latest_scans.get(symbol) or {})
+                    latest_scan["price_watch"] = copy.deepcopy(evaluation_state["last_price_watch"])
+                    state.latest_scans[symbol] = latest_scan
+                    continue
+                if not session_status.get("is_active_window") and not force_scan:
+                    evaluation_state["last_price_watch"] = {
+                        "status": "MARKET_CLOSED",
+                        "checked_at": now_iso,
+                        "reason": "Quote monitoring is outside the configured market session.",
+                        "interval_seconds": interval,
+                        "next_open_str": session_status.get("next_open_str"),
+                    }
+                    latest_scan = copy.deepcopy(state.latest_scans.get(symbol) or {})
+                    latest_scan["price_watch"] = copy.deepcopy(evaluation_state["last_price_watch"])
+                    state.latest_scans[symbol] = latest_scan
+                    continue
+
+                revision = state.profile_revision(symbol)
+                generation = evaluation_state.get("generation")
+                try:
+                    quote = await screener_manager.work_tracker.run(
+                        (state.uid, symbol, "quote"),
+                        screener_manager.evaluation_semaphore,
+                        _get_cached_quote_detail,
+                        SimpleNamespace(uid=state.uid, broker=None), symbol, 0, 30,
+                        timeout=8.0,
+                    )
+                except Exception:
+                    quote = {"stale": True, "source": "unavailable"}
+                if not _screener_profile_is_current(state, symbol, revision, generation):
+                    continue
+                quote_price = _entry_forecast_float(quote.get("price"), 0.0)
+                quote_age = quote.get("cache_age")
+                quote_stale = bool(quote.get("stale"))
+                quote_source = str(quote.get("source") or "unavailable")
+                if quote_stale or quote_price <= 0 or not math.isfinite(quote_price):
+                    state.health["price_data_rejections"] = int(state.health.get("price_data_rejections", 0) or 0) + 1
+                    evaluation_state["last_price_watch"] = {
+                        "status": "STALE" if quote_stale else "UNAVAILABLE",
+                        "checked_at": now_iso,
+                        "source": quote_source,
+                        "quote_age_seconds": quote_age,
+                        "interval_seconds": interval,
+                    }
+                    latest_scan = copy.deepcopy(state.latest_scans.get(symbol) or {})
+                    latest_scan["price_watch"] = copy.deepcopy(evaluation_state["last_price_watch"])
+                    state.latest_scans[symbol] = latest_scan
+                    continue
+
+                latest_scan = copy.deepcopy(state.latest_scans.get(symbol) or {})
+                if watch_custom_entry:
+                    custom_target = _entry_forecast_float(settings.get("custom_buy_price"), 0.0)
+                    is_put_entry = bool(settings.get("options_trading")) and normalize_options_type(
+                        settings.get("options_type"), default="calls_only"
+                    ) == "puts_only"
+                    entry_direction = "BEARISH" if is_put_entry else "BULLISH"
+                    entry_target_valid = custom_target > 0 and math.isfinite(custom_target)
+                    entry_event_key = (
+                        _screener_price_entry_event_key(
+                            evaluation_state, symbol, buy_mode, entry_direction, custom_target
+                        )
+                        if entry_target_valid else ""
+                    )
+                    if entry_event_key and evaluation_state.get("last_price_entry_key") == entry_event_key:
+                        price_watch = {
+                            "status": "ENTRY_RECORDED",
+                            "checked_at": now_iso,
+                            "price": quote_price,
+                            "source": quote_source,
+                            "quote_age_seconds": quote_age,
+                            "interval_seconds": interval,
+                            "mode": buy_mode,
+                            "entry_target": custom_target,
+                            "text": "Custom price entry already recorded for this completed-candle opportunity.",
+                        }
+                        evaluation_state["last_price_watch"] = price_watch
+                        latest_scan["price_watch"] = copy.deepcopy(price_watch)
+                        state.latest_scans[symbol] = latest_scan
+                        continue
+                    entry_triggered = entry_target_valid and (
+                        quote_price >= custom_target if is_put_entry else quote_price <= custom_target
+                    )
+                    if not entry_target_valid:
+                        price_watch = {
+                            "status": "UNAVAILABLE",
+                            "checked_at": now_iso,
+                            "price": quote_price,
+                            "source": quote_source,
+                            "quote_age_seconds": quote_age,
+                            "interval_seconds": interval,
+                            "mode": buy_mode,
+                            "entry_target": None,
+                            "text": "Custom price entry is unavailable until a positive target price is configured.",
+                        }
+                    elif not entry_triggered:
+                        relation = "above" if is_put_entry else "below"
+                        price_watch = {
+                            "status": "WAITING_FOR_ENTRY",
+                            "checked_at": now_iso,
+                            "price": quote_price,
+                            "source": quote_source,
+                            "quote_age_seconds": quote_age,
+                            "interval_seconds": interval,
+                            "mode": buy_mode,
+                            "entry_target": custom_target,
+                            "text": f"Custom {entry_direction.title()} entry waits for price {relation} {custom_target:.6f}.",
+                        }
+                    else:
+                        entry_state = copy.deepcopy(evaluation_state)
+                        entry_state.update({
+                            "virtual_position": entry_direction == "BULLISH",
+                            "virtual_entry_price": quote_price,
+                            "virtual_entry_atr": _entry_forecast_float(latest_scan.get("atr"), 0.0),
+                            "virtual_entry_candle_key": str(
+                                evaluation_state.get("last_observed_candle_key")
+                                or evaluation_state.get("last_candle_key")
+                                or f"PRICE:{entry_event_key}"
+                            ),
+                            "virtual_exit_mode": sell_mode,
+                            "virtual_exit_settings": copy.deepcopy(settings),
+                            "virtual_peak_price": quote_price,
+                        })
+                        entry_exit_snapshot = {}
+                        if entry_direction == "BULLISH" and sell_mode in _SCREENER_PRICE_EXIT_MODES:
+                            entry_exit_status = _screener_exit_level_status(
+                                settings,
+                                latest_scan,
+                                entry_state,
+                                sell_mode,
+                                price_override=quote_price,
+                            )
+                            entry_exit_snapshot = {
+                                "mode": sell_mode,
+                                "stop": entry_exit_status.get("stop"),
+                                "target": entry_exit_status.get("target"),
+                                "atr": entry_state.get("virtual_entry_atr"),
+                                "available": bool(entry_exit_status.get("available")),
+                            }
+                        event = {
+                            "price_event_key": entry_event_key,
+                            "event_type": "PRICE_ENTRY",
+                            "event_direction": entry_direction,
+                            "level_name": "target",
+                            "trigger_price": quote_price,
+                            "target_price": custom_target,
+                            "mode": buy_mode,
+                            "strategy_label": "Custom Price",
+                            "atr": entry_state.get("virtual_entry_atr"),
+                            "atr_levels": entry_exit_snapshot,
+                            "exit_snapshot": entry_exit_snapshot,
+                            "price_source": quote_source,
+                            "quote_age_seconds": quote_age,
+                            "observed_at": now_iso,
+                            "text": (
+                                f"Custom {entry_direction.title()} price entry reached at {quote_price:.6f} "
+                                f"(target {custom_target:.6f}). Live price trigger; source {quote_source}, "
+                                f"quote age {_screener_quote_age_label(quote_age)}."
+                            ),
+                        }
+                        state.health["price_entry_trigger_count"] = int(
+                            state.health.get("price_entry_trigger_count", 0) or 0
+                        ) + 1
+                        snapshot_state = copy.deepcopy(evaluation_state)
+                        notification = state.commit_price_entry(symbol, event, now_ts=now_ts)
+                        price_watch = {
+                            "status": "ENTRY_TRIGGERED",
+                            "checked_at": now_iso,
+                            "price": quote_price,
+                            "source": quote_source,
+                            "quote_age_seconds": quote_age,
+                            "interval_seconds": interval,
+                            "mode": buy_mode,
+                            "entry_target": custom_target,
+                            "text": event["text"],
+                        }
+                        evaluation_state["last_price_watch"] = price_watch
+                        latest_scan["price_watch"] = copy.deepcopy(price_watch)
+                        latest_scan["live_price"] = quote_price
+                        latest_scan["live_price_source"] = quote_source
+                        latest_scan["live_price_checked_at"] = now_iso
+                        latest_scan["price_event"] = copy.deepcopy(event)
+                        latest_scan["scan_log"] = _build_screener_scan_log(
+                            symbol,
+                            latest_scan,
+                            settings,
+                            snapshot_state,
+                            alert_created=bool(notification),
+                            price_event=event,
+                        )
+                        state.latest_scans[symbol] = latest_scan
+                        state.activity.insert(0, {
+                            "time": now_iso,
+                            "ticker": symbol,
+                            "action": entry_direction,
+                            "event_direction": entry_direction,
+                            "event_type": "PRICE_ENTRY",
+                            "price": quote_price,
+                            "reason": event.get("text", "Custom price entry reached."),
+                            "bullish_count": 0,
+                            "bearish_count": 0,
+                            "total_signals": 0,
+                            "timeframe": latest_scan.get("timeframe") or settings.get("timeframe"),
+                            "log_type": "Screener",
+                            "scan_log_status": latest_scan["scan_log"].get("status"),
+                            "scan_log_summary": latest_scan["scan_log"].get("summary"),
+                            "price_event_key": entry_event_key,
+                        })
+                        state.activity = state.activity[:100]
+                        changed = True
+                        continue
+                    evaluation_state["last_price_watch"] = price_watch
+                    latest_scan["price_watch"] = copy.deepcopy(price_watch)
+                    state.latest_scans[symbol] = latest_scan
+                    continue
+
+                exit_status = _screener_exit_level_status(
+                    settings,
+                    latest_scan,
+                    evaluation_state,
+                    sell_mode,
+                    price_override=quote_price,
+                )
+                price_watch = {
+                    "status": "TRIGGERED" if exit_status.get("triggered") else "WATCHING",
+                    "checked_at": now_iso,
+                    "price": quote_price,
+                    "source": quote_source,
+                    "quote_age_seconds": quote_age,
+                    "interval_seconds": interval,
+                    "mode": sell_mode,
+                    "levels": {
+                        "stop": exit_status.get("stop"),
+                        "target": exit_status.get("target"),
+                    },
+                    "text": exit_status.get("text", ""),
+                }
+                evaluation_state["last_price_watch"] = price_watch
+
+                if not exit_status.get("triggered"):
+                    latest_scan["price_watch"] = copy.deepcopy(price_watch)
+                    state.latest_scans[symbol] = latest_scan
+                    continue
+                level_name = "stop" if quote_price <= _entry_forecast_float(exit_status.get("stop"), 0.0) else "target"
+                event_key = _screener_price_event_key(evaluation_state, symbol, sell_mode, level_name)
+                event = {
+                    **exit_status,
+                    "price_event_key": event_key,
+                    "event_type": "PRICE_EXIT",
+                    "level_name": level_name,
+                    "trigger_price": quote_price,
+                    "mode": sell_mode,
+                    "strategy_label": {
+                        "atr": "ATR",
+                        "sltp": "ATR",
+                        "hybrid": "ATR",
+                        "hybrid_atr": "ATR",
+                        "percentage": "Percentage",
+                        "hybrid_pct": "Percentage",
+                        "pivot_points": "Pivot Points",
+                        "hybrid_pivot": "Pivot Points",
+                        "high_low": "Prior Day High/Low",
+                        "hybrid_high_low": "Prior Day High/Low",
+                        "swing_points": "Swing Structure",
+                        "hybrid_swing": "Swing Structure",
+                        "custom_sltp": "Custom SL/TP",
+                        "custom_underlying_sltp": "Custom Underlying SL/TP",
+                    }.get(sell_mode, sell_mode),
+                    "atr": evaluation_state.get("virtual_entry_atr") or latest_scan.get("atr"),
+                    "atr_levels": {
+                        "stop": exit_status.get("stop"),
+                        "target": exit_status.get("target"),
+                        "active_mode": sell_mode,
+                    },
+                    "price_source": quote_source,
+                    "quote_age_seconds": quote_age,
+                    "observed_at": now_iso,
+                    "text": f"{exit_status.get('text', 'Configured price level reached.')} Live price trigger; source {quote_source}, quote age {_screener_quote_age_label(quote_age)}.",
+                }
+                state.health["price_trigger_count"] = int(state.health.get("price_trigger_count", 0) or 0) + 1
+                snapshot_state = copy.deepcopy(evaluation_state)
+                notification = state.commit_price_event(symbol, event, now_ts=now_ts)
+                latest_scan["price_watch"] = price_watch
+                latest_scan["live_price"] = quote_price
+                latest_scan["live_price_source"] = quote_source
+                latest_scan["live_price_checked_at"] = now_iso
+                latest_scan["price_event"] = copy.deepcopy(event)
+                latest_scan["scan_log"] = _build_screener_scan_log(
+                    symbol,
+                    latest_scan,
+                    settings,
+                    snapshot_state,
+                    alert_created=bool(notification),
+                    exit_event=event,
+                )
+                state.latest_scans[symbol] = latest_scan
+                state.activity.insert(0, {
+                    "time": now_iso,
+                    "ticker": symbol,
+                    "action": "BEARISH",
+                    "event_direction": "BEARISH",
+                    "event_type": "PRICE_EXIT",
+                    "price": quote_price,
+                    "reason": event.get("text", "Configured price level reached."),
+                    "bullish_count": 0,
+                    "bearish_count": 0,
+                    "total_signals": 0,
+                    "timeframe": latest_scan.get("timeframe") or settings.get("timeframe"),
+                    "log_type": "Screener",
+                    "scan_log_status": latest_scan["scan_log"].get("status"),
+                    "scan_log_summary": latest_scan["scan_log"].get("summary"),
+                    "price_event_key": event_key,
+                })
+                state.activity = state.activity[:100]
+                changed = True
+            if changed:
+                await state.save()
+        finally:
+            active_evaluation_context.reset(context_token)
+            await state.release_process_scan_lock()
 
 
 async def _watch_screener_news_state(state: ScreenerUserState, symbols: list[str] = None) -> None:
@@ -2222,10 +3160,10 @@ async def _watch_screener_news_state(state: ScreenerUserState, symbols: list[str
                     "checked_at": datetime.now(pytz.UTC).isoformat(),
                     "failure_count": failures,
                     "new_count": 0,
-                    "error": f"{type(exc).__name__}: {str(exc)[:160]}",
+                    "error": f"{_safe_exception_type(exc)}",
                     "next_check_at": now_ts + retry_seconds,
                 })
-                print(f"[screener] News watch failed for {symbol}: {exc}")
+                print(f"[screener] News watch failed for {symbol}: {_safe_exception_type(exc)}")
                 return symbol, payload
 
         try:
@@ -2238,13 +3176,32 @@ async def _watch_screener_news_state(state: ScreenerUserState, symbols: list[str
             ]
             if not active_symbols:
                 return
+            event_scan_symbols = []
             results = await asyncio.gather(
                 *(_refresh_symbol(symbol) for symbol in active_symbols),
                 return_exceptions=False,
             )
             for symbol, payload in results:
+                previous = state.news_watch.get(symbol) or {}
+                feed_changed = bool(
+                    previous.get("initialized")
+                    and payload.get("initialized")
+                    and payload.get("feed_fingerprint")
+                    and payload.get("feed_fingerprint") != previous.get("feed_fingerprint")
+                )
                 state.news_watch[symbol] = payload
+                strategy_mode = normalize_screening_strategy_mode(
+                    state.profiles.get(symbol, {}).get("strategy_mode", "combined")
+                )
+                if feed_changed and int(payload.get("new_count") or 0) > 0 and strategy_mode in {"event", "combined", "discovery"}:
+                    # The news worker owns headline freshness; the scan worker
+                    # owns completed-candle technical evidence and alert
+                    # persistence. The force flag only requests an immediate
+                    # analysis refresh and never places an order.
+                    event_scan_symbols.append(symbol)
             await state.save()
+            for symbol in event_scan_symbols:
+                asyncio.create_task(_scan_screener_state(state, [symbol], force_scan=True))
         finally:
             active_evaluation_context.reset(context_token)
 
@@ -2281,10 +3238,10 @@ async def _watch_screener_earnings_state(state: ScreenerUserState, symbols: list
                     "status": "stale" if previous.get("initialized") else "unavailable",
                     "ticker": symbol,
                     "checked_at": datetime.now(pytz.UTC).isoformat(),
-                    "error": f"{type(exc).__name__}: {str(exc)[:160]}",
+                    "error": f"{_safe_exception_type(exc)}",
                     "next_check_at": now_ts + 1800,
                 })
-                print(f"[screener] Earnings watch failed for {symbol}: {exc}")
+                print(f"[screener] Earnings watch failed for {symbol}: {_safe_exception_type(exc)}")
                 return symbol, payload
 
         active_symbols = [
@@ -2333,10 +3290,10 @@ async def _watch_screener_fundamental_state(state: ScreenerUserState, symbols: l
                     "ticker": symbol,
                     "status": "stale" if previous.get("status") == "current" else "unavailable",
                     "checked_at": datetime.now(pytz.UTC).isoformat(),
-                    "error": f"{type(exc).__name__}: {str(exc)[:160]}",
+                    "error": f"{_safe_exception_type(exc)}",
                     "next_check_at": time.time() + 1800,
                 })
-                print(f"[screener] Fundamental report failed for {symbol}: {exc}")
+                print(f"[screener] Fundamental report failed for {symbol}: {_safe_exception_type(exc)}")
                 return symbol, payload
 
         active_symbols = [
@@ -2367,6 +3324,7 @@ async def _screener_scheduler_loop() -> None:
         states = list(screener_manager.states.values())
         if states:
             due_work = []
+            due_price_work = []
             due_news_work = []
             due_earnings_work = []
             due_fundamental_work = []
@@ -2381,6 +3339,14 @@ async def _screener_scheduler_loop() -> None:
                     due_work.append(_scan_screener_state(state, due_symbols or list(state.order), force_scan=True))
                 elif due_symbols:
                     due_work.append(_scan_screener_state(state, due_symbols))
+                due_price_symbols = [
+                    symbol
+                    for symbol in state.order
+                    if bool(state.profiles.get(symbol, {}).get("enabled", True))
+                    and now >= float(state.evaluation_state.get(symbol, {}).get("next_price_watch_at", 0) or 0)
+                ]
+                if due_price_symbols:
+                    due_price_work.append(_watch_screener_price_levels_state(state, due_price_symbols))
                 due_news_symbols = [
                     symbol for symbol in state.order
                     if bool(state.profiles.get(symbol, {}).get("enabled", True))
@@ -2407,10 +3373,16 @@ async def _screener_scheduler_loop() -> None:
                 ]
                 if due_fundamental_symbols:
                     due_fundamental_work.append(_watch_screener_fundamental_state(state, due_fundamental_symbols))
-            if due_work or due_news_work or due_earnings_work or due_fundamental_work:
-                await asyncio.gather(*(due_work + due_news_work + due_earnings_work + due_fundamental_work), return_exceptions=True)
+            if due_work or due_price_work or due_news_work or due_earnings_work or due_fundamental_work:
+                await asyncio.gather(
+                    *(due_work + due_price_work + due_news_work + due_earnings_work + due_fundamental_work),
+                    return_exceptions=True,
+                )
         elapsed = time.monotonic() - cycle_started
-        await asyncio.sleep(max(1.0, 10.0 - elapsed))
+        # Price-level monitoring defaults to a five-second cadence; candle
+        # scans retain their per-profile intervals and are still gated by a
+        # completed-candle probe.
+        await asyncio.sleep(max(1.0, 5.0 - elapsed))
 
 
 def _smtp_settings() -> dict:
@@ -2501,13 +3473,57 @@ async def _verified_email_for_user(uid: str) -> str:
         email = str(getattr(record, "email", "") or "").strip()
         return email if bool(getattr(record, "email_verified", False)) else ""
     except Exception as exc:
-        print(f"[screener-email] Could not resolve verified email for {uid}: {exc}")
+        print(f"[screener-email] Could not resolve verified email for {uid}: {_safe_exception_type(exc)}")
         return ""
 
 
 def _email_content(notification: dict, recipient: str) -> tuple[str, str, str]:
     import html
     symbol = html.escape(str(notification.get("symbol", "")))
+    event_type = str(notification.get("event_type") or notification.get("alert_kind") or "").upper()
+    price_event = notification.get("price_event") or {}
+    if not isinstance(price_event, dict):
+        price_event = {}
+    price_event_type = event_type if event_type in {"PRICE_EXIT", "PRICE_ENTRY"} else str(price_event.get("event_type") or "").upper()
+    is_price_event = price_event_type in {"PRICE_EXIT", "PRICE_ENTRY"}
+    if is_price_event:
+        is_price_entry = price_event_type == "PRICE_ENTRY"
+        event_label = "Price Entry" if is_price_entry else "Price Exit"
+        level = html.escape(str(price_event.get("level_name") or "level").strip().title())
+        strategy = html.escape(str(price_event.get("strategy_label") or price_event.get("mode") or "Price").strip())
+        trigger_price_raw = price_event.get("trigger_price", notification.get("price", "Unavailable"))
+        trigger_price = html.escape(str(trigger_price_raw))
+        observed_at = html.escape(str(price_event.get("observed_at") or notification.get("created_at") or "Unavailable"))
+        source = html.escape(str(price_event.get("price_source") or "live quote"))
+        quote_age_raw = price_event.get("quote_age_seconds")
+        quote_age = html.escape(
+            f"{float(quote_age_raw):.1f}s" if isinstance(quote_age_raw, (int, float)) else str(quote_age_raw or "unavailable")
+        )
+        reason_raw = str(notification.get("reason") or f"{strategy} {level.lower()} reached by live price.")
+        reason = html.escape(reason_raw)
+        target_price_raw = price_event.get("target_price")
+        target_line = f"Target price: {target_price_raw}\n" if is_price_entry and target_price_raw is not None else ""
+        target_html = f"<br><strong>Target price:</strong> {html.escape(str(target_price_raw))}" if is_price_entry and target_price_raw is not None else ""
+        subject = f"BotBulls Screener: {symbol} {event_label} ({level})"
+        text = (
+            f"{symbol} reached a configured live-price {'entry' if is_price_entry else 'exit'} level.\n\n"
+            f"Level: {level}\nStrategy: {strategy}\nTrigger price: {trigger_price_raw}\n"
+            f"{target_line}"
+            f"Observed: {price_event.get('observed_at') or notification.get('created_at') or 'Unavailable'}\n"
+            f"Quote source: {price_event.get('price_source') or 'live quote'}\nQuote age: {quote_age_raw if quote_age_raw is not None else 'unavailable'}\n"
+            f"Reason: {reason_raw}\n\n"
+            f"This is an analysis alert only; no trade was placed."
+        )
+        html_body = (
+            f"<h2>{symbol} {event_label}</h2>"
+            f"<p><strong>Level:</strong> {level}<br><strong>Strategy:</strong> {strategy}<br>"
+            f"<strong>Trigger price:</strong> {trigger_price}{target_html}<br><strong>Observed:</strong> {observed_at}<br>"
+            f"<strong>Quote source:</strong> {source}<br><strong>Quote age:</strong> {quote_age}</p>"
+            f"<p>{reason}</p>"
+            f"<p>This is an analysis alert only; no trade was placed.</p>"
+            f"<p><a href=\"{html.escape(os.getenv('SCREENER_PUBLIC_URL', 'http://localhost:8000/screener.html'))}\">Open Screener</a></p>"
+        )
+        return subject, text, html_body
     direction = html.escape(str(notification.get("direction", "Neutral")))
     reason = html.escape(str(notification.get("reason", "")))
     price = html.escape(str(notification.get("price", "Unavailable")))
@@ -2535,6 +3551,27 @@ def _email_content(notification: dict, recipient: str) -> tuple[str, str, str]:
 
 def _sms_content(notification: dict) -> str:
     symbol = str(notification.get("symbol") or "Ticker")
+    event_type = str(notification.get("event_type") or notification.get("alert_kind") or "").upper()
+    price_event = notification.get("price_event") or {}
+    if not isinstance(price_event, dict):
+        price_event = {}
+    price_event_type = event_type if event_type in {"PRICE_EXIT", "PRICE_ENTRY"} else str(price_event.get("event_type") or "").upper()
+    if price_event_type in {"PRICE_EXIT", "PRICE_ENTRY"}:
+        is_price_entry = price_event_type == "PRICE_ENTRY"
+        event_label = "PRICE ENTRY" if is_price_entry else "PRICE EXIT"
+        level = str(price_event.get("level_name") or "level").strip().title()
+        strategy = str(price_event.get("strategy_label") or price_event.get("mode") or "Price").strip()
+        trigger_price = price_event.get("trigger_price", notification.get("price"))
+        source = str(price_event.get("price_source") or "live quote")
+        quote_age = price_event.get("quote_age_seconds")
+        age_text = f" age {float(quote_age):.1f}s" if isinstance(quote_age, (int, float)) else ""
+        reason = " ".join(str(notification.get("reason") or f"{strategy} {level.lower()} reached by live price.").split())
+        target_price = price_event.get("target_price")
+        target_text = f" target ${target_price}." if is_price_entry and target_price is not None else "."
+        return (
+            f"BotBulls {symbol} {event_label}: {level} at ${trigger_price}{target_text} "
+            f"{reason} ({source}{age_text}). Analysis only; no order was placed."
+        )
     direction = str(notification.get("direction") or "Signal").title()
     price = notification.get("price")
     price_text = f" Price: ${price}" if price is not None else ""
@@ -2543,8 +3580,27 @@ def _sms_content(notification: dict) -> str:
     return f"BotBulls {symbol} {direction} screener alert.{price_text}{suffix} Analysis only; no order was placed."
 
 
-async def _process_screener_email_outbox(state: ScreenerUserState) -> None:
+def _reclaim_expired_screener_leases(outbox: list[dict], now: float) -> None:
+    """Return work abandoned by a crashed delivery worker to the retry queue."""
+    for item in outbox:
+        if item.get("status") != "sending":
+            continue
+        try:
+            lease_until = float(item.get("lease_until") or 0)
+        except (TypeError, ValueError, OverflowError):
+            lease_until = 0
+        if lease_until <= now:
+            item.update({
+                "status": "retrying",
+                "next_attempt_at": now,
+                "lease_until": None,
+                "recovered_at": now,
+            })
+
+
+async def _process_screener_email_outbox_body(state: ScreenerUserState) -> None:
     now = time.time()
+    _reclaim_expired_screener_leases(state.email_outbox, now)
     def _timestamp(value, fallback=0.0):
         try:
             if isinstance(value, str):
@@ -2599,6 +3655,11 @@ async def _process_screener_email_outbox(state: ScreenerUserState) -> None:
                 notification["email_skip_reason"] = item["skip_reason"]
             continue
         subject, text_body, html_body = _email_content(notification, recipient)
+        item["lease_until"] = time.time() + 120
+        if not await state.save():
+            item.update(status="retrying", lease_until=None, next_attempt_at=time.time() + 60,
+                        error="durable_claim_failed")
+            return
         try:
             domain = smtp["from_email"].split("@")[-1] or "localhost"
             await asyncio.to_thread(
@@ -2616,21 +3677,26 @@ async def _process_screener_email_outbox(state: ScreenerUserState) -> None:
             attempts = int(item.get("attempts", 0) or 0) + 1
             item["attempts"] = attempts
             if attempts >= 4:
-                item.update({"status": "failed", "failed_at": time.time(), "error": str(exc), "lease_until": None})
+                item.update({"status": "failed", "failed_at": time.time(), "error": _safe_exception_type(exc), "lease_until": None})
                 if not item.get("test") and notification:
                     notification["email_status"] = "failed"
             else:
-                item.update({"status": "retrying", "next_attempt_at": now + (60, 300, 900)[attempts - 1], "error": str(exc), "lease_until": None})
+                item.update({"status": "retrying", "next_attempt_at": now + (60, 300, 900)[attempts - 1], "error": _safe_exception_type(exc), "lease_until": None})
                 if not item.get("test") and notification:
                     notification["email_status"] = "retrying"
+        if not await state.save():
+            # Do not dispatch more messages while delivery acknowledgments
+            # cannot be persisted. Recovery may still see an ambiguous send.
+            return
     state.health["email_queued"] = sum(item.get("status") in {"queued", "sending", "retrying"} for item in state.email_outbox)
     state.health["email_failed"] = sum(item.get("status") == "failed" for item in state.email_outbox)
     await state.save()
 
 
-async def _process_screener_sms_outbox(state: ScreenerUserState) -> None:
+async def _process_screener_sms_outbox_body(state: ScreenerUserState) -> None:
     """Deliver queued SMS alerts with the same bounded retry policy as email."""
     now = time.time()
+    _reclaim_expired_screener_leases(state.sms_outbox, now)
     provider_ready = _sms_provider_configured()
     for item in list(state.sms_outbox):
         if item.get("status") not in {"queued", "retrying"} or float(item.get("next_attempt_at", 0) or 0) > now:
@@ -2652,13 +3718,36 @@ async def _process_screener_sms_outbox(state: ScreenerUserState) -> None:
             item.update({"status": "skipped", "skip_reason": "profile_disabled_or_deleted"})
             notification.update({"sms_status": "skipped", "sms_skip_reason": item["skip_reason"]})
             continue
+        def _notification_timestamp(value, fallback=0.0):
+            try:
+                if isinstance(value, str):
+                    return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+                return float(value or fallback)
+            except (TypeError, ValueError, OverflowError):
+                return float(fallback)
+        opposite_exists = any(
+            other.get("symbol") == notification.get("symbol")
+            and other.get("direction") in {"BULLISH", "BEARISH"}
+            and other.get("direction") != notification.get("direction")
+            and _notification_timestamp(other.get("created_at")) > _notification_timestamp(notification.get("created_at"))
+            for other in state.notifications
+        )
+        age_seconds = now - _notification_timestamp(notification.get("created_at"), now)
+        if opposite_exists or age_seconds > 1800:
+            item.update({"status": "skipped", "skip_reason": "superseded_or_expired"})
+            notification.update({"sms_status": "skipped", "sms_skip_reason": item["skip_reason"]})
+            continue
         recipient = normalize_screener_sms_phone(item.get("to"))
         if not recipient:
             item.update({"status": "skipped", "skip_reason": "valid_phone_required"})
             notification.update({"sms_status": "setup_required", "sms_skip_reason": item["skip_reason"]})
             continue
         item["status"] = "sending"
-        item["lease_until"] = now + 120
+        item["lease_until"] = time.time() + 120
+        if not await state.save():
+            item.update(status="retrying", lease_until=None, next_attempt_at=time.time() + 60,
+                        error="durable_claim_failed")
+            return
         try:
             await asyncio.to_thread(_send_screener_sms_sync, recipient, _sms_content(notification))
             item.update({"status": "sent", "sent_at": time.time(), "lease_until": None})
@@ -2667,14 +3756,38 @@ async def _process_screener_sms_outbox(state: ScreenerUserState) -> None:
             attempts = int(item.get("attempts", 0) or 0) + 1
             item["attempts"] = attempts
             if attempts >= 4:
-                item.update({"status": "failed", "failed_at": time.time(), "error": str(exc)[:160], "lease_until": None})
+                item.update({"status": "failed", "failed_at": time.time(), "error": _safe_exception_type(exc), "lease_until": None})
                 notification["sms_status"] = "failed"
             else:
-                item.update({"status": "retrying", "next_attempt_at": now + (60, 300, 900)[attempts - 1], "error": str(exc)[:160], "lease_until": None})
+                item.update({"status": "retrying", "next_attempt_at": now + (60, 300, 900)[attempts - 1], "error": _safe_exception_type(exc), "lease_until": None})
                 notification["sms_status"] = "retrying"
+        if not await state.save():
+            return
     state.health["sms_queued"] = sum(item.get("status") in {"queued", "sending", "retrying"} for item in state.sms_outbox)
     state.health["sms_failed"] = sum(item.get("status") == "failed" for item in state.sms_outbox)
     await state.save()
+
+
+async def _run_screener_delivery_worker(state: ScreenerUserState, worker) -> None:
+    """Serialize outbox claims with scans and reload their durable status."""
+    if state.scan_lock.locked():
+        return
+    async with state.scan_lock:
+        if not await state.try_acquire_process_scan_lock():
+            return
+        try:
+            await state.refresh_from_persistence()
+            await worker(state)
+        finally:
+            await state.release_process_scan_lock()
+
+
+async def _process_screener_email_outbox(state: ScreenerUserState) -> None:
+    await _run_screener_delivery_worker(state, _process_screener_email_outbox_body)
+
+
+async def _process_screener_sms_outbox(state: ScreenerUserState) -> None:
+    await _run_screener_delivery_worker(state, _process_screener_sms_outbox_body)
 
 
 async def _screener_delivery_loop() -> None:
@@ -2760,7 +3873,7 @@ async def record_legal_acceptance(
         "accepted_by_uid": eng.uid,
         "accepted_email": user.get("email", ""),
         "paper_trading_acknowledged": True,
-        "acceptance_source": "web_google_sign_in",
+        "acceptance_source": "web_sign_in",
     }
     await eng.save_settings()
     return {
@@ -2809,15 +3922,95 @@ async def reset_analysis_context_middleware(request: Request, call_next):
         active_ticker_context.reset(ticker_token)
         active_evaluation_context.reset(eval_token)
 
+
+@app.middleware("http")
+async def security_headers_and_request_limits(request: Request, call_next):
+    # Bound JSON/form submissions before they reach parsers or strategy
+    # handlers. Workload-specific endpoints have tighter limits below.
+    max_body_bytes = 2 * 1024 * 1024
+    content_length = request.headers.get("content-length")
+    try:
+        if content_length and int(content_length) > max_body_bytes:
+            return Response("Request body too large", status_code=413)
+    except ValueError:
+        return Response("Invalid Content-Length", status_code=400)
+
+    # Content-Length is optional and can be forged. Count streamed ASGI body
+    # chunks as they arrive so chunked requests cannot bypass the same limit.
+    original_receive = request._receive
+    received_bytes = 0
+
+    async def limited_receive():
+        nonlocal received_bytes
+        message = await original_receive()
+        if message.get("type") == "http.request":
+            received_bytes += len(message.get("body", b"") or b"")
+            if received_bytes > max_body_bytes:
+                raise ValueError("request body exceeds configured limit")
+        return message
+
+    request._receive = limited_receive
+
+    try:
+        response = await call_next(request)
+    except ValueError as exc:
+        if str(exc) == "request body exceeds configured limit":
+            return Response("Request body too large", status_code=413)
+        raise
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if request.url.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
 @app.get("/")
 def root():
     return {"message": "Bot Bulls API is running!", "version": "2.0.0"}
 
 
+@app.get("/api/dev-token")
+async def get_development_token(request: Request):
+    """Return the ephemeral development token only to a loopback client."""
+    client_host = request.client.host if request.client else ""
+    if (
+        os.getenv("ENV", "").lower() != "development"
+        or client_host not in {"127.0.0.1", "::1", "localhost"}
+        or not _DEV_AUTH_TOKEN
+    ):
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"token": _DEV_AUTH_TOKEN}
+
+
 @app.post("/api/alpaca_config")
 async def update_alpaca_config(cfg: AlpacaConfig, eng: UserEngine = Depends(get_user_engine)):
-    success = eng.broker.connect(cfg.api_key, cfg.secret_key, cfg.paper)
+    if not cfg.paper and not cfg.live_trading_acknowledged:
+        raise HTTPException(
+            status_code=400,
+            detail="A fresh live-trading acknowledgement is required before connecting a live account.",
+        )
+    if not cfg.paper and not getattr(eng.broker, "live_tenant_authorized", False):
+        raise HTTPException(
+            status_code=403,
+            detail="Live trading is disabled until the operator binds this account to the authorized tenant.",
+        )
+    try:
+        async with eng.broker_connect_lock:
+            success = await asyncio.wait_for(
+                asyncio.to_thread(eng.broker.connect, cfg.api_key, cfg.secret_key, cfg.paper),
+                timeout=15.0,
+            )
+    except asyncio.TimeoutError:
+        eng.live_trading_armed = False
+        eng.broker.live_trading_armed = False
+        raise HTTPException(
+            status_code=504,
+            detail="Broker connection timed out; no order was submitted.",
+        )
     if success:
+        eng.live_trading_armed = bool(not cfg.paper and cfg.live_trading_acknowledged)
+        eng.broker.live_trading_armed = eng.live_trading_armed
         # Persist to cloud (Encrypted)
         data = {
             "api_key": vault.encrypt(cfg.api_key),
@@ -2836,6 +4029,8 @@ async def update_alpaca_config(cfg: AlpacaConfig, eng: UserEngine = Depends(get_
 
         return {"status": "success", "message": "Connected to Alpaca."}
     else:
+        eng.live_trading_armed = False
+        eng.broker.live_trading_armed = False
         return {"status": "error", "message": "Failed to connect to Alpaca. Check your keys."}
 
 
@@ -2846,11 +4041,22 @@ def unlink_alpaca(eng: UserEngine = Depends(get_user_engine)):
         try:
             db.collection("users").document(eng.uid).collection("settings").document("alpaca").delete(timeout=2.0)
         except Exception as e:
-            print(f"[api] Error deleting alpaca settings: {e}")
+            print(f"[api] Error deleting alpaca settings: {_safe_exception_type(e)}")
 
-    # Reset broker to simulation
-    eng.broker.simulation_mode = True
-    eng.broker.client = None
+    # Reset broker to simulation and drop all credential-bearing SDK state.
+    clear_credentials = getattr(eng.broker, "clear_credentials", None)
+    if callable(clear_credentials):
+        clear_credentials()
+    else:
+        eng.broker.simulation_mode = True
+        eng.broker.client = None
+        eng.broker.live_trading_armed = False
+    eng.live_trading_armed = False
+    try:
+        from broker_factory import invalidate_alpaca_client_cache
+        invalidate_alpaca_client_cache()
+    except Exception as exc:
+        print(f"[api] Alpaca data-client cache cleanup failed: {type(exc).__name__}")
 
     # Clear config module state
     eng.config.ALPACA_API_KEY = ""
@@ -2875,7 +4081,7 @@ def get_alpaca_status(eng: UserEngine = Depends(get_user_engine)):
                 "daily_pl_pct": raw_account.get("daily_pl_pct"),
             }
         except Exception as exc:
-            print(f"[api] Alpaca account summary unavailable: {exc}")
+            print(f"[api] Alpaca account summary unavailable: {_safe_exception_type(exc)}")
     return {
         "status": "success",
         "simulation": (not has_keys) or broker_simulation,
@@ -2906,7 +4112,7 @@ async def get_portfolio_history(
         )
         return data
     except (asyncio.TimeoutError, Exception) as e:
-        print(f"[api] Portfolio history error/timeout ({e}) for period={alpaca_period}, timeframe={timeframe}. Using fallback data.")
+        print(f"[api] Portfolio history error/timeout ({_safe_exception_type(e)}) for period={alpaca_period}, timeframe={timeframe}. Using fallback data.")
         try:
             if hasattr(eng.broker, '_ph_cache') and (alpaca_period.lower(), timeframe.lower()) in eng.broker._ph_cache:
                 return eng.broker._ph_cache[(alpaca_period.lower(), timeframe.lower())]['data']
@@ -2979,7 +4185,7 @@ def _read_generic_dashboard_card_disk_cache():
     except FileNotFoundError:
         return {}
     except Exception as e:
-        print(f"[generic-cache] Could not read shared cache file: {e}")
+        print(f"[generic-cache] Could not read shared cache file: {_safe_exception_type(e)}")
         return {}
 
 
@@ -3097,7 +4303,7 @@ def _download_generic_yahoo(tickers, period):
                 group_by="column",
             )
     except Exception as exc:
-        print(f"[generic-cache] Yahoo batch request failed ({period}): {type(exc).__name__}: {exc}")
+        print(f"[generic-cache] Yahoo batch request failed ({period}): {_safe_exception_type(exc)}")
         return None
 
 
@@ -3390,7 +4596,7 @@ async def _get_cached_market_data(force: bool = False):
             print("[generic-cache] Refreshed market breadth + sector heatmap cache")
             return data
         except Exception as e:
-            print(f"Error fetching market data: {e}")
+            print(f"Error fetching market data: {_safe_exception_type(e)}")
             import traceback
             traceback.print_exc()
             if _MARKET_DATA_CACHE:
@@ -3398,10 +4604,10 @@ async def _get_cached_market_data(force: bool = False):
                 stale_data["cache"] = {
                     **stale_data.get("cache", {}),
                     "stale": True,
-                    "last_error": str(e),
+                    "last_error": "Market data temporarily unavailable",
                 }
                 return stale_data
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=503, detail="Market data temporarily unavailable")
 
 
 @app.get("/api/market-data")
@@ -3496,7 +4702,7 @@ async def _fetch_macro_events_uncached():
             _macro_calendar_cache["timestamp"] = now
             return result
         except Exception as e:
-            print(f"Error fetching forex calendar: {e}")
+            print(f"Error fetching forex calendar: {_safe_exception_type(e)}")
             return _macro_calendar_cache["data"]
 
     indicators_task = asyncio.to_thread(get_macro_data, False)
@@ -3552,16 +4758,16 @@ async def _get_cached_macro_events(force: bool = False):
             print("[generic-cache] Refreshed macro events cache")
             return data
         except Exception as e:
-            print(f"Error fetching macro events: {e}")
+            print(f"Error fetching macro events: {_safe_exception_type(e)}")
             if _MACRO_EVENTS_CACHE:
                 stale_data = dict(_MACRO_EVENTS_CACHE)
                 stale_data["cache"] = {
                     **stale_data.get("cache", {}),
                     "stale": True,
-                    "last_error": str(e),
+                    "last_error": "Macro calendar temporarily unavailable",
                 }
                 return stale_data
-            return {"status": "error", "message": str(e), "indicators": {}, "calendar": []}
+            return {"status": "error", "message": "Macro calendar temporarily unavailable", "indicators": {}, "calendar": []}
 
 
 def _fetch_fear_greed_sync():
@@ -3625,18 +4831,18 @@ async def _get_cached_fear_greed(force: bool = False):
             print("[generic-cache] Refreshed Fear & Greed cache")
             return data
         except Exception as e:
-            print(f"Error fetching Fear & Greed: {e}")
+            print(f"Error fetching Fear & Greed: {_safe_exception_type(e)}")
             if _FEAR_GREED_CACHE:
                 stale_data = dict(_FEAR_GREED_CACHE)
                 stale_data["cache"] = {
                     **stale_data.get("cache", {}),
                     "stale": True,
-                    "last_error": str(e),
+                    "last_error": _safe_exception_type(e),
                 }
                 return stale_data
             return {
                 "status": "error",
-                "message": str(e),
+                "message": "Fear & Greed data temporarily unavailable",
                 "score": None,
                 "components": [],
                 "source": "feargreedchart.com",
@@ -3692,8 +4898,8 @@ async def get_generic_dashboard_cards(user: dict = Depends(verify_token)):
             }
         }
     except Exception as e:
-        print(f"Error fetching generic dashboard cards: {e}")
-        return {"status": "error", "message": str(e)}
+        print(f"Error fetching generic dashboard cards: {_safe_exception_type(e)}")
+        return {"status": "error", "message": "Dashboard cards temporarily unavailable"}
 
 
 def _get_threshold_setting(settings, keys, default_value):
@@ -4296,15 +5502,145 @@ def _screener_scan_interval_seconds(settings: dict) -> int:
         return default
 
 
-def _screener_market_status(symbol: str, settings: dict, now=None) -> dict:
-    """Mirror Bots' session windows without constructing a trading engine.
+def _screener_timeframe_seconds(timeframe: str) -> int:
+    value = str(timeframe or "15Min").strip().lower()
+    match = re.fullmatch(r"(\d+)\s*(sec|s|min|m|hour|h|day|d|week|w)", value)
+    if not match:
+        return 15 * 60
+    amount = max(1, int(match.group(1)))
+    unit = match.group(2)
+    if unit in {"sec", "s"}:
+        return amount
+    if unit in {"hour", "h"}:
+        return amount * 3600
+    if unit in {"day", "d"}:
+        return amount * 86400
+    if unit in {"week", "w"}:
+        return amount * 7 * 86400
+    return amount * 60
 
-    Technical Screener scans use the same active-window rules as Bots: stocks
-    follow Regular or Extended, options use the regular session with a
-    two-minute pre-open window, and crypto remains continuously available.
-    """
+
+def _screener_candle_key_timestamp(candle_key: str) -> float:
+    try:
+        value = float(str(candle_key or "").rsplit(":", 1)[-1])
+        return value if math.isfinite(value) else 0.0
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+def _screener_candle_is_usable(candle_meta: dict, timeframe: str, active_window: bool) -> bool:
+    """Reject missing, future, and implausibly stale completed candles."""
+    if candle_meta.get("candle_status", "closed") != "closed":
+        return False
+    close_value = candle_meta.get("candle_close_ts")
+    try:
+        if isinstance(close_value, str):
+            close_ts = datetime.fromisoformat(close_value.replace("Z", "+00:00")).timestamp()
+        else:
+            close_ts = float(close_value)
+            if close_ts > 10_000_000_000:
+                close_ts /= 1000.0
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if not math.isfinite(close_ts) or close_ts <= 0:
+        return False
+    now_ts = time.time()
+    if close_ts > now_ts:
+        return False
+    timeframe_seconds = _screener_timeframe_seconds(timeframe)
+    # During an active session, a provider should publish the last closed bar
+    # promptly. Outside the session, allow weekends/holidays but never accept
+    # an old cached candle measured in weeks or years.
+    max_age = (
+        max(300, timeframe_seconds * 3)
+        if active_window
+        else max(5 * 86400, timeframe_seconds * 2)
+    )
+    return now_ts - close_ts <= max_age
+
+
+_SCREENER_EXCHANGE_CALENDAR = None
+
+
+def _screener_exchange_session(day) -> Optional[dict]:
+    """Return the official XNYS session when exchange-calendars is available."""
+    global _SCREENER_EXCHANGE_CALENDAR
+    try:
+        if _SCREENER_EXCHANGE_CALENDAR is None:
+            import exchange_calendars
+            _SCREENER_EXCHANGE_CALENDAR = exchange_calendars.get_calendar("XNYS")
+        session_label = day.isoformat()
+        if not _SCREENER_EXCHANGE_CALENDAR.is_session(session_label):
+            return {"is_trading_day": False}
+        market_open = _SCREENER_EXCHANGE_CALENDAR.session_open(session_label).tz_convert("US/Eastern")
+        market_close = _SCREENER_EXCHANGE_CALENDAR.session_close(session_label).tz_convert("US/Eastern")
+        return {
+            "is_trading_day": True,
+            "open_hour": int(market_open.hour),
+            "open_minute": int(market_open.minute),
+            "close_hour": int(market_close.hour),
+            "close_minute": int(market_close.minute),
+        }
+    except Exception:
+        return None
+
+
+def _screener_is_us_trading_day(day) -> bool:
+    """Use the official XNYS calendar with a deterministic holiday fallback."""
+    exchange_session = _screener_exchange_session(day)
+    if exchange_session is not None:
+        return bool(exchange_session.get("is_trading_day"))
+    try:
+        from option_selector import is_us_market_trading_day
+        return bool(is_us_market_trading_day(day))
+    except Exception:
+        return day.weekday() < 5
+
+
+def _screener_next_us_trading_day(day):
+    candidate = day + timedelta(days=1)
+    while not _screener_is_us_trading_day(candidate):
+        candidate += timedelta(days=1)
+    return candidate
+
+
+def _screener_early_close_minutes(day) -> Optional[int]:
+    """Return the official close, with standard NYSE-rule fallback dates."""
+    exchange_session = _screener_exchange_session(day)
+    if exchange_session is not None:
+        if not exchange_session.get("is_trading_day"):
+            return None
+        close_minutes = int(exchange_session["close_hour"]) * 60 + int(exchange_session["close_minute"])
+        return close_minutes if close_minutes < 16 * 60 else None
+    if not _screener_is_us_trading_day(day):
+        return None
+    # Thanksgiving Friday.
+    first = datetime(day.year, 11, 1).date()
+    thanksgiving = first + timedelta(days=(3 - first.weekday()) % 7 + 21)
+    if day == thanksgiving + timedelta(days=1):
+        return 13 * 60
+    # Christmas Eve and the observed Independence Day eve when it is a
+    # weekday. These dates cover the regular-session early-close rules used by
+    # the stock/options profile windows.
+    if day.month == 12 and day.day == 24:
+        return 13 * 60
+    if day.month == 7 and day.day == 3:
+        return 13 * 60
+    return None
+
+
+def _screener_localize_eastern(tz, day, hour: int, minute: int):
+    """Build a wall-clock exchange time with the correct offset for its date."""
+    return tz.localize(
+        datetime(day.year, day.month, day.day, hour, minute, 0),
+        is_dst=None,
+    )
+
+
+def _screener_market_status(symbol: str, settings: dict, now=None) -> dict:
+    """Mirror exchange session windows, holidays, and common early closes."""
     tz = pytz.timezone("US/Eastern")
-    et_now = now.astimezone(tz) if now is not None else datetime.now(tz)
+    et_now = tz.normalize(now.astimezone(tz)) if now is not None else datetime.now(tz)
     if _is_crypto_symbol(symbol):
         return {
             "is_active_window": True,
@@ -4329,42 +5665,39 @@ def _screener_market_status(symbol: str, settings: dict, now=None) -> dict:
         close_hour, close_minute = (20, 0) if is_extended else (16, 0)
         session_label = "Extended" if is_extended else "Regular"
 
-    is_weekday = et_now.weekday() < 5
-    scan_start = et_now.replace(hour=scan_hour, minute=scan_minute, second=0, microsecond=0)
-    market_open = et_now.replace(hour=open_hour, minute=open_minute, second=0, microsecond=0)
-    market_close = et_now.replace(hour=close_hour, minute=close_minute, second=0, microsecond=0)
-    is_active_window = is_weekday and scan_start <= et_now <= market_close
-    is_open = is_weekday and market_open <= et_now <= market_close
+    today = et_now.date()
+    early_close = None if session_label == "Extended" else _screener_early_close_minutes(today)
+    if early_close is not None:
+        close_hour, close_minute = divmod(early_close, 60)
+    scan_start = _screener_localize_eastern(tz, today, scan_hour, scan_minute)
+    market_open = _screener_localize_eastern(tz, today, open_hour, open_minute)
+    market_close = _screener_localize_eastern(tz, today, close_hour, close_minute)
+    trading_day = _screener_is_us_trading_day(today)
+    is_active_window = trading_day and scan_start <= et_now <= market_close
+    is_open = trading_day and market_open <= et_now <= market_close
 
     next_open = market_open
     next_scan = scan_start
-    if not is_weekday or et_now > market_close:
-        days_add = 1
-        if et_now.weekday() == 4:
-            days_add = 3
-        elif et_now.weekday() == 5:
-            days_add = 2
-        next_open = (et_now + timedelta(days=days_add)).replace(
-            hour=open_hour, minute=open_minute, second=0, microsecond=0
-        )
-        next_scan = (et_now + timedelta(days=days_add)).replace(
-            hour=scan_hour, minute=scan_minute, second=0, microsecond=0
-        )
+    if not trading_day or et_now > market_close:
+        next_day = _screener_next_us_trading_day(today)
+        next_open = _screener_localize_eastern(tz, next_day, open_hour, open_minute)
+        next_scan = _screener_localize_eastern(tz, next_day, scan_hour, scan_minute)
     elif et_now < scan_start:
         next_open = market_open
         next_scan = scan_start
 
-    open_day_name = next_open.strftime("%A") if next_open.date() != et_now.date() else "Today"
+    open_day_name = next_open.strftime("%A") if next_open.date() != today else "Today"
     meridiem = "AM" if open_hour < 12 else "PM"
     hour_label = ((open_hour - 1) % 12) + 1
-    time_label = f"{hour_label}:{open_minute:02d} {meridiem} ET"
+    time_label = f"{hour_label}:{open_minute:02d} {meridiem}"
     return {
         "is_active_window": is_active_window,
         "is_open": is_open,
         "market_session_label": session_label,
         "seconds_to_open": max(0, int((next_open - et_now).total_seconds())),
         "seconds_to_pre_open": max(0, int((next_scan - et_now).total_seconds())),
-        "next_open_str": f"{open_day_name} at {time_label}",
+        "next_open_str": f"{open_day_name} at {time_label} ET",
+        "early_close": early_close is not None,
     }
 
 
@@ -4514,11 +5847,33 @@ def _signal_weight_for_direction(signals: dict, selected_indicators: list[str], 
     return total
 
 
-def _screener_exit_level_status(settings: dict, scan: dict, state: dict, mode: str) -> dict:
-    """Evaluate virtual long exit levels without reading a bot or placing an order."""
-    price = _entry_forecast_float(scan.get("price_raw"), 0.0)
+def _screener_exit_level_status(
+    settings: dict,
+    scan: dict,
+    state: dict,
+    mode: str,
+    price_override: Optional[float] = None,
+) -> dict:
+    """Evaluate virtual long exit levels without reading a bot or placing an order.
+
+    ``price_override`` is used by the independent quote watcher. The level
+    inputs remain anchored to the saved virtual cycle and completed history;
+    only the observed price may update between candles.
+    """
+    frozen_settings = state.get("virtual_exit_settings")
+    if not isinstance(frozen_settings, dict) or not frozen_settings:
+        frozen_settings = settings or {}
+    frozen_mode = str(state.get("virtual_exit_mode") or mode or "indicator").strip().lower()
+    mode = frozen_mode
+    price = _entry_forecast_float(
+        price_override if price_override is not None else scan.get("price_raw"),
+        0.0,
+    )
     entry = _entry_forecast_float(state.get("virtual_entry_price"), 0.0)
-    atr = _entry_forecast_float(scan.get("atr"), 0.0)
+    atr = _entry_forecast_float(
+        state.get("virtual_entry_atr") or scan.get("atr"),
+        0.0,
+    )
     precision = 6 if 0 < price < 1 else 2
 
     def pending(message: str) -> dict:
@@ -4559,15 +5914,25 @@ def _screener_exit_level_status(settings: dict, scan: dict, state: dict, mode: s
             "nearest_level": "SL" if stop_distance_pct <= target_distance_pct else "TP",
         }
 
+    frozen_levels = state.get("virtual_exit_levels")
+    frozen_stop = _entry_forecast_float(
+        frozen_levels.get("stop") if isinstance(frozen_levels, dict) else None,
+        0.0,
+    )
+    frozen_target = _entry_forecast_float(
+        frozen_levels.get("target") if isinstance(frozen_levels, dict) else None,
+        0.0,
+    )
+
     if mode in {"sltp", "hybrid", "atr", "hybrid_atr"}:
         if entry <= 0 or atr <= 0:
-            return pending("Waiting for the virtual entry price and current ATR to evaluate the ATR exit.")
-        stop = entry - atr * _entry_forecast_float(settings.get("atr_stop_multiplier"), 2.0)
+            return pending("Waiting for the virtual entry price and completed-candle ATR to evaluate the ATR exit.")
+        stop = frozen_stop if frozen_stop > 0 else entry - atr * _entry_forecast_float(frozen_settings.get("atr_stop_multiplier"), 2.0)
         # Missing settings use the same safe default shown by the Screener
         # card: ATR trailing is enabled unless explicitly disabled.
-        if settings.get("enable_atr_trail", True) is not False:
+        if frozen_settings.get("enable_atr_trail", True) is not False:
             peak = max(entry, _entry_forecast_float(state.get("virtual_peak_price"), entry), price)
-            candidate_trailing_stop = peak - atr * _entry_forecast_float(settings.get("atr_trail_multiplier"), 3.0)
+            candidate_trailing_stop = peak - atr * _entry_forecast_float(frozen_settings.get("atr_trail_multiplier"), 3.0)
             prior_trailing_stop = _entry_forecast_float(state.get("virtual_trailing_stop"), 0.0)
             # A trailing stop may tighten as the virtual peak rises, but it
             # must never loosen because a later ATR value expands.
@@ -4575,23 +5940,36 @@ def _screener_exit_level_status(settings: dict, scan: dict, state: dict, mode: s
             state["virtual_trailing_stop"] = stop
         else:
             state["virtual_trailing_stop"] = None
-        target = entry + atr * _entry_forecast_float(settings.get("take_profit_multiplier"), 4.0)
+        target = frozen_target if frozen_target > 0 else entry + atr * _entry_forecast_float(frozen_settings.get("take_profit_multiplier"), 4.0)
         return levels(stop, target, "ATR exit")
 
     if mode in {"percentage", "hybrid_pct"}:
         if entry <= 0:
             return pending("Waiting for the virtual entry price to evaluate the percentage exit.")
-        stop = entry * (1 - _entry_forecast_float(settings.get("regular_stop_loss_pct"), 0.05))
-        if settings.get("enable_pct_trail"):
+        stop = frozen_stop if frozen_stop > 0 else entry * (1 - _entry_forecast_float(frozen_settings.get("regular_stop_loss_pct"), 0.05))
+        if frozen_settings.get("enable_pct_trail"):
             peak = max(entry, _entry_forecast_float(state.get("virtual_peak_price"), entry), price)
-            stop = max(stop, peak * (1 - _entry_forecast_float(settings.get("regular_trailing_pct"), 0.03)))
-        target = entry * (1 + _entry_forecast_float(settings.get("regular_take_profit_pct"), 0.10))
+            stop = max(stop, peak * (1 - _entry_forecast_float(frozen_settings.get("regular_trailing_pct"), 0.03)))
+        target = frozen_target if frozen_target > 0 else entry * (1 + _entry_forecast_float(frozen_settings.get("regular_take_profit_pct"), 0.10))
         return levels(stop, target, "Percentage exit")
 
     if mode in {"custom_sltp", "custom_underlying_sltp"}:
+        if frozen_stop > 0 and frozen_target > 0:
+            return levels(frozen_stop, frozen_target, "Custom SL/TP")
         stop_key = "custom_underlying_stop_loss_price" if mode == "custom_underlying_sltp" else "custom_stop_loss_price"
         target_key = "custom_underlying_take_profit_price" if mode == "custom_underlying_sltp" else "custom_take_profit_price"
-        return levels(_entry_forecast_float(settings.get(stop_key), 0.0), _entry_forecast_float(settings.get(target_key), 0.0), "Custom SL/TP")
+        return levels(_entry_forecast_float(frozen_settings.get(stop_key), 0.0), _entry_forecast_float(frozen_settings.get(target_key), 0.0), "Custom SL/TP")
+
+    if frozen_stop > 0 and frozen_target > 0 and mode in {
+        "pivot_points", "hybrid_pivot", "high_low", "hybrid_high_low",
+        "swing_points", "hybrid_swing",
+    }:
+        level_label = (
+            "Pivot exit" if "pivot" in mode
+            else "High/low exit" if "high_low" in mode
+            else "Swing exit"
+        )
+        return levels(frozen_stop, frozen_target, level_label)
 
     prior = _get_prior_day_ohlc(scan.get("price_history") or [])
     if mode in {"pivot_points", "hybrid_pivot"}:
@@ -4602,12 +5980,12 @@ def _screener_exit_level_status(settings: dict, scan: dict, state: dict, mode: s
     if mode in {"high_low", "hybrid_high_low"}:
         if not prior or price <= 0:
             return pending("Waiting for prior-day OHLC data to evaluate the high/low exit.")
-        level_set = _dynamic_high_low_exit_levels(prior["high"], prior["low"], price, resolve_high_low_buffer_pct(settings))
+        level_set = _dynamic_high_low_exit_levels(prior["high"], prior["low"], price, resolve_high_low_buffer_pct(frozen_settings))
         return levels(level_set["sl"], level_set["tp"], "High/low exit") if level_set else pending("High/low exit levels are unavailable.")
     if mode in {"swing_points", "hybrid_swing"}:
         exit_levels = build_swing_exit(scan.get("price_history") or [], current_price=price, is_long=True,
             lookback_days=int(settings.get("swing_exit_lookback_days", settings.get("swing_lookback_days", 20)) or 20),
-            market_session=settings.get("market_session", "Regular"), is_crypto=False)
+            market_session=frozen_settings.get("market_session", "Regular"), is_crypto=False)
         return levels(exit_levels.get("stop_loss") or 0, exit_levels.get("take_profit") or 0, "Swing exit")
     if mode == "trend_rider":
         return pending("Trend Rider has no standalone Screener exit evaluator; no exit condition is being inferred.")
@@ -5767,7 +7145,7 @@ async def get_dashboard(
             print(f"[dashboard] Broker {label} timeout; using fallback")
             return fallback
         except Exception as e:
-            print(f"[dashboard] Broker {label} unavailable: {type(e).__name__}: {e or repr(e)}")
+            print(f"[dashboard] Broker {label} unavailable: {_safe_exception_type(e)}")
             return fallback
 
     account_fallback = {
@@ -5865,7 +7243,7 @@ async def get_dashboard(
                     else:
                         eng._record_scan(primary_scan)
             except Exception as e:
-                print(f"[dashboard] Scan error for primary ticker {primary_ticker}: {e}")
+                print(f"[dashboard] Scan error for primary ticker {primary_ticker}: {_safe_exception_type(e)}")
                 primary_scan = None
 
     if not primary_scan:
@@ -5975,7 +7353,7 @@ async def get_dashboard(
         print(f"[dashboard] Quote API timeout after {quote_timeout:.2f}s; using cached prices")
         fast_prices, slow_prices = stale_fast_prices, stale_slow_prices
     except Exception as e:
-        print(f"[dashboard] Quote API error: {type(e).__name__}: {e!r}")
+        print(f"[dashboard] Quote API error: {_safe_exception_type(e)}")
         fast_prices, slow_prices = stale_fast_prices, stale_slow_prices
     latest_prices = {**slow_prices, **fast_prices}
     quote_ms = (time.perf_counter() - quote_start) * 1000
@@ -6356,7 +7734,7 @@ async def get_dashboard(
 
             except Exception as e:
                 import traceback
-                print(f"[dashboard] Error forecasting exit for {p.get('symbol')}: {e}")
+                print(f"[dashboard] Error forecasting exit for {p.get('symbol')}: {_safe_exception_type(e)}")
                 traceback.print_exc()
                 p['exit_forecast'] = "Forecast Error"
 
@@ -6581,7 +7959,7 @@ async def get_bots_snapshot(
         except asyncio.TimeoutError:
             print(f"[bots/snapshot] Broker {label} timeout; using cached fallback")
         except Exception as exc:
-            print(f"[bots/snapshot] Broker {label} unavailable: {type(exc).__name__}: {exc or repr(exc)}")
+            print(f"[bots/snapshot] Broker {label} unavailable: {_safe_exception_type(exc)}")
         return fallback
 
     if not eng.broker:
@@ -6875,7 +8253,7 @@ async def get_bots_activity(
         except asyncio.TimeoutError:
             print("[bots/activity] Broker order history timeout")
         except Exception as e:
-            print(f"[bots/activity] Error fetching order history: {e}")
+            print(f"[bots/activity] Error fetching order history: {_safe_exception_type(e)}")
         return {
             "schema_version": "1.0",
             "kind": "orders",
@@ -6923,10 +8301,11 @@ async def get_chart_data(
             market_session=chart_session,
         )
         try:
-            analysis, cached, cache_age = await asyncio.wait_for(
-                asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, eng, force, analysis_source, chart_settings),
-                timeout=30.0,
-            )
+            async with _bounded_analysis_work(eng.uid, "chart analysis"):
+                analysis, cached, cache_age = await asyncio.wait_for(
+                    asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, eng, force, analysis_source, chart_settings),
+                    timeout=30.0,
+                )
         except asyncio.TimeoutError:
             raise HTTPException(status_code=504, detail=f"Chart refresh timed out for {ticker}")
         if not analysis:
@@ -6989,10 +8368,11 @@ async def get_bot_chart_preview(data: dict, eng: UserEngine = Depends(get_user_e
     try:
         with _analysis_request_context("bots", ticker, True):
             try:
-                analysis, cached, cache_age = await asyncio.wait_for(
-                    asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, eng, force, "bots", draft_settings),
-                    timeout=45.0,
-                )
+                async with _bounded_analysis_work(eng.uid, "chart preview"):
+                    analysis, cached, cache_age = await asyncio.wait_for(
+                        asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, eng, force, "bots", draft_settings),
+                        timeout=45.0,
+                    )
             except asyncio.TimeoutError:
                 # A previous preview is still useful while a slow provider
                 # refresh finishes in the background. Return it instead of
@@ -7027,7 +8407,7 @@ async def get_bot_chart_preview(data: dict, eng: UserEngine = Depends(get_user_e
                 except asyncio.TimeoutError:
                     ai_status = "timeout"
                 except Exception as exc:
-                    print(f"[preview] AI sentiment unavailable for {ticker}: {exc}")
+                    print(f"[preview] AI sentiment unavailable for {ticker}: {_safe_exception_type(exc)}")
                     ai_status = "unavailable"
 
             preview_meta = {
@@ -7061,7 +8441,12 @@ async def get_ollama_models(eng: UserEngine = Depends(get_user_engine)):
     Returns a list of model names or an empty list if offline.
     """
     import requests
-    host = getattr(eng.config, "OLLAMA_HOST", "http://localhost:11434")
+    host = str(getattr(global_config, "OLLAMA_HOST", "http://localhost:11434") or "").strip()
+    parsed = urlparse(host)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        return {"status": "offline", "models": []}
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        return {"status": "offline", "models": []}
     try:
         response = await asyncio.to_thread(
             requests.get,
@@ -7075,7 +8460,7 @@ async def get_ollama_models(eng: UserEngine = Depends(get_user_engine)):
                 "models": [m["name"] for m in models_data]
             }
     except Exception as e:
-        print(f"[api] Ollama not reachable at {host}: {e}")
+        print(f"[api] Ollama not reachable at {host}: {_safe_exception_type(e)}")
     return {"status": "offline", "models": []}
 
 
@@ -7189,6 +8574,16 @@ async def get_ai_indicator_endpoint(
     if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
         return {"error": "Invalid ticker format"}
     context = _normalize_analysis_context(context)
+    # Screener uses /api/screener/ai-indicator. Keep the shared Dashboard,
+    # Bots, and Backtest endpoint from starting duplicate BTCUSD AI/news scans.
+    if ticker == "BTCUSD":
+        return {
+            "skipped": True,
+            "ticker": ticker,
+            "signal": "HOLD",
+            "confidence": 0,
+            "reason": "BTCUSD AI indicator is available only in Screener.",
+        }
     context_token = active_evaluation_context.set(context)
     try:
         configured_timeframe = getattr(eng.config, "AI_DECISION_TIMEFRAME", AI_CANDLE_TIMEFRAME)
@@ -7215,23 +8610,28 @@ async def get_ai_indicator_endpoint(
     inflight_key = stable_cache_key(eng.uid, "ai_indicator_endpoint", context, ticker, timeframe, model_key)
 
     def _run_coalesced_ai_indicator():
-        with _ai_indicator_endpoint_cache.with_inflight_lock(inflight_key):
-            with _analysis_request_context(context, ticker, context == "bots"):
-                if force:
-                    clear_ai_cache(ticker, timeframe, include_news=True)
-                return get_ai_indicator(
-                    ticker,
-                    timeframe,
-                    available_cash,
-                    account_equity,
-                    model,
-                )
+        ai_lock = _ai_indicator_endpoint_cache.with_inflight_lock(inflight_key)
+        try:
+            with ai_lock:
+                with _analysis_request_context(context, ticker, context == "bots"):
+                    if force:
+                        clear_ai_cache(ticker, timeframe, include_news=True)
+                    return get_ai_indicator(
+                        ticker,
+                        timeframe,
+                        available_cash,
+                        account_equity,
+                        model,
+                    )
+        finally:
+            _ai_indicator_endpoint_cache.release_inflight_lock(inflight_key, ai_lock)
 
     try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(_run_coalesced_ai_indicator),
-            timeout=25.0,
-        )
+        async with _bounded_analysis_work(eng.uid, "AI indicator"):
+            result = await asyncio.wait_for(
+                asyncio.to_thread(_run_coalesced_ai_indicator),
+                timeout=25.0,
+            )
         result.setdefault("performance", {})
         result["performance"].update({
             "total_ms": (time.perf_counter() - started) * 1000,
@@ -7247,9 +8647,9 @@ async def get_ai_indicator_endpoint(
             "model": model,
         }
     except Exception as e:
-        print(f"[api] AI indicator error for {ticker}: {e}")
+        print(f"[api] AI indicator error for {ticker}: {_safe_exception_type(e)}")
         return {
-            "error": str(e),
+            "error": "AI indicator temporarily unavailable",
             "signal": "HOLD",
             "confidence": 0,
             "summary": "AI Indicator temporarily unavailable.",
@@ -7285,10 +8685,11 @@ async def get_fast_signals(
             market_session=_normalize_market_session_for_symbol(ticker, session),
         )
         try:
-            analysis, cached, cache_age = await asyncio.wait_for(
-                asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, eng, force, analysis_source, chart_settings),
-                timeout=30.0,
-            )
+            async with _bounded_analysis_work(eng.uid, "signal analysis"):
+                analysis, cached, cache_age = await asyncio.wait_for(
+                    asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, eng, force, analysis_source, chart_settings),
+                    timeout=30.0,
+                )
         except asyncio.TimeoutError:
             raise HTTPException(status_code=504, detail=f"Signal refresh timed out for {ticker}")
         if not analysis:
@@ -7314,7 +8715,7 @@ async def get_fast_signals(
 
 
 @app.get("/api/scan/{ticker}")
-def scan_ticker(ticker: str, timeframe: str = "1Hour", eng: UserEngine = Depends(get_user_engine)):
+async def scan_ticker(ticker: str, timeframe: str = "1Hour", eng: UserEngine = Depends(get_user_engine)):
     """On-demand scan of a specific ticker."""
     if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker.upper()):
         return {"error": "Invalid ticker format"}
@@ -7338,12 +8739,14 @@ def scan_ticker(ticker: str, timeframe: str = "1Hour", eng: UserEngine = Depends
     is_crypto = any(c in ticker.upper() for c in ["BTC", "ETH", "LTC", "SOL", "DOGE"]) or "USD" in ticker.upper()
     avail_cash = account.get('non_marginable_buying_power') or account['cash'] if is_crypto else account['cash']
 
-    result = evaluate_trade(
-        ticker.upper(),
-        account_equity=account['equity'],
-        available_cash=avail_cash,
-        timeframe=timeframe
-    )
+    async with _bounded_analysis_work(eng.uid, "on-demand scan"):
+        result = await asyncio.to_thread(
+            evaluate_trade,
+            ticker.upper(),
+            account_equity=account['equity'],
+            available_cash=avail_cash,
+            timeframe=timeframe,
+        )
     if result:
         eng._record_scan(result)
         return _format_scan_for_ui(result)
@@ -7351,9 +8754,9 @@ def scan_ticker(ticker: str, timeframe: str = "1Hour", eng: UserEngine = Depends
 
 
 @app.post("/api/backtest/cancel")
-async def cancel_backtest():
-    """Signals the global cancellation event to abort running backtests."""
-    global_backtest_cancel.set()
+async def cancel_backtest(eng: UserEngine = Depends(get_user_engine)):
+    """Cancel the authenticated user's running backtest, if any."""
+    _get_backtest_cancel_event(eng.uid).set()
     return {"status": "cancelled", "message": "Backtest cancelled successfully"}
 
 @app.post("/api/backtest/replay/data")
@@ -7399,6 +8802,8 @@ async def get_backtest_replay_data(data: dict, eng: UserEngine = Depends(get_use
     indicators = data.get("indicators") if isinstance(data.get("indicators"), list) else []
     indicator_overrides = data.get("indicator_overrides") if isinstance(data.get("indicator_overrides"), dict) else {}
     selected_indicators = [str(value) for value in indicators if value]
+    if len(selected_indicators) > DASHBOARD_INDICATOR_DISPLAY_LIMIT * 2:
+        raise HTTPException(status_code=413, detail="Too many replay indicators requested")
     market_session = _normalize_market_session_for_symbol(
         ticker,
         data.get("market_session", "Regular"),
@@ -7429,25 +8834,26 @@ async def get_backtest_replay_data(data: dict, eng: UserEngine = Depends(get_use
         from indicators import calculate_indicators_for_df, _unix_timestamp
         previous_context = active_evaluation_context.get()
         active_evaluation_context.set("backtest")
-        try:
-            raw_df = await asyncio.to_thread(get_historical_data, ticker, timeframe, start_date, end_date, force_yahoo)
-            if raw_df is None or raw_df.empty:
-                raise HTTPException(status_code=404, detail=f"No historical data available for {ticker}")
-            if 0 < replay_interval_seconds < 86400:
-                completed_cutoff = int(end_date.timestamp())
-                completed_mask = [
-                    _unix_timestamp(index_value) + replay_interval_seconds <= completed_cutoff
-                    for index_value in raw_df.index
-                ]
-                completed_df = raw_df.loc[completed_mask].copy()
-                if completed_df.empty:
-                    raise HTTPException(status_code=404, detail=f"No completed replay candles available for {ticker}")
-                completed_df.attrs.update(getattr(raw_df, "attrs", {}) or {})
-                raw_df = completed_df
-            actual_source = str(getattr(raw_df, "attrs", {}).get("data_source") or ("yahoo" if force_yahoo else "alpaca")).lower()
-            analysis = await asyncio.to_thread(calculate_indicators_for_df, raw_df, timeframe, ticker, settings)
-        finally:
-            active_evaluation_context.set(previous_context)
+        async with _bounded_analysis_work(eng.uid, "replay"):
+            try:
+                raw_df = await asyncio.to_thread(get_historical_data, ticker, timeframe, start_date, end_date, force_yahoo)
+                if raw_df is None or raw_df.empty:
+                    raise HTTPException(status_code=404, detail=f"No historical data available for {ticker}")
+                if 0 < replay_interval_seconds < 86400:
+                    completed_cutoff = int(end_date.timestamp())
+                    completed_mask = [
+                        _unix_timestamp(index_value) + replay_interval_seconds <= completed_cutoff
+                        for index_value in raw_df.index
+                    ]
+                    completed_df = raw_df.loc[completed_mask].copy()
+                    if completed_df.empty:
+                        raise HTTPException(status_code=404, detail=f"No completed replay candles available for {ticker}")
+                    completed_df.attrs.update(getattr(raw_df, "attrs", {}) or {})
+                    raw_df = completed_df
+                actual_source = str(getattr(raw_df, "attrs", {}).get("data_source") or ("yahoo" if force_yahoo else "alpaca")).lower()
+                analysis = await asyncio.to_thread(calculate_indicators_for_df, raw_df, timeframe, ticker, settings)
+            finally:
+                active_evaluation_context.set(previous_context)
         candles = (analysis or {}).get("price_history", []) if isinstance(analysis, dict) else []
         candles = [candle for candle in candles if isinstance(candle, dict) and candle.get("time") is not None and candle.get("open") is not None and candle.get("close") is not None]
         if 0 < replay_interval_seconds < 86400:
@@ -7456,6 +8862,8 @@ async def get_backtest_replay_data(data: dict, eng: UserEngine = Depends(get_use
                 candle for candle in candles
                 if int(float(candle["time"])) + replay_interval_seconds <= completed_cutoff
             ]
+        if len(candles) > MAX_REPLAY_CANDLES:
+            candles = candles[-MAX_REPLAY_CANDLES:]
         raw_signals = (analysis or {}).get("signals", {}) if isinstance(analysis, dict) else {}
         signals = {
             name: {
@@ -7498,10 +8906,8 @@ async def get_backtest_replay_data(data: dict, eng: UserEngine = Depends(get_use
             "total_signals": sum(1 for s in signals.values() if s.get("enabled")),
             "volume_profile": (analysis or {}).get("volume_profile") or {},
         }
-    except HTTPException:
-        raise
     except Exception as exc:
-        print(f"[backtest-replay] Data load failed for {ticker}: {exc}")
+        print(f"[backtest-replay] Data load failed for {ticker}: {_safe_exception_type(exc)}")
         raise HTTPException(status_code=500, detail="Could not load replay data")
 
 
@@ -7510,7 +8916,8 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
     """Runs a historical backtest for a ticker."""
     data = dict(data or {})
     _normalize_percentage_strategy_settings(data)
-    global_backtest_cancel.clear()
+    cancel_event = _get_backtest_cancel_event(eng.uid)
+    cancel_event.clear()
     from user_config import active_evaluation_context, active_ticker_context
     active_evaluation_context.set("backtest")
     indicator_overrides = data.get("indicator_overrides", {})
@@ -7524,7 +8931,12 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
     if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
         return {"status": "error", "message": "Invalid ticker format"}
     timeframe = data.get("timeframe", "1Day")
-    days = int(data.get("days", 30))
+    try:
+        days = int(data.get("days", 30))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="days must be a whole number")
+    if not 1 <= days <= MAX_BACKTEST_DAYS:
+        raise HTTPException(status_code=413, detail=f"days must be between 1 and {MAX_BACKTEST_DAYS}")
     capital = float(data.get("capital", 1000.0))
     allocation_mode = data.get("allocation_mode", "fixed")
     trade_amount = float(data.get("trade_amount", capital))
@@ -7628,16 +9040,23 @@ async def run_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
         max_daily_loss_pct=float(data.get("max_daily_loss_pct", 0.0) or 0.0),
         enable_liquidity_filter=bool(data.get("enable_liquidity_filter", True)),
         min_relative_volume=float(data.get("min_relative_volume", 0.10) or 0.0),
-        cancel_event=global_backtest_cancel
+        cancel_event=cancel_event
     )
 
     try:
-        results = await asyncio.to_thread(bt.run)
+        try:
+            await asyncio.wait_for(_backtest_semaphore.acquire(), timeout=_BACKTEST_QUEUE_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=429, detail="Too many backtests are running; retry shortly.")
+        try:
+            results = await asyncio.to_thread(bt.run)
+        finally:
+            _backtest_semaphore.release()
         if "error" in results:
             return {"status": "error", "message": results["error"]}
         return {"status": "success", "results": results}
     except Exception as e:
-        print(f"[api] Backtest crash: {e}")
+        print(f"[api] Backtest crash: {_safe_exception_type(e)}")
         return {"status": "error", "message": "An internal error occurred during backtest simulation."}
 
 
@@ -7647,7 +9066,8 @@ async def run_optimization_endpoint(data: dict, eng: UserEngine = Depends(get_us
     data = dict(data or {})
     _normalize_percentage_strategy_settings(data)
     """Runs an Auto-Optimization grid search with In-Sample/Out-of-Sample splitting."""
-    global_backtest_cancel.clear()
+    cancel_event = _get_backtest_cancel_event(eng.uid)
+    cancel_event.clear()
     from user_config import active_evaluation_context, active_ticker_context
     active_evaluation_context.set("backtest")
     indicator_overrides = data.get("indicator_overrides", {})
@@ -7662,7 +9082,12 @@ async def run_optimization_endpoint(data: dict, eng: UserEngine = Depends(get_us
         return {"status": "error", "message": "Invalid ticker format"}
 
     timeframe = data.get("timeframe", "1Day")
-    days = int(data.get("days", 90))
+    try:
+        days = int(data.get("days", 90))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="days must be a whole number")
+    if not 1 <= days <= MAX_OPTIMIZATION_DAYS:
+        raise HTTPException(status_code=413, detail=f"days must be between 1 and {MAX_OPTIMIZATION_DAYS}")
     capital = float(data.get("capital", 1000.0))
     split_pct = float(data.get("oos_split_pct", 30.0))
 
@@ -7715,6 +9140,7 @@ async def run_optimization_endpoint(data: dict, eng: UserEngine = Depends(get_us
         "max_daily_loss_pct": float(data.get("max_daily_loss_pct", 0.0) or 0.0),
         "enable_liquidity_filter": bool(data.get("enable_liquidity_filter", True)),
         "min_relative_volume": float(data.get("min_relative_volume", 0.10) or 0.0),
+        "cancel_event": cancel_event,
     }
     continuous_grid_settings = dict(data)
     continuous_grid_settings["amount"] = base_kwargs["trade_amount"]
@@ -7724,19 +9150,27 @@ async def run_optimization_endpoint(data: dict, eng: UserEngine = Depends(get_us
 
     from optimizer import run_optimization
     try:
-        results = await run_optimization(base_kwargs, split_pct)
+        try:
+            await asyncio.wait_for(_backtest_semaphore.acquire(), timeout=_BACKTEST_QUEUE_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=429, detail="Too many optimizations are running; retry shortly.")
+        try:
+            results = await run_optimization(base_kwargs, split_pct)
+        finally:
+            _backtest_semaphore.release()
         if "error" in results:
             return {"status": "error", "message": results["error"]}
         return {"status": "success", "results": results}
     except Exception as e:
         import traceback
-        print(f"[api] Auto-Optimize crash: {e}\n{traceback.format_exc()}")
+        print(f"[api] Auto-Optimize crash: {_safe_exception_type(e)}")
         return {"status": "error", "message": "Optimization engine crashed."}
 
 @app.post("/api/options/backtest")
 async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_engine)):
     """Runs a historical options backtest."""
-    global_backtest_cancel.clear()
+    cancel_event = _get_backtest_cancel_event(eng.uid)
+    cancel_event.clear()
     from user_config import active_evaluation_context, active_ticker_context
     active_evaluation_context.set("backtest")
     indicator_overrides = data.get("indicator_overrides", {})
@@ -7751,10 +9185,20 @@ async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_en
         return {"status": "error", "message": "Invalid ticker format"}
 
     timeframe = data.get("timeframe", "1Day")
-    days = int(data.get("days", 30))
+    try:
+        days = int(data.get("days", 30))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="days must be a whole number")
+    if not 1 <= days <= MAX_OPTIONS_BACKTEST_DAYS:
+        raise HTTPException(status_code=413, detail=f"days must be between 1 and {MAX_OPTIONS_BACKTEST_DAYS}")
     capital = float(data.get("capital", 1000.0))
     trade_amount = float(data.get("trade_amount", 100.0))
-    expiry_days = int(data.get("expiry_days", 7))
+    try:
+        expiry_days = int(data.get("expiry_days", 7))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="expiry_days must be a whole number")
+    if not 0 <= expiry_days <= 365:
+        raise HTTPException(status_code=413, detail="expiry_days must be between 0 and 365")
     strike_type = data.get("strike_type", "ATM")
     try:
         options_type = validate_options_type(data.get("options_type", "calls_only"))
@@ -7826,7 +9270,7 @@ async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_en
         r=r,
         dividend_yield=dividend_yield,
         option_contract_fee=option_contract_fee,
-        cancel_event=global_backtest_cancel,
+        cancel_event=cancel_event,
         enable_signal_reset=enable_signal_reset,
         enable_smart_reentry=enable_smart_reentry,
         smart_reentry_type=smart_reentry_type,
@@ -7873,14 +9317,15 @@ async def run_options_backtest(data: dict, eng: UserEngine = Depends(get_user_en
 
 
     try:
-        results = await asyncio.to_thread(opt_bt.run)
+        async with _bounded_analysis_work(eng.uid, "options backtest"):
+            results = await asyncio.to_thread(opt_bt.run)
         if "error" in results:
             return {"status": "error", "message": results["error"]}
         return {"status": "success", "results": results}
     except Exception as e:
         import traceback
         traceback.print_exc()
-        print(f"[api] Options Backtest crash: {e}")
+        print(f"[api] Options Backtest crash: {_safe_exception_type(e)}")
         return {"status": "error", "message": "An internal error occurred during options backtest simulation."}
 
 
@@ -7891,26 +9336,59 @@ async def run_monte_carlo_endpoint(data: dict, eng: UserEngine = Depends(get_use
     Accepts the raw trades array from a previous backtest result — no re-running needed.
     Returns overfitting risk classification, Sharpe distribution, and fan chart data.
     """
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Request body must be an object.")
+
     trades = data.get("trades", [])
-    capital = float(data.get("capital", 1000.0))
-    n_simulations = int(data.get("n_simulations", 1000))
+    if not isinstance(trades, list):
+        raise HTTPException(status_code=400, detail="trades must be a list.")
+
+    from monte_carlo import MAX_MONTE_CARLO_SIMULATIONS, MAX_MONTE_CARLO_TRADES, run_monte_carlo
+
+    if len(trades) > MAX_MONTE_CARLO_TRADES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Too many trades; the maximum is {MAX_MONTE_CARLO_TRADES}."
+        )
+    if any(not isinstance(trade, dict) for trade in trades):
+        raise HTTPException(status_code=400, detail="Each trade must be an object.")
+
+    try:
+        capital = float(data.get("capital", 1000.0))
+        n_simulations = int(data.get("n_simulations", 1000))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="capital and n_simulations must be numeric.")
 
     if not trades:
         return {"status": "error", "message": "No trades provided for Monte Carlo simulation."}
     if len(trades) < 3:
         return {"status": "error", "message": "Need at least 3 trades to run Monte Carlo simulation."}
+    if n_simulations < 1:
+        raise HTTPException(status_code=400, detail="n_simulations must be at least 1.")
 
     # Cap simulations for safety
-    n_simulations = min(n_simulations, 5000)
+    n_simulations = min(n_simulations, MAX_MONTE_CARLO_SIMULATIONS)
 
-    from monte_carlo import run_monte_carlo
     try:
-        result = await asyncio.to_thread(run_monte_carlo, trades, capital, n_simulations)
+        try:
+            await asyncio.wait_for(
+                _monte_carlo_semaphore.acquire(),
+                timeout=_MONTE_CARLO_QUEUE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=429, detail="Monte Carlo capacity is temporarily busy; retry shortly.")
+
+        try:
+            result = await asyncio.to_thread(run_monte_carlo, trades, capital, n_simulations)
+        finally:
+            _monte_carlo_semaphore.release()
         if "error" in result:
             return {"status": "error", "message": result["error"]}
         return {"status": "success", "result": result}
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"[api] Monte Carlo error: {e}")
+        print(f"[api] Monte Carlo error: {_safe_exception_type(e)}")
         return {"status": "error", "message": "An error occurred during Monte Carlo simulation."}
 
 
@@ -7925,16 +9403,82 @@ async def deploy_backtest_as_bot(data: dict, eng: UserEngine = Depends(get_user_
         return {"status": "error", "message": "Symbol is required"}
     deploy_mode = data.get("deploy_mode", "override")  # "override" | "liquidate"
     is_options = data.get("is_options", False)
+    existing_settings = eng.config.TICKER_SETTINGS.get(symbol, {}) or {}
+    is_options = bool(
+        is_options
+        or existing_settings.get("options_trading")
+        or existing_settings.get("is_option")
+    )
 
-    # Handle liquidation if requested and position exists
+    # Handle liquidation if requested and position exists.  Do not remove the
+    # bot or redeploy until broker cancellation/liquidation is confirmed.
     if deploy_mode == "liquidate" and symbol in eng.config.TRADELIST:
-        try:
-            eng.broker.cancel_orders_for_ticker(symbol)
-            eng.broker.close_position(symbol)
-        except Exception as e:
-            print(f"[api] Error during liquidation for {symbol}: {e}")
-        if symbol in eng.config.TRADELIST:
-            eng.config.TRADELIST.remove(symbol)
+        cancel_result = eng.broker.cancel_orders_for_ticker(symbol)
+        if not cancel_result.get("success", False):
+            return {
+                "status": "pending",
+                "message": "Redeployment paused because broker order cancellation was not confirmed.",
+                "broker": cancel_result,
+            }
+        if is_options:
+            try:
+                from option_selector import parse_occ_symbol
+                positions = await asyncio.wait_for(
+                    asyncio.to_thread(eng.broker.get_positions),
+                    timeout=3.0,
+                )
+                option_position = next(
+                    (
+                        position for position in (positions or [])
+                        if (
+                            parse_occ_symbol(
+                                str(position.get("symbol", "")).replace("/", "").upper()
+                            )
+                            or {}
+                        ).get("underlying") == symbol.replace("/", "").upper()
+                    ),
+                    None,
+                )
+            except Exception as exc:
+                return {
+                    "status": "pending",
+                    "message": "Redeployment paused because the option position could not be reconciled.",
+                    "broker": {"success": False, "error": type(exc).__name__},
+                }
+            if option_position:
+                close_result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        eng._close_option_with_limit,
+                        option_position,
+                        ticker=symbol,
+                        result={"level": "redeploy"},
+                        t_settings=existing_settings,
+                    ),
+                    timeout=10.0,
+                )
+            else:
+                close_result = {"success": True, "status": "no_position"}
+        else:
+            close_result = await asyncio.wait_for(
+                asyncio.to_thread(eng.broker.close_position, symbol),
+                timeout=10.0,
+            )
+        no_position = "no position" in str(close_result.get("error", "")).lower()
+        close_status = str(close_result.get("status") or "").lower().replace(" ", "_")
+        confirmed = bool(getattr(eng.broker, "simulation_mode", False)) or close_status == "filled" or no_position
+        if not close_result.get("success", False) and not no_position:
+            return {
+                "status": "pending",
+                "message": "Redeployment paused because liquidation failed or has an unknown broker outcome.",
+                "broker": close_result,
+            }
+        if close_result.get("success", False) and not confirmed:
+            return {
+                "status": "pending",
+                "message": "Redeployment paused until the submitted liquidation is confirmed filled.",
+                "broker": close_result,
+            }
+        eng.config.TRADELIST.remove(symbol)
         await eng.save_settings()
 
     # Build create_bot payload
@@ -8046,14 +9590,38 @@ async def get_options_chain_api(ticker: str, expiry_days: int = 7, current_price
     """Fetches the options contract chain for a ticker from Alpaca."""
     if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker.upper()):
         return {"error": "Invalid ticker format"}
+    try:
+        expiry_days = int(expiry_days)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="expiry_days must be a whole number")
+    if not 0 <= expiry_days <= 365:
+        raise HTTPException(status_code=413, detail="expiry_days must be between 0 and 365")
+    if current_price is not None:
+        try:
+            current_price = float(current_price)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="current_price must be numeric")
+        if not math.isfinite(current_price) or current_price <= 0:
+            raise HTTPException(status_code=400, detail="current_price must be finite and positive")
 
     from option_selector import get_option_chain
-    chain = get_option_chain(
-        underlying=ticker,
-        expiration_limit_days=expiry_days,
-        current_price=current_price,
-        client=eng.broker.client
-    )
+    try:
+        chain = await _run_bounded_provider_call(
+            eng.uid,
+            "options-chain",
+            lambda: get_option_chain(
+                underlying=ticker,
+                expiration_limit_days=expiry_days,
+                current_price=current_price,
+                client=getattr(eng.broker, "client", None),
+            ),
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Option-chain provider timed out; retry shortly.")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=502, detail="Option-chain provider is temporarily unavailable.")
     return {"status": "success", "chain": chain}
 
 
@@ -8078,8 +9646,8 @@ async def get_options_review(review_date: str = None, eng: UserEngine = Depends(
         )
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Timed out loading option trade history")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Could not load option trade history: {e}")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Could not load option trade history")
 
     today_option_orders = []
     for order in order_history or []:
@@ -8226,18 +9794,28 @@ async def download_all_data(data: dict, eng: UserEngine = Depends(get_user_engin
 
     log = []
     end_date = get_now()
+    download_deadline = time.monotonic() + 120.0
 
     # 1. Download Price History
     for tf, days in timeframes:
+        if time.monotonic() >= download_deadline:
+            raise HTTPException(status_code=504, detail="Historical download exceeded its time budget")
         start_date = end_date - timedelta(days=days)
-        df = get_historical_data(ticker, tf, start_date, end_date)
+        async with _bounded_analysis_work(eng.uid, "historical download"):
+            df = await asyncio.wait_for(
+                asyncio.to_thread(get_historical_data, ticker, tf, start_date, end_date),
+                timeout=min(20.0, max(1.0, download_deadline - time.monotonic())),
+            )
         status = "Success" if df is not None and not df.empty else "No Data"
         log.append(f"{tf}: {status}")
 
     # 2. Download Metadata
     try:
-        t = yf.Ticker(ticker)
-        info = t.info
+        async with _bounded_analysis_work(eng.uid, "historical metadata download"):
+            info = await asyncio.wait_for(
+                asyncio.to_thread(lambda: yf.Ticker(ticker).info),
+                timeout=min(15.0, max(1.0, download_deadline - time.monotonic())),
+            )
 
         clean_ticker = re.sub(r'[^A-Z0-9]', '', ticker)
         safe_ticker = os.path.basename(clean_ticker)
@@ -8253,7 +9831,7 @@ async def download_all_data(data: dict, eng: UserEngine = Depends(get_user_engin
             json.dump(info, f, indent=4)
         log.append("Metadata: Saved")
     except Exception as e:
-        print(f"[api] Metadata extraction error: {e}")
+        print(f"[api] Metadata extraction error: {_safe_exception_type(e)}")
         log.append("Metadata Error: Could not save metadata securely")
 
     return {"ticker": ticker, "status": log}
@@ -8414,6 +9992,10 @@ async def update_risk_settings(settings: dict, context: str = "dashboard", eng: 
     """Updates risk management parameters."""
     from user_config import active_evaluation_context
     ctx = _normalize_analysis_context(context)
+    allowed_risk_keys = {"MAX_DAILY_DRAWDOWN", "RISK_PER_TRADE", "MAX_POSITION_PCT", "GLOBAL_HARD_STOP_PCT"}
+    unknown_keys = sorted(set(settings or {}) - allowed_risk_keys)
+    if unknown_keys:
+        raise HTTPException(status_code=400, detail=f"Unsupported risk setting(s): {', '.join(unknown_keys)}")
     token = active_evaluation_context.set(ctx)
     try:
         normalized_settings = {}
@@ -8424,6 +10006,8 @@ async def update_risk_settings(settings: dict, context: str = "dashboard", eng: 
                         value = float(value)
                     except (TypeError, ValueError):
                         raise HTTPException(status_code=400, detail=f"{key} must be numeric or null")
+                    if not math.isfinite(value):
+                        raise HTTPException(status_code=400, detail=f"{key} must be finite")
                     if value < 0:
                         raise HTTPException(status_code=400, detail=f"{key} cannot be negative")
                     if value > 1:
@@ -8490,12 +10074,17 @@ async def update_ticker_amount(data: dict, eng: UserEngine = Depends(get_user_en
     amount = data.get("amount")
 
     if ticker:
+        if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
+            raise HTTPException(status_code=400, detail="Invalid ticker format")
         if amount is None or amount == "":
             if ticker in eng.config.TICKER_AMOUNTS:
                 del eng.config.TICKER_AMOUNTS[ticker]
         else:
             try:
-                eng.config.TICKER_AMOUNTS[ticker] = float(amount)
+                normalized_amount = float(amount)
+                if not math.isfinite(normalized_amount) or not 0 < normalized_amount <= 1_000_000:
+                    raise ValueError
+                eng.config.TICKER_AMOUNTS[ticker] = normalized_amount
             except:
                 return {"status": "error", "message": "Invalid amount"}
 
@@ -8549,7 +10138,11 @@ def get_watchlist(eng: UserEngine = Depends(get_user_engine)):
 @app.post("/api/watchlist")
 async def add_to_watchlist(data: dict, eng: UserEngine = Depends(get_user_engine)):
     """Add a ticker to the watchlist."""
-    ticker = data.get("ticker", "").upper()
+    ticker = str(data.get("ticker", "")).upper().strip()
+    if ticker and not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
+        raise HTTPException(status_code=400, detail="Invalid ticker format")
+    if ticker and len(eng.config.WATCHLIST) >= MAX_WATCHLIST_ITEMS and ticker not in eng.config.WATCHLIST:
+        raise HTTPException(status_code=413, detail=f"Watchlist limit is {MAX_WATCHLIST_ITEMS} symbols")
     if ticker and ticker not in eng.config.WATCHLIST:
         eng.config.WATCHLIST.append(ticker)
         await eng.save_settings()
@@ -8583,7 +10176,11 @@ def get_tradelist(eng: UserEngine = Depends(get_user_engine)):
 @app.post("/api/tradelist")
 async def add_to_tradelist(data: dict, eng: UserEngine = Depends(get_user_engine)):
     """Add a ticker to the active trade list."""
-    ticker = data.get("ticker", "").upper()
+    ticker = str(data.get("ticker", "")).upper().strip()
+    if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
+        raise HTTPException(status_code=400, detail="Invalid ticker format")
+    if ticker not in eng.config.TRADELIST and len(eng.config.TRADELIST) >= MAX_ACTIVE_BOTS:
+        raise HTTPException(status_code=413, detail=f"Active bot limit is {MAX_ACTIVE_BOTS} symbols")
     timeframe = data.get("timeframe", eng.config.DEFAULT_TIMEFRAME)
 
     if ticker and ticker not in eng.config.TRADELIST:
@@ -8637,6 +10234,37 @@ async def debug_history(eng: UserEngine = Depends(get_user_engine)):
 async def remove_from_tradelist(ticker: str, liquidate: bool = False, eng: UserEngine = Depends(get_user_engine)):
     """Remove a ticker from the active trade list."""
     ticker = ticker.upper()
+    res_cancel = eng.broker.cancel_orders_for_ticker(ticker)
+    print(f"[tradelist] Cancelled pending orders for {ticker}: {res_cancel}")
+    if not res_cancel.get('success', False):
+        return {
+            "status": "pending",
+            "message": "Bot remains active because broker order cancellation was not confirmed.",
+            "tradelist": eng.config.TRADELIST,
+            "broker": res_cancel,
+        }
+
+    if liquidate:
+        res = eng.broker.close_position(ticker)
+        print(f"[tradelist] Liquidating {ticker}: {res}")
+        no_position = "no position" in str(res.get("error", "")).lower()
+        status = str(res.get("status") or "").lower().replace(" ", "_")
+        confirmed = bool(getattr(eng.broker, "simulation_mode", False)) or status == "filled" or no_position
+        if not res.get("success", False) and not no_position:
+            return {
+                "status": "pending",
+                "message": "Bot remains active because liquidation failed or has an unknown broker outcome.",
+                "tradelist": eng.config.TRADELIST,
+                "broker": res,
+            }
+        if res.get("success", False) and not confirmed:
+            return {
+                "status": "pending",
+                "message": "Liquidation was submitted but not confirmed; bot remains active until the fill is visible.",
+                "tradelist": eng.config.TRADELIST,
+                "broker": res,
+            }
+
     if ticker in eng.config.TRADELIST:
         eng.config.TRADELIST.remove(ticker)
         await eng.save_settings()
@@ -8644,21 +10272,17 @@ async def remove_from_tradelist(ticker: str, liquidate: bool = False, eng: UserE
         clear_evaluation_cache(ticker, None)
         _clear_chart_analysis_cache(ticker, None)
 
-    res_cancel = eng.broker.cancel_orders_for_ticker(ticker)
-    print(f"[tradelist] Cancelled pending orders for {ticker}: {res_cancel}")
-
-    if liquidate:
-        res = eng.broker.close_position(ticker)
-        print(f"[tradelist] Liquidating {ticker}: {res}")
-
     return {"status": "success", "tradelist": eng.config.TRADELIST}
 
 
 @app.get("/api/search/{query}")
 def search_symbols(query: str, eng: UserEngine = Depends(get_user_engine)):
     """Searches for tradeable assets using the modular eng.broker."""
+    _enforce_symbol_search_rate_limit(eng.uid)
     if len(query) < 1:
         return []
+    if len(query) > 64:
+        raise HTTPException(status_code=400, detail="Search query is too long")
     return eng.broker.search_assets(query)
 
 
@@ -8692,6 +10316,14 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
     symbol = data.get("symbol", "").upper().strip()
     if not symbol:
         return {"status": "error", "message": "Symbol is required"}
+    if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", symbol):
+        raise HTTPException(status_code=400, detail="Invalid symbol format")
+    if symbol not in eng.config.TRADELIST and len(eng.config.TRADELIST) >= MAX_ACTIVE_BOTS:
+        raise HTTPException(status_code=413, detail=f"Active bot limit is {MAX_ACTIVE_BOTS} symbols")
+    if "enable_risk_management" in data and data.get("enable_risk_management") is not None:
+        data["enable_risk_management"] = _normalize_risk_management_setting(data["enable_risk_management"])
+    if data.get("enable_risk_management") is False:
+        raise HTTPException(status_code=400, detail="Risk management cannot be disabled for live bots")
 
     if symbol in eng.config.TRADELIST and not data.get("force_override", False):
         return {
@@ -8721,7 +10353,13 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         eng.config.TICKER_SETTINGS[symbol]["asset_class"] = "crypto" if _is_crypto_symbol(symbol) else "stock"
 
     if "capital" in data and data["capital"] is not None:
-        eng.config.TICKER_SETTINGS[symbol]["amount"] = float(data["capital"])
+        try:
+            capital = float(data["capital"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="capital must be numeric")
+        if not math.isfinite(capital) or not 0 < capital <= 1_000_000:
+            raise HTTPException(status_code=400, detail="capital must be finite and between 0 and 1000000")
+        eng.config.TICKER_SETTINGS[symbol]["amount"] = capital
 
     if "threshold" in data and data["threshold"] is not None:
         eng.config.TICKER_SETTINGS[symbol]["min_buy_signals"] = int(data["threshold"])
@@ -8802,6 +10440,7 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
                 eng.config.TICKER_SETTINGS[symbol].pop(key, None)
             else:
                 eng.config.TICKER_SETTINGS[symbol][key] = value
+    eng.config.TICKER_SETTINGS[symbol]["enable_risk_management"] = True
     # Live bots use one consistent safety policy: pause after exactly three
     # consecutive completed losing trades.
     eng.config.TICKER_SETTINGS[symbol]["max_consecutive_losses"] = 3
@@ -8851,14 +10490,31 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
     if "options_trade_amount" in data:
-        eng.config.TICKER_SETTINGS[symbol]["options_trade_amount"] = float(data["options_trade_amount"])
+        if data["options_trade_amount"] is None:
+            eng.config.TICKER_SETTINGS[symbol].pop("options_trade_amount", None)
+        else:
+            eng.config.TICKER_SETTINGS[symbol]["options_trade_amount"] = _validate_trade_allocation(
+                data["options_trade_amount"], "options_trade_amount"
+            )
     options_allocation_mode = str(eng.config.TICKER_SETTINGS[symbol].get("options_allocation_mode", eng.config.TICKER_SETTINGS[symbol].get("allocation_mode", "fixed")) or "fixed").lower()
     if options_allocation_mode == "compound" and not eng.config.TICKER_SETTINGS[symbol].get("options_compound_amount"):
         eng.config.TICKER_SETTINGS[symbol]["options_compound_amount"] = float(eng.config.TICKER_SETTINGS[symbol].get("options_trade_amount", data.get("options_trade_amount", 0)) or 0)
+    if "options_compound_amount" in eng.config.TICKER_SETTINGS[symbol]:
+        compound_amount = eng.config.TICKER_SETTINGS[symbol].get("options_compound_amount")
+        if compound_amount not in (None, ""):
+            eng.config.TICKER_SETTINGS[symbol]["options_compound_amount"] = _validate_trade_allocation(
+                compound_amount, "options_compound_amount"
+            )
     if options_allocation_mode != "compound":
         eng.config.TICKER_SETTINGS[symbol].pop("options_compound_amount", None)
     if "options_expiry_days" in data and data["options_expiry_days"] is not None:
-        eng.config.TICKER_SETTINGS[symbol]["options_expiry_days"] = int(data["options_expiry_days"])
+        try:
+            expiry_days = int(data["options_expiry_days"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="options_expiry_days must be a whole number")
+        if not 0 <= expiry_days <= 365:
+            raise HTTPException(status_code=400, detail="options_expiry_days must be between 0 and 365")
+        eng.config.TICKER_SETTINGS[symbol]["options_expiry_days"] = expiry_days
     if "options_strike_type" in data:
         eng.config.TICKER_SETTINGS[symbol]["options_strike_type"] = data["options_strike_type"]
     if "options_exit_strategy" in data:
@@ -8942,7 +10598,7 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
                 _ensure_exit_forecast_snapshot(eng.config.TICKER_SETTINGS[symbol], initial_scan, active_pos, symbol)
                 print(f"[bots/create] Background warm up scan completed for new bot {symbol}")
         except Exception as e:
-            print(f"[bots/create] Background warm up scan failed for {symbol}: {e}")
+            print(f"[bots/create] Background warm up scan failed for {symbol}: {_safe_exception_type(e)}")
 
         if not eng.config.TICKER_SETTINGS[symbol].get("forecast_entry_snapshot"):
             _ensure_entry_forecast_snapshot(eng.config.TICKER_SETTINGS[symbol], {}, symbol)
@@ -8958,10 +10614,24 @@ async def create_bot(data: dict, eng: UserEngine = Depends(get_user_engine)):
 @app.post("/api/cancel_order")
 async def cancel_order(data: dict, eng: UserEngine = Depends(get_user_engine)):
     """Cancel an active order on Alpaca by ID."""
-    order_id = data.get("order_id")
+    order_id = str(data.get("order_id") or "").strip()
     if not order_id:
         return {"status": "error", "message": "order_id is required"}
-    result = eng.broker.cancel_order_by_id(order_id)
+    if len(order_id) > 128:
+        raise HTTPException(status_code=400, detail="order_id is too long")
+    try:
+        result = await _run_bounded_provider_call(
+            eng.uid,
+            "order cancellation",
+            lambda: eng.broker.cancel_order_by_id(order_id),
+        )
+    except asyncio.TimeoutError:
+        return {
+            "status": "error",
+            "message": "Cancellation outcome is unknown; reconcile the order before retrying.",
+        }
+    except Exception:
+        return {"status": "error", "message": "Broker cancellation is temporarily unavailable."}
     if result.get("success"):
         return {"status": "success", "message": f"Order {order_id} cancelled successfully."}
     else:
@@ -8972,6 +10642,12 @@ async def cancel_order(data: dict, eng: UserEngine = Depends(get_user_engine)):
 async def update_indicators(updates: dict, context: str = "dashboard", ticker: str = None, eng: UserEngine = Depends(get_user_engine)):
     """Update indicator toggles or parameters dynamically. Instant in-memory + persists to Firestore."""
     ctx = _normalize_analysis_context(context)
+    allowed_indicator_keys = set(INDICATOR_PARAMETER_KEYS) | set(DASHBOARD_CONFLUENCE_TOGGLE_KEYS)
+    unknown_keys = sorted(set(updates or {}) - allowed_indicator_keys - {
+        "reset_confluence", "__reset_confluence", "confluence_toggles", "reset_all"
+    })
+    if unknown_keys:
+        raise HTTPException(status_code=400, detail=f"Unsupported indicator setting(s): {', '.join(unknown_keys)}")
     reset_confluence = bool(updates.pop("reset_confluence", False) or updates.pop("__reset_confluence", False))
     requested_confluence_defaults = updates.pop("confluence_toggles", None)
     reset_all = bool(updates.pop("reset_all", False))
@@ -9071,7 +10747,7 @@ async def update_indicators(updates: dict, context: str = "dashboard", ticker: s
                             else:
                                 eng.config.set(k, v)
                         except Exception as e:
-                            print(f"[settings] Type conversion error for {k}: {e}")
+                            print(f"[settings] Type conversion error for {k}: {_safe_exception_type(e)}")
                             eng.config.set(k, v)
             if ctx == "dashboard":
                 if reset_all or reset_confluence:
@@ -9109,9 +10785,22 @@ async def update_indicators(updates: dict, context: str = "dashboard", ticker: s
 @app.post("/api/settings/ticker")
 async def update_ticker_settings(data: dict, eng: UserEngine = Depends(get_user_engine)):
     """Update settings for a specific ticker."""
-    ticker = data.get("ticker", "").upper()
+    ticker = str(data.get("ticker", "")).strip().upper()
     settings = data.get("settings", {})
     if not ticker: return {"status": "error"}
+    if not re.fullmatch(r"[A-Z0-9.\-]{1,15}", ticker):
+        raise HTTPException(status_code=400, detail="Invalid ticker format")
+    if ticker not in eng.config.TICKER_SETTINGS and len(eng.config.TICKER_SETTINGS) >= MAX_ACTIVE_BOTS:
+        raise HTTPException(status_code=413, detail=f"Ticker settings limit is {MAX_ACTIVE_BOTS} symbols")
+    if not isinstance(settings, dict):
+        raise HTTPException(status_code=400, detail="settings must be an object")
+    for allocation_key in ("options_trade_amount", "options_compound_amount"):
+        if allocation_key in settings and settings[allocation_key] not in (None, "default", ""):
+            settings[allocation_key] = _validate_trade_allocation(settings[allocation_key], allocation_key)
+    if "enable_risk_management" in settings and settings.get("enable_risk_management") is not None:
+        settings["enable_risk_management"] = _normalize_risk_management_setting(settings["enable_risk_management"])
+    if settings.get("enable_risk_management") is False:
+        raise HTTPException(status_code=400, detail="Risk management cannot be disabled for live bots")
 
     if ticker not in eng.config.TICKER_SETTINGS:
         eng.config.TICKER_SETTINGS[ticker] = {}
@@ -9221,7 +10910,7 @@ async def update_ticker_settings(data: dict, eng: UserEngine = Depends(get_user_
                 active_pos = _matching_position_for_ticker(positions, ticker, current_settings)
                 _ensure_exit_forecast_snapshot(current_settings, refreshed_scan, active_pos, ticker)
         except Exception as e:
-            print(f"[settings/update] Background warm up scan failed for {ticker}: {e}")
+            print(f"[settings/update] Background warm up scan failed for {ticker}: {_safe_exception_type(e)}")
 
         if not current_settings.get("forecast_entry_snapshot"):
             _ensure_entry_forecast_snapshot(current_settings, {}, ticker)
@@ -9230,13 +10919,34 @@ async def update_ticker_settings(data: dict, eng: UserEngine = Depends(get_user_
         if eng.force_scan_trigger:
             eng.force_scan_trigger.set()
 
-    asyncio.create_task(_background_warmup_and_save())
+    warmup_key = (str(eng.uid), ticker)
+    previous_warmup = _ticker_warmup_tasks.get(warmup_key)
+    if previous_warmup and not previous_warmup.done():
+        previous_warmup.cancel()
+    async def _bounded_warmup():
+        try:
+            async with _bounded_analysis_work(eng.uid, "ticker warmup"):
+                await _background_warmup_and_save()
+        except asyncio.CancelledError:
+            raise
+        except HTTPException as exc:
+            print(f"[settings/update] Warmup deferred for {ticker}: {exc.detail}")
+            await eng.save_settings()
+        finally:
+            current_task = asyncio.current_task()
+            if _ticker_warmup_tasks.get(warmup_key) is current_task:
+                _ticker_warmup_tasks.pop(warmup_key, None)
+    _ticker_warmup_tasks[warmup_key] = asyncio.create_task(_bounded_warmup())
     return {"status": "success"}
 
 @app.delete("/api/settings/ticker/{ticker}")
 async def reset_ticker_settings(ticker: str, eng: UserEngine = Depends(get_user_engine)):
     """Reset a ticker to global defaults."""
     ticker = ticker.upper()
+    warmup_key = (str(eng.uid), ticker)
+    pending_warmup = _ticker_warmup_tasks.pop(warmup_key, None)
+    if pending_warmup and not pending_warmup.done():
+        pending_warmup.cancel()
     if ticker in eng.config.TICKER_SETTINGS:
         del eng.config.TICKER_SETTINGS[ticker]
         asyncio.create_task(eng.save_settings())
@@ -9419,7 +11129,7 @@ def _fetch_alpaca_option_snapshots(eng: UserEngine, symbols: list[str]) -> tuple
         from alpaca.data.historical.option import OptionHistoricalDataClient
         from alpaca.data.requests import OptionSnapshotRequest
     except Exception as exc:
-        return {}, "unavailable", f"Alpaca option data client unavailable: {exc}"
+        return {}, "unavailable", f"Alpaca option data client unavailable: {_safe_exception_type(exc)}"
 
     data_client = OptionHistoricalDataClient(api_key, api_secret)
     last_error = ""
@@ -9436,7 +11146,7 @@ def _fetch_alpaca_option_snapshots(eng: UserEngine, symbols: list[str]) -> tuple
             if merged:
                 return merged, getattr(feed, "value", str(feed)), ""
         except Exception as exc:
-            last_error = f"{type(exc).__name__}: {exc}"
+            last_error = _safe_exception_type(exc)
             continue
 
     return {}, "unavailable", last_error
@@ -9721,9 +11431,37 @@ def _screener_profile_from_request(data: dict, state: ScreenerUserState, symbol:
         settings["scan_interval_seconds"] = max(10, min(14400, int(incoming.get("scan_interval_seconds", settings.get("scan_interval_seconds", default_scan_interval)))))
     except (TypeError, ValueError):
         settings["scan_interval_seconds"] = default_scan_interval
+    try:
+        settings["price_watch_interval_seconds"] = max(2, min(60, int(incoming.get("price_watch_interval_seconds", settings.get("price_watch_interval_seconds", 5)))))
+    except (TypeError, ValueError):
+        settings["price_watch_interval_seconds"] = 5
     settings["news_watch_enabled"] = bool(incoming.get("news_watch_enabled", settings.get("news_watch_enabled", True)))
     settings["earnings_watch_enabled"] = bool(incoming.get("earnings_watch_enabled", settings.get("earnings_watch_enabled", True)))
     settings["fundamental_watch_enabled"] = bool(incoming.get("fundamental_watch_enabled", settings.get("fundamental_watch_enabled", True)))
+    # Screener strategy policy is separate from the existing bot entry/exit
+    # modes. Combined is the safe default for new and legacy profiles: a
+    # technical setup alone must not be presented as an event-confirmed idea.
+    settings["strategy_mode"] = normalize_screening_strategy_mode(
+        incoming.get("strategy_mode", settings.get("strategy_mode", "combined"))
+    )
+    # News is a qualification dependency, not an independent opt-out, for
+    # every policy that can use the event leg. Technical-only profiles must
+    # not spend resources polling or presenting news evidence.
+    settings["news_watch_enabled"] = settings["strategy_mode"] != "technical"
+    try:
+        settings["event_max_age_days"] = max(
+            1,
+            min(30, int(incoming.get("event_max_age_days", settings.get("event_max_age_days", 10)))),
+        )
+    except (TypeError, ValueError):
+        settings["event_max_age_days"] = 10
+    try:
+        settings["event_min_confidence"] = max(
+            0.0,
+            min(1.0, float(incoming.get("event_min_confidence", settings.get("event_min_confidence", 0.55)))),
+        )
+    except (TypeError, ValueError):
+        settings["event_min_confidence"] = 0.55
     for key in ("email_enabled", "alert_bullish_enabled", "alert_bearish_enabled"):
         if key in incoming:
             settings[key] = bool(incoming[key])
@@ -9843,6 +11581,7 @@ def _build_screener_scan_log(
     evaluation_state: dict,
     alert_created: bool = False,
     exit_event: Optional[dict] = None,
+    price_event: Optional[dict] = None,
 ) -> dict:
     """Build a position-free scan log for the independent Screener card.
 
@@ -9854,9 +11593,21 @@ def _build_screener_scan_log(
     evaluation_status = str(formatted_scan.get("evaluation_status") or "waiting").lower()
     last_actionable = str(evaluation_state.get("last_actionable_direction") or "").upper()
     virtual_position = bool(evaluation_state.get("virtual_position", last_actionable == "BULLISH"))
-    exit_event_active = bool(exit_event and exit_event.get("triggered"))
-    target_direction = "BEARISH" if virtual_position or exit_event_active else "BULLISH"
-    phase = "EXIT" if virtual_position or exit_event_active else "ENTRY"
+    price_event = price_event or (
+        exit_event
+        if exit_event and str(exit_event.get("event_type") or "").upper() in {"PRICE_EXIT", "PRICE_ENTRY"}
+        else None
+    )
+    price_event_type = str(price_event.get("event_type") or "").upper() if price_event else ""
+    is_price_exit_event = price_event_type == "PRICE_EXIT"
+    is_price_entry_event = price_event_type == "PRICE_ENTRY"
+    exit_event_active = bool(is_price_exit_event and exit_event and exit_event.get("triggered"))
+    target_direction = (
+        str(price_event.get("event_direction") or "BULLISH").upper()
+        if is_price_entry_event
+        else "BEARISH" if virtual_position or exit_event_active else "BULLISH"
+    )
+    phase = "ENTRY" if is_price_entry_event else "EXIT" if virtual_position or exit_event_active else "ENTRY"
     strategy_context = _scan_log_strategy_context(
         settings,
         {"screener_virtual_signal": True} if virtual_position or exit_event_active else {},
@@ -9864,6 +11615,20 @@ def _build_screener_scan_log(
     strategy_mode = str(strategy_context["mode"] or "indicator")
     strategy_label = str(strategy_context["label"] or "Indicator")
     condition_logic = _scan_log_condition_logic(strategy_context)
+    screening_mode = normalize_screening_strategy_mode(
+        formatted_scan.get("screening_strategy_mode", settings.get("strategy_mode", "combined"))
+    )
+    screening_qualification = (
+        formatted_scan.get("strategy_qualification")
+        if isinstance(formatted_scan.get("strategy_qualification"), dict)
+        else {}
+    )
+    screening_label = {
+        "technical": "Technical Only",
+        "event": "Event-Driven Only",
+        "combined": "Combined · Require Both",
+        "discovery": "Discovery · Either Qualifies",
+    }.get(screening_mode, "Combined · Require Both")
     strategy_uses_indicators = bool(strategy_context["uses_indicators"])
     strategy_uses_structural = bool(strategy_context["uses_structural"])
     entry_levels = (
@@ -9937,10 +11702,21 @@ def _build_screener_scan_log(
     anti_chasing_blocked = str(formatted_scan.get("reason") or "").startswith("⚠️ Anti-chasing")
     if anti_chasing_blocked:
         blockers.append(str(formatted_scan.get("reason")))
+    if (
+        phase == "ENTRY"
+        and screening_qualification
+        and not bool(screening_qualification.get("qualified"))
+    ):
+        blockers.insert(0, f"{screening_label}: {screening_qualification.get('reason') or 'waiting for policy conditions.'}")
 
     if evaluation_status == "error":
         status = "SCAN_ERROR"
         summary = f"Scan error while monitoring for {target_direction.lower()} confirmation."
+    elif is_price_entry_event:
+        status = "PRICE_ENTRY_TRIGGERED"
+        summary = "Live custom-price entry triggered — " + str(
+            price_event.get("text") or "configured entry price reached"
+        ).rstrip(".") + "."
     elif evaluation_status != "valid" or not candle_meta.get("candle_key"):
         status = "WAITING_DATA"
         summary = f"Waiting for completed-candle data before checking the {strategy_label.lower()} {phase.lower()} setup."
@@ -9956,6 +11732,9 @@ def _build_screener_scan_log(
     elif phase == "ENTRY" and direction == "BEARISH":
         status = "BEARISH_SIGNAL"
         summary = "Bearish signal active. Virtual signal cycle is now watching for the next bullish transition."
+    elif phase == "EXIT" and is_price_exit_event:
+        status = "PRICE_EXIT_TRIGGERED"
+        summary = f"Live price exit triggered — {str(exit_levels.get('text') or 'configured price level reached.').rstrip('.')}."
     elif phase == "EXIT" and (
         (strategy_uses_indicators and confirmed_weight >= required_count)
         or bool(exit_levels and exit_levels.get("triggered"))
@@ -9989,14 +11768,26 @@ def _build_screener_scan_log(
     detail_parts = [
         f"Current completed-candle direction: {direction.title()}.",
         f"{progress_label.rstrip('.') }.",
+        f"Screening policy: {screening_label}.",
         "Virtual lifecycle only; no brokerage position or order is used.",
     ]
     if alert_created:
-        detail_parts.insert(0, f"New {direction.title()} transition alert created.")
+        detail_parts.insert(
+            0,
+            "New live price entry alert created." if is_price_entry_event
+            else "New live price exit alert created." if is_price_exit_event
+            else f"New {direction.title()} transition alert created.",
+        )
     if blockers:
         detail_parts.append("Waiting reason: " + " | ".join(blockers))
 
-    if exit_levels and exit_levels.get("triggered"):
+    if is_price_entry_event:
+        trigger_text = str(price_event.get("text") or "configured custom entry price reached").rstrip(". ")
+        final_summary = f"Live custom-price entry — {trigger_text}. The entry was triggered by the fresh quote level check."
+    elif exit_levels and exit_levels.get("triggered") and is_price_exit_event:
+        trigger_text = str(exit_levels.get("text") or "configured price level reached").rstrip(". ")
+        final_summary = f"Live price exit — {trigger_text}. The exit was triggered by the fresh quote level check."
+    elif exit_levels and exit_levels.get("triggered"):
         trigger_text = str(exit_levels.get("text") or "configured structural exit reached").rstrip(". ")
         if strategy_context.get("is_hybrid") and strategy_uses_indicators:
             final_summary = (
@@ -10060,10 +11851,16 @@ def _build_screener_scan_log(
         "detail": " ".join(detail_parts),
         "status": status,
         "phase": phase,
-        "decision": direction,
+        "decision": target_direction if is_price_entry_event else direction,
         "target_direction": target_direction,
         "strategy_mode": strategy_mode,
         "strategy_label": strategy_label,
+        "screening_strategy_mode": screening_mode,
+        "screening_strategy_label": screening_label,
+        "technical_direction": formatted_scan.get("technical_direction", direction),
+        "technical_qualification": formatted_scan.get("technical_qualification", {}),
+        "event_qualification": formatted_scan.get("event_qualification", {}),
+        "strategy_qualification": screening_qualification,
         "condition_logic": condition_logic,
         "uses_indicators": strategy_uses_indicators,
         "uses_structural": strategy_uses_structural,
@@ -10086,26 +11883,63 @@ def _build_screener_scan_log(
         "candle_close_ts": candle_meta.get("candle_close_ts"),
         "virtual_position": virtual_position,
         "exit_event_active": exit_event_active,
+        "event_type": price_event_type if price_event_type in {"PRICE_EXIT", "PRICE_ENTRY"} else "CANDLE_SIGNAL",
+        "price_watch": formatted_scan.get("price_watch") or {},
         "position_source": "virtual_signal_lifecycle",
         "no_trade_placed": True,
     }
 
 
-def _screener_summary(state: ScreenerUserState, symbols: list[str]) -> dict:
+def _screener_profile_is_current(state, symbol, revision, generation):
+    profile = state.profiles.get(symbol, {})
+    return bool(
+        profile
+        and profile.get("enabled", not profile.get("paused", False))
+        and state.profile_revision(symbol) == revision
+        and state.evaluation_state.get(symbol, {}).get("generation") == generation
+    )
+
+
+def _mark_screener_scan_degraded(state, symbol, settings, reason):
+    scan = copy.deepcopy(state.latest_scans.get(symbol) or _empty_screener_scan(symbol, settings))
+    scan.update(data_status="degraded", stale_reason=reason)
+    scan.setdefault("scan_log", {})["next_due_at"] = state.evaluation_state.get(symbol, {}).get("next_due_at")
+    state.latest_scans[symbol] = scan
+
+
+def _project_screener_scan(state, symbol):
+    """Read-only freshness projection; never relabel old data as a new signal."""
+    settings = state.profiles.get(symbol, {})
+    scan = copy.deepcopy(state.latest_scans.get(symbol) or _empty_screener_scan(symbol, settings))
+    if not settings.get("enabled", not settings.get("paused", False)):
+        scan["data_status"] = "paused"
+    elif scan.get("evaluation_status") != "valid":
+        scan.setdefault("data_status", "waiting")
+    elif scan.get("data_status") not in {"degraded", "stale_reference"}:
+        session = _screener_market_status(symbol, settings)
+        if not _screener_candle_is_usable(scan.get("candle_meta") or {}, settings.get("timeframe", "5Min"), session["is_active_window"]):
+            scan.update(data_status="degraded", stale_reason="The last completed-candle analysis is no longer current. Waiting for fresh data.")
+        else:
+            scan["data_status"] = "current" if session["is_active_window"] else "session_closed"
+    return scan
+
+
+def _screener_summary(state: ScreenerUserState, symbols: list[str], scans: Optional[dict] = None) -> dict:
     enabled_symbols = [
         symbol for symbol in symbols
         if bool(state.profiles.get(symbol, {}).get("enabled", True))
     ]
-    valid_scans = {
-        symbol: state.latest_scans.get(symbol, {})
-        for symbol in enabled_symbols
-        if state.latest_scans.get(symbol, {}).get("evaluation_status") == "valid"
-    }
+    projected = scans if scans is not None else {symbol: _project_screener_scan(state, symbol) for symbol in enabled_symbols}
+    valid_scans = {symbol: projected[symbol] for symbol in enabled_symbols if projected.get(symbol, {}).get("evaluation_status") == "valid" and projected.get(symbol, {}).get("data_status") == "current"}
     tz = pytz.timezone(getattr(state.config, "TIMEZONE", "America/Chicago"))
     today = datetime.now(tz).date()
     alerts_today = 0
     alerts_today_by_direction = {"bullish": 0, "bearish": 0}
-    for item in state.notifications:
+    visible_notifications = [
+        item for item in state.notifications
+        if item.get("browser_status", "delivered") != "disabled"
+    ]
+    for item in visible_notifications:
         try:
             created = item.get("created_at")
             if isinstance(created, str):
@@ -10117,7 +11951,7 @@ def _screener_summary(state: ScreenerUserState, symbols: list[str]) -> dict:
                     alerts_today_by_direction[direction] += 1
         except (TypeError, ValueError, OverflowError):
             continue
-    unread = sum(not bool(item.get("read")) for item in state.notifications)
+    unread = sum(not bool(item.get("read")) for item in visible_notifications)
     email_queued = sum(item.get("status") in {"queued", "sending", "retrying"} for item in state.email_outbox)
     email_failed = sum(item.get("status") == "failed" for item in state.email_outbox)
     sms_queued = sum(item.get("status") in {"queued", "sending", "retrying"} for item in state.sms_outbox)
@@ -10126,6 +11960,9 @@ def _screener_summary(state: ScreenerUserState, symbols: list[str]) -> dict:
     sms_phone_configured = bool(normalize_screener_sms_phone(state.notification_settings.get("sms_phone_number")))
     health = dict(state.health)
     health.setdefault("status", "starting")
+    degraded_count = sum(projected.get(symbol, {}).get("data_status") in {"degraded", "stale_reference"} for symbol in enabled_symbols)
+    if degraded_count and health["status"] == "healthy":
+        health["status"] = "degraded"
     return {
         "monitoring": health,
         "profiles": {
@@ -10138,11 +11975,13 @@ def _screener_summary(state: ScreenerUserState, symbols: list[str]) -> dict:
             "bearish": sum(scan.get("direction") == "BEARISH" for scan in valid_scans.values()),
             "neutral": sum(scan.get("direction") == "NEUTRAL" for scan in valid_scans.values()),
             "valid": len(valid_scans),
+            "unavailable": len(enabled_symbols) - len(valid_scans),
+            "degraded": degraded_count,
         },
         "alerts_today": alerts_today,
         "alerts_today_by_direction": alerts_today_by_direction,
         "unread_alerts": unread,
-        "browser_delivery": {"enabled": True},
+        "browser_delivery": {"enabled": bool(state.notification_settings.get("browser_enabled", True))},
         "email_delivery": {
             "enabled": bool(state.notification_settings.get("email_enabled")),
             "queued": email_queued,
@@ -10168,10 +12007,9 @@ async def get_screener_snapshot(
 ):
     snapshot_started = time.perf_counter()
     partition_norm = partition if partition in {"all", "regular", "options"} else "all"
-    if force:
-        await _scan_screener_state(state)
-    elif any(symbol not in state.latest_scans for symbol in state.order) and not state.scan_lock.locked():
-        asyncio.create_task(_scan_screener_state(state))
+    # GET must remain a read-only projection. In particular, a browser refresh
+    # or preview request must not create a technical alert as a side effect.
+    # Use POST /api/screener/scan for an explicit, user-requested scan.
 
     symbols = []
     for symbol in state.order:
@@ -10184,10 +12022,7 @@ async def get_screener_snapshot(
 
     scans = {}
     for symbol in symbols:
-        scan = copy.deepcopy(
-            state.latest_scans.get(symbol)
-            or _empty_screener_scan(symbol, state.profiles.get(symbol, {}))
-        )
+        scan = _project_screener_scan(state, symbol)
         # Chart candles are loaded by the dedicated chart-preview endpoint.
         # Keeping them out of the polling snapshot prevents multi-megabyte
         # responses and repeated JSON parsing on every 60-second refresh.
@@ -10233,7 +12068,7 @@ async def get_screener_snapshot(
         else:
             scan["fundamental_watch"] = {"enabled": False, "status": "disabled", "ticker": symbol}
         scans[symbol] = scan
-    summary = _screener_summary(state, symbols)
+    summary = _screener_summary(state, symbols, scans=scans)
     enabled_count = summary["profiles"]["enabled"]
     buy_count = summary["setups"]["bullish"]
     sell_count = summary["setups"]["bearish"]
@@ -10342,6 +12177,8 @@ async def save_screener_profile(data: dict, state: ScreenerUserState = Depends(g
     if not symbol:
         raise HTTPException(status_code=400, detail="A valid symbol is required")
     exists = symbol in state.profiles
+    if not exists and len(state.profiles) >= MAX_SCREENER_PROFILES:
+        raise HTTPException(status_code=413, detail=f"Screener supports a maximum of {MAX_SCREENER_PROFILES} total profiles")
     enabled_profiles = sum(bool(profile.get("enabled", True)) for profile in state.profiles.values())
     incoming_settings = data.get("settings") if isinstance(data.get("settings"), dict) else data
     requested_enabled = bool((incoming_settings or {}).get("enabled", not bool((incoming_settings or {}).get("paused", False))))
@@ -10385,7 +12222,7 @@ async def save_screener_profile(data: dict, state: ScreenerUserState = Depends(g
     if technical_scan_changed:
         state.latest_scans.pop(symbol, None)
     await state.save()
-    if settings_changed:
+    if settings_changed and now_enabled:
         # A settings save gets one immediate fresh result, even outside the
         # selected market window. Normal scheduler passes remain session- and
         # completed-candle-gated.
@@ -10447,13 +12284,20 @@ async def reset_screener_profile(ticker: str, state: ScreenerUserState = Depends
         "source": "screener",
         "enabled": True,
         "paused": False,
-        "timeframe": state.config.DEFAULT_TIMEFRAME,
+        "timeframe": "4Hour" if _is_crypto_symbol(symbol) else "1Day",
         "asset_class": "crypto" if _is_crypto_symbol(symbol) else "stock",
-        "indicators": [],
+        "strategy_mode": "combined",
+        "event_max_age_days": 10,
+        "event_min_confidence": 0.55,
+        # Keep the API reset path aligned with the UI's low-frequency swing
+        # defaults. These are conservative starting settings, not an
+        # optimized performance claim.
+        "indicators": ["EMA Cross", "SMA", "RSI", "ADX Trend"],
         "indicator_overrides": {},
         "min_buy_signals": 3,
         "min_sell_signals": 3,
-        "scan_interval_seconds": 60,
+        "scan_interval_seconds": 900,
+        "price_watch_interval_seconds": 5,
         "news_watch_enabled": True,
         "earnings_watch_enabled": True,
         "fundamental_watch_enabled": True,
@@ -10519,7 +12363,7 @@ async def update_screener_settings(data: dict, state: ScreenerUserState = Depend
     if requested_sms_enabled and not requested_sms_phone:
         raise HTTPException(status_code=400, detail="Add a valid E.164 phone number before enabling SMS alerts")
     allowed = {
-        "email_enabled", "sms_enabled", "sms_phone_number",
+        "browser_enabled", "email_enabled", "sms_enabled", "sms_phone_number",
         "bullish_enabled", "bearish_enabled", "cooldown_minutes",
     }
     for key, value in updates.items():
@@ -10544,6 +12388,61 @@ async def update_screener_settings(data: dict, state: ScreenerUserState = Depend
     return {"status": "success", "settings": state.notification_settings, "page_settings": state.page_settings}
 
 
+def _repair_historical_alert_snapshot(state: ScreenerUserState, item: dict) -> dict:
+    """Repair pre-fix alerts whose saved explanation used post-transition state."""
+    if not isinstance(item, dict):
+        return item
+    direction = str(item.get("event_direction") or item.get("direction") or "").upper()
+    scan_log = item.get("scan_log") if isinstance(item.get("scan_log"), dict) else {}
+    target_direction = str(scan_log.get("target_direction") or "").upper()
+    if direction not in {"BULLISH", "BEARISH"} or target_direction in {"", direction}:
+        return item
+    symbol = normalize_screener_symbol(item.get("symbol"))
+    saved_settings = item.get("settings_snapshot")
+    if not isinstance(saved_settings, dict):
+        # Do not rewrite a legacy alert using today's profile: that would make
+        # a historical explanation appear precise while silently changing its
+        # indicator/settings context. Preserve the stored explanation and make
+        # the limitation explicit to the caller.
+        legacy = copy.deepcopy(item)
+        legacy["historical_reconstructed"] = False
+        legacy["historical_snapshot_status"] = "legacy_snapshot_unavailable"
+        return legacy
+    settings = copy.deepcopy(saved_settings)
+    if not settings:
+        return item
+    signals = item.get("signals") if isinstance(item.get("signals"), dict) else {}
+    candle_meta = item.get("candle_meta") if isinstance(item.get("candle_meta"), dict) else {}
+    formatted = {
+        "ticker": symbol,
+        "direction": direction,
+        "evaluation_status": "valid",
+        "reason": item.get("reason") or "Signal transition detected.",
+        "price_raw": item.get("price"),
+        "signals": signals,
+        "atr_levels": item.get("atr_levels") if isinstance(item.get("atr_levels"), dict) else {},
+        "candle_meta": {
+            "candle_key": item.get("candle_key") or candle_meta.get("candle_key"),
+            "candle_open_ts": item.get("candle_open_ts") or candle_meta.get("candle_open_ts"),
+            "candle_close_ts": item.get("candle_close_ts") or candle_meta.get("candle_close_ts"),
+        },
+    }
+    pre_transition_state = {
+        "virtual_position": direction == "BEARISH",
+        "last_actionable_direction": "BULLISH" if direction == "BEARISH" else "",
+    }
+    repaired = copy.deepcopy(item)
+    repaired["historical_snapshot_status"] = "repaired_from_saved_snapshot"
+    repaired["scan_log"] = _build_screener_scan_log(
+        symbol,
+        formatted,
+        settings,
+        pre_transition_state,
+        alert_created=True,
+    )
+    return repaired
+
+
 @app.get("/api/screener/notifications")
 async def list_screener_notifications(
     limit: int = 50,
@@ -10561,7 +12460,11 @@ async def list_screener_notifications(
         "1m": 30 * 86400,
         "1y": 365 * 86400,
     }
-    items = list(state.notifications)
+    items = [
+        item for item in state.notifications
+        if item.get("browser_status", "delivered") != "disabled"
+    ]
+    items = [_repair_historical_alert_snapshot(state, item) for item in items]
     if period_value == "today":
         tz = pytz.timezone(getattr(state.config, "TIMEZONE", "America/Chicago"))
         today = datetime.now(tz).date()
@@ -10672,12 +12575,22 @@ async def queue_screener_test_email(state: ScreenerUserState = Depends(get_scree
 
 @app.post("/api/screener/scan")
 async def scan_screener_now(data: dict = None, state: ScreenerUserState = Depends(get_screener_state)):
+    """Run an explicit Screener scan immediately, including outside session hours."""
     symbols = (data or {}).get("symbols")
     if isinstance(symbols, list):
         symbols = [symbol for symbol in (normalize_screener_symbol(item) for item in symbols) if symbol in state.profiles]
     else:
         symbols = None
-    await _scan_screener_state(state, symbols)
+    # Manual scans are explicit user requests. Use the same force path as a
+    # settings refresh so a valid bullish/bearish result can create an alert
+    # even when the configured stock session is closed. Normal scheduler
+    # passes remain session-gated.
+    state.force_scan.set()
+    await _scan_screener_state(state, symbols, force_scan=True)
+    # Explicit scans also evaluate fresh quote-based entries and exits. This
+    # uses the same force semantics as the candle path, including outside the
+    # configured session; normal scheduler passes remain session-gated.
+    await _watch_screener_price_levels_state(state, symbols, force_scan=True)
     return {"status": "success", "scanned": symbols or list(state.order)}
 
 
@@ -10712,10 +12625,11 @@ async def _load_screener_chart(state: ScreenerUserState, ticker: str, timeframe:
     overlay_token = set_draft_ticker_settings({ticker: settings})
     try:
         with _analysis_request_context("screener", ticker, True):
-            analysis, _cached, _age = await asyncio.wait_for(
-                asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, state, force, "screener", settings),
-                timeout=45.0,
-            )
+            async with _bounded_analysis_work(state.uid, "Screener chart analysis"):
+                analysis, _cached, _age = await asyncio.wait_for(
+                    asyncio.to_thread(_get_cached_chart_analysis, ticker, timeframe, state, force, "screener", settings),
+                    timeout=45.0,
+                )
             if not analysis:
                 raise HTTPException(status_code=404, detail=f"Could not load chart data for {ticker}")
             if not _has_usable_chart_history(analysis):
@@ -10778,14 +12692,17 @@ async def reactivate_screener_settings(state: ScreenerUserState = Depends(get_sc
 
 @app.get("/api/screener/search/{query}")
 def search_screener_symbols(query: str, state: ScreenerUserState = Depends(get_screener_state)):
+    _enforce_symbol_search_rate_limit(state.uid)
     if not str(query or "").strip():
         return []
+    if len(query) > 64:
+        raise HTTPException(status_code=400, detail="Search query is too long")
     provider = _get_webull_market_data_broker()
     if provider and hasattr(provider, "search_assets"):
         try:
             return provider.search_assets(query)
         except Exception as exc:
-            print(f"[screener] Symbol search provider failed: {exc}")
+            print(f"[screener] Symbol search provider failed: {_safe_exception_type(exc)}")
     symbol = normalize_screener_symbol(query)
     return [{"symbol": symbol, "name": symbol}] if symbol else []
 
@@ -10825,11 +12742,16 @@ def get_screener_history(period: str = "ALL", timeframe: str = "1D", state: Scre
     now = now_dt.timestamp()
     period_key = str(period or "ALL").upper()
     window_days = {"1D": 1, "1W": 7, "1M": 30, "1Y": 365, "ALL": 90}.get(period_key, 90)
-    bucket_seconds = {"1D": 60, "1W": 900, "1M": 3600, "1Y": 86400, "ALL": 86400}.get(period_key, 3600)
+    # Multi-day chart labels are calendar dates, so use one bucket per local
+    # date. A 15-minute 1W bucket would render the same date repeatedly.
+    bucket_seconds = {"1D": 60, "1W": 86400, "1M": 3600, "1Y": 86400, "ALL": 86400}.get(period_key, 3600)
     start_dt = (now_dt - timedelta(days=window_days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
     start = int(start_dt.timestamp())
     buckets = {}
     for item in state.notifications:
+        if item.get("browser_status", "delivered") == "disabled":
+            continue
+        item = _repair_historical_alert_snapshot(state, item)
         try:
             created = item.get("created_at", 0)
             if isinstance(created, str):
@@ -10934,22 +12856,22 @@ async def get_screener_ai_indicator(
         if force:
             clear_ai_cache(symbol, timeframe, include_news=True)
         with _analysis_request_context("screener", symbol, True):
-            return await asyncio.wait_for(
-                asyncio.to_thread(get_ai_indicator, symbol, timeframe, 10000.0, 10000.0, model),
-                timeout=25.0,
-            )
+            async with _bounded_analysis_work(state.uid, "Screener AI indicator"):
+                return await asyncio.wait_for(
+                    asyncio.to_thread(get_ai_indicator, symbol, timeframe, 10000.0, 10000.0, model),
+                    timeout=25.0,
+                )
     except asyncio.TimeoutError:
         return {"error": "AI indicator timed out", "signal": "HOLD", "confidence": 0, "timeframe": timeframe, "model": model}
     except Exception as exc:
-        print(f"[screener] AI indicator error for {symbol}: {exc}")
-        return {"error": str(exc), "signal": "HOLD", "confidence": 0, "summary": "AI Indicator temporarily unavailable."}
+        print(f"[screener] AI indicator error for {symbol}: {_safe_exception_type(exc)}")
+        return {"error": "AI indicator temporarily unavailable", "signal": "HOLD", "confidence": 0, "summary": "AI Indicator temporarily unavailable."}
     finally:
         active_evaluation_context.reset(token)
 
 @app.get("/api/debug-doge")
-async def get_debug_doge():
-    if not user_manager.engines: return {"error": "no engines"}
-    eng = list(user_manager.engines.values())[0]
+async def get_debug_doge(eng: UserEngine = Depends(get_user_engine)):
+    """Authenticated developer diagnostic scoped to the current user."""
 
     from main import _format_trade_for_ui
     ui_trade_log = [_format_trade_for_ui(trade) for trade in eng.trade_log]

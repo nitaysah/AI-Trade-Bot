@@ -100,12 +100,10 @@ def _filter_market_session_df(df, ticker, timeframe, settings=None):
             & (minutes >= 9 * 60 + 30)
             & (minutes < 16 * 60)
         )
-        filtered = df.loc[regular_mask].copy()
-        if not filtered.empty:
-            return filtered
+        return df.loc[regular_mask].copy()
     except Exception as exc:
-        print(f"[indicators] Market-session filter failed for {ticker}: {exc}")
-    return df
+        print(f"[indicators] Market-session filter failed for {ticker}: {type(exc).__name__}")
+        return df.iloc[:0].copy()
 
 
 def _botbulls5_live_evaluation_start(df, ticker, settings=None):
@@ -717,12 +715,12 @@ def _exchange_session_dates_for_df(df, ticker=None):
 
 def _completed_candles_for_live_chart(df, timeframe, safety_delay_seconds=5, ticker=None):
     """Return only candles that are fully closed for live dashboard/bot views."""
-    if df is None or df.empty or len(df) <= 1:
+    if df is None or df.empty:
         return df
 
     seconds = _timeframe_seconds(timeframe)
     if seconds <= 0:
-        return df.iloc[:-1]
+        return df.iloc[:0]
 
     index = df.index
     if getattr(index, "tz", None) is None:
@@ -733,12 +731,7 @@ def _completed_candles_for_live_chart(df, timeframe, safety_delay_seconds=5, tic
 
     now_utc = pd.Timestamp.now(tz="UTC") - pd.Timedelta(seconds=safety_delay_seconds)
     completed_mask = (index + pd.Timedelta(seconds=seconds)) <= now_utc
-    completed = df.loc[completed_mask]
-
-    # Keep the previous behavior as a fallback if clocks/provider timestamps are unusual.
-    if completed.empty:
-        return df.iloc[:-1]
-    return completed
+    return df.loc[completed_mask].copy()
 
 
 def _evaluation_candle_metadata(chart_df, timeframe):
@@ -825,6 +818,76 @@ def _live_chart_display_limit(timeframe, ticker=None):
     if tf == "1MIN" and not _is_crypto_ticker(ticker):
         return 1650
     return 1200
+
+
+def _validate_live_candle_data(df, ticker, timeframe, required_bars=0):
+    """Reject incomplete history before it can influence a live signal.
+
+    Crypto is continuous, so a large interval means bars are missing. Equity
+    sessions legitimately jump overnight, on weekends, and at holidays; for
+    those symbols only gaps within the same exchange-local calendar day are
+    considered data defects.
+    """
+    if df is None or df.empty:
+        return "No candle history was returned by the provider."
+    try:
+        required = int(required_bars or 0)
+    except (TypeError, ValueError):
+        required = 0
+    if required > 0 and len(df) < required:
+        return f"Only {len(df)} completed candles returned; {required} are required for indicator warm-up."
+
+    required_columns = {"Open", "High", "Low", "Close", "Volume"}
+    if not required_columns.issubset(set(df.columns)):
+        missing = ", ".join(sorted(required_columns - set(df.columns)))
+        return f"Candle history is missing required fields: {missing}."
+    numeric = df[list(required_columns)].apply(pd.to_numeric, errors="coerce")
+    window = numeric.tail(min(len(numeric), max(required, 30)))
+    if not np.isfinite(window.to_numpy(dtype=float)).all():
+        return "Candle history contains missing or non-finite OHLCV values in the analysis window."
+    prices = window[["Open", "High", "Low", "Close"]]
+    if (prices <= 0).any().any() or (window["Volume"] < 0).any():
+        return "Candle history contains nonpositive prices or negative volume."
+    if (
+        (window["High"] < prices.max(axis=1)).any()
+        or (window["Low"] > prices.min(axis=1)).any()
+    ):
+        return "Candle high/low values do not contain the open and close."
+
+    try:
+        timestamps = pd.DatetimeIndex(df.index)
+        if timestamps.hasnans or timestamps.has_duplicates or not timestamps.is_monotonic_increasing:
+            return "Candle timestamps must be present, unique, and chronological."
+        if timestamps.tz is None:
+            timestamps = timestamps.tz_localize("UTC" if _is_crypto_ticker(ticker) else "America/New_York")
+        else:
+            timestamps = timestamps.tz_convert("UTC")
+        seconds = timestamps.astype("int64").to_numpy(dtype="int64") / 1_000_000_000
+        deltas = seconds[1:] - seconds[:-1]
+        tf_seconds = {
+            "30SEC": 30, "1MIN": 60, "2MIN": 120, "3MIN": 180,
+            "5MIN": 300, "10MIN": 600, "15MIN": 900, "30MIN": 1800,
+            "1HOUR": 3600, "2HOUR": 7200, "4HOUR": 14400, "1DAY": 86400,
+        }.get(str(timeframe or "").upper())
+        if tf_seconds and len(deltas):
+            # Inspect the latest history window; older gaps cannot affect the
+            # current rolling indicators once sufficient warm-up is present.
+            recent_start = max(0, len(deltas) - 250)
+            recent_deltas = deltas[recent_start:]
+            is_crypto = _is_crypto_ticker(ticker)
+            if is_crypto:
+                bad_gap = recent_deltas > (tf_seconds * 1.5)
+            else:
+                eastern = timestamps.tz_convert("America/New_York")
+                same_day = eastern[1:].date == eastern[:-1].date
+                same_day = same_day[recent_start:]
+                bad_gap = (recent_deltas > (tf_seconds * 1.5)) & same_day
+            if bool(bad_gap.any()):
+                largest = float(recent_deltas[bad_gap].max())
+                return f"Candle history has a {largest:.0f}s gap where {tf_seconds}s was expected."
+    except Exception as exc:
+        return f"Candle timestamp validation failed: {type(exc).__name__}."
+    return ""
 
 
 def _bounded_chart_frame(chart_df, settings=None):
@@ -1201,7 +1264,7 @@ def get_alpaca_clients():
         
     cache_key = (api_key, secret_key)
     if cache_key not in _client_cache:
-        print(f"[indicators] Initializing Alpaca clients for user key {api_key[:4]}***...")
+        print("[indicators] Initializing Alpaca clients")
         s_client = StockHistoricalDataClient(api_key, secret_key)
         c_client = CryptoHistoricalDataClient(api_key, secret_key)
         _client_cache[cache_key] = (s_client, c_client)
@@ -1442,6 +1505,9 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca", settings=N
                     count=requested_count,
                     trading_sessions=provider_sessions,
                 )
+            # Normalize the crypto envelope before checking individual bars.
+            if isinstance(bars, list) and bars and isinstance(bars[0], dict) and "result" in bars[0]:
+                bars = bars[0].get("result") or []
             if bars:
                 if isinstance(bars, list) and len(bars) > 0:
                     # Check for dummy bar with None time
@@ -1467,6 +1533,8 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca", settings=N
                 df.columns = [c.capitalize() for c in df.columns]
                 df = df.sort_index() # Ensure chronological order for indicators
                 print(f"[indicators] Webull bars fetched for {ticker}: {len(df)} rows. First time: {df.index[0]}, Last time: {df.index[-1]}")
+                # Shared validation runs after session/completed-candle
+                # filtering for both Webull and Alpaca below.
             else:
                 print(f"[indicators] Webull data failed for {ticker}. Falling back to Alpaca.")
                 data_source = "alpaca"
@@ -1869,7 +1937,15 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
         return _resolve_param(key, fallback, settings=settings)
 
     try:
+        if df is None or df.empty:
+            return None
+        # Normalize ordering without mutating a caller's provider/cache frame.
+        # A provider's last observation wins for duplicate timestamps.
+        df = df.loc[~df.index.duplicated(keep="last")].sort_index().copy()
         df = _filter_market_session_df(df, ticker, timeframe, settings=settings)
+        eval_context = active_evaluation_context.get()
+        if eval_context in ("dashboard", "bots", "screener"):
+            df = _completed_candles_for_live_chart(df, timeframe, ticker=ticker)
         if df is None or df.empty or len(df) < 30:
             return None
         enabled_indicators = None
@@ -1930,6 +2006,15 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
         df = df.loc[:, ~df.columns.duplicated()]
         for col in ("Open", "High", "Low", "Close", "Volume"):
             df[col] = pd.to_numeric(df[col].squeeze(), errors="coerce")
+
+        if eval_context in ("dashboard", "bots", "screener"):
+            quality_error = _validate_live_candle_data(
+                df, ticker, timeframe,
+                required_bars=max(30, _required_indicator_history_bars(settings)),
+            )
+            if quality_error:
+                print(f"[indicators] Data-quality gate blocked {ticker}: {quality_error}")
+                return None
 
         close = df["Close"]
         high = df["High"]
@@ -2224,9 +2309,8 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
             df["Bear_Pulse"] = 0
 
             for col in ["RSI", "BOLL_Upper", "BOLL_Lower", "BOLL_Middle", "VWAP", "Auto_AVWAP", "ATR"]:
-                df[col] = df[col].ffill().bfill()
+                df[col] = df[col].ffill()
 
-            from user_config import active_evaluation_context
             eval_context = active_evaluation_context.get()
             if eval_context in ("dashboard", "bots", "screener"):
                 chart_df = _completed_candles_for_live_chart(df, timeframe, ticker=ticker)
@@ -3046,27 +3130,13 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
             "HA_Close", "UT_Trail",
         ]
         indicator_cols.extend(EXTENSION_CALCULATION_COLUMNS)
-        prior_session_cols = {
-            "Daily_HighLow_High", "Daily_HighLow_Low",
-            "Daily_HighLow_High_Trigger", "Daily_HighLow_Low_Trigger",
-            "Volume_Profile_POC", "Volume_Profile_VAH", "Volume_Profile_VAL",
-            "Swing_Support_1", "Swing_Support_2", "Swing_Support_3", "Swing_Support_4", "Swing_Support_5",
-            "Swing_Resistance_1", "Swing_Resistance_2", "Swing_Resistance_3", "Swing_Resistance_4", "Swing_Resistance_5",
-        }
-        no_backfill_cols = prior_session_cols | set(EXTENSION_CALCULATION_COLUMNS)
         # Warm-up indicators must never be back-filled. Doing so leaks a future
         # computed value into earlier strategy bars and draws a false flat/vertical
         # line before the indicator actually exists.
-        no_backfill_cols.update({
-            "RSI", "MACD_Line", "MACD_Signal", "MACD_Hist",
-            "ATR", "EMA_Fast", "EMA_Slow", "SMA", "SMA_Secondary",
-            "ADX", "DI_Plus", "DI_Minus",
-        })
         for col in indicator_cols:
             if col in df.columns:
-                df[col] = df[col].ffill() if col in no_backfill_cols else df[col].ffill().bfill()
+                df[col] = df[col].ffill()
 
-        from user_config import active_evaluation_context
         eval_context = active_evaluation_context.get()
         if eval_context in ("dashboard", "bots", "screener"):
             chart_df = _completed_candles_for_live_chart(df, timeframe, ticker=ticker)

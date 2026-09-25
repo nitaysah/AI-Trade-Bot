@@ -53,6 +53,14 @@
         .google-btn { transition: transform .2s ease, box-shadow .2s ease, background .2s ease; }
         .google-btn:not(:disabled):hover { transform: translateY(-2px); box-shadow: 0 12px 28px rgba(34,211,238,.18); background: #f8fafc; }
         .google-btn:disabled { cursor: not-allowed; opacity: .42; }
+        .email-auth-btn { background: linear-gradient(135deg, #7c3aed, #4f46e5); color: #fff; transition: transform .2s ease, box-shadow .2s ease, filter .2s ease; }
+        .email-auth-btn:not(:disabled):hover { transform: translateY(-2px); filter: saturate(1.08); box-shadow: 0 12px 28px rgba(79,70,229,.25); }
+        .email-auth-btn:disabled { cursor: not-allowed; opacity: .42; }
+        .auth-input { border: 1px solid rgba(129,140,248,.34); background: rgba(255,255,255,.68); color: #312e81; outline: none; transition: border-color .2s ease, box-shadow .2s ease, background .2s ease; }
+        .auth-input::placeholder { color: #9b95bd; }
+        .auth-input:focus { border-color: rgba(124,58,237,.72); background: rgba(255,255,255,.9); box-shadow: 0 0 0 3px rgba(124,58,237,.12); }
+        .auth-mode-btn { color: #6d6498; transition: background .2s ease, color .2s ease, box-shadow .2s ease; }
+        .auth-mode-btn.active { background: rgba(255,255,255,.85); color: #4c1d95; box-shadow: 0 4px 12px rgba(99,102,241,.12); }
         .check-wrap input:checked + span { background: #22d3ee; border-color: #22d3ee; }
         .check-wrap input:checked + span svg { opacity: 1; }
         .terms-link { display: inline-flex; align-items: center; justify-content: center; min-height: 30px; padding: 0 12px; border: 1px solid rgba(168,85,247,.48); border-radius: 999px; background: linear-gradient(135deg, rgba(250,232,255,.86), rgba(216,180,254,.58) 52%, rgba(165,180,252,.52)); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); color: #6b21a8; text-decoration: none; box-shadow: 0 5px 14px rgba(139,92,246,.18), inset 0 1px 0 rgba(255,255,255,.85); transition: transform .2s ease, box-shadow .2s ease, filter .2s ease; }
@@ -161,6 +169,9 @@
                 margin-top: .3rem !important;
             }
             #loginBtn { margin-top: .65rem !important; padding-top: .65rem; padding-bottom: .65rem; }
+            #emailAuthForm { margin-top: .55rem !important; }
+            #emailAuthForm input { padding-top: .55rem; padding-bottom: .55rem; font-size: .7rem; }
+            #emailAuthBtn { padding-top: .65rem; padding-bottom: .65rem; }
             #status { min-height: 0.3rem !important; padding-top: 0.15rem !important; }
             .auth-card .mt-3 { margin-top: 0.2rem !important; }
             .mobile-install-guide summary { list-style: none; }
@@ -251,7 +262,7 @@
                         <div class="flex gap-3"><span class="mt-0.5 text-amber-200">⚠</span><div><div class="text-xs font-bold text-amber-100">Trading involves real risk</div><p class="mt-1 text-[11px] leading-5 text-amber-100/65">BotBulls is software—not an investment adviser. You remain responsible for your account, settings, and orders.</p></div></div>
                     </div>
 
-                    <div class="mt-6 space-y-3 text-left">
+                    <div id="consentPanel" class="hidden mt-6 space-y-3 text-left" aria-live="polite">
                     <div class="check-wrap flex items-start gap-3">
                         <input id="termsCheck" type="checkbox" class="sr-only">
                         <span class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-slate-600 bg-slate-950 transition-colors"><svg class="h-3.5 w-3.5 opacity-0 transition-opacity" viewBox="0 0 20 20" fill="none" stroke="#05202a" stroke-width="3"><path d="m4 10 4 4 8-8"/></svg></span>
@@ -265,13 +276,66 @@
                     </label>
                     </div>
 
-                    <button id="loginBtn" disabled class="google-btn mt-6 flex w-full items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm font-bold text-slate-900 shadow-md shadow-indigo-950/10">
+                    <div class="mt-6 rounded-2xl border border-indigo-200/60 bg-white/35 p-1" role="tablist" aria-label="Account access mode">
+                        <div class="grid grid-cols-2 gap-1 rounded-xl bg-indigo-100/35 p-1">
+                            <button id="signInModeBtn" type="button" class="auth-mode-btn active rounded-lg px-3 py-2 text-xs font-bold" role="tab" aria-selected="true">Sign in</button>
+                            <button id="signUpModeBtn" type="button" class="auth-mode-btn rounded-lg px-3 py-2 text-xs font-bold" role="tab" aria-selected="false">Create account</button>
+                        </div>
+                    </div>
+
+                    <form id="emailAuthForm" class="mt-3 space-y-3" novalidate>
+                        <div>
+                            <label for="emailInput" class="mb-1.5 block text-[10px] font-bold uppercase tracking-[.14em] text-indigo-900/65">Email address</label>
+                            <input id="emailInput" name="email" type="email" autocomplete="email" inputmode="email" required class="auth-input w-full rounded-xl px-3.5 py-3 text-sm" placeholder="you@example.com">
+                        </div>
+                        <div>
+                            <div class="mb-1.5 flex items-center justify-between gap-2">
+                                <label for="passwordInput" class="block text-[10px] font-bold uppercase tracking-[.14em] text-indigo-900/65">Password</label>
+                                <button id="togglePasswordBtn" type="button" class="text-[10px] font-bold text-violet-700 hover:text-violet-900">Show</button>
+                            </div>
+                            <input id="passwordInput" name="password" type="password" autocomplete="current-password" minlength="8" required class="auth-input w-full rounded-xl px-3.5 py-3 text-sm" placeholder="At least 8 characters">
+                            <div id="passwordStrength" class="mt-1.5 hidden text-[10px] font-semibold text-slate-500" aria-live="polite"></div>
+                        </div>
+                        <div id="confirmPasswordWrap" class="hidden">
+                            <label for="confirmPasswordInput" class="mb-1.5 block text-[10px] font-bold uppercase tracking-[.14em] text-indigo-900/65">Confirm password</label>
+                            <input id="confirmPasswordInput" name="confirmPassword" type="password" autocomplete="new-password" minlength="8" class="auth-input w-full rounded-xl px-3.5 py-3 text-sm" placeholder="Re-enter your password">
+                        </div>
+                        <button id="emailAuthBtn" type="submit" disabled class="email-auth-btn flex w-full items-center justify-center rounded-2xl px-5 py-3.5 text-sm font-bold shadow-md shadow-indigo-950/10">Sign in with email</button>
+                        <button id="forgotPasswordBtn" type="button" class="mx-auto block text-[10px] font-bold text-violet-700 hover:text-violet-900">Forgot password?</button>
+                    </form>
+
+                    <div class="my-4 flex items-center gap-3 text-[9px] font-bold uppercase tracking-[.2em] text-slate-400"><span class="h-px flex-1 bg-indigo-200/70"></span><span>or</span><span class="h-px flex-1 bg-indigo-200/70"></span></div>
+
+                    <button id="loginBtn" disabled class="google-btn flex w-full items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-3.5 text-sm font-bold text-slate-900 shadow-md shadow-indigo-950/10">
                         <svg class="h-5 w-5" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.66l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
                         Continue with Google
                     </button>
+
+                    <div id="passwordLinkPanel" class="mt-4 hidden rounded-2xl border border-violet-300/40 bg-violet-100/35 p-4 text-left">
+                        <div class="text-xs font-bold text-violet-950">Add email/password sign-in?</div>
+                        <p class="mt-1 text-[11px] leading-5 text-violet-900/70">Your Google account is already created. Add a password to sign in with this same account later; this will not create a duplicate user.</p>
+                        <div class="mt-3 grid gap-3 sm:grid-cols-2">
+                            <input id="linkPasswordInput" type="password" autocomplete="new-password" minlength="8" class="auth-input w-full rounded-xl px-3 py-2.5 text-sm" placeholder="New password">
+                            <input id="linkPasswordConfirmInput" type="password" autocomplete="new-password" minlength="8" class="auth-input w-full rounded-xl px-3 py-2.5 text-sm" placeholder="Confirm password">
+                        </div>
+                        <div class="mt-3 flex flex-col gap-2 sm:flex-row">
+                            <button id="linkPasswordBtn" type="button" class="email-auth-btn flex-1 rounded-xl px-3 py-2.5 text-xs font-bold">Add password</button>
+                            <button id="continueWithoutPasswordBtn" type="button" class="flex-1 rounded-xl border border-violet-200 bg-white/65 px-3 py-2.5 text-xs font-bold text-violet-800 hover:bg-white">Continue without it</button>
+                        </div>
+                    </div>
+
+                    <div id="emailVerificationPanel" class="mt-4 hidden rounded-2xl border border-amber-300/45 bg-amber-100/45 p-4 text-left">
+                        <div class="text-xs font-bold text-amber-950">Verify your email to continue</div>
+                        <p id="emailVerificationMessage" class="mt-1 text-[11px] leading-5 text-amber-900/75">Email verification is required once for email/password access. After you verify, future sign-ins will not show this step.</p>
+                        <div class="mt-3 flex flex-col gap-2 sm:flex-row">
+                            <button id="checkVerificationBtn" type="button" class="flex-1 rounded-xl bg-amber-500 px-3 py-2.5 text-xs font-bold text-amber-950 hover:bg-amber-400">I’ve verified — continue</button>
+                            <button id="resendVerificationBtn" type="button" class="flex-1 rounded-xl border border-amber-300/70 bg-white/65 px-3 py-2.5 text-xs font-bold text-amber-900 hover:bg-white">Resend email</button>
+                            <button id="signOutVerificationBtn" type="button" class="rounded-xl border border-amber-300/70 bg-transparent px-3 py-2.5 text-xs font-bold text-amber-900 hover:bg-white/50">Sign out</button>
+                        </div>
+                    </div>
                     <div id="status" class="min-h-3 pt-1 text-center text-[9px] font-bold uppercase tracking-[.15em] text-cyan-300"></div>
                     <div class="mt-1 flex flex-wrap items-center justify-center gap-2 text-[8px] text-slate-600"><span>User-isolated workspace</span><span>•</span><span>Paper trading available</span></div>
-                    <p class="agreement-disclaimer mt-1 text-center text-[7.5px] leading-3 text-slate-500/70">By continuing, you are creating an account and accepting the latest agreement version shown above. Legal protections depend on your applicable law and operating practices.</p>
+                    <p class="agreement-disclaimer mt-1 text-center text-[7.5px] leading-3 text-slate-500/70">Before entering the platform, you must accept the latest agreement version shown above. Legal protections depend on your applicable law and operating practices.</p>
                 </div>
             </div>
             <details class="mobile-install-guide mt-3 md:hidden rounded-xl border border-indigo-200/70 bg-white/55 px-3 py-2 text-left text-[0.58rem] text-indigo-900 shadow-sm">
@@ -337,7 +401,7 @@
                     <section><h3 class="font-bold text-white">6. Paper and live trading modes</h3><p class="mt-1">Paper trading is simulated and may not match live execution. Live trading requires a supported broker connection and your explicit configuration. BotBulls does not guarantee that a pause, stop, or cancellation will prevent an order already accepted by a broker from filling.</p></section>
                     <section><h3 class="font-bold text-white">7. Limitation of liability and indemnification</h3><p class="mt-1">To the maximum extent permitted by applicable law, BotBulls and its owners, operators, developers, affiliates, and service providers are not liable for trading losses, lost profits, lost data, indirect or consequential damages, or losses arising from your use of or inability to use the platform, including automated execution, AI output, broker connectivity, or technical failures. You agree to defend, indemnify, and hold them harmless from claims arising from your use, violation of this agreement, or trading activity.</p></section>
                     <section><h3 class="font-bold text-white">8. Eligibility and lawful use</h3><p class="mt-1">You represent that you are legally able to use the service, are permitted to trade through your selected broker and jurisdiction, and will comply with applicable laws, regulations, broker terms, and tax obligations. You will not use the platform for unlawful activity or provide access to unauthorized persons.</p></section>
-                    <section><h3 class="font-bold text-white">9. Electronic acceptance</h3><p class="mt-1">By checking the acknowledgement and selecting “Continue with Google,” you agree that your electronic acceptance is legally binding, confirm that you read and understood this agreement, and consent to the current version being associated with your account. BotBulls may update these terms; continued use after an update constitutes acceptance where permitted by law.</p></section>
+                    <section><h3 class="font-bold text-white">9. Electronic acceptance</h3><p class="mt-1">By checking the acknowledgement and selecting a sign-in method, you agree that your electronic acceptance is legally binding, confirm that you read and understood this agreement, and consent to the current version being associated with your account. BotBulls may update these terms; continued use after an update constitutes acceptance where permitted by law.</p></section>
                 </div>
                 <p class="mt-7 border-t border-slate-800 pt-5 text-xs text-slate-600">This template is not a substitute for advice from a qualified attorney. Have counsel review the final agreement, entity structure, disclosures, privacy practices, jurisdiction, and regulatory obligations before accepting live users or live funds.</p>
             </div>
@@ -347,21 +411,44 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-        import { getAuth, signInWithPopup, signInWithRedirect, getRedirectResult, GoogleAuthProvider, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+        import { getAuth, signInWithPopup, signInWithRedirect, reauthenticateWithRedirect, getRedirectResult, GoogleAuthProvider, EmailAuthProvider, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, sendEmailVerification, linkWithCredential, reauthenticateWithPopup, reload, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
         import { firebaseConfig } from "./firebase-config.js";
 
         const TERMS_VERSION = "BB-2026.07";
-        const TERMS_KEY = "botbulls_terms_acknowledgement";
-        const PAPER_KEY = "botbulls_paper_trading_acknowledgement";
         const REDIRECT_PENDING_KEY = "botbulls_google_redirect_pending";
+        const VERIFICATION_SENT_KEY_PREFIX = "botbulls_verification_email_sent:";
+        const VERIFICATION_COOLDOWN_MS = 60 * 1000;
+        const VERIFICATION_THROTTLE_COOLDOWN_MS = 5 * 60 * 1000;
         const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://localhost:8000' : 'https://207-211-184-22.sslip.io';
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const provider = new GoogleAuthProvider();
         provider.setCustomParameters({ prompt: 'select_account' });
         const loginBtn = document.getElementById('loginBtn');
+        const signInModeBtn = document.getElementById('signInModeBtn');
+        const signUpModeBtn = document.getElementById('signUpModeBtn');
+        const emailAuthForm = document.getElementById('emailAuthForm');
+        const emailInput = document.getElementById('emailInput');
+        const passwordInput = document.getElementById('passwordInput');
+        const confirmPasswordWrap = document.getElementById('confirmPasswordWrap');
+        const confirmPasswordInput = document.getElementById('confirmPasswordInput');
+        const emailAuthBtn = document.getElementById('emailAuthBtn');
+        const forgotPasswordBtn = document.getElementById('forgotPasswordBtn');
+        const togglePasswordBtn = document.getElementById('togglePasswordBtn');
+        const passwordStrength = document.getElementById('passwordStrength');
+        const passwordLinkPanel = document.getElementById('passwordLinkPanel');
+        const linkPasswordInput = document.getElementById('linkPasswordInput');
+        const linkPasswordConfirmInput = document.getElementById('linkPasswordConfirmInput');
+        const linkPasswordBtn = document.getElementById('linkPasswordBtn');
+        const continueWithoutPasswordBtn = document.getElementById('continueWithoutPasswordBtn');
+        const emailVerificationPanel = document.getElementById('emailVerificationPanel');
+        const emailVerificationMessage = document.getElementById('emailVerificationMessage');
+        const checkVerificationBtn = document.getElementById('checkVerificationBtn');
+        const resendVerificationBtn = document.getElementById('resendVerificationBtn');
+        const signOutVerificationBtn = document.getElementById('signOutVerificationBtn');
         const termsCheck = document.getElementById('termsCheck');
         const paperCheck = document.getElementById('paperCheck');
+        const consentPanel = document.getElementById('consentPanel');
         const status = document.getElementById('status');
         const modal = document.getElementById('termsModal');
         const authTransitionScreen = document.getElementById('authTransitionScreen');
@@ -372,6 +459,16 @@
         let redirecting = false;
         let dashboardNavigationTimeout = null;
         let dashboardNavigationCleanup = null;
+        let authMode = 'signin';
+        let authActionInFlight = false;
+        let offerPasswordForGoogle = false;
+        let passwordOfferUser = null;
+        let verificationUser = null;
+        let verificationEmailSent = false;
+        let verificationEmailInFlight = false;
+        let verificationCooldownTimer = null;
+        let acceptanceConfirmedUid = null;
+        let sendVerificationEmailOnNextCheck = false;
         const isMobileBrowser = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.innerWidth <= 768;
 
         function readRedirectPending() {
@@ -403,29 +500,18 @@
             } catch (_) {}
         }
 
-        function readStoredVersion(key) {
-            for (const storage of [localStorage, sessionStorage]) {
-                try { if (JSON.parse(storage.getItem(key) || 'null')?.version === TERMS_VERSION) return true; } catch (_) {}
-            }
-            return false;
-        }
-        function writeConsent(key) {
-            const value = JSON.stringify({ version: TERMS_VERSION, accepted_at: new Date().toISOString() });
-            for (const storage of [localStorage, sessionStorage]) {
-                try { storage.setItem(key, value); } catch (_) {}
-            }
-        }
-        function clearConsent(key) {
-            for (const storage of [localStorage, sessionStorage]) {
-                try { storage.removeItem(key); } catch (_) {}
-            }
-        }
         function hasAcceptedTerms() {
-            return readStoredVersion(TERMS_KEY);
+            return termsCheck.checked;
         }
         function setStatus(message, tone = 'cyan') {
             status.textContent = message;
             status.className = `min-h-5 pt-3 text-center text-[10px] font-bold uppercase tracking-[.15em] text-${tone}-300`;
+        }
+        function showConsentPanel() {
+            consentPanel.classList.remove('hidden');
+        }
+        function hideConsentPanel() {
+            consentPanel.classList.add('hidden');
         }
         function showAuthTransition() {
             authTransitionScreen.classList.remove('hidden');
@@ -483,12 +569,215 @@
             window.location.replace('dashboard.html');
         }
         function hasAcceptedPaperMode() {
-            return readStoredVersion(PAPER_KEY);
+            return paperCheck.checked;
         }
-        function syncConsent() { loginBtn.disabled = !(termsCheck.checked && paperCheck.checked); }
+        function hasPasswordProvider(user) {
+            return Boolean(user?.providerData?.some((item) => item.providerId === 'password'));
+        }
+        function hasGoogleProvider(user) {
+            return Boolean(user?.providerData?.some((item) => item.providerId === 'google.com'));
+        }
+        function hasRequiredConsent() {
+            return termsCheck.checked && paperCheck.checked;
+        }
+        function syncConsent() {
+            // Authentication can complete before consent is restored from the
+            // user's backend record. Protected access remains blocked until the
+            // backend confirms acceptance or the user accepts it here.
+            const ready = !authActionInFlight;
+            loginBtn.disabled = !ready;
+            emailAuthBtn.disabled = !ready;
+        }
+        function setAuthMode(nextMode) {
+            authMode = nextMode === 'signup' ? 'signup' : 'signin';
+            const creating = authMode === 'signup';
+            signInModeBtn.classList.toggle('active', !creating);
+            signUpModeBtn.classList.toggle('active', creating);
+            signInModeBtn.setAttribute('aria-selected', String(!creating));
+            signUpModeBtn.setAttribute('aria-selected', String(creating));
+            confirmPasswordWrap.classList.toggle('hidden', !creating);
+            confirmPasswordInput.required = creating;
+            passwordInput.autocomplete = creating ? 'new-password' : 'current-password';
+            emailAuthBtn.textContent = creating ? 'Create account with email' : 'Sign in with email';
+            forgotPasswordBtn.classList.toggle('hidden', creating);
+            passwordStrength.classList.toggle('hidden', !creating && !passwordInput.value);
+            if (creating) passwordStrength.textContent = passwordInput.value ? passwordStrengthText(passwordInput.value) : 'Use 8+ characters for a stronger password.';
+            setStatus('');
+        }
+        function passwordStrengthText(password) {
+            const score = [
+                password.length >= 8,
+                /[a-z]/.test(password),
+                /[A-Z]/.test(password),
+                /\d/.test(password),
+                /[^A-Za-z0-9]/.test(password)
+            ].filter(Boolean).length;
+            if (password.length < 8) return 'Too short · use at least 8 characters';
+            if (score <= 2) return 'Basic password · add upper/lowercase, a number, or a symbol';
+            if (score <= 4) return 'Good password';
+            return 'Strong password';
+        }
+        function validateEmailForm() {
+            const email = emailInput.value.trim();
+            const password = passwordInput.value;
+            if (!email || !emailInput.validity.valid) return 'Enter a valid email address.';
+            if (password.length < 8) return 'Password must be at least 8 characters.';
+            if (authMode === 'signup' && password !== confirmPasswordInput.value) return 'Passwords do not match.';
+            return '';
+        }
+        function friendlyAuthError(error, context = 'signin') {
+            const code = String(error?.code || '').replace(/^auth\//, '');
+            if (context === 'reset') {
+                const resetMessages = {
+                    'invalid-email': 'Enter a valid email address.',
+                    'too-many-requests': 'Too many reset attempts. Wait a few minutes and try again.',
+                    'operation-not-allowed': 'Password reset is not enabled in Firebase yet. Enable Email/Password sign-in first.',
+                    'network-request-failed': 'Connection failed while requesting the reset email. Check your connection and retry.',
+                    'unauthorized-continue-uri': 'Password reset link configuration is incomplete. Check Firebase authorized domains.',
+                    'invalid-continue-uri': 'Password reset link configuration is incomplete. Check Firebase authorized domains.',
+                    // Keep account existence private when Firebase returns this
+                    // code without email-enumeration protection enabled.
+                    'user-not-found': 'If an account exists, reset instructions were sent. Check your inbox and spam folder.',
+                    'invalid-credential': 'If an account exists, reset instructions were sent. Check your inbox and spam folder.'
+                };
+                return resetMessages[code] || 'Password reset could not be started. Check the email and try again.';
+            }
+            const messages = {
+                'invalid-credential': 'Email or password is incorrect.',
+                'wrong-password': 'Email or password is incorrect.',
+                'user-not-found': 'Email or password is incorrect.',
+                'invalid-email': 'Enter a valid email address.',
+                'email-already-in-use': context === 'link' ? 'That email is already connected to another account.' : 'Unable to create account. Please check your details and try again.',
+                'weak-password': 'Choose a stronger password.',
+                'too-many-requests': 'Too many attempts. Wait a moment and try again.',
+                'operation-not-allowed': 'Email/password sign-in is not enabled in Firebase yet.',
+                'popup-blocked': 'Google popup blocked · allow popups and retry',
+                'popup-closed-by-user': 'Sign-in cancelled',
+                'operation-not-supported-in-this-environment': 'Google sign-in is unavailable in this browser · retry in a standard browser',
+                'network-request-failed': 'Connection failed · please retry',
+                'unauthorized-domain': 'This site is not authorized for sign-in.',
+                'account-exists-with-different-credential': 'Google sign-in could not be completed. Try another sign-in method.',
+                'provider-already-linked': 'This sign-in method is already linked to your account.'
+            };
+            return messages[code] || 'Authentication could not be completed. Please retry.';
+        }
+        function hidePasswordLinkPanel() {
+            passwordLinkPanel.classList.add('hidden');
+            linkPasswordInput.value = '';
+            linkPasswordConfirmInput.value = '';
+        }
+        function showPasswordLinkPanel(user) {
+            passwordOfferUser = user;
+            passwordLinkPanel.classList.remove('hidden');
+            linkPasswordInput.focus();
+        }
+        function hideVerificationPanel() {
+            verificationUser = null;
+            verificationEmailSent = false;
+            emailVerificationPanel.classList.add('hidden');
+            if (verificationCooldownTimer) {
+                window.clearTimeout(verificationCooldownTimer);
+                verificationCooldownTimer = null;
+            }
+            resendVerificationBtn.disabled = false;
+            resendVerificationBtn.textContent = 'Resend email';
+        }
+        function verificationStateKey(user) {
+            return `${VERIFICATION_SENT_KEY_PREFIX}${user?.uid || ''}`;
+        }
+        function readVerificationSendState(user) {
+            if (!user?.uid) return null;
+            try { return JSON.parse(sessionStorage.getItem(verificationStateKey(user)) || 'null'); } catch (_) { return null; }
+        }
+        function writeVerificationSendState(user, kind, cooldownMs) {
+            if (!user?.uid) return;
+            try {
+                sessionStorage.setItem(verificationStateKey(user), JSON.stringify({ kind, sent_at: Date.now(), cooldown_ms: cooldownMs }));
+            } catch (_) {}
+        }
+        function verificationCooldownRemaining(user) {
+            const state = readVerificationSendState(user);
+            if (!state?.sent_at) return 0;
+            return Math.max(0, Number(state.cooldown_ms || VERIFICATION_COOLDOWN_MS) - (Date.now() - Number(state.sent_at)));
+        }
+        function formatVerificationWait(milliseconds) {
+            const seconds = Math.max(1, Math.ceil(milliseconds / 1000));
+            return seconds >= 60 ? `${Math.ceil(seconds / 60)} min` : `${seconds}s`;
+        }
+        function scheduleVerificationCooldown(user) {
+            if (verificationCooldownTimer) window.clearTimeout(verificationCooldownTimer);
+            const remaining = verificationCooldownRemaining(user);
+            resendVerificationBtn.disabled = verificationEmailInFlight || remaining > 0;
+            resendVerificationBtn.textContent = verificationEmailInFlight
+                ? 'Sending…'
+                : remaining > 0
+                    ? `Resend in ${formatVerificationWait(remaining)}`
+                    : 'Resend email';
+            if (remaining > 0) {
+                verificationCooldownTimer = window.setTimeout(() => {
+                    verificationCooldownTimer = null;
+                    scheduleVerificationCooldown(user);
+                }, Math.min(remaining, 1000));
+            }
+        }
+        async function requestVerificationEmail(user) {
+            if (!user) return false;
+            const remaining = verificationCooldownRemaining(user);
+            if (remaining > 0) {
+                verificationEmailSent = true;
+                scheduleVerificationCooldown(user);
+                setStatus(`Verification email recently requested · try again in ${formatVerificationWait(remaining)}`, 'amber');
+                return false;
+            }
+            if (verificationEmailInFlight) return false;
+            verificationEmailInFlight = true;
+            scheduleVerificationCooldown(user);
+            try {
+                await sendEmailVerification(user);
+                verificationEmailSent = true;
+                writeVerificationSendState(user, 'sent', VERIFICATION_COOLDOWN_MS);
+                setStatus('Verification email sent · check your inbox and spam folder', 'amber');
+                return true;
+            } catch (error) {
+                const throttled = error?.code === 'auth/too-many-requests';
+                console[throttled ? 'warn' : 'error']('[auth] Verification email request failed:', error);
+                if (throttled) {
+                    verificationEmailSent = true;
+                    writeVerificationSendState(user, 'throttled', VERIFICATION_THROTTLE_COOLDOWN_MS);
+                    emailVerificationMessage.textContent = 'Firebase is temporarily limiting verification emails. Please wait before trying again, and check your inbox or spam folder.';
+                    setStatus('Verification email temporarily limited · try again later', 'amber');
+                } else {
+                    setStatus(friendlyAuthError(error), 'rose');
+                }
+                return false;
+            } finally {
+                verificationEmailInFlight = false;
+                scheduleVerificationCooldown(user);
+            }
+        }
+        async function showVerificationPanel(user, { sendEmail = false } = {}) {
+            verificationUser = user;
+            emailVerificationPanel.classList.remove('hidden');
+            emailVerificationMessage.textContent = sendEmail
+                ? `We sent a verification link to ${user.email || 'your email'}. Check your inbox, then return here.`
+                : `Email verification is still required for ${user.email || 'this account'}. Check your inbox or choose Resend email. After you verify, future sign-ins will not show this step.`;
+            const state = readVerificationSendState(user);
+            verificationEmailSent = Boolean(state);
+            scheduleVerificationCooldown(user);
+            if (state?.kind === 'throttled') {
+                emailVerificationMessage.textContent = 'Firebase is temporarily limiting verification emails. Please wait before trying again, and check your inbox or spam folder.';
+                setStatus('Verification email temporarily limited · try again later', 'amber');
+            } else if (state?.kind === 'sent') {
+                setStatus('Verification email already sent · check your inbox and spam folder', 'amber');
+            } else if (sendEmail && !verificationEmailInFlight) {
+                await requestVerificationEmail(user);
+            } else {
+                setStatus('Email verification required · check your inbox or resend the email', 'amber');
+            }
+        }
         function openTerms() { modal.classList.remove('hidden'); modal.classList.add('flex'); document.body.classList.add('overflow-hidden'); }
         function closeTerms() { modal.classList.add('hidden'); modal.classList.remove('flex'); document.body.classList.remove('overflow-hidden'); }
-        function acceptTerms() { termsCheck.checked = true; writeConsent(TERMS_KEY); syncConsent(); closeTerms(); setStatus('Agreement read · complete the paper-trading acknowledgement'); }
+        function acceptTerms() { termsCheck.checked = true; syncConsent(); closeTerms(); setStatus('Agreement read · complete the paper-trading acknowledgement'); void continueAfterConsentChange(); }
 
         document.getElementById('termsOpen').addEventListener('click', openTerms);
         document.getElementById('termsClose').addEventListener('click', closeTerms);
@@ -498,26 +787,19 @@
         document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeTerms(); });
         termsCheck.nextElementSibling.addEventListener('click', () => termsCheck.click());
         termsCheck.addEventListener('change', () => {
-            if (termsCheck.checked) writeConsent(TERMS_KEY); else clearConsent(TERMS_KEY);
+            if (!termsCheck.checked) acceptanceConfirmedUid = null;
             syncConsent();
+            void continueAfterConsentChange();
         });
         paperCheck.addEventListener('change', () => {
-            if (paperCheck.checked) writeConsent(PAPER_KEY); else clearConsent(PAPER_KEY);
+            if (!paperCheck.checked) acceptanceConfirmedUid = null;
             syncConsent();
+            void continueAfterConsentChange();
         });
-        // Require an explicit acknowledgement on every normal visit. Preserve
-        // it only while Firebase is returning from the Google redirect flow.
-        if (returningFromGoogleRedirect) {
-            // Never treat URL parameters as legal consent. The checkboxes are
-            // restored only from storage written by the user's explicit clicks.
-            termsCheck.checked = hasAcceptedTerms();
-            paperCheck.checked = hasAcceptedPaperMode();
-        } else {
-            termsCheck.checked = false;
-            paperCheck.checked = false;
-            clearConsent(TERMS_KEY);
-            clearConsent(PAPER_KEY);
-        }
+        // Consent is user-scoped and restored from the authenticated backend
+        // record. Never infer it from URL parameters or browser-local state.
+        termsCheck.checked = false;
+        paperCheck.checked = false;
         syncConsent();
 
         async function syncAcceptanceToServer(user) {
@@ -548,14 +830,100 @@
             }
         }
 
-        async function completeAuthenticatedUser(user) {
+        async function restoreConsentFromServer(user) {
+            if (!user?.uid || hasRequiredConsent()) return false;
+            const token = await user.getIdToken();
+            const controller = new AbortController();
+            const timeoutId = window.setTimeout(() => controller.abort(), AGREEMENT_REQUEST_TIMEOUT_MS);
+            try {
+                const response = await fetch(`${API_BASE}/api/legal/acceptance`, {
+                    method: 'GET',
+                    headers: { 'Authorization': `Bearer ${token}` },
+                    signal: controller.signal
+                });
+                if (!response.ok) throw new Error(`Acceptance lookup failed (${response.status})`);
+                const result = await response.json();
+                const accepted = result.accepted === true
+                    && result.acceptance?.terms_version === TERMS_VERSION
+                    && result.acceptance?.paper_trading_acknowledged === true;
+                if (accepted) {
+                    termsCheck.checked = true;
+                    paperCheck.checked = true;
+                    acceptanceConfirmedUid = user.uid;
+                    hideConsentPanel();
+                    syncConsent();
+                }
+                return accepted;
+            } catch (error) {
+                if (error?.name === 'AbortError') {
+                    console.warn('[auth] Agreement lookup timed out; consent remains required.');
+                } else {
+                    console.warn('[auth] Agreement lookup failed; consent remains required:', error);
+                }
+                return false;
+            } finally {
+                window.clearTimeout(timeoutId);
+            }
+        }
+
+        async function continueAfterConsentChange() {
+            const user = auth.currentUser;
+            if (!user || !hasRequiredConsent() || authActionInFlight || redirecting) return;
+            try {
+                await completeAuthenticatedUser(user);
+            } catch (error) {
+                console.error('[auth] Consent continuation error:', error);
+                setStatus('Agreement could not be recorded · retry', 'rose');
+            }
+        }
+
+        async function completeAuthenticatedUser(user, { skipGooglePasswordOffer = false, sendVerificationEmail = false } = {}) {
             if (!user || redirecting) return;
+            if (acceptanceConfirmedUid && acceptanceConfirmedUid !== user.uid) {
+                acceptanceConfirmedUid = null;
+                termsCheck.checked = false;
+                paperCheck.checked = false;
+                hideConsentPanel();
+                syncConsent();
+            }
+            // Google has already verified the identity for this account. If the
+            // user later links a password provider, do not make them verify the
+            // same Google email again before reaching the password setup flow.
+            const requiresEmailVerification = hasPasswordProvider(user)
+                && !hasGoogleProvider(user)
+                && !user.emailVerified;
+            if (requiresEmailVerification) {
+                if (returningFromGoogleRedirect) hideAuthTransition();
+                hidePasswordLinkPanel();
+                const shouldSendVerificationEmail = sendVerificationEmail || sendVerificationEmailOnNextCheck;
+                sendVerificationEmailOnNextCheck = false;
+                await showVerificationPanel(user, { sendEmail: shouldSendVerificationEmail });
+                return;
+            }
+            if (!skipGooglePasswordOffer && offerPasswordForGoogle && hasGoogleProvider(user) && !hasPasswordProvider(user)) {
+                offerPasswordForGoogle = false;
+                if (returningFromGoogleRedirect) hideAuthTransition();
+                hideVerificationPanel();
+                showPasswordLinkPanel(user);
+                setStatus('Google sign-in complete · choose whether to add email/password access');
+                return;
+            }
+            offerPasswordForGoogle = false;
+            hidePasswordLinkPanel();
+            if (!hasRequiredConsent()) {
+                await restoreConsentFromServer(user);
+            }
+            if (!hasRequiredConsent()) showConsentPanel();
             if (hasAcceptedTerms() && hasAcceptedPaperMode()) {
                 redirecting = true;
                 showAuthTransition();
                 setStatus('Recording agreement · initializing');
                 try {
-                    await syncAcceptanceToServer(user);
+                    if (acceptanceConfirmedUid !== user.uid) {
+                        await syncAcceptanceToServer(user);
+                        acceptanceConfirmedUid = user.uid;
+                    }
+                    hideConsentPanel();
                     clearGoogleRedirectMarker();
                     localStorage.setItem('loginTimestamp', Date.now().toString());
                     navigateToDashboard();
@@ -583,7 +951,10 @@
         onAuthStateChanged(auth, async (user) => {
             try {
                 if (user) {
-                    if (returningFromGoogleRedirect) setStatus('Google sign-in complete · finishing setup');
+                    if (returningFromGoogleRedirect) {
+                        offerPasswordForGoogle = true;
+                        setStatus('Sign-in complete · finishing setup');
+                    }
                     await completeAuthenticatedUser(user);
                 }
             } catch (error) {
@@ -612,20 +983,152 @@
             return auth.currentUser;
         }
 
-        loginBtn.addEventListener('click', async () => {
-            if (!termsCheck.checked) { openTerms(); return; }
-            if (!paperCheck.checked) { setStatus('Acknowledge paper and live trading modes first', 'amber'); return; }
+        signInModeBtn.addEventListener('click', () => setAuthMode('signin'));
+        signUpModeBtn.addEventListener('click', () => setAuthMode('signup'));
+        togglePasswordBtn.addEventListener('click', () => {
+            const showing = passwordInput.type === 'text';
+            passwordInput.type = showing ? 'password' : 'text';
+            togglePasswordBtn.textContent = showing ? 'Show' : 'Hide';
+        });
+        passwordInput.addEventListener('input', () => {
+            passwordStrength.classList.toggle('hidden', authMode !== 'signup' && !passwordInput.value);
+            passwordStrength.textContent = passwordStrengthText(passwordInput.value);
+        });
+        emailAuthForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const validationMessage = validateEmailForm();
+            if (validationMessage) {
+                setStatus(validationMessage, 'amber');
+                return;
+            }
+            authActionInFlight = true;
+            syncConsent();
+            const email = emailInput.value.trim();
             try {
-                loginBtn.disabled = true;
-                if (auth.currentUser) {
-                    await completeAuthenticatedUser(auth.currentUser);
+                setStatus(authMode === 'signup' ? 'Creating your account' : 'Signing in securely');
+                const creatingAccount = authMode === 'signup';
+                sendVerificationEmailOnNextCheck = creatingAccount;
+                const result = creatingAccount
+                    ? await createUserWithEmailAndPassword(auth, email, passwordInput.value)
+                    : await signInWithEmailAndPassword(auth, email, passwordInput.value);
+                await completeAuthenticatedUser(result.user, { sendVerificationEmail: creatingAccount });
+                sendVerificationEmailOnNextCheck = false;
+            } catch (error) {
+                sendVerificationEmailOnNextCheck = false;
+                console.error('[auth] Email authentication error:', error);
+                setStatus(friendlyAuthError(error, authMode), 'rose');
+            } finally {
+                authActionInFlight = false;
+                syncConsent();
+            }
+        });
+        forgotPasswordBtn.addEventListener('click', async () => {
+            const email = emailInput.value.trim();
+            if (!email || !emailInput.validity.valid) {
+                setStatus('Enter your email first, then choose forgot password', 'amber');
+                emailInput.focus();
+                return;
+            }
+            try {
+                forgotPasswordBtn.disabled = true;
+                setStatus('Sending password reset instructions');
+                await sendPasswordResetEmail(auth, email);
+                setStatus('If eligible, reset instructions were sent. Check your inbox and spam folder. Google-only accounts should use Google sign-in, then add a password.');
+            } catch (error) {
+                console.error('[auth] Password reset error:', error);
+                setStatus(friendlyAuthError(error, 'reset'), 'rose');
+            } finally {
+                window.setTimeout(() => { forgotPasswordBtn.disabled = false; }, 1200);
+            }
+        });
+        linkPasswordBtn.addEventListener('click', async () => {
+            const password = linkPasswordInput.value;
+            if (!passwordOfferUser) return;
+            if (password.length < 8) { setStatus('Password must be at least 8 characters', 'amber'); return; }
+            if (password !== linkPasswordConfirmInput.value) { setStatus('Passwords do not match', 'amber'); return; }
+            try {
+                authActionInFlight = true;
+                linkPasswordBtn.disabled = true;
+                setStatus('Confirm your Google identity to continue');
+                const reauthenticated = await reauthenticateWithPopup(passwordOfferUser, provider);
+                const freshUser = reauthenticated?.user || auth.currentUser;
+                if (!freshUser || freshUser.uid !== passwordOfferUser.uid || !freshUser.email) {
+                    throw new Error('Fresh Google authentication did not match the current account.');
+                }
+                const credential = EmailAuthProvider.credential(freshUser.email, password);
+                const result = await linkWithCredential(freshUser, credential);
+                passwordOfferUser = result.user;
+                offerPasswordForGoogle = false;
+                hidePasswordLinkPanel();
+                setStatus('Password added · finishing setup');
+                await completeAuthenticatedUser(result.user, { skipGooglePasswordOffer: true });
+            } catch (error) {
+                console.error('[auth] Password link error:', error);
+                setStatus(friendlyAuthError(error, 'link'), 'rose');
+            } finally {
+                authActionInFlight = false;
+                linkPasswordBtn.disabled = false;
+                syncConsent();
+            }
+        });
+        continueWithoutPasswordBtn.addEventListener('click', async () => {
+            const user = passwordOfferUser || auth.currentUser;
+            offerPasswordForGoogle = false;
+            hidePasswordLinkPanel();
+            await completeAuthenticatedUser(user, { skipGooglePasswordOffer: true });
+        });
+        checkVerificationBtn.addEventListener('click', async () => {
+            const user = verificationUser || auth.currentUser;
+            if (!user) return;
+            try {
+                checkVerificationBtn.disabled = true;
+                setStatus('Checking email verification');
+                await reload(user);
+                const refreshedUser = auth.currentUser || user;
+                if (!refreshedUser.emailVerified) {
+                    setStatus('Email is not verified yet · use the link in your inbox', 'amber');
                     return;
                 }
+                hideVerificationPanel();
+                await completeAuthenticatedUser(refreshedUser);
+            } catch (error) {
+                console.error('[auth] Email verification check error:', error);
+                setStatus('Verification check failed · retry', 'rose');
+            } finally {
+                checkVerificationBtn.disabled = false;
+            }
+        });
+        resendVerificationBtn.addEventListener('click', async () => {
+            const user = verificationUser || auth.currentUser;
+            if (!user) return;
+            await requestVerificationEmail(user);
+        });
+        signOutVerificationBtn.addEventListener('click', async () => {
+            try { await signOut(auth); } catch (error) { console.error('[auth] Sign-out error:', error); }
+            hideVerificationPanel();
+            setStatus('Signed out · ready for another account');
+            syncConsent();
+        });
+
+        loginBtn.addEventListener('click', async () => {
+            const currentUser = auth.currentUser;
+            const shouldReauthenticateGoogle = Boolean(currentUser && hasGoogleProvider(currentUser));
+            try {
+                authActionInFlight = true;
+                loginBtn.disabled = true;
+                offerPasswordForGoogle = true;
                 // localhost:3000 is served outside Firebase Hosting. Popup is
                 // the reliable first path there, especially when a browser
                 // blocks third-party storage used by redirect sign-in.
-                setStatus(isMobileBrowser ? 'Opening Google sign-in' : 'Opening secure Google sign-in');
-                await signInWithPopup(auth, provider);
+                setStatus(shouldReauthenticateGoogle
+                    ? 'Opening Google reauthentication'
+                    : (isMobileBrowser ? 'Opening Google sign-in' : 'Opening secure Google sign-in'));
+                if (shouldReauthenticateGoogle) {
+                    const result = await reauthenticateWithPopup(currentUser, provider);
+                    await completeAuthenticatedUser(result?.user || auth.currentUser);
+                } else {
+                    await signInWithPopup(auth, provider);
+                }
             } catch (error) {
                 console.error('Auth Error:', error);
                 const localAuthHost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
@@ -634,22 +1137,21 @@
                     try {
                         markGoogleRedirect();
                         setStatus('Popup unavailable · switching to secure redirect');
-                        await signInWithRedirect(auth, provider);
+                        if (shouldReauthenticateGoogle) {
+                            await reauthenticateWithRedirect(currentUser, provider);
+                        } else {
+                            await signInWithRedirect(auth, provider);
+                        }
                         return;
                     } catch (redirectError) {
                         console.error('Redirect Auth Error:', redirectError);
                     }
                 }
-                const message = error?.code === 'auth/popup-blocked'
-                    ? 'Google popup blocked · allow popups and retry'
-                    : error?.code === 'auth/operation-not-supported-in-this-environment'
-                        ? 'Google sign-in is unavailable in this browser · retry in a standard browser'
-                        : error?.code === 'auth/popup-closed-by-user'
-                            ? 'Sign-in cancelled'
-                            : error?.code === 'auth/unauthorized-domain'
-                                ? 'This site is not authorized for Google sign-in'
-                                : 'Connection failed · please retry';
-                setStatus(message, 'rose');
+                setStatus(friendlyAuthError(error), 'rose');
+                offerPasswordForGoogle = false;
+                syncConsent();
+            } finally {
+                authActionInFlight = false;
                 syncConsent();
             }
         });

@@ -9,11 +9,13 @@ from indicator_catalog import EXTENSION_INDICATOR_DEFAULTS, EXTENSION_INDICATOR_
 
 _BASE_DIR = os.path.dirname(__file__)
 _PROJECT_ROOT = os.path.dirname(_BASE_DIR)
+_ENVIRONMENT = os.getenv("ENV", "production").strip().lower()
 
-# Load both the backend-local .env and the project-root .env so scripts work
-# whether they are launched from the repo root or from backend/.
-load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
-load_dotenv(os.path.join(_BASE_DIR, ".env"))
+# Local dotenv files are a development convenience only. Production must use
+# the process environment or a managed secret injector, never a checkout file.
+if _ENVIRONMENT in {"development", "test"}:
+    load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
+    load_dotenv(os.path.join(_BASE_DIR, ".env"))
 
 # ──────────────────────────────────────────────
 # Timezone
@@ -39,7 +41,16 @@ ALPACA_PAPER = True
 WEBULL_APP_KEY = os.getenv("WEBULL_APP_KEY", "")
 WEBULL_APP_SECRET = os.getenv("WEBULL_APP_SECRET", "")
 WEBULL_ACCOUNT_ID = os.getenv("WEBULL_ACCOUNT_ID", "")  # Auto-discovered if blank
-WEBULL_DATA_ONLY = os.getenv("WEBULL_DATA_ONLY", "false").lower() == "true"  # If True, skip trading/account calls
+WEBULL_DATA_ONLY = os.getenv("WEBULL_DATA_ONLY", "true").lower() == "true"  # If True, skip trading/account calls
+WEBULL_LIVE_TRADING_ENABLED = os.getenv("WEBULL_LIVE_TRADING_ENABLED", "false").lower() == "true"
+WEBULL_SINGLE_TENANT_MODE = os.getenv("WEBULL_SINGLE_TENANT_MODE", "false").lower() == "true"
+# Live broker access is fail-closed unless the operator explicitly binds the
+# one allowed authenticated Firebase UID to this process. Paper/simulation
+# workflows do not use this setting.
+BROKER_LIVE_TENANT_UID = os.getenv("BROKER_LIVE_TENANT_UID", "").strip()
+# SHA-256 prefix of the one broker account allowed for live writes. The raw
+# account identifier is never logged or returned by the application.
+BROKER_LIVE_ACCOUNT_FINGERPRINT = os.getenv("BROKER_LIVE_ACCOUNT_FINGERPRINT", "").strip().lower()
 
 # ──────────────────────────────────────────────
 # API Keys — Massive
@@ -124,7 +135,7 @@ AI_REQUIRE_VOLUME_CONFIRMATION = False
 # forcing the opposite side.  Open-position risk exits are still permitted.
 AI_NEWS_ALIGNMENT_MODE = "veto_conflicting_entries"
 AI_NEWS_MIN_CONFIDENCE = 0.40
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434").strip()
 
 # AI Autopilot (uses AI Indicator for autonomous trade decisions in bots & backtest)
 AI_AUTOPILOT_ENABLED = False                # Master toggle (per-ticker override via TICKER_SETTINGS)

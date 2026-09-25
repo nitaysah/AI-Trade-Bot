@@ -14,11 +14,13 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from user_config import UserConfig
+from screener_tasks import ScreenerWorkTracker
 
 
 _SYMBOL_RE = re.compile(r"[A-Z0-9.\-]{1,15}")
@@ -35,6 +37,11 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 
 def normalize_screener_symbol(value: Any) -> str:
     symbol = str(value or "").upper().replace("/", "").strip()
+    # Yahoo search represents USD crypto pairs with a dash (BTC-USD), while
+    # the Screener's Webull data path expects the compact form (BTCUSD).
+    # Preserve dashes for ordinary securities such as BRK-B.
+    if re.fullmatch(r"[A-Z0-9]{1,12}-(?:USD|USDT|USDC)", symbol):
+        symbol = symbol.replace("-", "")
     return symbol if _SYMBOL_RE.fullmatch(symbol) else ""
 
 
@@ -65,6 +72,7 @@ class ScreenerUserState:
         self.email_outbox: list[dict] = []
         self.sms_outbox: list[dict] = []
         self.notification_settings: dict[str, Any] = {
+            "browser_enabled": True,
             "email_enabled": False,
             "sms_enabled": False,
             "sms_phone_number": "",
@@ -78,6 +86,18 @@ class ScreenerUserState:
             "last_success_at": None,
             "last_error": "",
             "consecutive_failures": 0,
+            "candle_probe_count": 0,
+            "same_candle_skips": 0,
+            "full_evaluation_count": 0,
+            "data_quality_rejections": 0,
+            "price_probe_count": 0,
+            "price_entry_trigger_count": 0,
+            "price_trigger_count": 0,
+            "price_data_rejections": 0,
+            "price_watch_skips": 0,
+            "last_price_watch_at": None,
+            "persistence_status": "starting",
+            "persistence_error": "",
             "email_queued": 0,
             "email_failed": 0,
             "sms_queued": 0,
@@ -92,6 +112,7 @@ class ScreenerUserState:
         self.load_lock = asyncio.Lock()
         self.save_lock = asyncio.Lock()
         self.scan_lock = asyncio.Lock()
+        self.price_watch_lock = asyncio.Lock()
         self.news_lock = asyncio.Lock()
         self.earnings_lock = asyncio.Lock()
         self.fundamental_lock = asyncio.Lock()
@@ -99,6 +120,11 @@ class ScreenerUserState:
         self._last_cloud_digest: str | None = None
         self._cloud_retry_at = 0.0
         self._cloud_failures = 0
+        self._process_scan_lock_fd = None
+        self._process_scan_lock_path = os.path.join(
+            "data",
+            f".screener_scan_{hashlib.sha256(str(uid).encode()).hexdigest()[:24]}.lock",
+        )
 
     @property
     def force_scan_trigger(self):
@@ -107,6 +133,69 @@ class ScreenerUserState:
 
     async def save_settings(self) -> None:
         await self.save()
+
+    async def refresh_from_persistence(self) -> bool:
+        """Reload the latest durable state after acquiring the process lock."""
+        try:
+            from local_store import load_state
+            raw = await asyncio.to_thread(load_state, self.uid, "screener_state")
+        except Exception as exc:
+            self.health["persistence_status"] = "degraded"
+            self.health["persistence_error"] = f"reload: {exc}"[:500]
+            return False
+        if not isinstance(raw, dict) or not raw:
+            return False
+        self._apply(raw)
+        return True
+
+    async def try_acquire_process_scan_lock(self) -> bool:
+        """Coordinate scans across backend worker processes on one host."""
+        if self._process_scan_lock_fd is not None:
+            return False
+        try:
+            import fcntl
+        except ImportError:
+            # Windows deployments should use a single scheduler worker or a
+            # distributed lease; keep the in-process lock as the fallback.
+            return True
+
+        def _acquire() -> bool:
+            os.makedirs("data", exist_ok=True)
+            handle = open(self._process_scan_lock_path, "a+", encoding="utf-8")
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (BlockingIOError, OSError):
+                handle.close()
+                return False
+            self._process_scan_lock_fd = handle
+            return True
+
+        try:
+            return await asyncio.to_thread(_acquire)
+        except (OSError, IOError):
+            # A lock-file failure must not stop analysis; the per-process
+            # asyncio lock remains the safe fallback and health persistence
+            # continues to report any subsequent save problem.
+            return True
+
+    async def release_process_scan_lock(self) -> None:
+        handle = self._process_scan_lock_fd
+        self._process_scan_lock_fd = None
+        if handle is None:
+            return
+        try:
+            import fcntl
+        except ImportError:
+            handle.close()
+            return
+
+        def _release() -> None:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+
+        await asyncio.to_thread(_release)
 
     @property
     def local_path(self) -> str:
@@ -149,31 +238,31 @@ class ScreenerUserState:
         scans = raw.get("latest_scans", {})
         if isinstance(scans, dict):
             self.latest_scans = {
-                symbol: scan for symbol, scan in scans.items()
+                normalize_screener_symbol(symbol): scan for symbol, scan in scans.items()
                 if normalize_screener_symbol(symbol) in clean_profiles and isinstance(scan, dict)
             }
         news_watch = raw.get("news_watch", {})
         if isinstance(news_watch, dict):
             self.news_watch = {
-                symbol: dict(value) for symbol, value in news_watch.items()
+                normalize_screener_symbol(symbol): dict(value) for symbol, value in news_watch.items()
                 if normalize_screener_symbol(symbol) in clean_profiles and isinstance(value, dict)
             }
         earnings_watch = raw.get("earnings_watch", {})
         if isinstance(earnings_watch, dict):
             self.earnings_watch = {
-                symbol: dict(value) for symbol, value in earnings_watch.items()
+                normalize_screener_symbol(symbol): dict(value) for symbol, value in earnings_watch.items()
                 if normalize_screener_symbol(symbol) in clean_profiles and isinstance(value, dict)
             }
         fundamental_reports = raw.get("fundamental_reports", {})
         if isinstance(fundamental_reports, dict):
             self.fundamental_reports = {
-                symbol: dict(value) for symbol, value in fundamental_reports.items()
+                normalize_screener_symbol(symbol): dict(value) for symbol, value in fundamental_reports.items()
                 if normalize_screener_symbol(symbol) in clean_profiles and isinstance(value, dict)
             }
         evaluation_state = raw.get("evaluation_state", {})
         if isinstance(evaluation_state, dict):
             self.evaluation_state = {
-                symbol: dict(value) for symbol, value in evaluation_state.items()
+                normalize_screener_symbol(symbol): dict(value) for symbol, value in evaluation_state.items()
                 if normalize_screener_symbol(symbol) in clean_profiles and isinstance(value, dict)
             }
         notifications = raw.get("notifications", [])
@@ -224,7 +313,9 @@ class ScreenerUserState:
             "health": self.health,
             "saved_at": time.time(),
         }
-        return json.loads(json.dumps(payload, default=str))
+        # Snapshot mutable state synchronously; serialization and I/O happen
+        # in save's worker, not on the FastAPI event loop.
+        return copy.deepcopy(payload)
 
     def prune_notifications(self, now_ts: float | None = None) -> None:
         cutoff = (now_ts or time.time()) - 90 * 86400
@@ -263,25 +354,44 @@ class ScreenerUserState:
             except Exception as exc:
                 print(f"[screener] Local SQLite load unavailable: {exc}")
             if not local_data:
-                try:
-                    with open(self.local_path, "r", encoding="utf-8") as handle:
-                        local_data = json.load(handle)
-                except (FileNotFoundError, json.JSONDecodeError, OSError):
-                    local_data = {}
+                def load_legacy():
+                    try:
+                        with open(self.local_path, "r", encoding="utf-8") as handle:
+                            return json.load(handle)
+                    except (FileNotFoundError, json.JSONDecodeError, OSError):
+                        return {}
+                local_data = await asyncio.to_thread(load_legacy)
 
             self._apply(local_data or {})
             self.loaded = True
 
-    async def save(self) -> None:
+    async def save(self) -> bool:
+        """Persist without blocking the loop; report authoritative SQLite success."""
         async with self.save_lock:
             data = self.payload()
-            try:
+            save_errors = []
+            def write_snapshot():
                 os.makedirs("data", exist_ok=True)
-                with open(self.local_path, "w", encoding="utf-8") as handle:
-                    json.dump(data, handle, indent=2, default=str)
-            except OSError as exc:
-                print(f"[screener] Local save failed: {exc}")
+                # Replace the snapshot atomically so a process interruption
+                # cannot leave a truncated settings/alert file.
+                fd, temp_path = tempfile.mkstemp(
+                    prefix=f".screener_{self.uid}_", suffix=".tmp", dir="data"
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                        json.dump(data, handle, indent=2, default=str)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    os.replace(temp_path, self.local_path)
+                finally:
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
+            try:
+                await asyncio.to_thread(write_snapshot)
+            except Exception as exc:
+                save_errors.append(f"local: {type(exc).__name__}")
 
+            durable = False
             try:
                 from local_store import save_state
                 sqlite_data = copy.deepcopy(data)
@@ -290,14 +400,25 @@ class ScreenerUserState:
                         for heavy_key in ("price_history", "priceHistory", "raw_candles", "candles"):
                             scan.pop(heavy_key, None)
                 await asyncio.to_thread(save_state, self.uid, "screener_state", sqlite_data)
+                durable = True
             except Exception as exc:
-                print(f"[screener] Local SQLite save failed: {exc}; state remains active in memory.")
+                save_errors.append(f"sqlite: {type(exc).__name__}")
+            if save_errors:
+                self.health["persistence_status"] = "degraded"
+                self.health["persistence_error"] = "; ".join(save_errors)[:500]
+            else:
+                self.health["persistence_status"] = "healthy"
+                self.health["persistence_error"] = ""
+            return durable
 
     def profile_revision(self, symbol: str) -> str:
         profile = self.profiles.get(symbol, {})
         # Recompute from canonical technical inputs so profiles saved by older
         # versions do not treat a scheduling-only interval change as a new
         # technical baseline.
+        context = self.config.contexts.get("screener", {})
+        if profile and any(context.values()):
+            return profile_revision({**profile, "analysis_context": context})
         return profile_revision(profile) if profile else "1"
 
     def mark_profile_baseline(self, symbol: str, reason: str) -> None:
@@ -305,6 +426,7 @@ class ScreenerUserState:
         revision = self.profile_revision(symbol)
         old_revision = current.get("profile_revision")
         generation = int(current.get("generation") or 0)
+        last_observed_candle_key = current.get("last_observed_candle_key") or current.get("last_candle_key")
         if old_revision and (old_revision != revision or reason in {"profile_activated", "profile_settings_changed"}):
             generation += 1
         current.update({
@@ -318,11 +440,24 @@ class ScreenerUserState:
             "virtual_entry_price": None,
             "virtual_entry_atr": None,
             "virtual_entry_candle_key": None,
+            "virtual_exit_mode": None,
+            "virtual_exit_settings": {},
+            "virtual_exit_levels": {},
             "virtual_peak_price": None,
             "virtual_trailing_stop": None,
             "last_exit_event_candle_key": None,
             "last_exit_event": None,
+            "last_price_event_key": None,
+            "last_price_event": None,
+            "last_price_event_at": 0,
+            "last_price_entry_key": None,
+            "last_price_entry_event": None,
+            "last_price_entry_at": 0,
+            "last_price_watch": {},
             "last_candle_key": None,
+            "last_observed_candle_key": last_observed_candle_key,
+            "last_bullish_alert_at": 0,
+            "last_bearish_alert_at": 0,
         })
 
     def commit_evaluation(self, symbol: str, evaluation: dict, now_ts: float | None = None) -> dict | None:
@@ -340,10 +475,26 @@ class ScreenerUserState:
         profile = self.profiles.get(symbol, {})
         state = self.evaluation_state.setdefault(symbol, {})
         revision = self.profile_revision(symbol)
+        last_observed_candle_key = state.get("last_observed_candle_key") or state.get("last_candle_key")
         if state.get("profile_revision") != revision:
             prior_generation = int(state.get("generation") or 0)
             state.clear()
-            state.update({"generation": str(prior_generation + 1), "profile_revision": revision, "baseline_required": True})
+            state.update({
+                "generation": str(prior_generation + 1),
+                "profile_revision": revision,
+                "baseline_required": True,
+                "last_observed_candle_key": last_observed_candle_key,
+                "last_bullish_alert_at": 0,
+                "last_bearish_alert_at": 0,
+            })
+        current_candle_ts = _safe_float(candle_key.rsplit(":", 1)[-1], 0.0)
+        previous_candle_ts = _safe_float(str(last_observed_candle_key or "").rsplit(":", 1)[-1], 0.0)
+        if current_candle_ts <= 0:
+            return None
+        if current_candle_ts and previous_candle_ts and current_candle_ts < previous_candle_ts:
+            # Never let a delayed provider response move the virtual lifecycle
+            # backward or create a reversal from an older completed candle.
+            return None
         if state.get("last_candle_key") == candle_key:
             # Keep a structural exit latched for the completed candle. A
             # repeated scan must not immediately reopen a bullish cycle from
@@ -373,6 +524,7 @@ class ScreenerUserState:
             "last_evaluated_at": now_ts,
             "last_status": "valid",
             "baseline_required": False,
+            "last_observed_candle_key": candle_key,
         }
         if state.get("last_exit_event_candle_key") and state.get("last_exit_event_candle_key") != candle_key:
             state_update["last_exit_event_candle_key"] = None
@@ -392,6 +544,13 @@ class ScreenerUserState:
                 "virtual_entry_price": _safe_float(evaluation.get("price_raw"), 0.0) or None,
                 "virtual_entry_atr": _safe_float(evaluation.get("atr"), 0.0) or None,
                 "virtual_entry_candle_key": candle_key,
+                "virtual_exit_mode": str(
+                    profile.get("sell_mode")
+                    or profile.get("options_exit_strategy")
+                    or "indicator"
+                ).strip().lower(),
+                "virtual_exit_settings": copy.deepcopy(profile),
+                "virtual_exit_levels": copy.deepcopy(evaluation.get("screener_exit_snapshot") or {}),
                 "virtual_peak_price": _safe_float(evaluation.get("price_raw"), 0.0) or None,
                 "virtual_trailing_stop": None,
             })
@@ -404,6 +563,9 @@ class ScreenerUserState:
                 "virtual_entry_price": None,
                 "virtual_entry_atr": None,
                 "virtual_entry_candle_key": None,
+                "virtual_exit_mode": None,
+                "virtual_exit_settings": {},
+                "virtual_exit_levels": {},
                 "virtual_peak_price": None,
                 "virtual_trailing_stop": None,
             })
@@ -465,9 +627,15 @@ class ScreenerUserState:
             title = f"{symbol} {play_type} Setup (~{exp_days}D {strike_type})"
         else:
             title = f"{symbol} {direction.title()} setup"
+        browser_enabled = bool(self.notification_settings.get("browser_enabled", True))
         email_enabled = bool(profile.get("email_enabled", self.notification_settings.get("email_enabled")))
         sms_enabled = bool(self.notification_settings.get("sms_enabled"))
         sms_phone_number = normalize_screener_sms_phone(self.notification_settings.get("sms_phone_number"))
+        # If every delivery channel is disabled, avoid creating an alert that
+        # cannot be delivered. Email/SMS-only alerts remain queued when the
+        # browser/in-app channel is disabled.
+        if not browser_enabled and not email_enabled and not sms_enabled:
+            return None
         notification = {
             "id": notification_id,
             "uid": self.uid,
@@ -479,6 +647,7 @@ class ScreenerUserState:
             "candle_open_ts": candle_meta.get("candle_open_ts"),
             "candle_close_ts": candle_meta.get("candle_close_ts"),
             "profile_revision": revision,
+            "settings_snapshot": copy.deepcopy(profile),
             "generation": generation,
             "price": evaluation.get("price_raw"),
             "reason": evaluation.get("reason", ""),
@@ -491,9 +660,7 @@ class ScreenerUserState:
             "atr": evaluation.get("atr"),
             "atr_levels": evaluation.get("atr_levels", {}),
             "read": False,
-            # Browser/in-app is the durable notification record and is always
-            # created when the selected directional alert is eligible.
-            "browser_status": "delivered",
+            "browser_status": "delivered" if browser_enabled else "disabled",
             "email_status": "queued" if email_enabled else "not_requested",
             "sms_status": "queued" if sms_enabled and sms_phone_number else ("setup_required" if sms_enabled else "not_requested"),
         }
@@ -528,6 +695,327 @@ class ScreenerUserState:
         )
         return notification
 
+    def commit_price_entry(self, symbol: str, event: dict, now_ts: float | None = None) -> dict | None:
+        """Commit one fresh custom-price entry without pretending it is a candle.
+
+        The entry is still analysis-only. A bullish entry starts the virtual
+        long cycle so the independent exit watcher can monitor its frozen
+        levels; a bearish entry is retained as a directional alert only (for
+        example, a PUT-oriented options profile).
+        """
+        now_ts = now_ts or time.time()
+        if not isinstance(event, dict):
+            return None
+        symbol = normalize_screener_symbol(symbol)
+        event_key = str(event.get("price_event_key") or "").strip()
+        trigger_price = _safe_float(event.get("trigger_price"), 0.0)
+        direction = str(event.get("event_direction") or "BULLISH").upper()
+        if not symbol or not event_key or trigger_price <= 0 or direction not in _SIGNAL_DIRECTIONS - {"NEUTRAL"}:
+            return None
+
+        profile = self.profiles.get(symbol, {})
+        state = self.evaluation_state.setdefault(symbol, {})
+        if state.get("last_price_entry_key") == event_key:
+            return None
+        # A live entry is one transition per virtual cycle. Do not re-alert
+        # while the bullish cycle is already active, even if a provider repeats
+        # a quote below the configured target.
+        if direction == "BULLISH" and bool(state.get("virtual_position")):
+            return None
+
+        revision = self.profile_revision(symbol)
+        generation = str(state.get("generation") or 1)
+        notification_id = hashlib.sha256("|".join([
+            self.uid,
+            generation,
+            symbol,
+            revision,
+            "PRICE_ENTRY",
+            event_key,
+        ]).encode()).hexdigest()
+        if any(item.get("id") == notification_id for item in self.notifications):
+            state["last_price_entry_key"] = event_key
+            return None
+
+        event_snapshot = copy.deepcopy(event)
+        event_snapshot.update({
+            "event_type": "PRICE_ENTRY",
+            "event_direction": direction,
+            "observed_at": event.get("observed_at") or datetime.now(timezone.utc).isoformat(),
+            "price_event_key": event_key,
+        })
+        entry_candle_key = str(
+            state.get("last_observed_candle_key")
+            or state.get("last_candle_key")
+            or f"PRICE:{event_key}"
+        )
+        state_update = {
+            "profile_revision": revision,
+            "last_actionable_direction": direction,
+            "last_direction": direction,
+            "last_price_entry_key": event_key,
+            "last_price_entry_event": event_snapshot,
+            "last_price_entry_at": now_ts,
+            "last_status": "price_entry",
+        }
+        if direction == "BULLISH":
+            state_update.update({
+                "virtual_position": True,
+                "virtual_entry_price": trigger_price,
+                "virtual_entry_atr": _safe_float(event.get("atr"), 0.0) or None,
+                "virtual_entry_candle_key": entry_candle_key,
+                "virtual_exit_mode": str(
+                    profile.get("sell_mode")
+                    or profile.get("options_exit_strategy")
+                    or "indicator"
+                ).strip().lower(),
+                "virtual_exit_settings": copy.deepcopy(profile),
+                "virtual_exit_levels": copy.deepcopy(event.get("exit_snapshot") or {}),
+                "virtual_peak_price": trigger_price,
+                "virtual_trailing_stop": None,
+            })
+        else:
+            state_update.update({
+                "virtual_position": False,
+                "virtual_entry_price": None,
+                "virtual_entry_atr": None,
+                "virtual_entry_candle_key": None,
+                "virtual_exit_mode": None,
+                "virtual_exit_settings": {},
+                "virtual_exit_levels": {},
+                "virtual_peak_price": None,
+                "virtual_trailing_stop": None,
+            })
+        state.update(state_update)
+
+        direction_enabled = bool(profile.get(
+            f"alert_{direction.lower()}_enabled",
+            self.notification_settings.get(f"{direction.lower()}_enabled", True),
+        ))
+        raw_cooldown = profile.get(
+            "alert_cooldown_minutes",
+            self.notification_settings.get("cooldown_minutes", 60),
+        )
+        try:
+            cooldown_minutes = max(0, int(raw_cooldown)) if raw_cooldown is not None else 60
+        except (TypeError, ValueError):
+            cooldown_minutes = 60
+        last_alert_at = float(state.get(f"last_{direction.lower()}_alert_at") or 0)
+        cooldown_active = last_alert_at > 0 and (now_ts - last_alert_at) < cooldown_minutes * 60
+        browser_enabled = bool(self.notification_settings.get("browser_enabled", True))
+        email_enabled = bool(profile.get("email_enabled", self.notification_settings.get("email_enabled")))
+        sms_enabled = bool(self.notification_settings.get("sms_enabled"))
+        sms_phone_number = normalize_screener_sms_phone(self.notification_settings.get("sms_phone_number"))
+        if not direction_enabled or cooldown_active or (not browser_enabled and not email_enabled and not sms_enabled):
+            return None
+
+        strategy_label = str(event.get("strategy_label") or "Custom Price").strip()
+        notification = {
+            "id": notification_id,
+            "uid": self.uid,
+            "symbol": symbol,
+            "direction": direction,
+            "event_direction": direction,
+            "event_type": "PRICE_ENTRY",
+            "alert_kind": "PRICE_EVENT",
+            "title": f"{symbol} {strategy_label} entry reached",
+            "created_at": now_ts,
+            "candle_key": entry_candle_key,
+            "candle_open_ts": state.get("last_candle_open_ts"),
+            "candle_close_ts": state.get("last_candle_close_ts"),
+            "profile_revision": revision,
+            "settings_snapshot": copy.deepcopy(profile),
+            "generation": generation,
+            "price": trigger_price,
+            "reason": event.get("text") or f"{strategy_label} entry reached by live price.",
+            "signals": {},
+            "sentiment": {},
+            "atr": event.get("atr"),
+            "atr_levels": event.get("atr_levels") or {},
+            "price_event": event_snapshot,
+            "read": False,
+            "browser_status": "delivered" if browser_enabled else "disabled",
+            "email_status": "queued" if email_enabled else "not_requested",
+            "sms_status": "queued" if sms_enabled and sms_phone_number else ("setup_required" if sms_enabled else "not_requested"),
+        }
+        self.notifications.insert(0, notification)
+        self.notifications = self.notifications[:1000]
+        state[f"last_{direction.lower()}_alert_at"] = now_ts
+        if notification["email_status"] == "queued":
+            self.email_outbox.append({
+                "id": notification_id,
+                "notification_id": notification_id,
+                "status": "queued",
+                "attempts": 0,
+                "next_attempt_at": now_ts,
+                "created_at": now_ts,
+            })
+            self.email_outbox = self.email_outbox[-1000:]
+        if notification["sms_status"] == "queued":
+            self.sms_outbox.append({
+                "id": notification_id,
+                "notification_id": notification_id,
+                "to": sms_phone_number,
+                "status": "queued",
+                "attempts": 0,
+                "next_attempt_at": now_ts,
+                "created_at": now_ts,
+            })
+            self.sms_outbox = self.sms_outbox[-1000:]
+        print(
+            f"[screener] Price entry alert created: {symbol} {direction} "
+            f"price={trigger_price} event_key={event_key} created_at={now_ts}"
+        )
+        return notification
+
+    def commit_price_event(self, symbol: str, event: dict, now_ts: float | None = None) -> dict | None:
+        """Commit one fresh live-price exit event for the virtual lifecycle.
+
+        Price events are separate from completed-candle alerts. The event
+        closes the virtual bullish cycle once, even if a quote is repeated or
+        two workers observe the same level.
+        """
+        now_ts = now_ts or time.time()
+        if not isinstance(event, dict):
+            return None
+        symbol = normalize_screener_symbol(symbol)
+        event_key = str(event.get("price_event_key") or "").strip()
+        trigger_price = _safe_float(event.get("trigger_price"), 0.0)
+        if not symbol or not event_key or trigger_price <= 0:
+            return None
+
+        profile = self.profiles.get(symbol, {})
+        state = self.evaluation_state.setdefault(symbol, {})
+        if not bool(state.get("virtual_position")):
+            return None
+        if state.get("last_price_event_key") == event_key:
+            return None
+
+        revision = self.profile_revision(symbol)
+        generation = str(state.get("generation") or 1)
+        notification_id = hashlib.sha256("|".join([
+            self.uid,
+            generation,
+            symbol,
+            revision,
+            event_key,
+        ]).encode()).hexdigest()
+        if any(item.get("id") == notification_id for item in self.notifications):
+            state["last_price_event_key"] = event_key
+            return None
+
+        event_snapshot = copy.deepcopy(event)
+        event_snapshot.update({
+            "event_type": "PRICE_EXIT",
+            "event_direction": "BEARISH",
+            "observed_at": event.get("observed_at") or datetime.now(timezone.utc).isoformat(),
+            "price_event_key": event_key,
+        })
+        # Close the virtual long lifecycle before checking delivery settings.
+        # A disabled channel must not leave the virtual position active.
+        state.update({
+            "profile_revision": revision,
+            "last_actionable_direction": "BEARISH",
+            "last_direction": "BEARISH",
+            "virtual_position": False,
+            "virtual_entry_price": None,
+            "virtual_entry_atr": None,
+            "virtual_entry_candle_key": None,
+            "virtual_exit_mode": None,
+            "virtual_exit_settings": {},
+            "virtual_exit_levels": {},
+            "virtual_peak_price": None,
+            "virtual_trailing_stop": None,
+            "last_price_event_key": event_key,
+            "last_price_event": event_snapshot,
+            "last_price_event_at": now_ts,
+            "last_exit_event": event_snapshot,
+            "last_exit_event_candle_key": state.get("last_candle_key"),
+            "last_status": "price_event",
+        })
+
+        direction_enabled = bool(profile.get(
+            "alert_bearish_enabled",
+            self.notification_settings.get("bearish_enabled", True),
+        ))
+        raw_cooldown = profile.get(
+            "alert_cooldown_minutes",
+            self.notification_settings.get("cooldown_minutes", 60),
+        )
+        try:
+            cooldown_minutes = max(0, int(raw_cooldown)) if raw_cooldown is not None else 60
+        except (TypeError, ValueError):
+            cooldown_minutes = 60
+        last_alert_at = float(state.get("last_bearish_alert_at") or 0)
+        cooldown_active = last_alert_at > 0 and (now_ts - last_alert_at) < cooldown_minutes * 60
+        browser_enabled = bool(self.notification_settings.get("browser_enabled", True))
+        email_enabled = bool(profile.get("email_enabled", self.notification_settings.get("email_enabled")))
+        sms_enabled = bool(self.notification_settings.get("sms_enabled"))
+        sms_phone_number = normalize_screener_sms_phone(self.notification_settings.get("sms_phone_number"))
+        if not direction_enabled or cooldown_active or (not browser_enabled and not email_enabled and not sms_enabled):
+            return None
+
+        level_label = str(event.get("level_name") or "level").strip().title()
+        mode_label = str(event.get("strategy_label") or event.get("mode") or "Price").strip()
+        candle_key = str(state.get("last_candle_key") or "")
+        notification = {
+            "id": notification_id,
+            "uid": self.uid,
+            "symbol": symbol,
+            "direction": "BEARISH",
+            "event_direction": "BEARISH",
+            "event_type": "PRICE_EXIT",
+            "alert_kind": "PRICE_EVENT",
+            "title": f"{symbol} {level_label} reached",
+            "created_at": now_ts,
+            "candle_key": candle_key,
+            "candle_open_ts": state.get("last_candle_open_ts"),
+            "candle_close_ts": state.get("last_candle_close_ts"),
+            "profile_revision": revision,
+            "settings_snapshot": copy.deepcopy(profile),
+            "generation": generation,
+            "price": trigger_price,
+            "reason": event.get("text") or f"{mode_label} {level_label.lower()} reached by live price.",
+            "signals": {},
+            "sentiment": {},
+            "atr": event.get("atr"),
+            "atr_levels": event.get("atr_levels") or {},
+            "price_event": event_snapshot,
+            "read": False,
+            "browser_status": "delivered" if browser_enabled else "disabled",
+            "email_status": "queued" if email_enabled else "not_requested",
+            "sms_status": "queued" if sms_enabled and sms_phone_number else ("setup_required" if sms_enabled else "not_requested"),
+        }
+        self.notifications.insert(0, notification)
+        self.notifications = self.notifications[:1000]
+        state["last_bearish_alert_at"] = now_ts
+        if notification["email_status"] == "queued":
+            self.email_outbox.append({
+                "id": notification_id,
+                "notification_id": notification_id,
+                "status": "queued",
+                "attempts": 0,
+                "next_attempt_at": now_ts,
+                "created_at": now_ts,
+            })
+            self.email_outbox = self.email_outbox[-1000:]
+        if notification["sms_status"] == "queued":
+            self.sms_outbox.append({
+                "id": notification_id,
+                "notification_id": notification_id,
+                "to": sms_phone_number,
+                "status": "queued",
+                "attempts": 0,
+                "next_attempt_at": now_ts,
+                "created_at": now_ts,
+            })
+            self.sms_outbox = self.sms_outbox[-1000:]
+        print(
+            f"[screener] Price alert created: {symbol} {level_label} "
+            f"price={trigger_price} event_key={event_key} created_at={now_ts}"
+        )
+        return notification
+
 
 def profile_revision(settings: dict) -> str:
     ignored = {
@@ -535,6 +1023,7 @@ def profile_revision(settings: dict) -> str:
         # Scan cadence changes scheduling only; they do not change the
         # technical inputs or invalidate the completed-candle baseline.
         "scan_interval_seconds",
+        "price_watch_interval_seconds",
         "alert_preferences", "alert_bullish_enabled", "alert_bearish_enabled",
         "alert_cooldown_minutes", "news_watch_enabled", "earnings_watch_enabled", "fundamental_watch_enabled",
         "symbol", "ticker",
@@ -620,6 +1109,9 @@ def evaluate_screener_profile(uid: str, settings: dict, context_settings: dict |
 class ScreenerManager:
     """Owns screener users without depending on the automated trading manager."""
 
+    MAX_STATES = 1024
+    STATE_IDLE_SECONDS = 3600.0
+
     def __init__(self, db):
         self.db = db
         self.states: dict[str, ScreenerUserState] = {}
@@ -628,12 +1120,14 @@ class ScreenerManager:
         # drop users that were deactivated without evicting a user who is
         # currently opening the Screener while the registry is unavailable.
         self._registry_uids: set[str] = set()
+        self._state_last_seen: dict[str, float] = {}
         # Firestore is only the discovery source. Keep the last successful
         # registry locally so a transient cloud/network outage cannot make the
         # independent screener scheduler lose its users.
         self._registry_cache_namespace = "screener_registry"
         self._registry_last_warning_at = 0.0
         self.evaluation_semaphore = asyncio.Semaphore(4)
+        self.work_tracker = ScreenerWorkTracker()
         self.news_semaphore = asyncio.Semaphore(3)
         self.earnings_semaphore = asyncio.Semaphore(3)
 
@@ -641,12 +1135,27 @@ class ScreenerManager:
         uid = str(uid or '').strip()
         if not uid:
             raise ValueError("Screener user id is required")
-        # A request authenticated by Firebase is the authoritative signal that
-        # this local Screener state is active. This keeps discovery independent
-        # from a separate Firestore registry query.
+        now = time.monotonic()
+        if uid not in self.states and len(self.states) >= self.MAX_STATES:
+            stale = sorted(
+                (seen, stale_uid) for stale_uid, seen in self._state_last_seen.items()
+                if now - seen > self.STATE_IDLE_SECONDS
+            )
+            for _, stale_uid in stale:
+                self.states.pop(stale_uid, None)
+                self._state_last_seen.pop(stale_uid, None)
+                self._registry_uids.discard(stale_uid)
+                if len(self.states) < self.MAX_STATES:
+                    break
+        if uid not in self.states and len(self.states) >= self.MAX_STATES:
+            raise RuntimeError("Screener state capacity is temporarily full; retry shortly.")
+        # Keep an authenticated request available as an in-memory fallback;
+        # scheduled discovery uses the active Firestore registry when it is
+        # reachable and never relies on this marker as durable authority.
         self._registry_uids.add(uid)
         if uid not in self.states:
             self.states[uid] = ScreenerUserState(uid, self.db)
+        self._state_last_seen[uid] = now
         return self.states[uid]
 
     async def discover_active_users(self) -> list[ScreenerUserState]:
@@ -657,7 +1166,7 @@ class ScreenerManager:
             await asyncio.gather(*(state.load() for state in states), return_exceptions=True)
             return states
 
-        async def _load_local_uids() -> set[str]:
+        async def _load_local_uids() -> tuple[set[str], set[str], bool]:
             try:
                 from local_store import list_state_users, load_state
 
@@ -666,41 +1175,72 @@ class ScreenerManager:
                 )
                 state_users_task = asyncio.to_thread(list_state_users, "screener_state")
                 payload, state_users = await asyncio.gather(registry_task, state_users_task)
+                cache_present = isinstance(payload, dict) and "uids" in payload
                 payload = payload or {}
                 values = payload.get("uids", []) if isinstance(payload, dict) else []
                 cached_uids = {str(uid).strip() for uid in values if str(uid).strip()}
                 stored_uids = {
                     str(uid).strip() for uid in (state_users or []) if str(uid).strip()
                 }
-                return cached_uids | stored_uids
+                return cached_uids, stored_uids, cache_present
             except Exception as exc:
                 # The in-memory registry remains a valid fallback if local
                 # persistence is unavailable as well.
                 if now - self._registry_last_warning_at >= 60:
                     self._registry_last_warning_at = now
                     print(f"[ScreenerManager] Local registry unavailable; using memory: {exc}")
-                return set()
+                return set(), set(), False
 
-        # Screener state is local-first. Discover persisted users from SQLite
-        # instead of polling Firestore every minute just to obtain document
-        # ids. This removes the 503 transport failure path from the scheduler
-        # while retaining the cached and in-memory registries as fallbacks.
-        active_uids = await _load_local_uids()
-        active_uids.update(self._registry_uids)
-        for stale_uid in self._registry_uids - active_uids:
-            self.states.pop(stale_uid, None)
-        self._registry_uids = active_uids
-        try:
-            from local_store import save_state
+        cached_uids, stored_uids, cache_present = await _load_local_uids()
 
-            await asyncio.to_thread(
-                save_state,
-                "__screener__",
-                self._registry_cache_namespace,
-                {"uids": sorted(active_uids), "saved_at": time.time()},
-            )
-        except Exception as exc:
-            if now - self._registry_last_warning_at >= 60:
-                self._registry_last_warning_at = now
-                print(f"[ScreenerManager] Local registry cache save unavailable: {exc}")
-        return await _states_for(active_uids)
+        async def _save_registry_cache(uids: set[str]) -> None:
+            try:
+                from local_store import save_state
+
+                await asyncio.to_thread(
+                    save_state,
+                    "__screener__",
+                    self._registry_cache_namespace,
+                    {"uids": sorted(uids), "saved_at": time.time()},
+                )
+            except Exception as exc:
+                if now - self._registry_last_warning_at >= 60:
+                    self._registry_last_warning_at = now
+                    print(f"[ScreenerManager] Local registry cache save unavailable: {exc}")
+
+        async def _apply_registry(uids: set[str], prune: bool = True) -> list[ScreenerUserState]:
+            active_uids = {str(uid).strip() for uid in uids if str(uid).strip()}
+            if prune:
+                for stale_uid in self._registry_uids - active_uids:
+                    self.states.pop(stale_uid, None)
+            self._registry_uids = active_uids
+            await _save_registry_cache(active_uids)
+            return await _states_for(active_uids)
+
+        # Firestore is authoritative when available, so deactivated users are
+        # pruned. Local SQLite/cache data remains the outage fallback.
+        if self.db is not None:
+            def _read_registry():
+                from google.cloud.firestore_v1.base_query import FieldFilter
+                query = self.db.collection("screener_users").where(
+                    filter=FieldFilter("active", "==", True)
+                )
+                return list(query.stream(timeout=3.0, retry=None))
+
+            try:
+                documents = await asyncio.wait_for(
+                    asyncio.to_thread(_read_registry), timeout=4.0
+                )
+                return await _apply_registry({document.id for document in documents})
+            except Exception as exc:
+                if now - self._registry_last_warning_at >= 60:
+                    self._registry_last_warning_at = now
+                    print(f"[ScreenerManager] Registry unavailable; using local cache: {exc}")
+
+        # Prefer the last explicit registry cache. If it does not exist yet,
+        # discover persisted state files and authenticated in-memory users.
+        if cache_present:
+            return await _apply_registry(cached_uids, prune=False)
+        if stored_uids:
+            return await _apply_registry(stored_uids, prune=False)
+        return await _apply_registry(self._registry_uids, prune=False)

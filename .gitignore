@@ -51,6 +51,9 @@ Thumbs.db
 *.swp
 *.swo
 backend/serviceAccount.json
+serviceAccount.json
+firebase-service-account*.json
+*_service_account*.json
 backend/conf/
 scratch/
 backend/scratch/
@@ -108,6 +111,11 @@ tsla_sweep_log.txt
 diff.txt
 /*.py
 
+# Generated audit reports (keep locally; they are not runtime application files)
+/SCREENER_FUNCTIONAL_AUDIT_*.md
+/SECURITY_REPORT.md
+/SECURITY_SCAN_REPORT_*.md
+
 # Validation, Test & Diagnostic Scripts
 backend/*_validation_test.py
 backend/*_validation.py
@@ -115,3 +123,6 @@ backend/*_test.py
 *_validation_test.py
 *_validation.py
 backend/audit_*.py
+
+# Keep maintained regression tests in source control, unlike scratch scripts.
+!backend/tests/test_*.py

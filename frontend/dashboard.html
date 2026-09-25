@@ -20,8 +20,15 @@
     <meta name="apple-mobile-web-app-title" content="BotBulls">
     <meta name="application-name" content="BotBulls">
     <meta name="msapplication-TileImage" content="assets/bot_bulls_logo.png">
+    <link rel="preconnect" href="https://cdn.tailwindcss.com">
+    <link rel="preconnect" href="https://unpkg.com">
+    <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
+    <!-- Tailwind generates the utility CSS at runtime. Keep this script
+         parser-blocking so the raw HTML never paints as an unstyled logo and
+         a grid of plain boxes during refresh. -->
+    <link rel="preload" as="script" href="https://cdn.tailwindcss.com">
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <script defer src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
@@ -754,11 +761,11 @@
 
 
     <script src="alpaca-status-cache.js?v=1"></script>
-    <script src="ai-indicator-card.js?v=12"></script>
+    <script src="ai-indicator-card.js?v=13"></script>
     <script src="indicator-catalog.js?v=16"></script>
     <script src="indicator-subcharts.js?v=16"></script>
     <script src="volume-profile-overlay.js?v=4"></script>
-    <script src="app.js?v=150"></script>
+    <script src="app.js?v=151"></script>
     <script src="indicator-workspace.js?v=11"></script>
 
     <!-- Fear & Greed Sub-Components Modal -->

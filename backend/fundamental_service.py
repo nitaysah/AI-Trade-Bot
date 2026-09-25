@@ -16,6 +16,8 @@ from zoneinfo import ZoneInfo
 
 import yfinance as yf
 
+from instrument_types import is_known_etf
+
 
 CENTRAL_TZ = ZoneInfo("America/Chicago")
 REPORT_VERSION = 1
@@ -129,6 +131,14 @@ def _build_report(ticker: str, options_profile: bool = False) -> dict[str, Any]:
         raise ValueError("Ticker is required")
     if _is_crypto(symbol):
         return {"report_version": REPORT_VERSION, "ticker": symbol, "status": "not_applicable", "assessment": "Insufficient evidence", "summary": "Company financial statements are not applicable to this crypto profile."}
+    if is_known_etf(symbol):
+        return {
+            "report_version": REPORT_VERSION,
+            "ticker": symbol,
+            "status": "not_applicable",
+            "assessment": "Insufficient evidence",
+            "summary": "Company financial statements are not applicable to an exchange-traded fund; evaluate its holdings, index methodology, fees, liquidity, and tracking instead.",
+        }
     if options_profile:
         return {"report_version": REPORT_VERSION, "ticker": symbol, "status": "not_applicable", "assessment": "Insufficient evidence", "summary": "Fundamental research is shown for the underlying equity; an option contract itself has no operating statements or P/E."}
 

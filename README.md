@@ -12,6 +12,21 @@ At its core, the bot runs a high-performance, non-blocking scan loop that analyz
 
 ---
 
+## 🔍 Screener-only analysis mode
+
+The Screener is an independent analysis and notification surface. It does not submit broker orders, manage broker positions, or depend on the Bots engine.
+
+Its qualification modes are:
+
+- **Combined · Require Both** (default): completed-candle technical confirmation and a recent qualifying catalyst must agree in direction.
+- **Technical Only**: evaluates completed-candle technical evidence and automatically disables News Watch.
+- **Event-Driven Only**: evaluates the catalyst leg and automatically enables News Watch.
+- **Discovery · Either Qualifies**: either leg may surface a candidate, while an explicit qualifying conflict is blocked.
+
+For swing-oriented screening, new stock profiles default to `1Day`, crypto profiles to `4Hour`, and the starting technical pool is EMA Cross, SMA, RSI, and ADX Trend. These are starting settings, not optimized performance claims. Screener alerts are signals for review, not forecasts or guarantees of profit.
+
+---
+
 ## 📈 How You Can Profit Using BotBulls
 
 BotBulls provides retail traders with tools and execution capabilities typically reserved for institutional quantitative hedge funds. Here is how you can maximize your profitability using the bot:

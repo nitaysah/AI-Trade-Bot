@@ -714,8 +714,24 @@ const MANUAL_BT_REPLAY_CACHE_LIMIT = 8;
 
 // ── Backtest Cancellation on Unload ──────────────────────────────────────
 window.addEventListener('beforeunload', () => {
-    // Attempt to cancel any running backtest on the backend when navigating away or refreshing
-    navigator.sendBeacon(`${window.BACKTEST_API_BASE}/api/backtest/cancel`);
+    // sendBeacon cannot attach the Firebase Authorization header. Use a
+    // keepalive request so cancellation stays authenticated and user-scoped.
+    const auth = window.auth;
+    const user = auth?.currentUser;
+    const isDev = !user && localStorage.getItem('dev_mode') === 'true';
+    if (!user && !isDev) return;
+
+    const cancel = (token) => fetch(`${window.BACKTEST_API_BASE}/api/backtest/cancel`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        keepalive: true,
+    }).catch(() => {});
+
+    if (user) {
+        user.getIdToken().then(cancel).catch(() => {});
+    } else {
+        cancel('dev-token');
+    }
 });
 // ────────────────────────────────────────────────────────────────────────
 
@@ -964,13 +980,19 @@ window.syncBtDaysInput = function(rawVal) {
                         data.forEach(item => {
                             const div = document.createElement('div');
                             div.className = "p-3 hover:bg-indigo-50 cursor-pointer border-b border-indigo-50 last:border-0 transition-colors flex justify-between items-center";
-                            div.innerHTML = `
-                                <div class="flex flex-col text-left">
-                                    <span class="font-black text-indigo-900">${item.symbol}</span>
-                                    <span class="text-[0.65rem] text-indigo-400 font-medium truncate w-40">${item.name}</span>
-                                </div>
-                                <span class="text-[0.6rem] bg-indigo-100 text-indigo-500 px-2 py-0.5 rounded uppercase font-bold tracking-widest">+ Select</span>
-                            `;
+                            const symbolEl = document.createElement('span');
+                            symbolEl.className = 'font-black text-indigo-900';
+                            symbolEl.textContent = String(item.symbol || '');
+                            const nameEl = document.createElement('span');
+                            nameEl.className = 'text-[0.65rem] text-indigo-400 font-medium truncate w-40';
+                            nameEl.textContent = String(item.name || '');
+                            const textWrap = document.createElement('div');
+                            textWrap.className = 'flex flex-col text-left';
+                            textWrap.append(symbolEl, nameEl);
+                            const selectEl = document.createElement('span');
+                            selectEl.className = 'text-[0.6rem] bg-indigo-100 text-indigo-500 px-2 py-0.5 rounded uppercase font-bold tracking-widest';
+                            selectEl.textContent = '+ Select';
+                            div.append(textWrap, selectEl);
                             div.onclick = () => {
                                 btTickerInput.value = item.symbol;
                                 btResultsContainer.classList.add('hidden');
@@ -1036,13 +1058,19 @@ window.syncBtDaysInput = function(rawVal) {
                         data.forEach(item => {
                             const div = document.createElement('div');
                             div.className = "p-3 hover:bg-indigo-50 cursor-pointer border-b border-indigo-50 last:border-0 transition-colors flex justify-between items-center";
-                            div.innerHTML = `
-                                <div class="flex flex-col text-left min-w-0">
-                                    <span class="font-black text-indigo-900">${item.symbol}</span>
-                                    <span class="text-[0.65rem] text-indigo-400 font-medium truncate w-56">${item.name || ''}</span>
-                                </div>
-                                <span class="text-[0.6rem] bg-indigo-100 text-indigo-500 px-2 py-0.5 rounded uppercase font-bold tracking-widest">Load</span>
-                            `;
+                            const textWrap = document.createElement('div');
+                            textWrap.className = 'flex flex-col text-left min-w-0';
+                            const symbolEl = document.createElement('span');
+                            symbolEl.className = 'font-black text-indigo-900';
+                            symbolEl.textContent = String(item.symbol || '');
+                            const nameEl = document.createElement('span');
+                            nameEl.className = 'text-[0.65rem] text-indigo-400 font-medium truncate w-56';
+                            nameEl.textContent = String(item.name || '');
+                            textWrap.append(symbolEl, nameEl);
+                            const loadEl = document.createElement('span');
+                            loadEl.className = 'text-[0.6rem] bg-indigo-100 text-indigo-500 px-2 py-0.5 rounded uppercase font-bold tracking-widest';
+                            loadEl.textContent = 'Load';
+                            div.append(textWrap, loadEl);
                             div.onclick = () => {
                                 manualTickerInput.value = item.symbol;
                                 manualResultsContainer.classList.add('hidden');
@@ -1163,8 +1191,7 @@ window.unlinkAlpaca = async () => {
 window.logoutCommander = async () => {
     const auth = window.auth;
     if (auth) {
-        const { signOut } = await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js");
-        await signOut(auth);
+        await auth.signOut();
     }
     window.location.href = "index.html";
 };
@@ -2602,6 +2629,12 @@ function manualBtStatusFor(indicator, bar) {
 
 function manualBtEscapeAttr(value) {
     return String(value || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function manualBtEscapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[char]);
 }
 
 function manualBtEscapeJs(value) {
@@ -4237,16 +4270,18 @@ function displayResults(res) {
 
     const metaEl = document.getElementById('resRunMeta');
     if (res.optimizer_meta) {
+        const safeOverfitScore = manualBtEscapeHtml(res.optimizer_meta.overfit_score);
         let overfitHtml = '';
         if (res.optimizer_meta.overfit_score >= 0.8) {
-            overfitHtml = `<span class="bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded ml-2">🟢 ROBUST (Score: ${res.optimizer_meta.overfit_score})</span>`;
+            overfitHtml = `<span class="bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded ml-2">🟢 ROBUST (Score: ${safeOverfitScore})</span>`;
         } else if (res.optimizer_meta.overfit_score >= 0.5) {
-            overfitHtml = `<span class="bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded ml-2">🟡 DEGRADED (Score: ${res.optimizer_meta.overfit_score})</span>`;
+            overfitHtml = `<span class="bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded ml-2">🟡 DEGRADED (Score: ${safeOverfitScore})</span>`;
         } else {
-            overfitHtml = `<span class="bg-rose-500/20 text-rose-300 px-2 py-0.5 rounded ml-2">🔴 OVERFITTED (Score: ${res.optimizer_meta.overfit_score})</span>`;
+            overfitHtml = `<span class="bg-rose-500/20 text-rose-300 px-2 py-0.5 rounded ml-2">🔴 OVERFITTED (Score: ${safeOverfitScore})</span>`;
         }
         if (metaEl) {
-            metaEl.innerHTML = `Out-of-Sample Validation Result ${overfitHtml} <br> Best Params: Thresh ${res.optimizer_meta.best_params.threshold}, Sell ${res.optimizer_meta.best_params.sell_threshold}, ATR Stop ${res.optimizer_meta.best_params.atr_stop_multiplier}`;
+            const bestParams = res.optimizer_meta.best_params || {};
+            metaEl.innerHTML = `Out-of-Sample Validation Result ${overfitHtml} <br> Best Params: Thresh ${manualBtEscapeHtml(bestParams.threshold)}, Sell ${manualBtEscapeHtml(bestParams.sell_threshold)}, ATR Stop ${manualBtEscapeHtml(bestParams.atr_stop_multiplier)}`;
         }
     } else {
         if (metaEl && s.ticker) {
@@ -4265,20 +4300,20 @@ function displayResults(res) {
                 const optLabel = s.options_type === 'calls_only' ? 'CALL' : (s.options_type === 'puts_only' ? 'PUT' : 'CALL + PUT');
                 const g = s.avg_greeks || {};
                 const avgIvPct = Number.isFinite(Number(g.iv)) ? (Number(g.iv) * 100).toFixed(1) : '—';
-                const greeksBadge = g.delta !== undefined ? ` <span class="ml-1 px-2 py-0.5 rounded bg-purple-500/30 text-purple-200 border border-purple-400/40 font-mono" title="Average Black-Scholes-Merton Greeks across executions">Avg Greeks: Δ ${g.delta} · Γ ${g.gamma} · Θ ${g.theta} · ν ${g.vega} · IV ${avgIvPct}%</span>` : '';
-                optionBadge = ` <span class="ml-2 px-2 py-0.5 rounded bg-fuchsia-500/30 text-fuchsia-200 border border-fuchsia-400/40">${optLabel} · ${s.expiry_days} DTE · ${s.strike_type}</span>${greeksBadge}`;
+                const greeksBadge = g.delta !== undefined ? ` <span class="ml-1 px-2 py-0.5 rounded bg-purple-500/30 text-purple-200 border border-purple-400/40 font-mono" title="Average Black-Scholes-Merton Greeks across executions">Avg Greeks: Δ ${manualBtEscapeHtml(g.delta)} · Γ ${manualBtEscapeHtml(g.gamma)} · Θ ${manualBtEscapeHtml(g.theta)} · ν ${manualBtEscapeHtml(g.vega)} · IV ${manualBtEscapeHtml(avgIvPct)}%</span>` : '';
+                optionBadge = ` <span class="ml-2 px-2 py-0.5 rounded bg-fuchsia-500/30 text-fuchsia-200 border border-fuchsia-400/40">${manualBtEscapeHtml(optLabel)} · ${manualBtEscapeHtml(s.expiry_days)} DTE · ${manualBtEscapeHtml(s.strike_type)}</span>${greeksBadge}`;
             }
             const riskBadge = s.enable_risk !== undefined ? ` <span class="ml-1 px-2 py-0.5 rounded ${s.enable_risk ? 'bg-indigo-500/30 text-indigo-200' : 'bg-rose-500/30 text-rose-200'}">Risk: ${s.enable_risk ? 'ON' : 'OFF'}</span>` : '';
-            const sourceBadge = s.data_source ? ` <span class="ml-1 px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-200 border border-emerald-400/30">Data: ${String(s.data_source).toUpperCase()}</span>` : '';
-            const executionBadge = s.execution_model ? ` <span class="ml-1 px-2 py-0.5 rounded bg-sky-500/20 text-sky-100 border border-sky-400/30" title="${s.execution_model}">Fills: Next Open</span>` : '';
+            const sourceBadge = s.data_source ? ` <span class="ml-1 px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-200 border border-emerald-400/30">Data: ${manualBtEscapeHtml(String(s.data_source).toUpperCase())}</span>` : '';
+            const executionBadge = s.execution_model ? ` <span class="ml-1 px-2 py-0.5 rounded bg-sky-500/20 text-sky-100 border border-sky-400/30" title="${manualBtEscapeAttr(s.execution_model)}">Fills: Next Open</span>` : '';
             const quoteCapability = s.historical_quote_capabilities || {};
             const quoteBadge = quoteCapability.two_sided_rows > 0
                 ? ` <span class="ml-1 px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-100 border border-emerald-400/30">Historical NBBO</span>`
                 : (quoteCapability.historical_rows > 0 ? ` <span class="ml-1 px-2 py-0.5 rounded bg-amber-500/20 text-amber-100 border border-amber-400/30" title="Historical option prices are marks; bid/ask was not supplied.">Historical marks</span>` : '');
-            metaEl.innerHTML = `<div>${s.ticker}  ·  ${s.timeframe}  ·  ${s.period_days} Days  ·  ${startCST} – ${endCST} CST</div><div class="mt-1 flex flex-wrap items-center gap-1.5 text-[0.6rem]">${optionBadge}${executionBadge}${quoteBadge}${riskBadge}${sourceBadge}</div>`;
+            metaEl.innerHTML = `<div>${manualBtEscapeHtml(s.ticker)}  ·  ${manualBtEscapeHtml(s.timeframe)}  ·  ${manualBtEscapeHtml(s.period_days)} Days  ·  ${manualBtEscapeHtml(startCST)} – ${manualBtEscapeHtml(endCST)} CST</div><div class="mt-1 flex flex-wrap items-center gap-1.5 text-[0.6rem]">${optionBadge}${executionBadge}${quoteBadge}${riskBadge}${sourceBadge}</div>`;
         }
         if (metaEl && s.no_trade_reason) {
-            metaEl.innerHTML = `${metaEl.innerHTML || ''}<div class="mt-2 rounded-xl border border-amber-300/40 bg-amber-500/10 px-3 py-2 text-amber-100 font-bold">No trades executed: ${s.no_trade_reason}</div>`;
+            metaEl.innerHTML = `${metaEl.innerHTML || ''}<div class="mt-2 rounded-xl border border-amber-300/40 bg-amber-500/10 px-3 py-2 text-amber-100 font-bold">No trades executed: ${manualBtEscapeHtml(s.no_trade_reason)}</div>`;
         }
     }
 
@@ -4373,14 +4408,14 @@ function renderBtTradesPage() {
         const plClass = t.pl_pct >= 0 ? 'text-emerald-600 font-bold' : 'text-red-500 font-bold';
         const isOption = t.option_type !== undefined;
         let entryHtml = `
-            <div class="text-xs font-semibold text-indigo-950">${formatDate(t.entry_time)}</div>
-            <div class="text-[0.6rem] text-purple-400 font-medium mt-0.5">Entry @ $${formatAssetPrice(t.entry_price, isCrypto(t.symbol || window.activeTicker))}</div>
+            <div class="text-xs font-semibold text-indigo-950">${manualBtEscapeHtml(formatDate(t.entry_time))}</div>
+            <div class="text-[0.6rem] text-purple-400 font-medium mt-0.5">Entry @ $${manualBtEscapeHtml(formatAssetPrice(t.entry_price, isCrypto(t.symbol || window.activeTicker)))}</div>
         `;
         let exitHtml = `
-            <div class="text-xs font-semibold text-indigo-950">${formatDate(t.exit_time)}</div>
-            <div class="text-[0.6rem] text-purple-400 font-medium mt-0.5">Exit @ $${formatAssetPrice(t.exit_price, isCrypto(t.symbol || window.activeTicker))}</div>
+            <div class="text-xs font-semibold text-indigo-950">${manualBtEscapeHtml(formatDate(t.exit_time))}</div>
+            <div class="text-[0.6rem] text-purple-400 font-medium mt-0.5">Exit @ $${manualBtEscapeHtml(formatAssetPrice(t.exit_price, isCrypto(t.symbol || window.activeTicker)))}</div>
         `;
-        let qtyHtml = `${t.qty.toFixed(4)}`;
+        let qtyHtml = manualBtEscapeHtml(Number.isFinite(Number(t.qty)) ? Number(t.qty).toFixed(4) : '—');
 
         if (isOption) {
             const eg = t.entry_greeks || {};
@@ -4388,8 +4423,8 @@ function renderBtTradesPage() {
             const formatIvPct = (displayIv, greekIv) => Number.isFinite(Number(displayIv))
                 ? Number(displayIv).toFixed(1)
                 : (Number.isFinite(Number(greekIv)) ? (Number(greekIv) * 100).toFixed(1) : '—');
-            const egHtml = eg.delta !== undefined ? `<div class="text-[0.55rem] font-mono text-purple-600 bg-purple-50/80 px-1.5 py-0.5 rounded border border-purple-200/60 mt-1 inline-block" title="Black-Scholes-Merton entry Greeks">Δ ${eg.delta} · Γ ${eg.gamma} · Θ ${eg.theta} · ν ${eg.vega} · IV ${formatIvPct(t.entry_iv, eg.iv)}%</div>` : '';
-            const xgHtml = xg.delta !== undefined ? `<div class="text-[0.55rem] font-mono text-indigo-600 bg-indigo-50/80 px-1.5 py-0.5 rounded border border-indigo-200/60 mt-1 inline-block" title="Black-Scholes-Merton exit Greeks">Δ ${xg.delta} · Γ ${xg.gamma} · Θ ${xg.theta} · ν ${xg.vega} · IV ${formatIvPct(t.exit_iv, xg.iv)}%</div>` : '';
+            const egHtml = eg.delta !== undefined ? `<div class="text-[0.55rem] font-mono text-purple-600 bg-purple-50/80 px-1.5 py-0.5 rounded border border-purple-200/60 mt-1 inline-block" title="Black-Scholes-Merton entry Greeks">Δ ${manualBtEscapeHtml(eg.delta)} · Γ ${manualBtEscapeHtml(eg.gamma)} · Θ ${manualBtEscapeHtml(eg.theta)} · ν ${manualBtEscapeHtml(eg.vega)} · IV ${manualBtEscapeHtml(formatIvPct(t.entry_iv, eg.iv))}%</div>` : '';
+            const xgHtml = xg.delta !== undefined ? `<div class="text-[0.55rem] font-mono text-indigo-600 bg-indigo-50/80 px-1.5 py-0.5 rounded border border-indigo-200/60 mt-1 inline-block" title="Black-Scholes-Merton exit Greeks">Δ ${manualBtEscapeHtml(xg.delta)} · Γ ${manualBtEscapeHtml(xg.gamma)} · Θ ${manualBtEscapeHtml(xg.theta)} · ν ${manualBtEscapeHtml(xg.vega)} · IV ${manualBtEscapeHtml(formatIvPct(t.exit_iv, xg.iv))}%</div>` : '';
             const sourceLabel = (source) => source === 'historical_obbo'
                 ? 'Historical bid/ask'
                 : (source === 'historical_option_mark' ? 'Historical mark' : 'BSM + spread');
@@ -4397,22 +4432,23 @@ function renderBtTradesPage() {
             const exitSource = sourceLabel(t.exit_price_source);
 
             entryHtml = `
-                <div class="text-xs font-semibold text-indigo-950">${formatDate(t.entry_time)}</div>
-                <div class="text-[0.65rem] text-indigo-600 font-black mt-0.5">${t.option_type} $${t.strike} @ $${formatAssetPrice(t.entry_price, isCrypto(t.symbol || window.activeTicker))}</div>
-                <div class="text-[0.55rem] text-slate-400">Stock: $${formatAssetPrice(t.entry_underlying, isCrypto(t.symbol || window.activeTicker))}</div>
-                ${t.contract_symbol ? `<div class="text-[0.5rem] text-slate-400 font-mono truncate max-w-[160px]" title="${t.contract_symbol}">${t.contract_symbol}</div>` : ''}
+                <div class="text-xs font-semibold text-indigo-950">${manualBtEscapeHtml(formatDate(t.entry_time))}</div>
+                <div class="text-[0.65rem] text-indigo-600 font-black mt-0.5">${manualBtEscapeHtml(t.option_type)} $${manualBtEscapeHtml(t.strike)} @ $${manualBtEscapeHtml(formatAssetPrice(t.entry_price, isCrypto(t.symbol || window.activeTicker)))}</div>
+                <div class="text-[0.55rem] text-slate-400">Stock: $${manualBtEscapeHtml(formatAssetPrice(t.entry_underlying, isCrypto(t.symbol || window.activeTicker)))}</div>
+                ${t.contract_symbol ? `<div class="text-[0.5rem] text-slate-400 font-mono truncate max-w-[160px]" title="${manualBtEscapeAttr(t.contract_symbol)}">${manualBtEscapeHtml(t.contract_symbol)}</div>` : ''}
                 <div class="text-[0.5rem] text-slate-400">Fill: ${entrySource}</div>
                 ${egHtml}
             `;
             exitHtml = `
-                <div class="text-xs font-semibold text-indigo-950">${formatDate(t.exit_time)}</div>
-                <div class="text-[0.65rem] text-indigo-600 font-black mt-0.5">Exit @ $${formatAssetPrice(t.exit_price, isCrypto(t.symbol || window.activeTicker))}</div>
-                <div class="text-[0.55rem] text-slate-400">Stock: $${formatAssetPrice(t.exit_underlying, isCrypto(t.symbol || window.activeTicker))}</div>
+                <div class="text-xs font-semibold text-indigo-950">${manualBtEscapeHtml(formatDate(t.exit_time))}</div>
+                <div class="text-[0.65rem] text-indigo-600 font-black mt-0.5">Exit @ $${manualBtEscapeHtml(formatAssetPrice(t.exit_price, isCrypto(t.symbol || window.activeTicker)))}</div>
+                <div class="text-[0.55rem] text-slate-400">Stock: $${manualBtEscapeHtml(formatAssetPrice(t.exit_underlying, isCrypto(t.symbol || window.activeTicker)))}</div>
                 <div class="text-[0.5rem] text-slate-400">Fill: ${exitSource}</div>
                 ${xgHtml}
-                <div class="text-[0.55rem] text-rose-500 font-bold max-w-[140px] truncate mt-0.5" title="${t.reason || ''}">${t.reason || ''}</div>
+                <div class="text-[0.55rem] text-rose-500 font-bold max-w-[140px] truncate mt-0.5" title="${manualBtEscapeAttr(t.reason)}">${manualBtEscapeHtml(t.reason)}</div>
             `;
-            qtyHtml = `${t.qty} Contract${t.qty !== 1 ? 's' : ''}`;
+            const safeOptionQty = manualBtEscapeHtml(Number.isFinite(Number(t.qty)) ? Number(t.qty).toFixed(4) : '—');
+            qtyHtml = `${safeOptionQty} Contract${Number(t.qty) !== 1 ? 's' : ''}`;
         }
 
         const row = `

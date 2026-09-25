@@ -14,6 +14,9 @@ Key outputs:
 import numpy as np
 import random
 
+MAX_MONTE_CARLO_TRADES = 5_000
+MAX_MONTE_CARLO_SIMULATIONS = 5_000
+
 
 def _compute_sharpe(returns: np.ndarray, n_per_year: int = 252) -> float:
     """Annualised Sharpe from a trade-level return series."""
@@ -63,6 +66,20 @@ def run_monte_carlo(
     Returns:
         dict with summary stats, overfitting risk, and fan chart data.
     """
+    if not isinstance(trades, list):
+        return {"error": "Trades must be provided as a list."}
+    if len(trades) > MAX_MONTE_CARLO_TRADES:
+        return {"error": f"Too many trades; the maximum is {MAX_MONTE_CARLO_TRADES}."}
+    if any(not isinstance(trade, dict) for trade in trades):
+        return {"error": "Each trade must be an object."}
+    try:
+        n_simulations = int(n_simulations)
+    except (TypeError, ValueError):
+        return {"error": "n_simulations must be an integer."}
+    if n_simulations < 1:
+        return {"error": "n_simulations must be at least 1."}
+    n_simulations = min(n_simulations, MAX_MONTE_CARLO_SIMULATIONS)
+
     if not trades or len(trades) < 3:
         return {"error": "Need at least 3 trades to run Monte Carlo simulation."}
 

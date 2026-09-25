@@ -6,12 +6,24 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     ports:
-      - "8080:8080"
-    env_file:
-      - ./backend/.env
+      - "127.0.0.1:8080:8080"
+    # Secrets must be exported by the caller or injected by the runtime. Do
+    # not load a credential-bearing checkout file into the container.
+    environment:
+      ENV: development
+      VAULT_SECRET_KEY: ${VAULT_SECRET_KEY:-}
+      VAULT_SECRET_KEY_VERSION: ${VAULT_SECRET_KEY_VERSION:-2}
+      VAULT_SECRET_KEY_PREVIOUS: ${VAULT_SECRET_KEY_PREVIOUS:-}
+      VAULT_SECRET_KEY_PREVIOUS_VERSION: ${VAULT_SECRET_KEY_PREVIOUS_VERSION:-1}
+      FIREBASE_SERVICE_ACCOUNT: ${FIREBASE_SERVICE_ACCOUNT:-}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+      BOTBULLS_TOKEN_DIR: /app/data/secrets
     volumes:
-      - ./backend:/app
+      - backend_data:/app/data
     restart: always
+
+volumes:
+  backend_data:
 
 # Note: For Google Cloud Run, you only need the Dockerfile.
 # This compose file is for local development and testing.

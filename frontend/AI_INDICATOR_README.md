@@ -24,7 +24,18 @@ The setup score is a rule-based setup-quality measure. It is not a forecast prob
 
 The settings button on the card supports 1Min, 5Min, 15Min, 30Min, 1Hour, 4Hour, and 1Day decision candles. Only completed candles are used. Dashboard, Bots, and Backtest persist separate settings and caches.
 
-News sentiment intentionally has no candle timeframe. Dashboard and Bots cache it by ticker and selected AI model, then reuse it as limited confirmation across decision intervals. An enabled Screener profile separately checks Yahoo Finance headline metadata every 60 seconds, uses Google News RSS when Yahoo coverage is insufficient, and reruns AI classification only when the article set changes. Historical backtest execution uses each replay bar's actual strategy timeframe and does not receive live news, preventing timeframe relabeling and look-ahead.
+News sentiment intentionally has no candle timeframe. Dashboard and Bots cache it by ticker and selected AI model, then reuse it as limited confirmation across decision intervals. Screener news is a separate, mode-controlled event leg: Combined, Event-Driven, and Discovery profiles enable the read-only watcher; Technical Only profiles disable it. The watcher checks Yahoo Finance headline metadata every 60 seconds, uses Google News RSS when Yahoo coverage is insufficient, and reruns AI classification only when the article set changes. Historical backtest execution uses each replay bar's actual strategy timeframe and does not receive live news, preventing timeframe relabeling and look-ahead.
+
+## Screener qualification modes
+
+The Screener is an analysis and notification surface, not an order executor. Its qualification mode determines which evidence is allowed to produce a new setup:
+
+- **Combined · Require Both** (default): completed-candle technical confirmation and a recent qualifying catalyst must both pass in the same direction.
+- **Technical Only**: only the completed-candle technical leg is evaluated. News Watch is automatically disabled and is shown as `Disabled` in the profile settings.
+- **Event-Driven Only**: a recent, directly relevant catalyst may qualify the setup without technical confirmation. News Watch is automatically enabled.
+- **Discovery · Either Qualifies**: either leg may surface a candidate. An explicit conflict between qualifying technical and event directions is blocked as a safety veto. News Watch is automatically enabled.
+
+For the swing-oriented starting profile, stocks default to `1Day`, crypto defaults to `4Hour`, refresh every 15 minutes, and use EMA Cross, SMA, RSI, and ADX Trend with a starting confirmation threshold of 3. These are conservative starting settings, not performance claims or optimized parameters. Technical checks use completed candles and require sufficient history plus a simple trend-structure guard.
 
 ## Settings
 
@@ -37,7 +48,7 @@ News sentiment intentionally has no candle timeframe. Dashboard and Bots cache i
 - News conflict handling: block conflicting new entries or information-only
 - Analysis cache: 1–120 minutes; default 30
 
-Saving settings clears the page-specific technical decision cache and immediately recalculates the active ticker. The Screener profile setting `Ticker News Watch` controls its independent 60-second watcher. Seen article identities and the last valid four-article summary are stored in local SQLite so a backend restart does not mark old headlines as new. The Quant decision cache does not delay this watcher.
+Saving settings clears the page-specific technical decision cache and immediately recalculates the active ticker. The Screener settings show a read-only News Watch status because the qualification mode controls it: `Enabled` for Combined, Event-Driven, and Discovery, and `Disabled` for Technical Only. Seen article identities and the last valid four-article summary are stored in local SQLite so a backend restart does not mark old headlines as new. A new headline can trigger an immediate Screener re-evaluation, while unchanged headlines do not create repeated event alerts. The Quant decision cache does not delay this watcher.
 
 The AI model is selected exclusively from the settings modal to keep the card header uncluttered. Model choices are persisted independently for Dashboard, Bots, and Backtest, just like the remaining Quant AI settings.
 
@@ -49,4 +60,4 @@ The expanded stock-analysis section provides six auditable technical views (tren
 
 ## Safety boundaries
 
-For BUY, the backend requires `stop_loss < entry_price < sell_target`. For SELL, it requires `sell_target < entry_price < stop_loss`. News never creates a trade by itself. LLM output is retained as diagnostic metadata, while executable fields come from the deterministic assessment.
+For BUY, the backend requires `stop_loss < entry_price < sell_target`. For SELL, it requires `sell_target < entry_price < stop_loss`. In Combined mode, a news headline alone cannot qualify a new setup, and news never creates a trade by itself. LLM output is retained as diagnostic metadata, while Screener qualification fields come from the deterministic assessment. Missing, stale, degraded, or conflicting evidence blocks a new qualification rather than being treated as neutral confirmation.

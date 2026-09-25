@@ -13,3 +13,12 @@ settings.json
 data/
 *.db
 .DS_Store
+# Never copy service-account credentials or private keys into image layers.
+serviceAccount.json
+firebase-service-account*.json
+*_service_account*.json
+*.pem
+conf/
+token*.txt
+*.bak
+backups/

@@ -16,6 +16,8 @@ from zoneinfo import ZoneInfo
 
 import yfinance as yf
 
+from instrument_types import is_known_etf
+
 from cache_manager import TTLCacheStore
 
 
@@ -152,7 +154,7 @@ def _fetch_raw(ticker: str) -> dict[str, Any]:
     symbol = str(ticker or "").upper().strip()
     if not symbol:
         raise ValueError("Ticker is required")
-    if _is_crypto(symbol):
+    if _is_crypto(symbol) or is_known_etf(symbol):
         return {"symbol": symbol, "not_applicable": True, "status": "not_applicable"}
 
     yf_ticker = yf.Ticker(symbol)
@@ -327,7 +329,14 @@ def build_earnings_watch(ticker: str, previous: dict | None = None, options_prof
     try:
         raw = _get_raw(ticker, force=force)
         if raw.get("not_applicable"):
-            return {"enabled": True, "status": "not_applicable", "ticker": str(ticker or "").upper(), "checked_at": checked_at, "source": "Yahoo Finance"}
+            return {
+                "enabled": True,
+                "status": "not_applicable",
+                "ticker": str(ticker or "").upper(),
+                "checked_at": checked_at,
+                "next_check_at": time.time() + _RAW_CACHE_TTL_SECONDS,
+                "source": "Yahoo Finance",
+            }
         event_date = _as_date(raw.get("event_date"))
         today = checked.astimezone(CENTRAL_TZ).date()
         days_to_event = (event_date - today).days if event_date else None

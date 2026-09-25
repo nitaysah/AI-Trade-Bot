@@ -10,6 +10,7 @@ Implements production-grade risk controls:
 """
 
 from datetime import datetime
+import math
 
 import config as global_config
 import pytz
@@ -293,6 +294,21 @@ class RiskManager:
             # Default to ATR for sltp, hybrid, or indicator modes
             stop_distance = atr * stop_mult
 
+        try:
+            bot_max_pos = float(t_settings.get('max_position_pct', self.max_position_pct))
+        except (TypeError, ValueError):
+            bot_max_pos = 0.0
+        if not math.isfinite(bot_max_pos) or not 0.0 < bot_max_pos <= 1.0:
+            return {
+                'shares': 0,
+                'notional': 0.0,
+                'stop_loss': 0.0,
+                'take_profit': 0.0,
+                'risk_amount': 0.0,
+                'stop_distance': 0.0,
+                'error': 'Invalid maximum position concentration',
+            }
+
         # Accumulate strategy exit parameters for logging inside parenthesis
         strategy_parts = []
         if sell_mode in ['sltp', 'hybrid', 'atr', 'hybrid_atr']:
@@ -336,7 +352,24 @@ class RiskManager:
 
         if custom_amount is not None:
             # Fixed Amount Sizing
-            notional = float(custom_amount)
+            try:
+                notional = float(custom_amount)
+            except (TypeError, ValueError):
+                notional = 0.0
+            if not math.isfinite(notional) or notional <= 0:
+                return {
+                    'shares': 0,
+                    'notional': 0.0,
+                    'stop_loss': 0.0,
+                    'take_profit': 0.0,
+                    'risk_amount': 0.0,
+                    'stop_distance': 0.0,
+                    'error': 'Invalid fixed allocation amount',
+                }
+            max_notional = capital_basis * bot_max_pos
+            if notional > max_notional:
+                notional = max_notional
+                print(f"[risk] Capping fixed allocation to max concentration: ${notional:.2f}")
             shares = notional / entry_price
             risk_amount = shares * stop_distance
             
@@ -360,12 +393,10 @@ class RiskManager:
             print(log_msg)
             
             # Cap position size to max portfolio concentration
-            bot_max_pos = t_settings.get('max_position_pct', self.max_position_pct)
-            if bot_max_pos is not None:
-                max_notional = capital_basis * bot_max_pos
-                if notional > max_notional:
-                    notional = max_notional
-                    print(f"[risk] Capping trade size to max concentration: ${notional:.2f}")
+            max_notional = capital_basis * bot_max_pos
+            if notional > max_notional:
+                notional = max_notional
+                print(f"[risk] Capping trade size to max concentration: ${notional:.2f}")
         
         # 2. Buying Power Check (CRITICAL FIX)
         if available_cash is not None:
