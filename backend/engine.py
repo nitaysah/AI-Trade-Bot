@@ -2317,6 +2317,9 @@ class UserEngine:
 
     async def load_from_cloud(self):
         if not self.db:
+            # Without a persistence backend there are no saved user choices
+            # to restore, so keep first-use indicator activation disabled.
+            self.config.disable_indicator_toggles()
             self.alpaca_load_status = "no_firestore"
             self.alpaca_load_error = "Firestore is not configured on the server."
             return False
@@ -2415,6 +2418,16 @@ class UserEngine:
                 self.config.WATCHLIST = ui.get("watchlist", self.config.WATCHLIST)
                 self.config.TRADELIST = ui.get("tradelist", self.config.TRADELIST)
                 self.config.DEFAULT_TIMEFRAME = ui.get("strategy_timeframe", self.config.DEFAULT_TIMEFRAME)
+                persisted_toggles = ui.get("toggles", {})
+                if isinstance(persisted_toggles, dict):
+                    self.config.toggles.update({
+                        str(key): bool(value)
+                        for key, value in persisted_toggles.items()
+                        if str(key).startswith("ENABLE_")
+                    })
+                persisted_parameters = ui.get("parameters", {})
+                if isinstance(persisted_parameters, dict):
+                    self.config.parameters.update(persisted_parameters)
                 self.config.TICKER_SETTINGS = ui.get("ticker_settings", {})
                 # Live bots always retain the server-side risk policy. Older
                 # persisted settings may contain a client-supplied opt-out;
@@ -2442,6 +2455,12 @@ class UserEngine:
                     if ctx_name in self.config.contexts:
                         self.config.contexts[ctx_name]["toggles"].update(ctx_data.get("toggles", {}))
                         self.config.contexts[ctx_name]["parameters"].update(ctx_data.get("parameters", {}))
+            else:
+                # A first-use account has no saved choices yet. Keep all
+                # indicator/AI activation toggles off while retaining the
+                # normal parameter defaults above. Existing accounts enter the
+                # branch above and keep their persisted settings.
+                self.config.disable_indicator_toggles()
                 
             # High-frequency scan history is local-first SQLite state. It is
             # loaded independently of Firestore so quota outages cannot erase

@@ -363,6 +363,13 @@ class ScreenerUserState:
                 local_data = await asyncio.to_thread(load_legacy)
 
             self._apply(local_data or {})
+            if not local_data:
+                # Screener has independent persistence from the trading
+                # engine. A first-use account must also begin with every
+                # indicator/AI activation toggle disabled, and that choice
+                # must survive the first local-state save/reload.
+                self.config.disable_indicator_toggles()
+                self.config.contexts["screener"]["toggles"] = dict(self.config.toggles)
             self.loaded = True
 
     async def save(self) -> bool:

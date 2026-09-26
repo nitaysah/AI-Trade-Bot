@@ -34,6 +34,12 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
         rel="stylesheet">
     <link rel="stylesheet" href="styles.css?v=64">
+    <style id="auth-guard-style">
+        html.auth-pending body { visibility: hidden; }
+    </style>
+    <script>
+        document.documentElement.classList.add('auth-pending');
+    </script>
     <!-- Firebase Sentinel (Auth Guard) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
@@ -44,6 +50,7 @@
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         window.auth = auth; // Expose for app.js
+        const releaseAuthGuard = () => document.documentElement.classList.remove('auth-pending');
 
         // 1-Hour Session Timeout Check (Inactivity-based)
         const enforceSessionTimeout = async () => {
@@ -71,14 +78,16 @@
             if (!user) {
                 if (localStorage.getItem('dev_mode') === 'true') {
                     console.log("[auth] Dev mode bypass active.");
+                    releaseAuthGuard();
                     return;
                 }
-                window.location.href = "index.html";
+                window.location.replace("index.html");
             } else {
                 if (!localStorage.getItem('loginTimestamp')) {
                     localStorage.setItem('loginTimestamp', Date.now().toString());
                 }
                 await enforceSessionTimeout();
+                if (auth.currentUser?.uid === user.uid) releaseAuthGuard();
             }
         });
 

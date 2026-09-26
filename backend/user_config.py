@@ -57,6 +57,15 @@ class UserConfig:
             "backtest": { "toggles": {}, "parameters": {} }
         }
 
+    def disable_indicator_toggles(self):
+        """Start a first-use account with every ENABLE_* feature off.
+
+        Parameter values still come from the normal application defaults. This
+        only changes activation state; persisted user settings can enable the
+        desired indicators later.
+        """
+        self.toggles = {key: False for key in self.toggles}
+
     @property
     def TICKER_SETTINGS(self):
         overlay = active_draft_ticker_settings.get()

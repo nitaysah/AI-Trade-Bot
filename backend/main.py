@@ -2065,15 +2065,6 @@ async def verify_token(request: Request, authorization: str = Header(None)):
             raise HTTPException(status_code=401, detail="Development authentication is loopback-only")
     try:
         claims = auth.verify_id_token(token)
-        sign_in_provider = ((claims.get("firebase") or {}).get("sign_in_provider"))
-        if sign_in_provider == "password" and claims.get("email_verified") is not True:
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "code": "EMAIL_VERIFICATION_REQUIRED",
-                    "message": "Verify your email before accessing protected platform features.",
-                },
-            )
         return claims
     except HTTPException:
         raise

@@ -27,6 +27,12 @@
         rel="stylesheet">
     <link rel="stylesheet" href="styles.css?v=58">
     <script src="alpaca-status-cache.js?v=1"></script>
+    <style id="auth-guard-style">
+        html.auth-pending body { visibility: hidden; }
+    </style>
+    <script>
+        document.documentElement.classList.add('auth-pending');
+    </script>
     <!-- Firebase Sentinel (Auth Guard) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
@@ -37,6 +43,7 @@
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         window.auth = auth;
+        const releaseAuthGuard = () => document.documentElement.classList.remove('auth-pending');
 
         const enforceSessionTimeout = async () => {
             const loginTime = localStorage.getItem('loginTimestamp');
@@ -63,14 +70,16 @@
             if (!user) {
                 if (localStorage.getItem('dev_mode') === 'true') {
                     console.log("[auth] Dev mode bypass active.");
+                    releaseAuthGuard();
                     return;
                 }
-                window.location.href = "index.html";
+                window.location.replace("index.html");
             } else {
                 if (!localStorage.getItem('loginTimestamp')) {
                     localStorage.setItem('loginTimestamp', Date.now().toString());
                 }
                 await enforceSessionTimeout();
+                if (auth.currentUser?.uid === user.uid) releaseAuthGuard();
             }
         });
 

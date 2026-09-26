@@ -708,7 +708,7 @@ const MANUAL_BT_CHART_PREVIEW_INDICATORS = [
 ];
 const MANUAL_BT_PREMIUM_INDICATORS = new Set(['BotBulls1', 'BotBulls2', 'BotBulls3', 'BotBulls5']);
 const MANUAL_BT_INDICATOR_PREF_KEY = 'manualBacktestChartIndicatorsV1';
-const MANUAL_BT_DEFAULT_INDICATORS = new Set(['RSI', 'MACD', 'EMA Cross', 'Supertrend', 'VWAP', 'BotBulls1', 'BotBulls2', 'BotBulls3']);
+const MANUAL_BT_DEFAULT_INDICATORS = new Set();
 const MANUAL_BT_REPLAY_CACHE_LIMIT = 8;
 // ────────────────────────────────────────────────────────────────────────
 
