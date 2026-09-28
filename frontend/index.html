@@ -77,6 +77,24 @@
         .auth-transition-spinner { animation: authTransitionSpin 1s linear infinite; }
         @keyframes authTransitionSpin { to { transform: rotate(360deg); } }
         @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
+        @media (max-width: 768px) {
+            input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="file"]):not([type="color"]):not([type="image"]):not([type="hidden"]),
+            select,
+            textarea,
+            [contenteditable]:not([contenteditable="false"]) {
+                font-size: 12px !important;
+                line-height: 1.2 !important;
+                font-weight: 500 !important;
+                touch-action: manipulation;
+            }
+
+            input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="file"]):not([type="color"]):not([type="image"]):not([type="hidden"]):focus,
+            textarea:focus,
+            [contenteditable]:not([contenteditable="false"]):focus {
+                font-size: 12px !important;
+                font-weight: 500 !important;
+            }
+        }
         /* Match the dashboard's bright purple glass language. */
         .dashboard-like .text-white { color: #312e81 !important; }
         .dashboard-like .text-slate-200 { color: #37306f !important; }

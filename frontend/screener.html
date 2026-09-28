@@ -27,7 +27,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
         rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=86">
+    <link rel="stylesheet" href="styles.css?v=90">
     <style>
         /* Screener is signal-only: keep analysis controls, remove broker/execution controls inherited from Bots. */
         #alpacaLinkRedirectBtn, #btnUnlinkAlpaca, #alpacaLinkStatus,
@@ -804,7 +804,7 @@
                     <!-- Independent Screener policy: technical, event, or both. -->
                     <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3 rounded-2xl border border-emerald-200/70 bg-emerald-50/40 shadow-sm">
                         <div class="sm:col-span-2 space-y-1.5">
-                            <label class="block text-[0.65rem] font-black text-indigo-900 uppercase tracking-widest">Screener Qualification Mode</label>
+                            <label class="screener-policy-label block text-[0.65rem] font-black text-indigo-900 uppercase tracking-widest">Screener Qualification Mode</label>
                             <select id="strategyScreeningMode_regular"
                                 onchange="window.syncScreenerNewsWatchForMode?.(this.value)"
                                 class="w-full bg-white/70 backdrop-blur-md border border-white/60 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/90 focus:border-emerald-400 outline-none cursor-pointer">
@@ -813,10 +813,10 @@
                                 <option value="event">Event-Driven Only</option>
                                 <option value="discovery">Discovery · Either Qualifies</option>
                             </select>
-                            <p class="text-[0.55rem] text-indigo-600 font-semibold">Combined is the default. Discovery surfaces either leg, but blocks an explicit technical/event conflict.</p>
+                            <p class="screener-policy-help text-[0.55rem] text-indigo-600 font-semibold">Combined is the default. Discovery surfaces either leg, but blocks an explicit technical/event conflict.</p>
                         </div>
                         <div class="space-y-1.5">
-                            <label class="block text-[0.65rem] font-black text-indigo-900 uppercase tracking-widest">Catalyst Age</label>
+                            <label class="screener-policy-label block text-[0.65rem] font-black text-indigo-900 uppercase tracking-widest">Catalyst Age</label>
                             <select id="strategyEventMaxAgeDays_regular"
                                 class="w-full bg-white/70 backdrop-blur-md border border-white/60 rounded-xl px-3 py-2 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/90 focus:border-emerald-400 outline-none cursor-pointer">
                                 <option value="1">1 day</option>
@@ -825,7 +825,7 @@
                                 <option value="10" selected>10 days</option>
                                 <option value="30">30 days</option>
                             </select>
-                            <p class="text-[0.55rem] text-indigo-600 font-semibold">Older headlines cannot qualify a new event setup.</p>
+                            <p class="screener-policy-help text-[0.55rem] text-indigo-600 font-semibold">Older headlines cannot qualify a new event setup.</p>
                         </div>
                     </div>
 

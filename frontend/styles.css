@@ -4169,3 +4169,53 @@ html body #manualBtChartPreviewPremiumSignalGrid .signal-card p {
         line-height: 1 !important;
     }
 }
+
+/* Keep mobile field boxes compact and normal-weight across all pages. The
+   impossible compound ID branch gives this final safeguard enough
+   specificity to override compact, field-specific rules above. */
+@media (max-width: 768px) {
+    html body :is(
+        #mobileTextZoomGuardFinalA#mobileTextZoomGuardFinalB#mobileTextZoomGuardFinalC,
+        input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="file"]):not([type="color"]):not([type="image"]):not([type="hidden"]),
+        select,
+        textarea,
+        [contenteditable]:not([contenteditable="false"])
+    ) {
+        font-size: 12px !important;
+        line-height: 1.2 !important;
+        font-weight: 500 !important;
+        touch-action: manipulation;
+    }
+
+    html body :is(
+        #mobileTextZoomGuardFocusA#mobileTextZoomGuardFocusB#mobileTextZoomGuardFocusC,
+        input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="file"]):not([type="color"]):not([type="image"]):not([type="hidden"]):focus,
+        textarea:focus,
+        [contenteditable]:not([contenteditable="false"]):focus
+    ) {
+        font-size: 12px !important;
+        font-weight: 500 !important;
+    }
+}
+
+/* Keep the Screener policy labels and helper copy readable while keeping the
+   selected dropdown values compact on mobile. */
+@media (max-width: 768px) {
+    html body .screener-policy-label,
+    html body .screener-policy-help {
+        font-size: 16px !important;
+        line-height: 1.25 !important;
+    }
+
+    html body :is(
+        #mobileTextZoomGuardFinalA#mobileTextZoomGuardFinalB#mobileTextZoomGuardFinalC,
+        #strategyScreeningMode_regular,
+        #strategyEventMaxAgeDays_regular,
+        #strategyScreeningMode_regular option,
+        #strategyEventMaxAgeDays_regular option
+    ) {
+        font-size: 12px !important;
+        line-height: 1.2 !important;
+        font-weight: 500 !important;
+    }
+}
