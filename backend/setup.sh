@@ -40,7 +40,10 @@ fi
 # 3. Install the repository's hash-locked dependency graph.
 echo "📥 Installing hash-locked dependencies..."
 source venv/bin/activate
-python -m pip install --require-hashes -r requirements.lock.txt
+# The lock lists the complete transitive graph.  Install it as an exact
+# artifact so package metadata extras cannot ask pip to resolve a different
+# platform/Python-specific version.
+python -m pip install --require-hashes --no-deps -r requirements.lock.txt
 python -m pip install --require-hashes --no-deps -r webull-requirements.lock.txt
 
 # 4. Generate .env file if missing

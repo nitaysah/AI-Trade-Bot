@@ -94,7 +94,9 @@ jobs:
               "$PYTHON_BIN" -m venv venv
             fi
             source venv/bin/activate
-            python -m pip install --require-hashes -r backend/requirements.lock.txt
+            # The lock lists the complete transitive graph; install it as an
+            # exact artifact instead of resolving metadata extras again.
+            python -m pip install --require-hashes --no-deps -r backend/requirements.lock.txt
             python -m pip install --require-hashes --no-deps -r backend/webull-requirements.lock.txt
             
             # Inject secrets through a root-owned systemd environment file,
