@@ -139,7 +139,7 @@
         window.scrollTo(0, state.scrollY);
     }
 
-    function sync() {
+    function sync({ refreshActiveRoots = false } = {}) {
         const openRoots = new Set(
             Array.from(document.querySelectorAll(modalSelector)).filter(isOpen)
         );
@@ -151,8 +151,15 @@
             }
         });
         openRoots.forEach(root => {
-            applyRootStyles(root);
-            activeRoots.add(root);
+            // The observer watches class changes. Reapplying inline styles on
+            // every observer pass can mutate the same root again and create a
+            // renderer-freezing MutationObserver loop when a modal opens.
+            // Apply styles once per open cycle; explicit viewport changes use
+            // refreshActiveRoots below to recalculate the mobile layout.
+            if (!activeRoots.has(root) || refreshActiveRoots) {
+                applyRootStyles(root);
+                activeRoots.add(root);
+            }
         });
 
         if (activeRoots.size > 0) lockBody();
@@ -167,8 +174,8 @@
             attributes: true,
             attributeFilter: ['class'],
         });
-        window.addEventListener('resize', sync, { passive: true });
-        window.addEventListener('orientationchange', sync, { passive: true });
+        window.addEventListener('resize', () => sync({ refreshActiveRoots: true }), { passive: true });
+        window.addEventListener('orientationchange', () => sync({ refreshActiveRoots: true }), { passive: true });
     }
 
     if (document.body) start();

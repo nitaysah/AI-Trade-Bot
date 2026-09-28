@@ -70,8 +70,8 @@
         .terms-modal-footer { background: linear-gradient(135deg, rgba(250,245,255,.74), rgba(238,242,255,.76)); border-color: rgba(196,181,253,.52) !important; }
         .terms-modal-accept { background: linear-gradient(135deg, rgba(192,132,252,.92), rgba(129,140,248,.92)); border: 1px solid rgba(126,34,206,.38); color: #3b0764; box-shadow: 0 7px 18px rgba(139,92,246,.22), inset 0 1px 0 rgba(255,255,255,.65); }
         .terms-modal-accept:hover { background: linear-gradient(135deg, rgba(216,180,254,.98), rgba(165,180,252,.98)); box-shadow: 0 10px 24px rgba(139,92,246,.3), inset 0 1px 0 rgba(255,255,255,.78); }
-        .modal-backdrop { background: rgba(2,6,23,.78); backdrop-filter: blur(12px); }
-        .modal-panel { animation: modalIn .22s ease-out both; }
+        .modal-backdrop { background: rgba(2,6,23,.78); backdrop-filter: none; -webkit-backdrop-filter: none; }
+        .modal-panel { animation: none; }
         @keyframes modalIn { from { opacity: 0; transform: translateY(12px) scale(.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
         .auth-transition-screen { background: #f5f3ff; }
         .auth-transition-spinner { animation: authTransitionSpin 1s linear infinite; }
@@ -287,7 +287,7 @@
                     </div>
 
                     <div id="consentPanel" class="modal-backdrop fixed inset-0 z-[60] hidden items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="consentTitle" aria-describedby="consentDescription">
-                        <div class="modal-panel w-full max-w-lg overflow-hidden rounded-3xl border border-purple-200/80 bg-white/95 text-left shadow-2xl shadow-indigo-900/20 backdrop-blur-xl">
+                        <div class="modal-panel w-full max-w-lg overflow-hidden rounded-3xl border border-purple-200/80 bg-white/95 text-left shadow-2xl shadow-indigo-900/20">
                             <div class="terms-modal-header border-b px-6 py-5">
                                 <div class="mono text-[9px] font-bold uppercase tracking-[.25em] text-purple-700">Required before access</div>
                                 <h2 id="consentTitle" class="mt-2 text-xl font-bold text-indigo-950">Review agreements to continue</h2>
@@ -1172,11 +1172,6 @@
         signInModeBtn.addEventListener('click', () => setAuthMode('signin'));
         signUpModeBtn.addEventListener('click', () => {
             setAuthMode('signup');
-            if (!hasRequiredConsent()) {
-                authDebug('signup-mode-open-consent');
-                showConsentPanel();
-                setStatus('Review and accept the agreements before creating your account', 'amber');
-            }
         });
         togglePasswordBtn.addEventListener('click', () => {
             const showing = passwordInput.type === 'text';
@@ -1446,6 +1441,6 @@
             });
         }
     </script>
-    <script src="modal-scroll-lock.js?v=1"></script>
+    <script src="modal-scroll-lock.js?v=2"></script>
 </body>
 </html>
