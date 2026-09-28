@@ -31,6 +31,9 @@ LOG_FILE="${BOTBULLS_LOG_FILE:-$DIR/stdout.log}"
 if [ "$FOREGROUND" = "true" ]; then
     # Keep systemd/journal stdout while also retaining a file beside the
     # backend code for simple local inspection and incident troubleshooting.
+    umask 077
+    touch "$LOG_FILE"
+    chmod 600 "$LOG_FILE"
     exec > >(tee -a "$LOG_FILE") 2>&1
 fi
 if [ "$FOREGROUND" != "true" ]; then
