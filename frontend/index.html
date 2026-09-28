@@ -457,7 +457,16 @@
         const REDIRECT_PENDING_KEY = "botbulls_google_redirect_pending";
         const PENDING_NEW_USER_KEY = "botbulls_pending_new_user_uid";
         const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://localhost:8000' : 'https://207-211-184-22.sslip.io';
-        const app = initializeApp(firebaseConfig);
+        // Firebase redirect auth must use the same Firebase Hosting origin on
+        // web.app. Cross-site firebaseapp.com helpers are blocked by modern
+        // browser storage partitioning on Safari, Firefox, and Chrome.
+        const runtimeFirebaseConfig = {
+            ...firebaseConfig,
+            authDomain: window.location.hostname === 'bot-bulls.web.app'
+                ? 'bot-bulls.web.app'
+                : firebaseConfig.authDomain,
+        };
+        const app = initializeApp(runtimeFirebaseConfig);
         const auth = getAuth(app);
         const provider = new GoogleAuthProvider();
         provider.setCustomParameters({ prompt: 'select_account' });
@@ -493,6 +502,7 @@
         const consentCancelBtn = document.getElementById('consentCancelBtn');
         const AGREEMENT_REQUEST_TIMEOUT_MS = 15000;
         const AUTH_OPERATION_TIMEOUT_MS = 20000;
+        const GOOGLE_POPUP_TIMEOUT_MS = 60000;
         const FIREBASE_CLEANUP_TIMEOUT_MS = 10000;
         const AUTH_DEBUG_ENABLED = new URLSearchParams(window.location.search).get('auth_debug') === '1';
         const AUTH_DEBUG_SESSION = Math.random().toString(36).slice(2, 10);
@@ -506,6 +516,8 @@
         let acceptanceConfirmedUid = null;
         let pendingSignupConsent = false;
         let pendingNewUserForCleanup = null;
+        let queuedAuthStateUser = null;
+        let authCompletionPromise = null;
         const isMobileBrowser = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.innerWidth <= 768;
 
         function withTimeout(promise, timeoutMs, message) {
@@ -534,9 +546,10 @@
             } catch (_) {}
         }
         const redirectParams = new URLSearchParams(window.location.search);
-        const returningFromGoogleRedirect = readRedirectPending() || redirectParams.get('auth_return') === '1';
+        let returningFromGoogleRedirect = readRedirectPending() || redirectParams.get('auth_return') === '1';
 
         function markGoogleRedirect() {
+            returningFromGoogleRedirect = true;
             setRedirectPending(true);
             try {
                 const url = new URL(window.location.href);
@@ -545,6 +558,7 @@
             } catch (_) {}
         }
         function clearGoogleRedirectMarker() {
+            returningFromGoogleRedirect = false;
             setRedirectPending(false);
             try {
                 const url = new URL(window.location.href);
@@ -881,7 +895,7 @@
         syncConsent();
         authDebug('firebase-ui-ready', {
             hostname: window.location.hostname,
-            authDomain: firebaseConfig.authDomain,
+            authDomain: runtimeFirebaseConfig.authDomain,
             emailButtonEnabled: !emailAuthBtn.disabled,
         });
 
@@ -983,7 +997,34 @@
             }
         }
 
-        async function completeAuthenticatedUser(user, { skipGooglePasswordOffer = false } = {}) {
+        async function drainQueuedAuthStateUser() {
+            if (authActionInFlight || redirecting || !queuedAuthStateUser) return;
+            const user = queuedAuthStateUser;
+            queuedAuthStateUser = null;
+            authDebug('auth-state-drain');
+            try {
+                await completeAuthenticatedUser(user);
+            } catch (error) {
+                console.error('[auth] Deferred login completion error:', error);
+                showAuthTransitionError('Login could not be completed · retry');
+            }
+        }
+
+        async function completeAuthenticatedUser(user, options = {}) {
+            if (!user || redirecting) return;
+            if (authCompletionPromise) {
+                authDebug('complete-join-existing');
+                return authCompletionPromise;
+            }
+            authCompletionPromise = completeAuthenticatedUserFlow(user, options);
+            try {
+                return await authCompletionPromise;
+            } finally {
+                authCompletionPromise = null;
+            }
+        }
+
+        async function completeAuthenticatedUserFlow(user, { skipGooglePasswordOffer = false } = {}) {
             if (!user || redirecting) return;
             authDebug('complete-start', {
                 hasConsent: hasRequiredConsent(),
@@ -1072,13 +1113,17 @@
 
         onAuthStateChanged(auth, async (user) => {
             try {
-                if (user && !authActionInFlight) {
-                    if (returningFromGoogleRedirect) {
-                        offerPasswordForGoogle = true;
-                        setStatus('Sign-in complete · finishing setup');
-                    }
-                    await completeAuthenticatedUser(user);
+                if (!user) return;
+                if (authActionInFlight) {
+                    queuedAuthStateUser = user;
+                    authDebug('auth-state-queued');
+                    return;
                 }
+                if (returningFromGoogleRedirect) {
+                    offerPasswordForGoogle = true;
+                    setStatus('Sign-in complete · finishing setup');
+                }
+                await completeAuthenticatedUser(user);
             } catch (error) {
                 console.error('[auth] Unexpected login completion error:', error);
                 cancelDashboardNavigationWatch();
@@ -1095,6 +1140,16 @@
             syncConsent();
             setStatus('Ready to retry sign-in', 'amber');
             loginBtn.focus();
+        });
+
+        window.addEventListener('pageshow', (event) => {
+            if (!event.persisted) return;
+            authActionInFlight = false;
+            redirecting = false;
+            cancelDashboardNavigationWatch();
+            hideAuthTransition();
+            syncConsent();
+            void drainQueuedAuthStateUser();
         });
 
         async function waitForRedirectUser(timeoutMs = 5000) {
@@ -1155,6 +1210,7 @@
                     try { sessionStorage.setItem(PENDING_NEW_USER_KEY, result.user.uid); } catch (_) {}
                 }
                 await completeAuthenticatedUser(result.user);
+                queuedAuthStateUser = null;
                 authDebug('email-auth-complete', { elapsedMs: Date.now() - startedAt });
             } catch (error) {
                 authDebug('email-auth-error', { elapsedMs: Date.now() - startedAt, code: String(error?.code || ''), name: error?.name, message: String(error?.message || error) });
@@ -1163,6 +1219,7 @@
             } finally {
                 authActionInFlight = false;
                 syncConsent();
+                void drainQueuedAuthStateUser();
             }
         }
         emailAuthForm.addEventListener('submit', async (event) => {
@@ -1216,7 +1273,11 @@
                 authActionInFlight = true;
                 linkPasswordBtn.disabled = true;
                 setStatus('Confirm your Google identity to continue');
-                const reauthenticated = await reauthenticateWithPopup(passwordOfferUser, provider);
+                const reauthenticated = await withTimeout(
+                    reauthenticateWithPopup(passwordOfferUser, provider),
+                    GOOGLE_POPUP_TIMEOUT_MS,
+                    'Google reauthentication timed out'
+                );
                 const freshUser = reauthenticated?.user || auth.currentUser;
                 if (!freshUser || freshUser.uid !== passwordOfferUser.uid || !freshUser.email) {
                     throw new Error('Fresh Google authentication did not match the current account.');
@@ -1246,11 +1307,12 @@
         loginBtn.addEventListener('click', async () => {
             const currentUser = auth.currentUser;
             const shouldReauthenticateGoogle = Boolean(currentUser && hasGoogleProvider(currentUser));
+            const localAuthHost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+            const useGoogleRedirect = isMobileBrowser && !localAuthHost;
             try {
                 authActionInFlight = true;
                 loginBtn.disabled = true;
                 offerPasswordForGoogle = true;
-                const useGoogleRedirect = isMobileBrowser;
                 authDebug('google-auth-start', { mode: shouldReauthenticateGoogle ? 'reauthenticate' : 'signin', method: useGoogleRedirect ? 'redirect' : 'popup' });
                 setStatus(shouldReauthenticateGoogle
                     ? (useGoogleRedirect ? 'Redirecting to Google reauthentication' : 'Opening Google reauthentication')
@@ -1258,18 +1320,36 @@
                 if (useGoogleRedirect) {
                     markGoogleRedirect();
                     if (shouldReauthenticateGoogle) {
-                        await reauthenticateWithRedirect(currentUser, provider);
+                        await withTimeout(
+                            reauthenticateWithRedirect(currentUser, provider),
+                            AUTH_OPERATION_TIMEOUT_MS,
+                            'Google redirect could not start'
+                        );
                     } else {
-                        await signInWithRedirect(auth, provider);
+                        await withTimeout(
+                            signInWithRedirect(auth, provider),
+                            AUTH_OPERATION_TIMEOUT_MS,
+                            'Google redirect could not start'
+                        );
                     }
                     return;
                 } else if (shouldReauthenticateGoogle) {
-                    const result = await reauthenticateWithPopup(currentUser, provider);
+                    const result = await withTimeout(
+                        reauthenticateWithPopup(currentUser, provider),
+                        GOOGLE_POPUP_TIMEOUT_MS,
+                        'Google reauthentication timed out'
+                    );
                     await completeAuthenticatedUser(result?.user || auth.currentUser);
+                    queuedAuthStateUser = null;
                 } else {
-                    const result = await signInWithPopup(auth, provider);
+                    const result = await withTimeout(
+                        signInWithPopup(auth, provider),
+                        GOOGLE_POPUP_TIMEOUT_MS,
+                        'Google sign-in timed out'
+                    );
                     const user = trackNewGoogleUser(result);
                     await completeAuthenticatedUser(user || auth.currentUser);
+                    queuedAuthStateUser = null;
                 }
             } catch (error) {
                 authDebug('google-auth-error', { code: String(error?.code || ''), name: error?.name, message: String(error?.message || error) });
@@ -1278,36 +1358,53 @@
                 } else {
                     console.error('Auth Error:', error);
                 }
-                const localAuthHost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
-                const popupNeedsRedirect = !localAuthHost && ['auth/popup-blocked', 'auth/operation-not-supported-in-this-environment'].includes(error?.code);
+                const popupTimedOut = String(error?.message || '').toLowerCase().includes('timed out');
+                const popupNeedsRedirect = !useGoogleRedirect && !localAuthHost && (
+                    ['auth/popup-blocked', 'auth/operation-not-supported-in-this-environment'].includes(error?.code)
+                    || popupTimedOut
+                );
                 if (popupNeedsRedirect) {
                     try {
                         markGoogleRedirect();
                         setStatus('Popup unavailable · switching to secure redirect');
                         if (shouldReauthenticateGoogle) {
-                            await reauthenticateWithRedirect(currentUser, provider);
+                            await withTimeout(
+                                reauthenticateWithRedirect(currentUser, provider),
+                                AUTH_OPERATION_TIMEOUT_MS,
+                                'Google redirect could not start'
+                            );
                         } else {
-                            await signInWithRedirect(auth, provider);
+                            await withTimeout(
+                                signInWithRedirect(auth, provider),
+                                AUTH_OPERATION_TIMEOUT_MS,
+                                'Google redirect could not start'
+                            );
                         }
                         return;
                     } catch (redirectError) {
                         console.error('Redirect Auth Error:', redirectError);
+                        clearGoogleRedirectMarker();
                     }
                 }
+                if (useGoogleRedirect) clearGoogleRedirectMarker();
                 setStatus(friendlyAuthError(error), 'rose');
                 offerPasswordForGoogle = false;
                 syncConsent();
             } finally {
                 authActionInFlight = false;
                 syncConsent();
+                void drainQueuedAuthStateUser();
             }
         });
 
         if (returningFromGoogleRedirect) {
+            offerPasswordForGoogle = true;
             showAuthTransition();
-            let redirectResultSettled = false;
-            getRedirectResult(auth).then(async (result) => {
-                redirectResultSettled = true;
+            withTimeout(
+                getRedirectResult(auth),
+                AUTH_OPERATION_TIMEOUT_MS,
+                'Google redirect result timed out'
+            ).then(async (result) => {
                 // Firebase may restore the credential through onAuthStateChanged
                 // slightly after getRedirectResult resolves with no result.
                 const user = trackNewGoogleUser(result) || await waitForRedirectUser();
@@ -1319,8 +1416,18 @@
                     setStatus('Google returned without completing sign-in · retry', 'rose');
                     syncConsent();
                 }
-            }).catch((error) => {
-                redirectResultSettled = true;
+            }).catch(async (error) => {
+                if (auth.currentUser) {
+                    try {
+                        await completeAuthenticatedUser(auth.currentUser);
+                    } catch (completionError) {
+                        console.error('Authenticated redirect completion error:', completionError);
+                        hideAuthTransition();
+                        clearGoogleRedirectMarker();
+                        showAuthTransitionError('Login could not be completed · retry');
+                    }
+                    return;
+                }
                 console.error('Google redirect result error:', error);
                 hideAuthTransition();
                 clearGoogleRedirectMarker();
@@ -1328,14 +1435,6 @@
                 setStatus(code ? `Google sign-in failed (${code}) · retry` : 'Google sign-in could not be completed · please retry', 'rose');
                 syncConsent();
             });
-            window.setTimeout(() => {
-                if (!redirectResultSettled && !auth.currentUser && !redirecting && readRedirectPending()) {
-                    hideAuthTransition();
-                    clearGoogleRedirectMarker();
-                    setStatus('Google sign-in timed out · please retry', 'rose');
-                    syncConsent();
-                }
-            }, 10000);
         }
     </script>
     <script src="modal-scroll-lock.js?v=1"></script>

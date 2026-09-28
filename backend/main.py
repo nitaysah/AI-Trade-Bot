@@ -2085,11 +2085,17 @@ async def get_user_engine(request: Request, user: dict = Depends(verify_token)) 
     if legal_endpoint:
         print(f"[legal-debug] start path={path} uid_hash={legal_uid}", flush=True)
     eng = user_manager.get_engine(user['uid'])
-    if not getattr(eng, 'loaded_from_cloud', False):
+    cloud_load_needed = not getattr(eng, 'loaded_from_cloud', False) and not (
+        legal_endpoint and getattr(eng, 'legal_settings_loaded', False)
+    )
+    if cloud_load_needed:
         async with eng.load_lock:
-            if not eng.loaded_from_cloud:
+            cloud_load_needed = not eng.loaded_from_cloud and not (
+                legal_endpoint and getattr(eng, 'legal_settings_loaded', False)
+            )
+            if cloud_load_needed:
                 try:
-                    await eng.load_from_cloud()
+                    await eng.load_from_cloud(connect_broker=not legal_endpoint)
                 except Exception as exc:
                     if legal_endpoint:
                         elapsed_ms = (time.perf_counter() - legal_started) * 1000

@@ -1917,6 +1917,7 @@ class UserEngine:
         self.last_scan_time = None
         self.dashboard_primary_ticker = None
         self.loaded_from_cloud = False
+        self.legal_settings_loaded = False
         # This is intentionally transient.  Persisted bot settings may be
         # loaded after restart, but live order submission requires a fresh
         # authenticated confirmation in the current process.
@@ -2315,7 +2316,7 @@ class UserEngine:
         if saved:
             self.last_history_save_ts = now_ts
 
-    async def load_from_cloud(self):
+    async def load_from_cloud(self, *, connect_broker: bool = True):
         if not self.db:
             # Without a persistence backend there are no saved user choices
             # to restore, so keep first-use indicator activation disabled.
@@ -2328,8 +2329,20 @@ class UserEngine:
         try:
             # Load Alpaca Settings
             try:
-                doc_alpaca = self.db.collection("users").document(self.uid).collection("settings").document("alpaca").get(timeout=2.5, retry=None)
-                if not doc_alpaca.exists:
+                doc_alpaca = None
+                if connect_broker:
+                    doc_alpaca = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self.db.collection("users").document(self.uid).collection("settings").document("alpaca").get,
+                            timeout=2.5,
+                            retry=None,
+                        ),
+                        timeout=3.0,
+                    )
+                if doc_alpaca is None:
+                    self.alpaca_load_status = "deferred"
+                    self.alpaca_load_error = "Broker settings are deferred until an authenticated workspace request."
+                elif not doc_alpaca.exists:
                     self.alpaca_load_status = "not_configured"
                     self.alpaca_load_error = "No Alpaca settings document exists for this Firebase user."
                 else:
@@ -2361,24 +2374,31 @@ class UserEngine:
                         self.config.ALPACA_API_KEY = decrypted_key
                         self.config.ALPACA_SECRET_KEY = decrypted_secret
                         self.config.ALPACA_PAPER = data.get("paper", True)
-                        try:
-                            async with self.broker_connect_lock:
-                                connected = await asyncio.wait_for(
-                                    asyncio.to_thread(
-                                        self.broker.connect,
-                                        self.config.ALPACA_API_KEY,
-                                        self.config.ALPACA_SECRET_KEY,
-                                        self.config.ALPACA_PAPER,
-                                    ),
-                                    timeout=15.0,
-                                )
-                        except asyncio.TimeoutError:
+                        if connect_broker:
+                            try:
+                                async with self.broker_connect_lock:
+                                    connected = await asyncio.wait_for(
+                                        asyncio.to_thread(
+                                            self.broker.connect,
+                                            self.config.ALPACA_API_KEY,
+                                            self.config.ALPACA_SECRET_KEY,
+                                            self.config.ALPACA_PAPER,
+                                        ),
+                                        timeout=15.0,
+                                    )
+                            except asyncio.TimeoutError:
+                                connected = False
+                                self.alpaca_load_status = "connect_timeout"
+                                self.alpaca_load_error = "Alpaca connection timed out; no broker write was attempted."
+                        else:
                             connected = False
-                            self.alpaca_load_status = "connect_timeout"
-                            self.alpaca_load_error = "Alpaca connection timed out; no broker write was attempted."
+                            self.alpaca_load_status = "deferred"
+                            self.alpaca_load_error = "Broker connection is deferred until an authenticated workspace request."
                         self.live_trading_armed = False
                         self.broker.live_trading_armed = False
-                        if connected and self.alpaca_load_status != "connect_timeout":
+                        if not connect_broker:
+                            pass
+                        elif connected and self.alpaca_load_status != "connect_timeout":
                             self.alpaca_load_status = "connected"
                             self.alpaca_load_error = ""
                         elif self.alpaca_load_status != "connect_timeout":
@@ -2402,7 +2422,14 @@ class UserEngine:
                     print(f"[engine-{self.uid}] Failed reading local settings backup: {ex_loc}")
 
             try:
-                doc_ui = self.db.collection("users").document(self.uid).collection("settings").document("ui").get(timeout=2.5, retry=None)
+                doc_ui = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.db.collection("users").document(self.uid).collection("settings").document("ui").get,
+                        timeout=2.5,
+                        retry=None,
+                    ),
+                    timeout=3.0,
+                )
                 if doc_ui.exists:
                     ui = doc_ui.to_dict()
             except Exception as ex_fs:
@@ -2466,7 +2493,10 @@ class UserEngine:
             # loaded independently of Firestore so quota outages cannot erase
             # or delay the Bots page history.
             from local_store import load_state
-            local_history = await asyncio.to_thread(load_state, self.uid, "bots_history")
+            local_history = (
+                await asyncio.to_thread(load_state, self.uid, "bots_history")
+                if connect_broker else None
+            )
             if local_history:
                 raw_logs = local_history.get("trade_log", [])
                 self.trade_log = []
@@ -2488,7 +2518,8 @@ class UserEngine:
                 print(f"[engine-{self.uid}] Loaded Bots history from local SQLite.")
                 
             load_ok = self.alpaca_load_status not in {"firestore_error", "cloud_load_failed"}
-            self.loaded_from_cloud = load_ok
+            self.legal_settings_loaded = load_ok
+            self.loaded_from_cloud = load_ok and connect_broker
             return load_ok
         except Exception as e:
             print(f"[engine-{self.uid}] Load error: {e}")
