@@ -893,6 +893,15 @@
         termsCheck.checked = false;
         paperCheck.checked = false;
         syncConsent();
+        const authErrorParam = new URLSearchParams(window.location.search).get('auth_error');
+        if (authErrorParam === 'session_check_timeout') {
+            setStatus('Session check timed out · please sign in again', 'amber');
+            try {
+                const cleanUrl = new URL(window.location.href);
+                cleanUrl.searchParams.delete('auth_error');
+                window.history.replaceState({}, document.title, cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
+            } catch (_) {}
+        }
         authDebug('firebase-ui-ready', {
             hostname: window.location.hostname,
             authDomain: runtimeFirebaseConfig.authDomain,

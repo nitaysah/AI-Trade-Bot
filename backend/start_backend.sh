@@ -10,6 +10,22 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 
+# Local development keeps secrets in a checkout .env file. Production must
+# receive secrets from the service manager and must never source a checkout
+# file, so only load dotenv files while running outside production.
+ENV="${ENV:-development}"
+if [ "$ENV" != "production" ]; then
+    for ENV_FILE in "$DIR/.env" "$DIR/../.env"; do
+        if [ -f "$ENV_FILE" ]; then
+            set -a
+            # shellcheck disable=SC1090
+            . "$ENV_FILE"
+            set +a
+            break
+        fi
+    done
+fi
+
 # 1. Activate the Python virtual environment. Local checkouts commonly keep
 # it beside this script; the Oracle checkout keeps it beside the backend
 # package directory.
@@ -137,8 +153,31 @@ if [ "$FOREGROUND" = "true" ]; then
 fi
 
 PYTHONUNBUFFERED=1 "$VENV_DIR/bin/python" -m uvicorn "${UVICORN_ARGS[@]}" > stdout.log 2>&1 &
+BACKEND_PID=$!
+
+# Do not report success until the child process is still alive and the local
+# health endpoint answers. This prevents the frontend from opening a dashboard
+# against a backend that exited during import or environment validation.
+HEALTH_URL="http://${HOST}:${PORT}/health"
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+        echo "❌ Backend exited during startup. Recent logs:"
+        tail -80 stdout.log || true
+        exit 1
+    fi
+    if command -v curl >/dev/null 2>&1 && curl -fsS --max-time 1 "$HEALTH_URL" >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+
+if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+    echo "❌ Backend exited during startup. Recent logs:"
+    tail -80 stdout.log || true
+    exit 1
+fi
 
 # 4. Logging
-echo "✅ Bot Bulls Backend started (PID: $!)."
+echo "✅ Bot Bulls Backend started and healthy (PID: $BACKEND_PID)."
 echo "📄 Logs are being piped to: stdout.log"
 echo "🌐 API Documentation: ${HOST}:${PORT}/docs"
