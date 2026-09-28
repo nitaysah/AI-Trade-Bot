@@ -63,10 +63,10 @@ if [ -n "${TLS_CERTFILE:-}" ] && [ -n "${TLS_KEYFILE:-}" ]; then
 fi
 if [ "$FOREGROUND" = "true" ]; then
     echo "✅ Bot Bulls Backend running under the service supervisor."
-    exec env PYTHONUNBUFFERED=1 uvicorn "${UVICORN_ARGS[@]}"
+    PYTHONUNBUFFERED=1 exec "$VENV_DIR/bin/python" -m uvicorn "${UVICORN_ARGS[@]}"
 fi
 
-PYTHONUNBUFFERED=1 uvicorn "${UVICORN_ARGS[@]}" > stdout.log 2>&1 &
+PYTHONUNBUFFERED=1 "$VENV_DIR/bin/python" -m uvicorn "${UVICORN_ARGS[@]}" > stdout.log 2>&1 &
 
 # 4. Logging
 echo "✅ Bot Bulls Backend started (PID: $!)."
