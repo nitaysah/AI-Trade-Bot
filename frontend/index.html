@@ -1225,13 +1225,20 @@
                 authActionInFlight = true;
                 loginBtn.disabled = true;
                 offerPasswordForGoogle = true;
-                // localhost:3000 is served outside Firebase Hosting. Popup is
-                // the reliable first path there, especially when a browser
-                // blocks third-party storage used by redirect sign-in.
+                const useGoogleRedirect = isMobileBrowser;
+                authDebug('google-auth-start', { mode: shouldReauthenticateGoogle ? 'reauthenticate' : 'signin', method: useGoogleRedirect ? 'redirect' : 'popup' });
                 setStatus(shouldReauthenticateGoogle
-                    ? 'Opening Google reauthentication'
-                    : (isMobileBrowser ? 'Opening Google sign-in' : 'Opening secure Google sign-in'));
-                if (shouldReauthenticateGoogle) {
+                    ? (useGoogleRedirect ? 'Redirecting to Google reauthentication' : 'Opening Google reauthentication')
+                    : (useGoogleRedirect ? 'Redirecting to Google sign-in' : 'Opening secure Google sign-in'));
+                if (useGoogleRedirect) {
+                    markGoogleRedirect();
+                    if (shouldReauthenticateGoogle) {
+                        await reauthenticateWithRedirect(currentUser, provider);
+                    } else {
+                        await signInWithRedirect(auth, provider);
+                    }
+                    return;
+                } else if (shouldReauthenticateGoogle) {
                     const result = await reauthenticateWithPopup(currentUser, provider);
                     await completeAuthenticatedUser(result?.user || auth.currentUser);
                 } else {
@@ -1240,7 +1247,12 @@
                     await completeAuthenticatedUser(user || auth.currentUser);
                 }
             } catch (error) {
-                console.error('Auth Error:', error);
+                authDebug('google-auth-error', { code: String(error?.code || ''), name: error?.name, message: String(error?.message || error) });
+                if (error?.code === 'auth/popup-closed-by-user') {
+                    console.info('[auth] Google sign-in popup was closed before authentication completed.');
+                } else {
+                    console.error('Auth Error:', error);
+                }
                 const localAuthHost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
                 const popupNeedsRedirect = !localAuthHost && ['auth/popup-blocked', 'auth/operation-not-supported-in-this-environment'].includes(error?.code);
                 if (popupNeedsRedirect) {
