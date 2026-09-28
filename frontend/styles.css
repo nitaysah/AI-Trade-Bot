@@ -4231,4 +4231,14 @@ html body #manualBtChartPreviewPremiumSignalGrid .signal-card p {
         -webkit-text-size-adjust: 100% !important;
         text-size-adjust: 100% !important;
     }
+
+    /* Give Dashboard ticker search enough usable width for 6–7 characters
+       while keeping its typed font at the no-zoom-safe 16px threshold. */
+    html body #tickerSearch {
+        width: 7rem !important;
+        min-width: 7rem !important;
+        max-width: 7rem !important;
+        padding-left: 1.15rem !important;
+        padding-right: 0.35rem !important;
+    }
 }
