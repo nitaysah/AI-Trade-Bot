@@ -37,6 +37,16 @@ jobs:
           key: ${{ secrets.ORACLE_SSH_KEY }}
           envs: GROQ_API_KEY,WEBULL_APP_KEY,WEBULL_APP_SECRET,VAULT_SECRET_KEY,VAULT_SECRET_KEY_PREVIOUS,VAULT_SECRET_KEY_PREVIOUS_VERSION,BROKER_LIVE_TENANT_UID,BROKER_LIVE_ACCOUNT_FINGERPRINT,GITHUB_SHA
           script: |
+            # Do not restart the service or overwrite its environment file when
+            # the required encryption key was not supplied by GitHub Actions.
+            # An empty value would make the backend fail during import and can
+            # also prevent previously encrypted broker credentials from being
+            # decrypted after deployment.
+            if [ -z "${VAULT_SECRET_KEY:-}" ]; then
+              echo "::error::VAULT_SECRET_KEY GitHub Actions secret is missing; refusing to deploy."
+              exit 1
+            fi
+
             # Clone if it does not exist, otherwise fetch the exact triggering
             # commit. Never deploy a moving branch after the workflow starts.
             if [ ! -d "/home/ubuntu/backend/.git" ]; then
