@@ -874,6 +874,11 @@
         termsCheck.checked = false;
         paperCheck.checked = false;
         syncConsent();
+        authDebug('firebase-ui-ready', {
+            hostname: window.location.hostname,
+            authDomain: firebaseConfig.authDomain,
+            emailButtonEnabled: !emailAuthBtn.disabled,
+        });
 
         async function syncAcceptanceToServer(user) {
             const startedAt = Date.now();
@@ -1151,16 +1156,24 @@
         emailAuthForm.addEventListener('submit', async (event) => {
             event.preventDefault();
             const validationMessage = validateEmailForm();
+            authDebug('email-form-submit', {
+                mode: authMode,
+                hasConsent: hasRequiredConsent(),
+                valid: !validationMessage,
+            });
             if (validationMessage) {
+                authDebug('email-submit-blocked-validation', { message: validationMessage });
                 setStatus(validationMessage, 'amber');
                 return;
             }
             if (authMode === 'signup' && !hasRequiredConsent()) {
+                authDebug('email-submit-blocked-consent');
                 pendingSignupConsent = true;
                 showConsentPanel();
                 setStatus('Review and accept the agreements before creating your account', 'amber');
                 return;
             }
+            authDebug('email-submit-accepted');
             await submitEmailAuth();
         });
         forgotPasswordBtn.addEventListener('click', async () => {
