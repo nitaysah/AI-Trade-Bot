@@ -4218,3 +4218,17 @@ html body #manualBtChartPreviewPremiumSignalGrid .signal-card p {
         font-weight: 500 !important;
     }
 }
+
+/* Ticker search inputs have page-specific compact utility classes. Keep
+   these typed search fields explicitly above the mobile browser zoom cutoff. */
+@media (max-width: 768px) {
+    html body #botSearchInput,
+    html body #tickerSearch,
+    html body #btTicker,
+    html body #manualBtTickerSearch {
+        font-size: 16px !important;
+        font-weight: 500 !important;
+        -webkit-text-size-adjust: 100% !important;
+        text-size-adjust: 100% !important;
+    }
+}
