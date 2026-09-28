@@ -1,0 +1,17 @@
+[Unit]
+Description=BotBulls FastAPI Trading Engine
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/backend/backend
+Environment="PATH=/home/ubuntu/backend/venv/bin"
+Environment="BOTBULLS_FOREGROUND=true"
+EnvironmentFile=-/home/ubuntu/backend/.env
+EnvironmentFile=/etc/botbulls/botbulls.env
+ExecStart=/home/ubuntu/backend/backend/start_backend.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

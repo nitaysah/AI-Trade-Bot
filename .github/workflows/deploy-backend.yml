@@ -105,9 +105,11 @@ jobs:
             sudo install -o root -g root -m 600 "$DEPLOY_ENV_FILE" /etc/botbulls/botbulls.env
             rm -f "$DEPLOY_ENV_FILE"
 
-            # Make the path explicit for systemd services that do not load the
-            # repository .env file directly.
+            # Install the version-controlled service definition. The checkout
+            # .env remains optional for backward compatibility until all
+            # managed Firebase credentials are in /etc/botbulls/botbulls.env.
             sudo install -d -m 755 /etc/systemd/system/botbulls.service.d
+            sudo install -o root -g root -m 644 backend/botbulls.service /etc/systemd/system/botbulls.service
             printf '%s\n' '[Service]' 'EnvironmentFile=/etc/botbulls/botbulls.env' "Environment=BOTBULLS_LOCAL_DB_PATH=$LOCAL_DATA_DIR/botbulls_local.sqlite3" | sudo tee /etc/systemd/system/botbulls.service.d/local-storage.conf >/dev/null
             sudo chmod 644 /etc/systemd/system/botbulls.service.d/local-storage.conf
             sudo systemctl daemon-reload
