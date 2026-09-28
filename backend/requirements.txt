@@ -24,7 +24,7 @@ numpy==2.2.6
 pandas==2.3.3
 peewee==4.0.5
 platformdirs==4.4.0
-protobuf==5.29.6
+protobuf==6.33.5
 pycparser==2.23
 pydantic==2.13.3
 pydantic_core==2.46.3
@@ -50,6 +50,6 @@ cryptography==48.0.1
 # Webull SDK is installed separately with --no-deps in Dockerfile because
 # upstream metadata caps cryptography below patched versions on Python 3.13.
 cachetools==5.5.2
-grpcio==1.69.0
+grpcio==1.84.0
 jmespath==0.10.0
 paho-mqtt==1.6.1
