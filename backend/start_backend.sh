@@ -27,6 +27,12 @@ source "$VENV_DIR/bin/activate"
 # 2. Safety Check: only clean a manually started development process.
 # systemd owns the foreground process and must handle its lifecycle itself.
 FOREGROUND="${BOTBULLS_FOREGROUND:-false}"
+LOG_FILE="${BOTBULLS_LOG_FILE:-$DIR/stdout.log}"
+if [ "$FOREGROUND" = "true" ]; then
+    # Keep systemd/journal stdout while also retaining a file beside the
+    # backend code for simple local inspection and incident troubleshooting.
+    exec > >(tee -a "$LOG_FILE") 2>&1
+fi
 if [ "$FOREGROUND" != "true" ]; then
     echo "🧹 Cleaning up port 8000..."
     if command -v lsof >/dev/null 2>&1; then
