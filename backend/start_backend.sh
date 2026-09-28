@@ -24,8 +24,74 @@ else
 fi
 source "$VENV_DIR/bin/activate"
 
-# 2. Safety Check: only clean a manually started development process.
-# systemd owns the foreground process and must handle its lifecycle itself.
+# 2. Runtime settings and stale-process cleanup.
+# A previous supervised launch can survive an interrupted restart. Clean up
+# only a BotBulls uvicorn process using this virtualenv; never kill an
+# unrelated service that happens to use the configured port.
+HOST="${BOTBULLS_HOST:-127.0.0.1}"
+PORT="${PORT:-8000}"
+PYTHON_BIN="$VENV_DIR/bin/python"
+
+cleanup_botbulls_port() {
+    local port="$1"
+    local pids=""
+    local pid=""
+    local process_args=""
+    local python_real="$PYTHON_BIN"
+    local process_exe=""
+    local managed="false"
+
+    if command -v ss >/dev/null 2>&1; then
+        pids="$(ss -ltnpH "sport = :$port" 2>/dev/null \
+            | grep -oE 'pid=[0-9]+' \
+            | cut -d= -f2 \
+            | sort -u || true)"
+    elif command -v lsof >/dev/null 2>&1; then
+        pids="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u || true)"
+    else
+        echo "❌ Cannot inspect port $port: neither ss nor lsof is installed."
+        return 1
+    fi
+
+    for pid in $pids; do
+        [ "$pid" = "$$" ] && continue
+        process_args="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+        [ -n "$process_args" ] || continue
+
+        # argv[0] is retained as the virtualenv path by the launch command.
+        # The executable check covers launches where that path was normalized.
+        managed="false"
+        if [[ "$process_args" == "$PYTHON_BIN -m uvicorn main:app"* ]]; then
+            managed="true"
+        elif command -v readlink >/dev/null 2>&1; then
+            python_real="$(readlink -f "$PYTHON_BIN" 2>/dev/null || printf '%s' "$PYTHON_BIN")"
+            process_exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+            if [ "$process_exe" = "$python_real" ] \
+                && [[ "$process_args" == *" -m uvicorn main:app"* ]] \
+                && [[ "$process_args" == *"--port $port"* ]]; then
+                managed="true"
+            fi
+        fi
+
+        if [ "$managed" != "true" ]; then
+            echo "❌ Port $port is occupied by a non-BotBulls process (PID $pid); refusing to stop it."
+            echo "   $process_args"
+            return 1
+        fi
+
+        echo "🧹 Stopping stale BotBulls process $pid on port $port..."
+        kill -TERM "$pid" 2>/dev/null || true
+        for _ in 1 2 3 4 5; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 1
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "⚠️  Process $pid did not stop after SIGTERM; sending SIGKILL."
+            kill -KILL "$pid" 2>/dev/null || true
+        fi
+    done
+}
+
 FOREGROUND="${BOTBULLS_FOREGROUND:-false}"
 LOG_FILE="${BOTBULLS_LOG_FILE:-$DIR/stdout.log}"
 if [ "$FOREGROUND" = "true" ]; then
@@ -36,16 +102,7 @@ if [ "$FOREGROUND" = "true" ]; then
     chmod 600 "$LOG_FILE"
     exec > >(tee -a "$LOG_FILE") 2>&1
 fi
-if [ "$FOREGROUND" != "true" ]; then
-    echo "🧹 Cleaning up port 8000..."
-    if command -v lsof >/dev/null 2>&1; then
-        PID=$(lsof -ti:8000 || true)
-        if [ -n "$PID" ]; then
-            echo "Killing process $PID running on port 8000..."
-            echo "$PID" | xargs -r kill -9
-        fi
-    fi
-fi
+cleanup_botbulls_port "$PORT"
 
 # 3. Launch: Starts the server via uvicorn.  The default is loopback-only;
 # bearer-token traffic must not be exposed over plaintext HTTP by accident.
@@ -55,8 +112,6 @@ if [ "${ENV}" = "production" ] && [ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] &
     echo "❌ Production requires managed Firebase credentials via GOOGLE_APPLICATION_CREDENTIALS or FIREBASE_SERVICE_ACCOUNT."
     exit 1
 fi
-HOST="${BOTBULLS_HOST:-127.0.0.1}"
-PORT="${PORT:-8000}"
 if [ "$HOST" != "127.0.0.1" ] && [ "$HOST" != "::1" ] && [ "$HOST" != "localhost" ]; then
     if [ -z "${TLS_CERTFILE:-}" ] || [ -z "${TLS_KEYFILE:-}" ]; then
         echo "❌ Non-loopback binding requires TLS_CERTFILE and TLS_KEYFILE."
