@@ -83,11 +83,36 @@ try:
 except ImportError:
     pass
 
-def get_vault():
+def _vault_candidates():
+    """Return active and optional previous keys for safe rotation reads."""
     secret_key = os.getenv("VAULT_SECRET_KEY", "").strip()
     if not secret_key:
         raise RuntimeError("VAULT_SECRET_KEY is required to access encrypted broker state")
-    return Fernet(secret_key.encode())
+    candidates = [("active", Fernet(secret_key.encode()))]
+    previous_key = os.getenv("VAULT_SECRET_KEY_PREVIOUS", "").strip()
+    if previous_key and previous_key != secret_key:
+        candidates.append(("previous", Fernet(previous_key.encode())))
+    return candidates
+
+
+def get_vault():
+    """Return the active vault for all new encryption writes."""
+    return _vault_candidates()[0][1]
+
+
+def _decrypt_with_vault_rotation(encrypted: str | bytes):
+    """Decrypt with the active key, then the configured previous key.
+
+    Previous keys are read-only compatibility keys. Plaintext fallback is
+    deliberately not supported.
+    """
+    raw = encrypted.encode() if isinstance(encrypted, str) else bytes(encrypted)
+    for key_source, vault in _vault_candidates():
+        try:
+            return vault.decrypt(raw), key_source
+        except Exception:
+            continue
+    raise ValueError("encrypted Webull material could not be decrypted")
 
 
 def _load_webull_firestore_credentials(db):
@@ -100,11 +125,15 @@ def _load_webull_firestore_credentials(db):
     vault = get_vault()
     values = {}
     migrated = {}
+    legacy_fields = []
     for field in ("app_key", "app_secret", "account_id"):
         encrypted = str(data.get(f"{field}_enc") or "")
         if encrypted:
             try:
-                values[field] = vault.decrypt(encrypted.encode()).decode().strip()
+                plaintext, key_source = _decrypt_with_vault_rotation(encrypted)
+                values[field] = plaintext.decode().strip()
+                if key_source == "previous":
+                    migrated[f"{field}_enc"] = vault.encrypt(plaintext).decode()
             except Exception:
                 raise RuntimeError(f"Encrypted Webull {field} could not be decrypted") from None
             continue
@@ -114,12 +143,16 @@ def _load_webull_firestore_credentials(db):
         if legacy:
             values[field] = legacy
             migrated[f"{field}_enc"] = vault.encrypt(legacy.encode()).decode()
+            legacy_fields.append(field)
     if migrated:
         migrated["updated_at"] = firestore.SERVER_TIMESTAMP
-        for field in ("app_key", "app_secret", "account_id"):
+        for field in legacy_fields:
             migrated[field] = firestore.DELETE_FIELD
         doc_ref.set(migrated, merge=True, timeout=2.0, retry=None)
-        print("[webull] Migrated legacy Webull credential fields to encrypted storage.")
+        if legacy_fields:
+            print("[webull] Migrated legacy Webull credential fields to encrypted storage.")
+        else:
+            print("[webull] Re-encrypted Webull credentials with the active vault key.")
     return values
 
 def get_firestore_db():
@@ -146,14 +179,21 @@ def sync_token_from_firestore():
             token_content_enc = data.get("token_content", "")
             if token_content_enc:
                 try:
-                    f_net = get_vault()
-                    token_content = f_net.decrypt(token_content_enc.encode()).decode()
-                except Exception as e:
+                    plaintext, key_source = _decrypt_with_vault_rotation(token_content_enc)
+                    token_content = plaintext.decode()
+                except Exception:
                     print("[webull] Could not decrypt stored token; refusing plaintext fallback")
                     return
 
                 _write_token_securely(token_content)
-                print("[webull] Restored Webull auth token from Firestore.")
+                if key_source == "previous":
+                    doc_ref.set({
+                        "token_content": get_vault().encrypt(plaintext).decode(),
+                        "updated_at": firestore.SERVER_TIMESTAMP,
+                    }, merge=True, timeout=2.0, retry=None)
+                    print("[webull] Restored and re-encrypted Webull auth token with the active vault key.")
+                else:
+                    print("[webull] Restored Webull auth token from Firestore.")
     except Exception as e:
         print(f"[webull] Error restoring token from Firestore: {type(e).__name__}")
 

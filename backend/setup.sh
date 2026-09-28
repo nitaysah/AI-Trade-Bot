@@ -6,17 +6,19 @@
 
 echo "🚀 Starting AI Trading Bot Backend Setup..."
 
-# 1. Verify Python 3.13
-REQUIRED_VERSION="3.13"
-
-# Find Python 3.13 binary
-if command -v python3.13 &> /dev/null; then
-    PY_CMD="python3.13"
-elif command -v python3 &> /dev/null && [[ $(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")') == "$REQUIRED_VERSION" ]]; then
-    PY_CMD="python3"
-else
+# 1. Verify a supported Python runtime. Prefer the same current runtime used
+# by the container image, while allowing supported 3.11/3.12 hosts.
+REQUIRED_VERSION="3.11 or newer"
+PY_CMD=""
+for candidate in python3.13 python3.12 python3.11 python3; do
+    if command -v "$candidate" &> /dev/null && "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' &> /dev/null; then
+        PY_CMD="$candidate"
+        break
+    fi
+done
+if [ -z "$PY_CMD" ]; then
     echo "❌ Error: Python $REQUIRED_VERSION is required but not found."
-    echo "Please install Python 3.13 (e.g., 'brew install python@3.13' on Mac)."
+    echo "Please install Python 3.11 or newer before running setup."
     exit 1
 fi
 
@@ -29,6 +31,10 @@ if [ ! -d "venv" ]; then
     $PY_CMD -m venv venv
 else
     echo "✅ Virtual environment already exists."
+    if ! venv/bin/python -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' &> /dev/null; then
+        echo "❌ Existing venv uses Python older than 3.11. Remove it and rerun setup."
+        exit 1
+    fi
 fi
 
 # 3. Install the repository's hash-locked dependency graph.

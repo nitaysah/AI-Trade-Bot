@@ -70,9 +70,28 @@ jobs:
             sudo install -d -m 700 -o "$DEPLOY_USER" -g "$DEPLOY_GROUP" "$LOCAL_DATA_DIR"
             sudo install -d -m 700 -o "$DEPLOY_USER" -g "$DEPLOY_GROUP" "$LOCAL_DATA_DIR/secrets"
             
-            # Setup virtual environment if missing, and install dependencies
+            # Use a supported Python runtime; never silently recreate the
+            # production venv with an end-of-life interpreter.
+            PYTHON_BIN=""
+            for candidate in python3.13 python3.12 python3.11 python3; do
+              if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
+                PYTHON_BIN="$(command -v "$candidate")"
+                break
+              fi
+            done
+            if [ -z "$PYTHON_BIN" ]; then
+              echo "::error::Python 3.11 or newer is required on the Oracle VM."
+              exit 1
+            fi
+
+            # Recreate only the disposable virtualenv when an older host venv
+            # is found; application code, secrets, and persistent data remain.
+            if [ -x "venv/bin/python" ] && ! venv/bin/python -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
+              echo "Recreating the unsupported Python virtualenv with $PYTHON_BIN"
+              rm -rf venv
+            fi
             if [ ! -d "venv" ]; then
-              python3 -m venv venv
+              "$PYTHON_BIN" -m venv venv
             fi
             source venv/bin/activate
             python -m pip install --require-hashes -r backend/requirements.lock.txt
