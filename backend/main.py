@@ -3879,6 +3879,11 @@ allowed_origins = [
     "https://trading-bot-engine-df3de.firebaseapp.com",
     "https://trading-bot-engine-df3de.web.app",
     "https://207-211-184-22.sslip.io",
+    # The Oracle VM also serves the frontend locally on port 3000. Keep these
+    # explicit origins available in production so email signup can record
+    # legal acceptance through the VM API instead of failing CORS preflight.
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
 ]
 
 if os.getenv("ENV") != "production":
