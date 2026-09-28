@@ -836,6 +836,11 @@
                 void submitEmailAuth();
                 return;
             }
+            if (!auth.currentUser) {
+                hideConsentPanel();
+                setStatus('Agreement accepted · enter your account details');
+                return;
+            }
             authActionInFlight = true;
             syncConsent();
             try {
@@ -1101,7 +1106,14 @@
         }
 
         signInModeBtn.addEventListener('click', () => setAuthMode('signin'));
-        signUpModeBtn.addEventListener('click', () => setAuthMode('signup'));
+        signUpModeBtn.addEventListener('click', () => {
+            setAuthMode('signup');
+            if (!hasRequiredConsent()) {
+                authDebug('signup-mode-open-consent');
+                showConsentPanel();
+                setStatus('Review and accept the agreements before creating your account', 'amber');
+            }
+        });
         togglePasswordBtn.addEventListener('click', () => {
             const showing = passwordInput.type === 'text';
             passwordInput.type = showing ? 'password' : 'text';
