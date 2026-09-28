@@ -2071,16 +2071,34 @@ async def verify_token(request: Request, authorization: str = Header(None)):
     except Exception as e:
         raise HTTPException(status_code=401, detail="Invalid or expired authentication credentials")
 
+def _legal_debug_uid(user: dict) -> str:
+    """Return a non-reversible correlation value for legal-flow diagnostics."""
+    uid = str((user or {}).get("uid") or "")
+    return hashlib.sha256(uid.encode("utf-8")).hexdigest()[:12] if uid else "unknown"
+
 async def get_user_engine(request: Request, user: dict = Depends(verify_token)) -> UserEngine:
+    path = request.url.path
+    query = request.query_params
+    legal_endpoint = path.startswith("/api/legal/")
+    legal_started = time.perf_counter() if legal_endpoint else None
+    legal_uid = _legal_debug_uid(user) if legal_endpoint else ""
+    if legal_endpoint:
+        print(f"[legal-debug] start path={path} uid_hash={legal_uid}", flush=True)
     eng = user_manager.get_engine(user['uid'])
     if not getattr(eng, 'loaded_from_cloud', False):
         async with eng.load_lock:
             if not eng.loaded_from_cloud:
-                await eng.load_from_cloud()
+                try:
+                    await eng.load_from_cloud()
+                except Exception as exc:
+                    if legal_endpoint:
+                        elapsed_ms = (time.perf_counter() - legal_started) * 1000
+                        print(f"[legal-debug] load-error path={path} uid_hash={legal_uid} elapsed_ms={elapsed_ms:.0f} error={type(exc).__name__}", flush=True)
+                    raise
+                if legal_endpoint:
+                    elapsed_ms = (time.perf_counter() - legal_started) * 1000
+                    print(f"[legal-debug] load-complete path={path} uid_hash={legal_uid} elapsed_ms={elapsed_ms:.0f} status={eng.alpaca_load_status}", flush=True)
 
-    path = request.url.path
-    query = request.query_params
-    legal_endpoint = path.startswith("/api/legal/")
     acceptance = getattr(eng.config, "legal_acceptance", {}) or {}
     if not legal_endpoint and acceptance.get("terms_version") != LEGAL_TERMS_VERSION:
         raise HTTPException(
@@ -2119,6 +2137,9 @@ async def get_user_engine(request: Request, user: dict = Depends(verify_token)) 
             if not eng.bot_running and not (eng.task and not eng.task.done()):
                 eng.task = asyncio.create_task(eng.trading_loop())
     set_user_config(eng.config)
+    if legal_endpoint:
+        elapsed_ms = (time.perf_counter() - legal_started) * 1000
+        print(f"[legal-debug] ready path={path} uid_hash={legal_uid} elapsed_ms={elapsed_ms:.0f}", flush=True)
     return eng
 
 
@@ -3868,7 +3889,16 @@ async def record_legal_acceptance(
         "paper_trading_acknowledged": True,
         "acceptance_source": "web_sign_in",
     }
-    await eng.save_settings()
+    started = time.perf_counter()
+    print(f"[legal-debug] save-start uid_hash={_legal_debug_uid(user)}", flush=True)
+    try:
+        await eng.save_settings()
+    except Exception as exc:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        print(f"[legal-debug] save-error uid_hash={_legal_debug_uid(user)} elapsed_ms={elapsed_ms:.0f} error={type(exc).__name__}", flush=True)
+        raise
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    print(f"[legal-debug] save-complete uid_hash={_legal_debug_uid(user)} elapsed_ms={elapsed_ms:.0f}", flush=True)
     return {
         "status": "success",
         "required_version": LEGAL_TERMS_VERSION,

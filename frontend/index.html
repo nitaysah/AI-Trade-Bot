@@ -494,6 +494,8 @@
         const AGREEMENT_REQUEST_TIMEOUT_MS = 15000;
         const AUTH_OPERATION_TIMEOUT_MS = 20000;
         const FIREBASE_CLEANUP_TIMEOUT_MS = 10000;
+        const AUTH_DEBUG_ENABLED = new URLSearchParams(window.location.search).get('auth_debug') === '1';
+        const AUTH_DEBUG_SESSION = Math.random().toString(36).slice(2, 10);
         let redirecting = false;
         let dashboardNavigationTimeout = null;
         let dashboardNavigationCleanup = null;
@@ -512,6 +514,14 @@
                 timeoutId = window.setTimeout(() => reject(new Error(message)), timeoutMs);
             });
             return Promise.race([Promise.resolve(promise), timeout]).finally(() => window.clearTimeout(timeoutId));
+        }
+
+        function authDebug(event, details = {}) {
+            if (!AUTH_DEBUG_ENABLED) return;
+            console.info('[auth-debug]', event, {
+                session: AUTH_DEBUG_SESSION,
+                ...details,
+            });
         }
 
         function readRedirectPending() {
@@ -763,6 +773,8 @@
         async function discardNewUserIfNeeded(user) {
             if (!user?.uid || pendingNewUserForCleanup?.uid !== user.uid) return true;
             const newUser = pendingNewUserForCleanup;
+            const startedAt = Date.now();
+            authDebug('cleanup-start');
             try {
                 await withTimeout(
                     deleteUser(newUser),
@@ -771,8 +783,10 @@
                 );
                 pendingNewUserForCleanup = null;
                 try { sessionStorage.removeItem(PENDING_NEW_USER_KEY); } catch (_) {}
+                authDebug('cleanup-success', { elapsedMs: Date.now() - startedAt });
                 return true;
             } catch (error) {
+                authDebug('cleanup-error', { elapsedMs: Date.now() - startedAt, message: String(error?.message || error) });
                 console.error('[auth] Could not remove account before agreement was recorded:', error);
                 return false;
             }
@@ -862,6 +876,8 @@
         syncConsent();
 
         async function syncAcceptanceToServer(user) {
+            const startedAt = Date.now();
+            authDebug('acceptance-post-start', { apiHost: new URL(API_BASE).host });
             const token = await withTimeout(
                 user.getIdToken(),
                 AUTH_OPERATION_TIMEOUT_MS,
@@ -876,6 +892,7 @@
                     body: JSON.stringify({ terms_version: TERMS_VERSION, paper_trading_acknowledged: paperCheck.checked }),
                     signal: controller.signal
                 });
+                authDebug('acceptance-post-response', { status: response.status, elapsedMs: Date.now() - startedAt });
                 if (!response.ok) {
                     let detail = 'Unable to record the agreement';
                     try {
@@ -884,8 +901,11 @@
                     } catch (_) {}
                     throw new Error(detail);
                 }
-                return response.json();
+                const result = await response.json();
+                authDebug('acceptance-post-success', { elapsedMs: Date.now() - startedAt });
+                return result;
             } catch (error) {
+                authDebug('acceptance-post-error', { elapsedMs: Date.now() - startedAt, name: error?.name, message: String(error?.message || error) });
                 if (error?.name === 'AbortError') throw new Error('Agreement recording timed out');
                 throw error;
             } finally {
@@ -895,6 +915,8 @@
 
         async function restoreConsentFromServer(user) {
             if (!user?.uid || hasRequiredConsent()) return false;
+            const startedAt = Date.now();
+            authDebug('acceptance-get-start', { apiHost: new URL(API_BASE).host });
             const token = await withTimeout(
                 user.getIdToken(),
                 AUTH_OPERATION_TIMEOUT_MS,
@@ -908,6 +930,7 @@
                     headers: { 'Authorization': `Bearer ${token}` },
                     signal: controller.signal
                 });
+                authDebug('acceptance-get-response', { status: response.status, elapsedMs: Date.now() - startedAt });
                 if (!response.ok) throw new Error(`Acceptance lookup failed (${response.status})`);
                 const result = await response.json();
                 const accepted = result.accepted === true
@@ -924,8 +947,10 @@
                     hideConsentPanel();
                     syncConsent();
                 }
+                authDebug('acceptance-get-result', { accepted, elapsedMs: Date.now() - startedAt });
                 return accepted;
             } catch (error) {
+                authDebug('acceptance-get-error', { elapsedMs: Date.now() - startedAt, name: error?.name, message: String(error?.message || error) });
                 if (error?.name === 'AbortError') {
                     console.warn('[auth] Agreement lookup timed out; consent remains required.');
                 } else {
@@ -950,6 +975,10 @@
 
         async function completeAuthenticatedUser(user, { skipGooglePasswordOffer = false } = {}) {
             if (!user || redirecting) return;
+            authDebug('complete-start', {
+                hasConsent: hasRequiredConsent(),
+                acceptanceConfirmed: acceptanceConfirmedUid === user.uid,
+            });
             restorePendingNewUser(user);
             if (acceptanceConfirmedUid && acceptanceConfirmedUid !== user.uid) {
                 acceptanceConfirmedUid = null;
@@ -960,6 +989,7 @@
             }
             if (!hasRequiredConsent()) {
                 await restoreConsentFromServer(user);
+                authDebug('complete-after-acceptance-get', { hasConsent: hasRequiredConsent() });
             }
             if (!hasRequiredConsent()) {
                 hidePasswordLinkPanel();
@@ -970,13 +1000,16 @@
             }
             if (acceptanceConfirmedUid !== user.uid) {
                 try {
+                    authDebug('complete-before-acceptance-post');
                     await syncAcceptanceToServer(user);
                     acceptanceConfirmedUid = user.uid;
                     if (pendingNewUserForCleanup?.uid === user.uid) {
                         pendingNewUserForCleanup = null;
                         try { sessionStorage.removeItem(PENDING_NEW_USER_KEY); } catch (_) {}
                     }
+                    authDebug('complete-after-acceptance-post');
                 } catch (error) {
+                    authDebug('complete-acceptance-post-failed', { message: String(error?.message || error) });
                     console.error('[auth] Agreement recording error:', error);
                     const removed = await discardNewUserIfNeeded(user);
                     resetLocalConsent();
@@ -998,6 +1031,7 @@
             hidePasswordLinkPanel();
             if (hasAcceptedTerms() && hasAcceptedPaperMode()) {
                 redirecting = true;
+                authDebug('dashboard-navigation-start');
                 showAuthTransition();
                 setStatus('Agreement recorded · opening your workspace');
                 try {
@@ -1082,6 +1116,8 @@
             authActionInFlight = true;
             syncConsent();
             const email = emailInput.value.trim();
+            const startedAt = Date.now();
+            authDebug('email-auth-start', { mode: authMode });
             try {
                 setStatus(authMode === 'signup' ? 'Creating your account' : 'Signing in securely');
                 const creatingAccount = authMode === 'signup';
@@ -1096,12 +1132,15 @@
                         AUTH_OPERATION_TIMEOUT_MS,
                         'Sign-in timed out'
                     );
+                authDebug('email-auth-success', { mode: creatingAccount ? 'signup' : 'signin', elapsedMs: Date.now() - startedAt });
                 if (creatingAccount) {
                     pendingNewUserForCleanup = result.user;
                     try { sessionStorage.setItem(PENDING_NEW_USER_KEY, result.user.uid); } catch (_) {}
                 }
                 await completeAuthenticatedUser(result.user);
+                authDebug('email-auth-complete', { elapsedMs: Date.now() - startedAt });
             } catch (error) {
+                authDebug('email-auth-error', { elapsedMs: Date.now() - startedAt, code: String(error?.code || ''), name: error?.name, message: String(error?.message || error) });
                 console.error('[auth] Email authentication error:', error);
                 setStatus(friendlyAuthError(error, authMode), 'rose');
             } finally {
