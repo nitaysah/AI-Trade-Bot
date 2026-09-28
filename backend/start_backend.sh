@@ -63,6 +63,12 @@ cleanup_botbulls_port() {
         managed="false"
         if [[ "$process_args" == "$PYTHON_BIN -m uvicorn main:app"* ]]; then
             managed="true"
+        elif [[ "$process_args" == "$VENV_DIR/bin/uvicorn main:app"* ]] \
+            && [[ "$process_args" == *"--port $port"* ]]; then
+            # macOS commonly reports the interpreter used by the uvicorn
+            # console script in argv[0], while the command itself still
+            # identifies this checkout's virtualenv and application.
+            managed="true"
         elif command -v readlink >/dev/null 2>&1; then
             python_real="$(readlink -f "$PYTHON_BIN" 2>/dev/null || printf '%s' "$PYTHON_BIN")"
             process_exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
