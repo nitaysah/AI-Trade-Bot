@@ -5,7 +5,7 @@ After=network.target
 [Service]
 User=ubuntu
 WorkingDirectory=/home/ubuntu/backend/backend
-Environment="PATH=/home/ubuntu/backend/venv/bin"
+Environment="PATH=/home/ubuntu/backend/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="BOTBULLS_FOREGROUND=true"
 EnvironmentFile=-/home/ubuntu/backend/.env
 EnvironmentFile=/etc/botbulls/botbulls.env
