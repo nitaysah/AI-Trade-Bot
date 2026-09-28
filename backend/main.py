@@ -2112,7 +2112,9 @@ async def get_user_engine(request: Request, user: dict = Depends(verify_token)) 
     )
     is_debug_endpoint = path == "/api/debug-doge"
 
-    if not eng.bot_running and not is_backtest_status and not is_backtest_execution and not is_chart_only_request and not is_debug_endpoint:
+    # Legal acceptance is part of sign-in/account setup.  It must not start
+    # the user's trading loop as a side effect of recording consent.
+    if not legal_endpoint and not eng.bot_running and not is_backtest_status and not is_backtest_execution and not is_chart_only_request and not is_debug_endpoint:
         async with eng.task_start_lock:
             if not eng.bot_running and not (eng.task and not eng.task.done()):
                 eng.task = asyncio.create_task(eng.trading_loop())

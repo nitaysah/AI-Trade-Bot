@@ -492,6 +492,8 @@
         const consentSaveBtn = document.getElementById('consentSaveBtn');
         const consentCancelBtn = document.getElementById('consentCancelBtn');
         const AGREEMENT_REQUEST_TIMEOUT_MS = 15000;
+        const AUTH_OPERATION_TIMEOUT_MS = 20000;
+        const FIREBASE_CLEANUP_TIMEOUT_MS = 10000;
         let redirecting = false;
         let dashboardNavigationTimeout = null;
         let dashboardNavigationCleanup = null;
@@ -503,6 +505,14 @@
         let pendingSignupConsent = false;
         let pendingNewUserForCleanup = null;
         const isMobileBrowser = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.innerWidth <= 768;
+
+        function withTimeout(promise, timeoutMs, message) {
+            let timeoutId;
+            const timeout = new Promise((_, reject) => {
+                timeoutId = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+            });
+            return Promise.race([Promise.resolve(promise), timeout]).finally(() => window.clearTimeout(timeoutId));
+        }
 
         function readRedirectPending() {
             try { return sessionStorage.getItem(REDIRECT_PENDING_KEY) === '1'; } catch (_) { return false; }
@@ -754,7 +764,11 @@
             if (!user?.uid || pendingNewUserForCleanup?.uid !== user.uid) return true;
             const newUser = pendingNewUserForCleanup;
             try {
-                await deleteUser(newUser);
+                await withTimeout(
+                    deleteUser(newUser),
+                    FIREBASE_CLEANUP_TIMEOUT_MS,
+                    'Account cleanup timed out'
+                );
                 pendingNewUserForCleanup = null;
                 try { sessionStorage.removeItem(PENDING_NEW_USER_KEY); } catch (_) {}
                 return true;
@@ -848,7 +862,11 @@
         syncConsent();
 
         async function syncAcceptanceToServer(user) {
-            const token = await user.getIdToken();
+            const token = await withTimeout(
+                user.getIdToken(),
+                AUTH_OPERATION_TIMEOUT_MS,
+                'Authentication token request timed out'
+            );
             const controller = new AbortController();
             const timeoutId = window.setTimeout(() => controller.abort(), AGREEMENT_REQUEST_TIMEOUT_MS);
             try {
@@ -877,7 +895,11 @@
 
         async function restoreConsentFromServer(user) {
             if (!user?.uid || hasRequiredConsent()) return false;
-            const token = await user.getIdToken();
+            const token = await withTimeout(
+                user.getIdToken(),
+                AUTH_OPERATION_TIMEOUT_MS,
+                'Authentication token request timed out'
+            );
             const controller = new AbortController();
             const timeoutId = window.setTimeout(() => controller.abort(), AGREEMENT_REQUEST_TIMEOUT_MS);
             try {
@@ -1064,8 +1086,16 @@
                 setStatus(authMode === 'signup' ? 'Creating your account' : 'Signing in securely');
                 const creatingAccount = authMode === 'signup';
                 const result = creatingAccount
-                    ? await createUserWithEmailAndPassword(auth, email, passwordInput.value)
-                    : await signInWithEmailAndPassword(auth, email, passwordInput.value);
+                    ? await withTimeout(
+                        createUserWithEmailAndPassword(auth, email, passwordInput.value),
+                        AUTH_OPERATION_TIMEOUT_MS,
+                        'Account creation timed out'
+                    )
+                    : await withTimeout(
+                        signInWithEmailAndPassword(auth, email, passwordInput.value),
+                        AUTH_OPERATION_TIMEOUT_MS,
+                        'Sign-in timed out'
+                    );
                 if (creatingAccount) {
                     pendingNewUserForCleanup = result.user;
                     try { sessionStorage.setItem(PENDING_NEW_USER_KEY, result.user.uid); } catch (_) {}
