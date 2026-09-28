@@ -3289,7 +3289,8 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
 
 
 
-        // All indicators start in unchecked mode with default settings when deploying new bots
+        // New profiles are independent of the previously opened ticker. Start
+        // with no indicators selected and let the user opt into the pool.
         document.querySelectorAll('.strategy-indicator-check').forEach(chk => {
             chk.checked = false;
         });

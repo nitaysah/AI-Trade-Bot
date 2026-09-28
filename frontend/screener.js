@@ -11,6 +11,23 @@ function formatAssetPrice(val, isCrypto) {
     if (v < 1.0) return v.toFixed(4);
     return v.toFixed(2);
 }
+
+function formatScreenerTimeframeLabel(timeframe) {
+    const raw = String(timeframe || '5Min').trim();
+    const normalized = raw.toLowerCase();
+    const shortLabel = ({
+        '1min': '1M',
+        '5min': '5M',
+        '15min': '15M',
+        '30min': '30M',
+        '1hour': '1H',
+        '4hour': '4H',
+        '1day': '1D',
+        '1week': '1W',
+        '1month': '1Mo',
+    })[normalized] || raw.replace(/minutes?$/i, 'M').replace(/hours?$/i, 'H').replace(/days?$/i, 'D');
+    return `${shortLabel} candle`;
+}
 // ═══════════════════════════════════════════════════
 // BotBulls — independent Screener page
 // Shares analysis services, but never calls trading or Bots-state endpoints.
@@ -1617,7 +1634,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             ? 'text-red-700 bg-red-100 border-red-200'
             : 'text-red-600 bg-red-50 border-red-100';
         const tickerTf = (window.lastBotsData?.ticker_settings || {})[ticker]?.timeframe || '';
-        const tfLabel = tickerTf || (window.lastBotsData?.strategyTimeframe || '5Min');
+        const tfLabel = formatScreenerTimeframeLabel(tickerTf || (window.lastBotsData?.strategyTimeframe || '5Min'));
         const isLocallyPaused = (window.lastBotsData?.ticker_settings || {})[ticker]?.paused || false;
         const isGlobalRiskHalted = Boolean(window.lastBotsData?.global_risk_status?.halted);
         const isPaused = isLocallyPaused || isGlobalRiskHalted;
@@ -2095,19 +2112,9 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 isCryptoAsset
             );
             const statusText = String(scanLog.status || 'WAITING_ENTRY').replace(/_/g, ' ');
-            const screeningPolicyLabel = String(scanLog.screening_strategy_label || (
-                String(scanLog.screening_strategy_mode || tickerSettings.strategy_mode || 'combined').toLowerCase() === 'discovery'
-                    ? 'Discovery · Either Qualifies'
-                    : String(scanLog.screening_strategy_mode || tickerSettings.strategy_mode || 'combined').toLowerCase() === 'technical'
-                        ? 'Technical Only'
-                        : String(scanLog.screening_strategy_mode || tickerSettings.strategy_mode || 'combined').toLowerCase() === 'event'
-                            ? 'Event-Driven Only'
-                            : 'Combined · Require Both'
-            ));
             const screeningQualification = scanLog.strategy_qualification && typeof scanLog.strategy_qualification === 'object'
                 ? scanLog.strategy_qualification
                 : {};
-            const screeningPolicyHtml = `<span class="px-1.5 py-0.5 rounded border border-emerald-200 bg-emerald-50 text-emerald-700 font-black text-[0.48rem] tracking-widest uppercase" title="Technical and event qualification policy">${sanitizePlainText(screeningPolicyLabel)}</span>`;
             const indicatorLines = [confirmedText, waitingText, opposingText].filter(Boolean);
             const strategyMode = String(scanLog.strategy_mode || '').toLowerCase();
             const structuralTitle = ({
@@ -2214,7 +2221,6 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                     <div class="flex items-center gap-1.5 flex-wrap">
                         <span class="font-black uppercase tracking-wider text-slate-600">Last scan result</span>
                         <span class="px-1.5 py-0.5 rounded border ${scanLogStatusClass(scanLog.status)} font-black text-[0.48rem] tracking-widest uppercase">${statusText}</span>
-                        ${screeningPolicyHtml}
                         ${decisionBadgeHtml}
                         ${scanRefreshBadge}
                     </div>
@@ -2373,14 +2379,6 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                </span>`
             : '';
         const incubatorBadge = '';
-        const isOpt = tickerSettings.options_trading || tickerSettings.is_option || (scan && scan.scan_log && scan.scan_log.is_option);
-        const screeningMode = String(tickerSettings.strategy_mode || scan?.scan_log?.screening_strategy_mode || 'combined').toLowerCase();
-        const screeningLabel = {
-            technical: 'Technical',
-            event: 'Event-Driven',
-            combined: 'Combined · Both',
-            discovery: 'Discovery · Either',
-        }[screeningMode] || 'Combined · Both';
         const arrangeControlsHtml = botArrangeMode ? `
                         <div class="flex items-center gap-1 mr-1">
                             <button class="h-7 w-7 flex items-center justify-center rounded-lg bg-white/80 border border-emerald-200 text-emerald-600 disabled:opacity-30 disabled:text-slate-300 disabled:border-slate-200"
@@ -2422,7 +2420,6 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 : (isCryptoFlag
                     ? `<span class="px-1.5 py-0.5 rounded bg-fuchsia-500/10 text-fuchsia-700 font-black text-[0.5rem] border border-fuchsia-500/20 uppercase tracking-widest">Crypto</span>`
                     : `<span class="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-700 font-black text-[0.5rem] border border-indigo-500/20 uppercase tracking-widest">Stocks</span>`)}
-            <span class="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-700 font-black text-[0.5rem] border border-emerald-500/20 uppercase tracking-widest" title="Screener qualification policy">${screeningLabel}</span>
             <span class="px-1.5 py-0.5 rounded bg-indigo-50/50 text-indigo-500 font-mono font-black text-[0.55rem] border border-indigo-100/50 uppercase">${tfLabel}</span>`;
 
         item.innerHTML = `
@@ -4464,19 +4461,15 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
 
 
 
-        // All indicators start in unchecked mode with default settings when deploying new bots
+        // New profiles are independent of the previously opened ticker. Start
+        // with no indicators selected and let the user opt into the pool.
         document.querySelectorAll('.strategy-indicator-check').forEach(chk => {
             chk.checked = false;
         });
-        // Conservative swing defaults for a new Combined profile. These are
-        // starting settings, not optimized performance claims; users can
-        // change the pool and thresholds before saving.
-        const recommendedSwingIndicators = new Set(['EMA Cross', 'SMA', 'RSI', 'ADX Trend']);
-        document.querySelectorAll('.strategy-indicator-check-regular').forEach(chk => {
-            chk.checked = recommendedSwingIndicators.has(chk.value);
-        });
-        if (document.getElementById('strategyBuyThreshold_regular')) document.getElementById('strategyBuyThreshold_regular').value = 3;
-        if (document.getElementById('strategySellThreshold_regular')) document.getElementById('strategySellThreshold_regular').value = 3;
+        if (document.getElementById('strategyBuyThreshold_regular')) document.getElementById('strategyBuyThreshold_regular').value = 0;
+        if (document.getElementById('strategySellThreshold_regular')) document.getElementById('strategySellThreshold_regular').value = 0;
+        if (document.getElementById('strategyBuyThreshold_options')) document.getElementById('strategyBuyThreshold_options').value = 0;
+        if (document.getElementById('strategySellThreshold_options')) document.getElementById('strategySellThreshold_options').value = 0;
         updateStrategySignalLabels('regular');
 
         const addWatchlistEl = document.getElementById('strategyAddWatchlist');
