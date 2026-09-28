@@ -4240,5 +4240,8 @@ html body #manualBtChartPreviewPremiumSignalGrid .signal-card p {
         max-width: 7rem !important;
         padding-left: 1.15rem !important;
         padding-right: 0.35rem !important;
+        font-size: 0.62rem !important;
+        line-height: 1rem !important;
+        letter-spacing: -0.02em !important;
     }
 }
