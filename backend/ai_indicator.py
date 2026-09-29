@@ -15,6 +15,7 @@ import hashlib
 import html as html_lib
 import http.client
 import ipaddress
+import math
 import re
 import socket
 import ssl
@@ -39,6 +40,10 @@ from cache_manager import TTLCacheStore
 
 _AI_CACHE = TTLCacheStore(maxsize=128)
 _NEWS_METADATA_CACHE = TTLCacheStore(maxsize=512)
+NEWS_MAX_AGE_DAYS = 10
+NEWS_MAX_AGE_SECONDS = NEWS_MAX_AGE_DAYS * 24 * 60 * 60
+NEWS_MAX_FUTURE_SKEW_SECONDS = 5 * 60
+NEWS_METADATA_CACHE_VERSION = "news-timestamp-v1"
 
 try:
     from groq import Groq
@@ -356,6 +361,44 @@ def _clean_news_text(value: str, maximum: int = 400) -> str:
     return text[:maximum].rstrip()
 
 
+def _recent_news_timestamp(value, now_ts: float = None) -> int | None:
+    """Return a provider timestamp only when it is recent and trustworthy."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        timestamp = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(timestamp) or timestamp <= 0:
+        return None
+    current_ts = float(now_ts if now_ts is not None else time.time())
+    if not math.isfinite(current_ts):
+        current_ts = time.time()
+    if timestamp < current_ts - NEWS_MAX_AGE_SECONDS:
+        return None
+    if timestamp > current_ts + NEWS_MAX_FUTURE_SKEW_SECONDS:
+        return None
+    return int(timestamp)
+
+
+def _filter_recent_news_articles(articles: list[dict], now_ts: float = None) -> list[dict]:
+    """Drop articles without a valid publication timestamp or outside the window."""
+    current_ts = float(now_ts if now_ts is not None else time.time())
+    filtered = []
+    for article in articles or []:
+        if not isinstance(article, dict):
+            continue
+        published_ts = _recent_news_timestamp(article.get("published_ts"), current_ts)
+        if published_ts is None:
+            continue
+        normalized = dict(article)
+        normalized["published_ts"] = published_ts
+        normalized["published_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(published_ts))
+        normalized["age_hours"] = round(max(0.0, (current_ts - published_ts) / 3600.0), 1)
+        filtered.append(normalized)
+    return filtered
+
+
 def _is_public_news_url(url: str) -> bool:
     """Allow article previews only from publicly routable HTTP(S) hosts."""
     return _resolve_public_news_endpoint(url) is not None
@@ -387,6 +430,18 @@ class _PublicNewsRedirectHandler(urllib.request.HTTPRedirectHandler):
         if not _is_public_news_url(newurl):
             raise urllib.error.URLError("Blocked non-public news redirect")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+class _PublicNewsHTTPError(urllib.error.URLError):
+    """Bounded provider error that preserves the upstream HTTP status."""
+
+    def __init__(self, status: int, reason: str = "", url: str = ""):
+        self.status = int(status)
+        self.url = str(url or "")
+        detail = f"HTTP {self.status}"
+        if reason:
+            detail += f" {reason}"
+        super().__init__(detail)
 
 
 def _article_preview(url: str) -> str:
@@ -435,8 +490,9 @@ def _fetch_public_url(url: str, max_bytes: int = 350_000, max_redirects: int = 3
                 (
                     f"GET {target} HTTP/1.1\r\n"
                     f"Host: {parsed.hostname}\r\n"
-                    "User-Agent: BotBullsNewsPreview/1.0\r\n"
-                    "Accept: text/html,application/xhtml+xml\r\n"
+                    "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36\r\n"
+                    "Accept: application/json,application/rss+xml,application/xml,text/html,application/xhtml+xml\r\n"
+                    "Accept-Language: en-US,en;q=0.8\r\n"
                     "Connection: close\r\n\r\n"
                 ).encode("ascii", "strict")
             )
@@ -449,7 +505,7 @@ def _fetch_public_url(url: str, max_bytes: int = 350_000, max_redirects: int = 3
                 current_url = urllib.parse.urljoin(current_url, location)
                 continue
             if response.status < 200 or response.status >= 300:
-                return b""
+                raise _PublicNewsHTTPError(response.status, response.reason, current_url)
             content_length = response.getheader("Content-Length")
             if content_length and int(content_length) > max_bytes:
                 return b""
@@ -466,7 +522,17 @@ def _fetch_public_url(url: str, max_bytes: int = 350_000, max_redirects: int = 3
 def _ticker_news_terms(ticker: str, company_name: str = "") -> set[str]:
     terms = {str(ticker or "").upper()}
     aliases = {
+        "AAPL": {"AAPL", "APPLE"},
+        "AMZN": {"AMZN", "AMAZON"},
+        "AMD": {"AMD", "ADVANCED MICRO DEVICES"},
+        "GOOG": {"GOOG", "GOOGLE", "ALPHABET"},
+        "GOOGL": {"GOOGL", "GOOGLE", "ALPHABET"},
+        "META": {"META", "META PLATFORMS", "FACEBOOK"},
+        "MSFT": {"MSFT", "MICROSOFT"},
+        "NFLX": {"NFLX", "NETFLIX"},
+        "NVDA": {"NVDA", "NVIDIA"},
         "SPY": {"SPY", "S&P 500", "SPDR S&P 500"},
+        "TSLA": {"TSLA", "TESLA", "TESLA INC"},
         "QQQ": {"QQQ", "NASDAQ 100", "NASDAQ-100", "INVESCO QQQ"},
         "IWM": {"IWM", "RUSSELL 2000"},
         "DIA": {"DIA", "DOW JONES", "DOW 30"},
@@ -505,7 +571,15 @@ def _fetch_yahoo_news_articles(ticker: str, max_articles: int = 8) -> list[dict]
         "enableNavLinks": "false",
     })
     url = f"https://query2.finance.yahoo.com/v1/finance/search?{params}"
-    payload = json.loads(_fetch_public_url(url, max_bytes=256_000).decode("utf-8", "ignore"))
+    raw = _fetch_public_url(url, max_bytes=256_000)
+    if not raw or not raw.strip():
+        raise ValueError("Yahoo returned an empty response")
+    try:
+        payload = json.loads(raw.decode("utf-8", "ignore"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Yahoo returned a non-JSON response") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Yahoo returned an invalid JSON payload")
     quotes = payload.get("quotes") or []
     company_name = ""
     for quote in quotes:
@@ -516,15 +590,14 @@ def _fetch_yahoo_news_articles(ticker: str, max_articles: int = 8) -> list[dict]
         _NEWS_COMPANY_NAME_CACHE[str(ticker).upper()] = str(company_name)
     terms = _ticker_news_terms(ticker, company_name)
     now_ts = time.time()
-    cutoff = now_ts - 10 * 24 * 60 * 60
     articles = []
     seen = set()
     for item in payload.get("news") or []:
         title = _clean_news_text(item.get("title"), 240)
-        published_ts = int(item.get("providerPublishTime") or 0)
+        published_ts = _recent_news_timestamp(item.get("providerPublishTime"), now_ts)
         related = {str(symbol).upper() for symbol in (item.get("relatedTickers") or [])}
         directly_relevant = _title_mentions_ticker(title, terms)
-        if not title or published_ts < cutoff or published_ts > now_ts + 300 or not directly_relevant or str(ticker).upper() not in related:
+        if not title or published_ts is None or not directly_relevant or str(ticker).upper() not in related:
             continue
         dedupe_key = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
         if dedupe_key in seen:
@@ -555,13 +628,12 @@ def _fetch_google_news_articles(ticker: str, max_articles: int = 8) -> list[dict
         key=lambda value: (len(value), value),
     )
     company_term = alias_terms[0] if alias_terms else ""
-    query_text = f'"{str(ticker).upper()}" {company_term} stock when:7d'.strip()
+    query_text = f'"{str(ticker).upper()}" {company_term} stock when:{NEWS_MAX_AGE_DAYS}d'.strip()
     query = urllib.parse.quote(query_text)
     url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
     root = ET.fromstring(_fetch_public_url(url, max_bytes=256_000))
     terms = _ticker_news_terms(ticker, company_name)
     now_ts = time.time()
-    cutoff = now_ts - 10 * 24 * 60 * 60
     articles = []
     seen = set()
     for item in root.findall(".//item"):
@@ -577,14 +649,15 @@ def _fetch_google_news_articles(ticker: str, max_articles: int = 8) -> list[dict
         if dedupe_key in seen:
             continue
         seen.add(dedupe_key)
-        published_ts = 0
+        published_ts = None
         if date_node is not None and date_node.text:
             try:
                 from email.utils import parsedate_to_datetime
-                published_ts = int(parsedate_to_datetime(date_node.text).timestamp())
+                parsed_ts = parsedate_to_datetime(date_node.text).timestamp()
+                published_ts = _recent_news_timestamp(parsed_ts, now_ts)
             except Exception:
-                published_ts = 0
-        if published_ts and (published_ts < cutoff or published_ts > now_ts + 300):
+                published_ts = None
+        if published_ts is None:
             continue
         link = str(link_node.text if link_node is not None else "")
         articles.append({
@@ -592,9 +665,9 @@ def _fetch_google_news_articles(ticker: str, max_articles: int = 8) -> list[dict
             "source": _clean_news_text(source_node.text if source_node is not None else "", 80) or "Google News source",
             "feed_provider": "google",
             "url": link if link.startswith(("http://", "https://")) else "",
-            "published_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(published_ts)) if published_ts else "",
+            "published_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(published_ts)),
             "published_ts": published_ts,
-            "age_hours": round(max(0.0, (time.time() - published_ts) / 3600.0), 1) if published_ts else None,
+            "age_hours": round(max(0.0, (now_ts - published_ts) / 3600.0), 1),
             "excerpt": "",
         })
         if len(articles) >= max_articles:
@@ -627,8 +700,10 @@ def _fetch_news_article_metadata(ticker: str, max_articles: int = 8) -> tuple[li
         provider_status["yahoo"] = "ok" if articles else "empty"
     except Exception as exc:
         provider_status["yahoo"] = "error"
-        provider_status["errors"].append(f"Yahoo: {type(exc).__name__}")
-        print(f"[ai_indicator] Yahoo news fetch error for {ticker}: {exc}")
+        status = getattr(exc, "status", None)
+        error_label = f"Yahoo: HTTP {status}" if status else f"Yahoo: {type(exc).__name__}"
+        provider_status["errors"].append(error_label)
+        print(f"[ai_indicator] Yahoo news unavailable for {ticker} ({error_label}); trying Google News fallback")
     if len(articles) < 3:
         try:
             google_articles = _fetch_google_news_articles(ticker, max_articles)
@@ -651,15 +726,17 @@ def _fetch_news_article_metadata(ticker: str, max_articles: int = 8) -> tuple[li
 
 def _fetch_news_article_metadata_cached(ticker: str, max_articles: int = 8) -> tuple[list[dict], dict]:
     """Coalesce the same public ticker feed across users for one poll cycle."""
-    cache_key = (str(ticker or "").upper(), int(max_articles))
+    cache_key = (NEWS_METADATA_CACHE_VERSION, str(ticker or "").upper(), int(max_articles))
     cached = _NEWS_METADATA_CACHE.get(cache_key, 50)
     if cached is not None:
-        return copy.deepcopy(cached["articles"]), copy.deepcopy(cached["provider_status"])
+        articles = _filter_recent_news_articles(cached["articles"])
+        return copy.deepcopy(articles), copy.deepcopy(cached["provider_status"])
     with _NEWS_METADATA_CACHE.with_inflight_lock(cache_key):
         cached = _NEWS_METADATA_CACHE.get(cache_key, 50)
         if cached is None:
             cache_generation = _NEWS_METADATA_CACHE.generation()
             articles, provider_status = _fetch_news_article_metadata(ticker, max_articles)
+            articles = _filter_recent_news_articles(articles)
             cached = {"articles": articles, "provider_status": provider_status}
             _NEWS_METADATA_CACHE.set_if_generation(cache_key, cached, cache_generation)
         return copy.deepcopy(cached["articles"]), copy.deepcopy(cached["provider_status"])
@@ -2785,7 +2862,7 @@ def clear_ai_cache(ticker: str = None, timeframe: str = None, include_news: bool
 # ───────────────────────────────────────────────────────────────────────────
 SENTIMENT_CACHE = TTLCacheStore(maxsize=128)
 SENTIMENT_CACHE_DURATION: int = 1800  # 30 minutes
-SENTIMENT_CACHE_VERSION = "news-v5-relevance-weighted"
+SENTIMENT_CACHE_VERSION = "news-v6-timestamp-validated"
 
 def _fallback_sentiment(ticker: str, news_items: list) -> dict:
     """Rule-based sentiment scoring as a fallback."""
@@ -2899,6 +2976,7 @@ def get_ai_sentiment(
         if articles is not None
         else _fetch_news_articles(ticker, max_articles=8)
     )
+    articles = _filter_recent_news_articles(articles)
     headlines = [article["title"] for article in articles]
 
     # Local fallback engine when Groq is not available or API key is not configured
