@@ -60,6 +60,9 @@ VAULT_SECRET_KEY_VERSION=2
 # Groq API Key (Sentiment Analysis)
 GROQ_API_KEY=your_groq_api_key_here
 
+# Finnhub API Key (Primary company news)
+FINNHUB_API_KEY=
+
 # Alpaca API Credentials (Broker)
 ALPACA_API_KEY=your_alpaca_key_here
 ALPACA_SECRET_KEY=your_alpaca_secret_here

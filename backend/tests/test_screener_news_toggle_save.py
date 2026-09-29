@@ -91,7 +91,7 @@ class ScreenerNewsToggleSaveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["dashboard_watchlist"], ["AAPL"])
         self.assertTrue(response["dashboard_watchlist_enabled"])
 
-    async def test_disabling_earnings_watch_preserves_latest_technical_scan(self):
+    async def test_news_summary_remains_enabled_for_technical_only(self):
         state = ScreenerUserState("earnings-toggle-test", None)
         initial = main._screener_profile_from_request({
             "symbol": "AAPL",
@@ -107,7 +107,7 @@ class ScreenerNewsToggleSaveTests(unittest.IsolatedAsyncioTestCase):
                 "news_watch_enabled": True,
             },
         }, state, "AAPL")
-        self.assertFalse(initial["news_watch_enabled"])
+        self.assertTrue(initial["news_watch_enabled"])
         state.config.TICKER_SETTINGS = {"AAPL": initial}
         state.profiles = state.config._ticker_settings
         state.order = ["AAPL"]
@@ -122,7 +122,7 @@ class ScreenerNewsToggleSaveTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(response["technical_scan_changed"])
         self.assertFalse(response["earnings_watch_enabled"])
-        self.assertFalse(response["news_watch_enabled"])
+        self.assertTrue(response["news_watch_enabled"])
         self.assertIs(state.latest_scans["AAPL"], existing_scan)
         create_task.assert_called_once()
         create_task.call_args.args[0].close()

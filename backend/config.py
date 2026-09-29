@@ -29,6 +29,7 @@ BROKER_TYPE = os.getenv("BROKER_TYPE", "alpaca")  # "alpaca" or "webull"
 # API Keys — Alpaca
 # ──────────────────────────────────────────────
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "").strip()
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
 

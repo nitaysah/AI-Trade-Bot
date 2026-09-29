@@ -55,6 +55,7 @@ cleanup_botbulls_port() {
     local process_args=""
     local python_real="$PYTHON_BIN"
     local process_exe=""
+    local process_cwd=""
     local managed="false"
 
     if command -v ss >/dev/null 2>&1; then
@@ -85,6 +86,21 @@ cleanup_botbulls_port() {
             # console script in argv[0], while the command itself still
             # identifies this checkout's virtualenv and application.
             managed="true"
+        elif [[ "$process_args" == *" -m uvicorn main:app"* ]] \
+            && [[ "$process_args" == *"--port $port"* ]]; then
+            # A stale local launch may use the system Python instead of the
+            # checkout virtualenv. Identify it only when the process cwd is
+            # this exact backend directory; command-line matching alone would
+            # risk terminating an unrelated uvicorn service.
+            if command -v lsof >/dev/null 2>&1; then
+                process_cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null \
+                    | sed -n 's/^n//p' | head -n 1 || true)"
+            elif [ -e "/proc/$pid/cwd" ]; then
+                process_cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+            fi
+            if [ "$process_cwd" = "$DIR" ]; then
+                managed="true"
+            fi
         elif command -v readlink >/dev/null 2>&1; then
             python_real="$(readlink -f "$PYTHON_BIN" 2>/dev/null || printf '%s' "$PYTHON_BIN")"
             process_exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"

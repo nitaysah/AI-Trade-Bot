@@ -34,7 +34,7 @@ class UserConfig:
         # Secrets and infrastructure endpoints must remain server-owned; putting
         # them here makes accidental persistence/serialization much more likely.
         _server_only = {
-            "ALPACA_API_KEY", "ALPACA_SECRET_KEY", "GROQ_API_KEY", "FERNET_KEY",
+            "ALPACA_API_KEY", "ALPACA_SECRET_KEY", "GROQ_API_KEY", "FINNHUB_API_KEY", "FERNET_KEY",
             "WEBULL_APP_KEY", "WEBULL_APP_SECRET", "WEBULL_ACCOUNT_ID",
             "VAULT_SECRET_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "FIREBASE_SERVICE_ACCOUNT",
             "OLLAMA_HOST", "ENV",
@@ -194,7 +194,7 @@ class UserConfig:
 
     def set(self, key, value):
         if str(key or "").upper() in {
-            "OLLAMA_HOST", "GROQ_API_KEY", "ALPACA_API_KEY", "ALPACA_SECRET_KEY",
+            "OLLAMA_HOST", "GROQ_API_KEY", "FINNHUB_API_KEY", "ALPACA_API_KEY", "ALPACA_SECRET_KEY",
             "WEBULL_APP_KEY", "WEBULL_APP_SECRET", "WEBULL_ACCOUNT_ID", "VAULT_SECRET_KEY",
             "FIREBASE_SERVICE_ACCOUNT", "GOOGLE_APPLICATION_CREDENTIALS", "ENV",
         }:

@@ -117,6 +117,20 @@ class ScreenerNewsWatchTests(unittest.TestCase):
         self.assertEqual(profile_revision(enabled), profile_revision(disabled))
         self.assertNotEqual(profile_revision(enabled), profile_revision(changed_timeframe))
 
+    def test_neutral_summary_labels_opposing_article_evidence_as_mixed(self):
+        summary = ai_indicator.canonicalize_sentiment_summary(
+            "Positive article evidence: Direct bullish opinion piece about Apple. "
+            "Negative article evidence: Direct negative legal outcome for Apple.",
+            "NEUTRAL",
+            63.0,
+            0.60,
+        )
+
+        self.assertEqual(summary.count("Mixed article evidence:"), 2)
+        self.assertNotIn("Positive article evidence:", summary)
+        self.assertNotIn("Negative article evidence:", summary)
+        self.assertIn("Aggregate headline tone is neutral at 63/100", summary)
+
 
 if __name__ == "__main__":
     unittest.main()

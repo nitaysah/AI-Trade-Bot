@@ -5,6 +5,8 @@ from screener_strategy import (
     assess_event_catalyst,
     assess_swing_technical,
     combine_strategy_qualification,
+    screening_strategy_label,
+    screening_strategy_logic,
 )
 
 
@@ -25,6 +27,9 @@ class ScreenerStrategyPolicyTests(unittest.TestCase):
                 "impact": "HIGH",
                 "published_ts": self.now - 3600,
             },
+            "latest_summary": "The company launched a material AI product.",
+            "ai_analysis": "The collected coverage is constructive but still awaiting broader confirmation.",
+            "article_count": 4,
         }
         self.scan = {
             "evaluation_status": "valid",
@@ -42,6 +47,10 @@ class ScreenerStrategyPolicyTests(unittest.TestCase):
         self.assertTrue(result["eligible"])
         self.assertEqual(result["direction"], "BULLISH")
         self.assertEqual(result["catalyst_id"], "catalyst-1")
+        self.assertEqual(result["latest_summary"], "The company launched a material AI product.")
+        self.assertIn("collected coverage", result["collected_news_summary"])
+        self.assertEqual(result["article_count"], 4)
+        self.assertEqual(result["collection_days"], 10)
 
     def test_stale_catalyst_is_blocked(self):
         stale = {**self.news, "latest": {**self.news["latest"], "published_ts": self.now - 11 * 86400}}
@@ -58,6 +67,20 @@ class ScreenerStrategyPolicyTests(unittest.TestCase):
             technical,
             {**event, "direction": "BEARISH"},
         )["qualified"])
+
+    def test_event_mode_uses_only_the_event_leg(self):
+        technical_missing = {"eligible": False, "direction": "NEUTRAL", "reason": "Technical waiting"}
+        event = {"eligible": True, "direction": "BEARISH", "reason": "Event qualified"}
+        result = combine_strategy_qualification("event_driven", technical_missing, event)
+        self.assertTrue(result["qualified"])
+        self.assertEqual(result["direction"], "BEARISH")
+        self.assertEqual(result["mode"], "event")
+
+    def test_policy_labels_and_logic_are_explicit(self):
+        self.assertEqual(screening_strategy_label("both"), "Combined · Require Both Indicator + Event")
+        self.assertEqual(screening_strategy_label("event-driven"), "Event-Driven Only")
+        self.assertIn("both indicator and event", screening_strategy_logic("combined").lower())
+        self.assertIn("indicator leg is not required", screening_strategy_logic("event").lower())
 
     def test_discovery_accepts_one_leg_but_vetoes_conflict(self):
         technical = {"eligible": True, "direction": "BULLISH", "reason": "Technical qualified"}

@@ -212,6 +212,11 @@ class ScreenerUserState:
                 settings = dict(raw_settings)
                 settings["source"] = "screener"
                 settings.setdefault("enabled", not bool(settings.get("paused", False)))
+                # News Summary is a universal Screener feed. Older persisted
+                # profiles may still carry the removed opt-out flag, so
+                # migrate them on load instead of leaving their news watcher
+                # permanently disabled until the user re-saves the ticker.
+                settings["news_watch_enabled"] = True
                 clean_profiles[symbol] = settings
 
         requested_order = raw.get("order", raw.get("tradelist", []))

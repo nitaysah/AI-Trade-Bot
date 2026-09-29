@@ -94,6 +94,8 @@ from screener_strategy import (
     assess_swing_technical,
     combine_strategy_qualification,
     normalize_screening_strategy_mode,
+    screening_strategy_label,
+    screening_strategy_logic,
 )
 from ai_indicator import (
     build_screener_news_watch,
@@ -1547,7 +1549,7 @@ def _technical_scan_from_analysis(
     ai_sentiment_score: float = 0.0,
     ai_sentiment_confidence: float = 0.0,
     ai_sentiment_summary: str = "",
-    ai_sentiment_key_factor: str = "Technical signals",
+    ai_sentiment_key_factor: str = "Indicator signals",
 ):
     if not analysis:
         return None
@@ -1619,7 +1621,7 @@ def _build_chart_payload(
         ai_sentiment_score=float(ai_payload.get("score", 0.0) or 0.0),
         ai_sentiment_confidence=float(ai_payload.get("confidence", 0.0) or 0.0),
         ai_sentiment_summary=ai_payload.get("summary", "") or "",
-        ai_sentiment_key_factor=ai_payload.get("key_factor", "Technical signals") or "Technical signals",
+        ai_sentiment_key_factor=ai_payload.get("key_factor", "Indicator signals") or "Indicator signals",
     )
     formatted_scan = _format_scan_for_ui(scan, use_global_settings=(not use_bot_settings))
     active_settings = settings if isinstance(settings, dict) else {}
@@ -2466,7 +2468,7 @@ async def _scan_screener_state(
                     if direction != raw_technical_direction:
                         combined_reason = str(strategy_qualification.get("reason") or "Strategy policy is waiting.")
                         original_reason = str(formatted.get("reason") or scan.get("reason") or "")
-                        scan["reason"] = f"{combined_reason} | Technical: {original_reason}" if original_reason else combined_reason
+                        scan["reason"] = f"{combined_reason} | Indicator: {original_reason}" if original_reason else combined_reason
                         formatted["reason"] = scan["reason"]
                     formatted["screening_strategy_mode"] = screening_mode
                     formatted["technical_direction"] = raw_technical_direction
@@ -2612,11 +2614,28 @@ async def _scan_screener_state(
                     # it must remain explainable even after the live card has
                     # moved to a later candle.
                     if notification:
+                        notification_reason = str(
+                            exit_event.get("text")
+                            if exit_event
+                            else strategy_qualification.get("reason")
+                            or evaluation_for_commit.get("reason")
+                            or formatted.get("reason")
+                            or "Signal transition detected."
+                        )
                         notification.update({
                             "event_direction": event_direction,
                             "timeframe": timeframe,
-                            "scan_log": copy.deepcopy(alert_scan_log),
+                            # Keep the delivered alert's reason tied to the
+                            # selected Screener policy. The raw technical
+                            # explanation remains available separately.
+                            "reason": notification_reason,
                             "scan_reason": str(formatted.get("reason") or ""),
+                            "screening_strategy_mode": screening_mode,
+                            "screening_strategy_label": screening_strategy_label(screening_mode),
+                            "strategy_qualification": copy.deepcopy(strategy_qualification),
+                            "event_qualification": copy.deepcopy(event_assessment),
+                            "alert_basis": "technical_exit_monitor" if exit_event else "screening_policy",
+                            "scan_log": copy.deepcopy(alert_scan_log),
                             "candle_meta": copy.deepcopy(formatted.get("candle_meta") or {}),
                             "atr_levels": copy.deepcopy(
                                 evaluation_for_commit.get("atr_levels")
@@ -2652,6 +2671,12 @@ async def _scan_screener_state(
                         "action": event_direction,
                         "price": formatted.get("price", ""),
                         "reason": evaluation_for_commit.get("reason", formatted.get("reason", "")),
+                        "scan_reason": str(formatted.get("reason") or ""),
+                        "screening_strategy_mode": screening_mode,
+                        "screening_strategy_label": screening_strategy_label(screening_mode),
+                        "screening_strategy_logic": screening_strategy_logic(screening_mode),
+                        "strategy_qualification": copy.deepcopy(strategy_qualification),
+                        "event_qualification": copy.deepcopy(event_assessment),
                         "bullish_count": bullish,
                         "bearish_count": bearish,
                         "total_signals": formatted.get("total_signals", 0),
@@ -3192,7 +3217,6 @@ async def _watch_screener_news_state(state: ScreenerUserState, symbols: list[str
                 for raw_symbol in selected
                 if normalize_screener_symbol(raw_symbol)
                 and bool(state.profiles.get(normalize_screener_symbol(raw_symbol), {}).get("enabled", True))
-                and bool(state.profiles.get(normalize_screener_symbol(raw_symbol), {}).get("news_watch_enabled", True))
             ]
             if not active_symbols:
                 return
@@ -3224,6 +3248,23 @@ async def _watch_screener_news_state(state: ScreenerUserState, symbols: list[str
                 asyncio.create_task(_scan_screener_state(state, [symbol], force_scan=True))
         finally:
             active_evaluation_context.reset(context_token)
+
+
+def _screener_news_refresh_due(state: ScreenerUserState, symbol: str, now_ts: float) -> bool:
+    """Return whether a ticker needs an initial or schema-complete news refresh."""
+    watch = state.news_watch.get(symbol) or {}
+    try:
+        next_check_at = float(watch.get("next_check_at", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        next_check_at = 0.0
+    if now_ts >= next_check_at:
+        return True
+    # Legacy records can be marked current while lacking the AI field needed by
+    # the Event leg. Retry those once the provider backoff is not active;
+    # provider-empty, unavailable, and stale records respect next_check_at.
+    if str(watch.get("status") or "").lower() == "current":
+        return not bool(watch.get("initialized") and watch.get("ai_analysis"))
+    return False
 
 
 async def _watch_screener_earnings_state(state: ScreenerUserState, symbols: list[str] = None) -> None:
@@ -3370,8 +3411,7 @@ async def _screener_scheduler_loop() -> None:
                 due_news_symbols = [
                     symbol for symbol in state.order
                     if bool(state.profiles.get(symbol, {}).get("enabled", True))
-                    and bool(state.profiles.get(symbol, {}).get("news_watch_enabled", True))
-                    and now >= float(state.news_watch.get(symbol, {}).get("next_check_at", 0) or 0)
+                    and _screener_news_refresh_due(state, symbol, now)
                 ]
                 if due_news_symbols:
                     due_news_work.append(_watch_screener_news_state(state, due_news_symbols))
@@ -3497,6 +3537,56 @@ async def _verified_email_for_user(uid: str) -> str:
         return ""
 
 
+def _screener_policy_alert_details(notification: dict) -> dict:
+    """Extract the selected Screener policy and evidence for alert delivery."""
+    scan_log = notification.get("scan_log") if isinstance(notification.get("scan_log"), dict) else {}
+    mode = normalize_screening_strategy_mode(
+        notification.get("screening_strategy_mode")
+        or scan_log.get("screening_strategy_mode")
+        or (notification.get("settings_snapshot") or {}).get("strategy_mode", "combined")
+    )
+    label = str(
+        notification.get("screening_strategy_label")
+        or scan_log.get("screening_strategy_label")
+        or screening_strategy_label(mode)
+    )
+    qualification = notification.get("strategy_qualification")
+    if not isinstance(qualification, dict):
+        qualification = scan_log.get("strategy_qualification") if isinstance(scan_log.get("strategy_qualification"), dict) else {}
+    event = notification.get("event_qualification")
+    if not isinstance(event, dict):
+        event = scan_log.get("event_qualification") if isinstance(scan_log.get("event_qualification"), dict) else {}
+    event_parts = []
+    if event:
+        event_direction = str(event.get("direction") or "NEUTRAL").upper()
+        event_status = "qualified" if event.get("eligible") else "waiting"
+        event_parts.append(f"{event_status} {event_direction} event leg")
+        if event.get("headline"):
+            event_parts.append(f"headline: {event.get('headline')}")
+        if event.get("source"):
+            event_parts.append(f"source: {event.get('source')}")
+        if event.get("age_hours") is not None:
+            try:
+                event_parts.append(f"age: {float(event['age_hours']):.1f}h")
+            except (TypeError, ValueError):
+                pass
+        if event.get("sentiment_pct") is not None:
+            event_parts.append(f"sentiment: {float(event['sentiment_pct']):.0f}%")
+        if event.get("confidence") is not None:
+            try:
+                event_parts.append(f"confidence: {float(event['confidence']):.0%}")
+            except (TypeError, ValueError):
+                pass
+    return {
+        "mode": mode,
+        "label": label,
+        "qualification": qualification,
+        "qualification_reason": str(qualification.get("reason") or "").strip(),
+        "event_text": "; ".join(event_parts),
+        "alert_basis": str(notification.get("alert_basis") or "screening_policy"),
+    }
+
+
 def _email_content(notification: dict, recipient: str) -> tuple[str, str, str]:
     import html
     symbol = html.escape(str(notification.get("symbol", "")))
@@ -3544,15 +3634,35 @@ def _email_content(notification: dict, recipient: str) -> tuple[str, str, str]:
             f"<p><a href=\"{html.escape(os.getenv('SCREENER_PUBLIC_URL', 'http://localhost:8000/screener.html'))}\">Open Screener</a></p>"
         )
         return subject, text, html_body
-    direction = html.escape(str(notification.get("direction", "Neutral")))
-    reason = html.escape(str(notification.get("reason", "")))
+    policy = _screener_policy_alert_details(notification)
+    raw_direction = str(notification.get("direction", "Neutral"))
+    direction = html.escape(raw_direction)
+    reason_raw = policy["qualification_reason"] or str(notification.get("reason", ""))
+    reason = html.escape(reason_raw)
     price = html.escape(str(notification.get("price", "Unavailable")))
     atr_levels = notification.get("atr_levels") or {}
     stop = html.escape(str(atr_levels.get("stop", "Unavailable")))
     target = html.escape(str(atr_levels.get("target", "Unavailable")))
-    subject = f"BotBulls Screener: {symbol} {direction.title()} setup"
+    policy_label = html.escape(policy["label"])
+    policy_reason = html.escape(policy["qualification_reason"] or "")
+    event_text = html.escape(policy["event_text"])
+    basis_text = html.escape(policy["alert_basis"].replace("_", " ").title())
+    policy_lines_text = (
+        f"Screening policy: {policy['label']}\n"
+        f"Alert basis: {policy['alert_basis'].replace('_', ' ').title()}\n"
+        f"Qualification: {policy['qualification_reason'] or reason_raw}\n"
+        + (f"Event evidence: {policy['event_text']}\n" if policy["event_text"] else "")
+    )
+    policy_lines_html = (
+        f"<strong>Screening policy:</strong> {policy_label}<br>"
+        f"<strong>Alert basis:</strong> {basis_text}<br>"
+        f"<strong>Qualification:</strong> {policy_reason or reason}<br>"
+        + (f"<strong>Event evidence:</strong> {event_text}<br>" if event_text else "")
+    )
+    subject = f"BotBulls Screener: {symbol} {policy['label']} {direction.title()} setup"
     text = (
         f"{symbol} has a {direction} Screener setup.\n\n"
+        f"{policy_lines_text}"
         f"Price: {price}\nReason: {notification.get('reason', '')}\n"
         f"ATR reference stop: {atr_levels.get('stop', 'Unavailable')}\n"
         f"ATR reference target: {atr_levels.get('target', 'Unavailable')}\n"
@@ -3560,7 +3670,7 @@ def _email_content(notification: dict, recipient: str) -> tuple[str, str, str]:
     )
     html_body = (
         f"<h2>{symbol} {direction.title()} setup</h2>"
-        f"<p><strong>Price:</strong> {price}</p><p>{reason}</p>"
+        f"<p>{policy_lines_html}<strong>Price:</strong> {price}</p><p>{reason}</p>"
         f"<p><strong>ATR informational stop:</strong> {stop}<br>"
         f"<strong>ATR informational target:</strong> {target}</p>"
         f"<p>This is an analysis alert only; no trade was placed.</p>"
@@ -3592,12 +3702,18 @@ def _sms_content(notification: dict) -> str:
             f"BotBulls {symbol} {event_label}: {level} at ${trigger_price}{target_text} "
             f"{reason} ({source}{age_text}). Analysis only; no order was placed."
         )
+    policy = _screener_policy_alert_details(notification)
     direction = str(notification.get("direction") or "Signal").title()
     price = notification.get("price")
     price_text = f" Price: ${price}" if price is not None else ""
-    reason = " ".join(str(notification.get("reason") or "").split())
+    reason = " ".join(str(policy["qualification_reason"] or notification.get("reason") or "").split())
     suffix = f" {reason}" if reason else ""
-    return f"BotBulls {symbol} {direction} screener alert.{price_text}{suffix} Analysis only; no order was placed."
+    event_suffix = f" Event: {policy['event_text']}." if policy["event_text"] else ""
+    return (
+        f"BotBulls {symbol} {direction} screener alert. Policy: {policy['label']}. "
+        f"Basis: {policy['alert_basis'].replace('_', ' ')}.{price_text}{suffix}{event_suffix} "
+        "Analysis only; no order was placed."
+    )
 
 
 def _reclaim_expired_screener_leases(outbox: list[dict], now: float) -> None:
@@ -6604,7 +6720,7 @@ def _build_static_entry_forecast(settings: dict, scan: dict, ticker: str) -> str
     if settings.get("ai_autopilot"):
         timeframe = settings.get("timeframe") or "1Hour"
         model = settings.get("ai_model") or "llama-3.3-70b-versatile"
-        return f"AI Autopilot | AI evaluates technicals, news, risk, entry, and exit on {timeframe} candles | Model: {model}"
+        return f"AI Autopilot | AI evaluates indicators, news, risk, entry, and exit on {timeframe} candles | Model: {model}"
 
     mode = settings.get("buy_mode", "indicator")
     buy_threshold = _get_threshold_setting(settings, ("min_buy_signals", "threshold", "buy_threshold"), 1)
@@ -7283,7 +7399,7 @@ async def get_dashboard(
             "price": "$0.00",
             "price_raw": 0.0,
             "reason": (
-                "Technical analysis is provided by the chart."
+                "Indicator analysis is provided by the chart."
                 if not include_primary_analysis
                 else "Scanning in background..."
             ),
@@ -11475,10 +11591,10 @@ def _screener_profile_from_request(data: dict, state: ScreenerUserState, symbol:
     settings["strategy_mode"] = normalize_screening_strategy_mode(
         incoming.get("strategy_mode", settings.get("strategy_mode", "combined"))
     )
-    # News is a qualification dependency, not an independent opt-out, for
-    # every policy that can use the event leg. Technical-only profiles must
-    # not spend resources polling or presenting news evidence.
-    settings["news_watch_enabled"] = settings["strategy_mode"] != "technical"
+    # Keep the news watcher available for every Screener ticker so the News
+    # Summary card is consistent across the watchlist. The selected policy
+    # still decides whether this evidence can qualify an entry.
+    settings["news_watch_enabled"] = True
     try:
         settings["event_max_age_days"] = max(
             1,
@@ -11574,6 +11690,7 @@ def _screener_profile_from_request(data: dict, state: ScreenerUserState, symbol:
 
 
 def _empty_screener_scan(symbol: str, settings: dict) -> dict:
+    screening_mode = normalize_screening_strategy_mode(settings.get("strategy_mode", "combined"))
     return {
         "ticker": symbol,
         "time": "",
@@ -11595,6 +11712,9 @@ def _empty_screener_scan(symbol: str, settings: dict) -> dict:
             "summary": "Waiting for the first completed-candle Screener evaluation.",
             "detail": "No trade is placed. The independent Screener is establishing its initial signal baseline.",
             "progress_label": "Waiting for bullish setup",
+            "screening_strategy_mode": screening_mode,
+            "screening_strategy_label": screening_strategy_label(screening_mode),
+            "screening_strategy_logic": screening_strategy_logic(screening_mode),
             "indicators": [],
             "blockers": ["Initial completed-candle evaluation pending."],
             "refresh_rate_sec": _screener_scan_interval_seconds(settings),
@@ -11639,13 +11759,6 @@ def _build_screener_scan_log(
         else "BEARISH" if virtual_position or exit_event_active else "BULLISH"
     )
     phase = "ENTRY" if is_price_entry_event else "EXIT" if virtual_position or exit_event_active else "ENTRY"
-    strategy_context = _scan_log_strategy_context(
-        settings,
-        {"screener_virtual_signal": True} if virtual_position or exit_event_active else {},
-    )
-    strategy_mode = str(strategy_context["mode"] or "indicator")
-    strategy_label = str(strategy_context["label"] or "Indicator")
-    condition_logic = _scan_log_condition_logic(strategy_context)
     screening_mode = normalize_screening_strategy_mode(
         formatted_scan.get("screening_strategy_mode", settings.get("strategy_mode", "combined"))
     )
@@ -11654,12 +11767,39 @@ def _build_screener_scan_log(
         if isinstance(formatted_scan.get("strategy_qualification"), dict)
         else {}
     )
-    screening_label = {
-        "technical": "Technical Only",
-        "event": "Event-Driven Only",
-        "combined": "Combined · Require Both",
-        "discovery": "Discovery · Either Qualifies",
-    }.get(screening_mode, "Combined · Require Both")
+    event_qualification = (
+        formatted_scan.get("event_qualification")
+        if isinstance(formatted_scan.get("event_qualification"), dict)
+        else {}
+    )
+    technical_qualification = (
+        formatted_scan.get("technical_qualification")
+        if isinstance(formatted_scan.get("technical_qualification"), dict)
+        else {}
+    )
+    screening_label = screening_strategy_label(screening_mode)
+    screening_logic = screening_strategy_logic(screening_mode)
+    strategy_context = _scan_log_strategy_context(
+        settings,
+        {"screener_virtual_signal": True} if virtual_position or exit_event_active else {},
+    )
+    # Event-only entry scans must not report the technical/bot leg as the
+    # active setup. Once a virtual entry exists, the normal technical exit
+    # watcher remains visible and is intentionally handled by the exit branch.
+    if phase == "ENTRY" and screening_mode == "event":
+        strategy_context = {
+            **strategy_context,
+            "mode": "event_driven",
+            "label": "Event-Driven",
+            "uses_indicators": False,
+            "uses_structural": False,
+            "is_hybrid": False,
+        }
+    strategy_mode = str(strategy_context["mode"] or "indicator")
+    strategy_label = str(strategy_context["label"] or "Indicator")
+    condition_logic = _scan_log_condition_logic(strategy_context)
+    if phase == "ENTRY" and screening_mode != "technical":
+        condition_logic = screening_logic if not condition_logic else f"{screening_logic} {condition_logic}"
     strategy_uses_indicators = bool(strategy_context["uses_indicators"])
     strategy_uses_structural = bool(strategy_context["uses_structural"])
     entry_levels = (
@@ -11740,6 +11880,39 @@ def _build_screener_scan_log(
     ):
         blockers.insert(0, f"{screening_label}: {screening_qualification.get('reason') or 'waiting for policy conditions.'}")
 
+    policy_entry = phase == "ENTRY" and screening_mode in {"event", "combined", "discovery"} and bool(screening_qualification)
+    policy_qualified = bool(screening_qualification.get("qualified")) if policy_entry else False
+    policy_reason = str(
+        screening_qualification.get("reason")
+        or "waiting for policy conditions."
+    ).strip()
+    technical_reason = str(
+        technical_qualification.get("reason")
+        or "Indicator confirmation is not available yet."
+    ).strip()
+    if strategy_uses_indicators:
+        if not has_indicator_pool:
+            technical_watch_summary = "No indicators are selected."
+        elif remaining_count:
+            technical_watch_summary = (
+                f"{target_direction.title()} indicators are {confirmed_weight}/{required_count} confirmed; "
+                f"{remaining_count} more confirmation{'s' if remaining_count != 1 else ''} needed."
+            )
+        else:
+            technical_watch_summary = (
+                f"{target_direction.title()} indicators met the configured threshold "
+                f"({confirmed_weight}/{required_count} confirmed)."
+            )
+    else:
+        technical_watch_summary = "Indicator confirmation is not required for this policy."
+    if strategy_uses_indicators and technical_reason:
+        technical_watch_summary = f"{technical_watch_summary} Reason: {technical_reason}"
+
+    event_direction = str(event_qualification.get("direction") or "NEUTRAL").upper()
+    event_status = "QUALIFIED" if event_qualification.get("eligible") else "WAITING"
+    event_reason = str(event_qualification.get("reason") or "No qualifying catalyst.").strip()
+    event_watch_summary = f"{event_status} {event_direction}: {event_reason}"
+
     if evaluation_status == "error":
         status = "SCAN_ERROR"
         summary = f"Scan error while monitoring for {target_direction.lower()} confirmation."
@@ -11754,6 +11927,13 @@ def _build_screener_scan_log(
     elif anti_chasing_blocked:
         status = "ANTI_CHASING_BLOCKED"
         summary = str(formatted_scan.get("reason"))
+    elif policy_entry:
+        status = f"{screening_mode.upper()}_QUALIFIED" if policy_qualified else f"WAITING_{screening_mode.upper()}"
+        summary = (
+            f"{screening_label} qualified: {policy_reason}"
+            if policy_qualified
+            else f"{screening_label} waiting: {policy_reason}"
+        )
     elif strategy_uses_indicators and not has_indicator_pool:
         status = "NO_INDICATORS"
         summary = f"{strategy_label} {phase.lower()} is unavailable until at least one indicator is selected."
@@ -11809,6 +11989,10 @@ def _build_screener_scan_log(
             else "New live price exit alert created." if is_price_exit_event
             else f"New {direction.title()} transition alert created.",
         )
+    if policy_entry:
+        detail_parts.append(
+            f"Policy qualification: {'QUALIFIED' if policy_qualified else 'WAITING'} — {policy_reason}."
+        )
     if blockers:
         detail_parts.append("Waiting reason: " + " | ".join(blockers))
 
@@ -11839,6 +12023,18 @@ def _build_screener_scan_log(
             )
         else:
             final_summary = f"Exit setup active — bearish indicator threshold reached ({confirmed_weight}/{required_count} confirmed)."
+    elif policy_entry:
+        policy_watch_parts = []
+        if screening_mode != "event":
+            policy_watch_parts.append(f"Indicator: {technical_watch_summary}")
+        policy_watch_parts.append(f"Event: {event_watch_summary}")
+        if screening_mode == "event":
+            policy_watch_parts.append("Indicator leg is not required.")
+        elif screening_mode == "combined":
+            policy_watch_parts.append("Both legs must qualify in the same direction.")
+        final_summary = (
+            "Entry watch summary — " + " ".join(policy_watch_parts)
+        )
     elif strategy_uses_indicators and not has_indicator_pool:
         final_summary = (
             f"{phase.title()} unavailable — select at least one indicator before this "
@@ -11888,9 +12084,10 @@ def _build_screener_scan_log(
         "strategy_label": strategy_label,
         "screening_strategy_mode": screening_mode,
         "screening_strategy_label": screening_label,
+        "screening_strategy_logic": screening_logic,
         "technical_direction": formatted_scan.get("technical_direction", direction),
         "technical_qualification": formatted_scan.get("technical_qualification", {}),
-        "event_qualification": formatted_scan.get("event_qualification", {}),
+        "event_qualification": event_qualification,
         "strategy_qualification": screening_qualification,
         "condition_logic": condition_logic,
         "uses_indicators": strategy_uses_indicators,
@@ -12059,16 +12256,13 @@ async def get_screener_snapshot(
         # responses and repeated JSON parsing on every 60-second refresh.
         for heavy_key in ("price_history", "priceHistory", "raw_candles", "candles", "df"):
             scan.pop(heavy_key, None)
-        if state.profiles.get(symbol, {}).get("news_watch_enabled", True):
-            scan["news_watch"] = copy.deepcopy(state.news_watch.get(symbol) or {
-                "enabled": True,
-                "status": "waiting",
-                "ticker": symbol,
-                "poll_seconds": 60,
-                "new_count": 0,
-            })
-        else:
-            scan["news_watch"] = {"enabled": False, "status": "disabled", "ticker": symbol}
+        scan["news_watch"] = copy.deepcopy(state.news_watch.get(symbol) or {
+            "enabled": True,
+            "status": "waiting",
+            "ticker": symbol,
+            "poll_seconds": 60,
+            "new_count": 0,
+        })
         if state.profiles.get(symbol, {}).get("earnings_watch_enabled", True) and not _is_crypto_symbol(symbol):
             scan["earnings_watch"] = copy.deepcopy(state.earnings_watch.get(symbol) or {
                 "enabled": True,
@@ -12453,6 +12647,9 @@ def _repair_historical_alert_snapshot(state: ScreenerUserState, item: dict) -> d
         "price_raw": item.get("price"),
         "signals": signals,
         "atr_levels": item.get("atr_levels") if isinstance(item.get("atr_levels"), dict) else {},
+        "screening_strategy_mode": item.get("screening_strategy_mode") or scan_log.get("screening_strategy_mode"),
+        "strategy_qualification": item.get("strategy_qualification") or scan_log.get("strategy_qualification") or {},
+        "event_qualification": item.get("event_qualification") or scan_log.get("event_qualification") or {},
         "candle_meta": {
             "candle_key": item.get("candle_key") or candle_meta.get("candle_key"),
             "candle_open_ts": item.get("candle_open_ts") or candle_meta.get("candle_open_ts"),

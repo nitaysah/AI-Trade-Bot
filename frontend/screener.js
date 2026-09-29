@@ -287,6 +287,67 @@ function openScreenerAlertDetail(item) {
         return Number.isFinite(number) && number !== 0 ? number.toFixed(2) : '—';
     };
     const scanLog = item.scan_log && typeof item.scan_log === 'object' ? item.scan_log : {};
+    const screeningMode = String(
+        item.screening_strategy_mode
+        || scanLog.screening_strategy_mode
+        || (item.settings_snapshot && item.settings_snapshot.strategy_mode)
+        || 'combined'
+    ).toLowerCase();
+    const screeningLabel = normalizeScreenerDisplayTerminology(String(
+        item.screening_strategy_label
+        || scanLog.screening_strategy_label
+        || ({
+            technical: 'Indicator Only',
+            event: 'Event-Driven Only',
+            combined: 'Combined · Require Both Indicator + Event',
+            discovery: 'Discovery · Either Qualifies',
+        }[screeningMode] || 'Combined · Require Both Indicator + Event')
+    ));
+    const screeningQualification = item.strategy_qualification && typeof item.strategy_qualification === 'object'
+        ? item.strategy_qualification
+        : (scanLog.strategy_qualification && typeof scanLog.strategy_qualification === 'object' ? scanLog.strategy_qualification : {});
+    const eventQualificationBase = item.event_qualification && typeof item.event_qualification === 'object'
+        ? item.event_qualification
+        : (scanLog.event_qualification && typeof scanLog.event_qualification === 'object' ? scanLog.event_qualification : {});
+    const newsWatchEvidence = item.news_watch && typeof item.news_watch === 'object' ? item.news_watch : {};
+    const eventQualification = { ...eventQualificationBase };
+    if (eventQualification.sentiment_pct == null && newsWatchEvidence.sentiment_pct != null) eventQualification.sentiment_pct = newsWatchEvidence.sentiment_pct;
+    if (eventQualification.confidence == null && newsWatchEvidence.sentiment_confidence != null) eventQualification.confidence = newsWatchEvidence.sentiment_confidence;
+    if (!eventQualification.analysis_direction && newsWatchEvidence.sentiment_direction) eventQualification.analysis_direction = newsWatchEvidence.sentiment_direction;
+    if (!eventQualification.ai_analysis && newsWatchEvidence.ai_analysis) eventQualification.ai_analysis = newsWatchEvidence.ai_analysis;
+    const policyUsesTechnical = screeningMode !== 'event' || String(scanLog.phase || '').toUpperCase() === 'EXIT';
+    const hasNewsEvidence = Boolean(
+        newsWatchEvidence.ai_analysis
+        || newsWatchEvidence.sentiment_summary
+        || newsWatchEvidence.latest_summary
+        || newsWatchEvidence.latest?.title
+    );
+    const showEventEvidence = screeningMode !== 'technical' || hasNewsEvidence;
+    const eventEvidenceParts = [];
+    if (eventQualification && (Object.keys(eventQualification).length || hasNewsEvidence)) {
+        const eventStatus = eventQualification.eligible ? 'QUALIFIED' : 'WAITING';
+        eventEvidenceParts.push(eventStatus);
+    }
+    const eventStatus = eventEvidenceParts[0] || '';
+    const eventStatusClass = eventStatus === 'QUALIFIED'
+        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+        : 'border-amber-200 bg-amber-50 text-amber-700';
+    const analysisDirection = String(eventQualification.analysis_direction || eventQualification.direction || 'NEUTRAL').toUpperCase();
+    const analysisLabel = analysisDirection.charAt(0) + analysisDirection.slice(1).toLowerCase();
+    const analysisToneClass = analysisDirection === 'BULLISH'
+        ? 'border-emerald-200 bg-emerald-100 text-emerald-700'
+        : analysisDirection === 'BEARISH'
+            ? 'border-rose-200 bg-rose-100 text-rose-700'
+            : 'border-slate-200 bg-slate-100 text-slate-600';
+    const aiAnalysis = normalizeScreenerEventAnalysis(String(
+        eventQualification.ai_analysis
+        || newsWatchEvidence.ai_analysis
+        || newsWatchEvidence.sentiment_summary
+        || ''
+    ).trim(), analysisDirection);
+    const eventEvidenceHtml = showEventEvidence && eventEvidenceParts.length
+        ? `<div class="mt-3 rounded-xl border border-sky-200 bg-sky-50/70 p-3 text-xs leading-relaxed text-sky-950"><div class="flex items-center gap-1.5 flex-wrap font-black"><span class="uppercase tracking-wider">Event evidence</span> ${text(screeningLabel)} <span class="inline-flex rounded border px-1.5 py-0.5 text-[0.62rem] font-black uppercase ${analysisToneClass}">${text(analysisLabel)}</span> <span class="inline-flex rounded border px-1.5 py-0.5 text-[0.62rem] font-black uppercase ${eventStatusClass}">${text(eventStatus)}</span></div>${aiAnalysis ? `<div class="mt-1 text-sky-900">${text(aiAnalysis)}</div>` : ''}</div>`
+        : '';
     const direction = String(item.event_direction || item.direction || 'SIGNAL').toUpperCase();
     const priceEventType = String(item.event_type || item.alert_kind || '').toUpperCase();
     const isPriceEvent = priceEventType === 'PRICE_EXIT' || priceEventType === 'PRICE_ENTRY';
@@ -300,9 +361,9 @@ function openScreenerAlertDetail(item) {
         ? 'text-rose-700 bg-rose-50 border-rose-200'
         : 'text-emerald-700 bg-emerald-50 border-emerald-200';
     const reason = item.reason || item.scan_reason || scanLog.detail || scanLog.summary || 'Signal transition detected.';
-    const rawIndicators = Array.isArray(scanLog.indicators)
+    const rawIndicators = policyUsesTechnical && Array.isArray(scanLog.indicators)
         ? scanLog.indicators
-        : (item.signals && typeof item.signals === 'object'
+        : (policyUsesTechnical && item.signals && typeof item.signals === 'object'
             ? Object.entries(item.signals).map(([name, signal]) => ({
                 name,
                 signal: signal?.signal || 'NEUTRAL',
@@ -310,6 +371,12 @@ function openScreenerAlertDetail(item) {
                 reason: signal?.reason || '',
             }))
             : []);
+    const indicatorEvidenceDirection = normalizeIndicatorEvidenceDirection(
+        scanLog.technical_direction || scanLog.target_direction,
+    );
+    const indicatorEvidenceConfirmedCount = rawIndicators.filter(item => String(item.status || '').toUpperCase() === 'CONFIRMED').length;
+    const indicatorEvidenceTotalCount = rawIndicators.length;
+    const indicatorEvidenceHeaderHtml = `<div class="mb-2 flex items-center gap-1.5 flex-wrap"><h3 class="text-xs font-black uppercase tracking-wider text-indigo-800">Indicator evidence</h3><span class="inline-flex rounded border px-1.5 py-0.5 text-[0.55rem] font-black uppercase ${indicatorEvidenceToneClass(indicatorEvidenceDirection)}">${text(indicatorEvidenceDirectionLabel(indicatorEvidenceDirection))}</span><span class="text-[0.65rem] font-bold text-slate-500">${indicatorEvidenceConfirmedCount}/${indicatorEvidenceTotalCount} confirmed</span></div>`;
     const indicatorsHtml = rawIndicators.length
         ? rawIndicators.map(indicator => `
             <div class="rounded-lg border border-indigo-100 bg-white/80 px-3 py-2">
@@ -348,6 +415,10 @@ function openScreenerAlertDetail(item) {
         : isEntryWatchSummary
             ? 'border-emerald-200 bg-emerald-50 text-emerald-950'
             : 'border-purple-200 bg-purple-50 text-purple-900';
+    const isNeutralScan = String(item.direction || scanLog.decision || '').toUpperCase() === 'NEUTRAL';
+    const structuredWatchSummaryHtml = (isEntryWatchSummary || isExitWatchSummary || isNeutralScan)
+        ? buildScreenerPolicyWatchSummary(scanLog, screeningMode)
+        : '';
     const legacySnapshotWarning = item.historical_snapshot_status === 'legacy_snapshot_unavailable'
         ? '<div class="mt-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs font-semibold text-amber-900">This legacy alert predates saved settings snapshots. Its original explanation is shown unchanged and cannot be recalculated reliably.</div>'
         : '';
@@ -371,13 +442,15 @@ function openScreenerAlertDetail(item) {
             <div class="rounded-xl border border-indigo-100 bg-indigo-50/60 p-2"><div class="text-[0.58rem] font-black uppercase text-indigo-500">Timeframe</div><div class="mt-1 text-xs font-bold text-indigo-950">${text(item.timeframe || '—')}</div></div>
             <div class="rounded-xl border border-indigo-100 bg-indigo-50/60 p-2"><div class="text-[0.58rem] font-black uppercase text-indigo-500">${isPriceEvent ? 'Quote observed' : 'Candle close'}</div><div class="mt-1 text-xs font-bold text-indigo-950">${isPriceEvent && item.price_event?.observed_at ? text(new Date(item.price_event.observed_at).toLocaleString()) : item.candle_close_ts ? text(signalActivityExactLabel(item.candle_close_ts)) : '—'}</div></div>
         </div>
+        <div class="mt-3 rounded-xl border border-indigo-100 bg-white p-3 text-xs leading-relaxed text-indigo-900"><span class="font-black">Screening policy:</span> ${text(screeningLabel)}${screeningQualification.reason ? ` · ${text(normalizeScreenerDisplayTerminology(screeningQualification.reason))}` : ''}</div>
+        ${eventEvidenceHtml}
         ${scanLog.summary ? `<div class="mt-3 rounded-xl border border-indigo-100 bg-white p-3 text-xs leading-relaxed text-indigo-900"><span class="font-black">Scan summary:</span> ${text(scanLog.summary)}</div>` : ''}
         ${scanLog.detail ? `<div class="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-700"><span class="font-black">Scan detail:</span> ${text(scanLog.detail)}</div>` : ''}
         ${legacySnapshotWarning}
-        ${finalSummaryText ? `<div class="mt-2 rounded-xl border ${finalSummaryClass} p-3 text-xs leading-relaxed"><span class="font-black">${finalSummaryLabel}</span> ${text(finalSummaryBody)}</div>` : ''}
+        ${finalSummaryText ? `<div class="mt-2 rounded-xl border ${finalSummaryClass} p-3 text-xs leading-relaxed"><div class="font-black">${finalSummaryLabel}</div>${structuredWatchSummaryHtml ? `<div class="mt-1">${structuredWatchSummaryHtml}</div>` : `<div class="mt-1">${text(normalizeScreenerDisplayTerminology(finalSummaryBody))}</div>`}</div>` : ''}
         ${scanLog.progress_label || scanLog.indicator_progress_label ? `<div class="mt-2 text-xs leading-relaxed text-slate-700"><span class="font-black">Confirmation progress:</span> ${text(scanLog.progress_label || scanLog.indicator_progress_label)}</div>` : ''}
         ${levelText ? `<div class="mt-2 text-xs leading-relaxed text-slate-700"><span class="font-black">Rule and levels:</span> ${text(levelText)}</div>` : ''}
-        <div class="mt-3"><h3 class="mb-2 text-xs font-black uppercase tracking-wider text-indigo-800">Indicator evidence</h3><div class="grid gap-2 sm:grid-cols-2">${indicatorsHtml}</div></div>
+        ${policyUsesTechnical ? `<div class="mt-3">${indicatorEvidenceHeaderHtml}<div class="grid gap-2 sm:grid-cols-2">${indicatorsHtml}</div></div>` : '<div class="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs font-semibold text-slate-600">Indicator leg is not used for this Event-Driven entry.</div>'}
         ${hasRiskLevels ? `<div class="mt-3 rounded-xl border border-cyan-200 bg-cyan-50/70 p-3 text-xs leading-relaxed text-cyan-950"><span class="font-black">ATR / risk details:</span> ATR ${metric(item.atr)} · Stop ${metric(exitLevels.stop)} · Target ${metric(exitLevels.target)}${exitLevels.text ? ` · ${text(exitLevels.text)}` : ''}</div>` : ''}
         ${item.candle_key ? `<div class="mt-2 text-[0.65rem] font-mono text-slate-500">Completed candle key: ${text(item.candle_key)}${item.candle_open_ts ? ` · Open ${text(signalActivityExactLabel(item.candle_open_ts))}` : ''}</div>` : ''}
         ${blockers.length ? `<div class="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-700"><span class="font-black">Blockers / waiting conditions:</span> ${blockers.map(text).join(' · ')}</div>` : ''}
@@ -418,11 +491,17 @@ function renderScreenerNotifications(
         const priceEventLabel = priceEventType === 'PRICE_ENTRY' ? 'PRICE ENTRY' : 'PRICE EXIT';
         const color = priceEventType === 'PRICE_EXIT' || direction === "BEARISH" ? "rose" : direction === "BULLISH" ? "emerald" : "slate";
         const eventLabel = isPriceEvent ? priceEventLabel : direction;
+        const notificationScanLog = item.scan_log && typeof item.scan_log === 'object' ? item.scan_log : {};
+        const notificationPolicy = String(
+            item.screening_strategy_label
+            || notificationScanLog.screening_strategy_label
+            || ''
+        ).trim();
         const createdValue = typeof item.created_at === 'string' ? Date.parse(item.created_at) : Number(item.created_at) * 1000;
         const created = item.created_at ? new Date(createdValue).toLocaleString() : "";
         return `<button type="button" onclick="openScreenerNotification('${String(item.id || '').replace(/'/g, "\\'")}')" class="w-full text-left rounded-2xl border border-${color}-200 bg-${color}-50/50 p-3 ${item.read ? 'opacity-70' : 'shadow-sm'} focus:outline-none focus:ring-2 focus:ring-indigo-400">
             <div class="flex items-center justify-between gap-2"><span class="text-xs font-black text-${color}-700">${escapeScreenerNewsText(item.symbol || '')} · ${escapeScreenerNewsText(eventLabel)}</span><span class="text-[10px] text-slate-400">${escapeScreenerNewsText(created)}</span></div>
-            <p class="mt-1 text-xs font-semibold text-slate-700">${escapeScreenerNewsText(item.reason || 'Signal transition detected')}</p>
+            <p class="mt-1 text-xs font-semibold text-slate-700">${notificationPolicy ? `${escapeScreenerNewsText(notificationPolicy)} · ` : ''}${escapeScreenerNewsText(item.reason || 'Signal transition detected')}</p>
             <p class="mt-1 text-[10px] text-slate-500">Price ${escapeScreenerNewsText(item.price ?? 'Unavailable')} · ${escapeScreenerNewsText(item.email_status || 'in-app')}</p>
         </button>`;
     }).join('');
@@ -1246,6 +1325,44 @@ function sanitizePlainText(text) {
     return String(text || '').replace(/<[^>]*>?/gm, '');
 }
 
+function normalizeScreenerEventAnalysis(value, direction) {
+    const summary = String(value || '').replace(/\s+/g, ' ').trim();
+    const directionUpper = String(direction || '').toUpperCase();
+    if (!summary) return summary;
+    const positiveEvidencePattern = /\b(?:positive|bullish)\s+article\s+evidence\s*:/i;
+    const negativeEvidencePattern = /\b(?:negative|bearish)\s+article\s+evidence\s*:/i;
+    const sentences = summary.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [summary];
+    const visibleSentences = sentences.filter((sentence) => {
+        if (directionUpper === 'BEARISH' && positiveEvidencePattern.test(sentence)) return false;
+        if (directionUpper === 'BULLISH' && negativeEvidencePattern.test(sentence)) return false;
+        return true;
+    });
+    const filteredSummary = visibleSentences.join(' ').replace(/\s+/g, ' ').trim();
+    if (!filteredSummary) return summary;
+    if (directionUpper === 'BEARISH') {
+        return filteredSummary.replace(
+            /\b(?:negative|bearish)\s+article\s+evidence\s*:\s*/gi,
+            'Negative article evidence: ',
+        );
+    }
+    if (directionUpper === 'BULLISH') {
+        return filteredSummary.replace(
+            /\b(?:positive|bullish)\s+article\s+evidence\s*:\s*/gi,
+            'Positive article evidence: ',
+        );
+    }
+    if (directionUpper !== 'NEUTRAL') return filteredSummary;
+    const hasPositiveEvidence = /\b(?:positive|bullish)\s+article\s+evidence\s*:/i.test(filteredSummary);
+    const hasNegativeEvidence = /\b(?:negative|bearish)\s+article\s+evidence\s*:/i.test(filteredSummary);
+    const evidenceLabel = hasPositiveEvidence && hasNegativeEvidence
+        ? 'Mixed article evidence:'
+        : 'Article evidence:';
+    return filteredSummary.replace(
+        /\b(?:positive|bullish|negative|bearish)\s+article\s+evidence\s*:\s*/gi,
+        `${evidenceLabel} `,
+    );
+}
+
 const botLossPauseAlertQueue = [];
 let botLossPauseAlertOpen = false;
 const botLossPauseAlertSeen = new Set();
@@ -1323,6 +1440,16 @@ function scanLogStatusClass(status) {
             return 'bg-emerald-100 text-emerald-800 border-emerald-300 font-bold';
         case 'BEARISH_SIGNAL':
             return 'bg-rose-100 text-rose-800 border-rose-300 font-bold';
+        case 'EVENT_QUALIFIED':
+        case 'COMBINED_QUALIFIED':
+        case 'DISCOVERY_QUALIFIED':
+            return 'bg-emerald-100 text-emerald-800 border-emerald-300 font-bold';
+        case 'WAITING_EVENT':
+            return 'bg-sky-50 text-sky-700 border-sky-200';
+        case 'WAITING_COMBINED':
+            return 'bg-amber-50 text-amber-800 border-amber-200';
+        case 'WAITING_DISCOVERY':
+            return 'bg-violet-50 text-violet-700 border-violet-200';
         case 'WAITING_BULLISH':
             return 'bg-emerald-50 text-emerald-700 border-emerald-200';
         case 'WAITING_BEARISH':
@@ -1361,6 +1488,142 @@ function formatScanIndicatorGroup(label, indicators, icon = '') {
         const itemIcon = (icon && !String(item.name || '').startsWith(icon)) ? `${icon} ` : '';
         return `${itemIcon}${item.name} ${item.signal}${reason}`;
     }).join(', ')}`;
+}
+
+function normalizeIndicatorEvidenceDirection(value) {
+    const direction = String(value || '').toUpperCase();
+    return ['BULLISH', 'BEARISH', 'NEUTRAL'].includes(direction) ? direction : 'NEUTRAL';
+}
+
+function indicatorEvidenceToneClass(direction) {
+    if (direction === 'BULLISH') return 'border-emerald-200 bg-emerald-100 text-emerald-700';
+    if (direction === 'BEARISH') return 'border-rose-200 bg-rose-100 text-rose-700';
+    return 'border-slate-200 bg-slate-100 text-slate-600';
+}
+
+function indicatorEvidenceDirectionLabel(direction) {
+    return direction.charAt(0) + direction.slice(1).toLowerCase();
+}
+
+function normalizeScreenerDisplayTerminology(value) {
+    return String(value || '')
+        .replace(/\btechnical-only\b/gi, 'indicator-only')
+        .replace(/\btechnical\s+leg\b/gi, 'indicator leg')
+        .replace(/\btechnical\s+(indicators?)\b/gi, (_match, noun) => noun.toLowerCase() === 'indicators' ? 'indicators' : 'indicator')
+        .replace(/\btechnical\s+confirmation\b/gi, 'indicator confirmation')
+        .replace(/\btechnical\/event\b/gi, 'indicator/event')
+        .replace(/\btechnical\b/gi, 'indicator');
+}
+
+function buildScreenerPolicyWatchSummary(scanLog, screeningMode, compact = false) {
+    const log = scanLog && typeof scanLog === 'object' ? scanLog : {};
+    const mode = String(screeningMode || log.screening_strategy_mode || '').toLowerCase();
+    const recordedPhase = String(log.phase || '').toUpperCase();
+    const phase = ['ENTRY', 'EXIT'].includes(recordedPhase)
+        ? recordedPhase
+        : (String(log.status || '').toUpperCase().startsWith('EXIT_') || Boolean(log.virtual_position) ? 'EXIT' : 'ENTRY');
+    if (!['technical', 'event', 'combined', 'discovery'].includes(mode)) return '';
+
+    const indicators = Array.isArray(log.indicators) ? log.indicators : [];
+    const technicalQualification = log.technical_qualification && typeof log.technical_qualification === 'object'
+        ? log.technical_qualification
+        : {};
+    const eventQualification = log.event_qualification && typeof log.event_qualification === 'object'
+        ? log.event_qualification
+        : {};
+    const technicalRequired = mode !== 'event';
+    const technicalDirection = normalizeIndicatorEvidenceDirection(
+        log.target_direction || log.technical_direction || technicalQualification.direction,
+    );
+    const eventDirection = normalizeIndicatorEvidenceDirection(
+        eventQualification.direction || eventQualification.analysis_direction,
+    );
+    const requiredCount = Number(log.required_count);
+    const confirmedWeight = Number(log.confirmed_weight);
+    const confirmedCount = Number.isFinite(confirmedWeight)
+        ? confirmedWeight
+        : indicators.filter(item => String(item.status || '').toUpperCase() === 'CONFIRMED').length;
+    const confirmationTotal = Number.isFinite(requiredCount) && requiredCount > 0
+        ? requiredCount
+        : indicators.length;
+    const remainingCount = Number.isFinite(Number(log.remaining_count))
+        ? Math.max(0, Number(log.remaining_count))
+        : Math.max(0, confirmationTotal - confirmedCount);
+    const hasTechnicalQualification = Object.prototype.hasOwnProperty.call(technicalQualification, 'eligible');
+    const hasEventQualification = Object.prototype.hasOwnProperty.call(eventQualification, 'eligible');
+    const technicalQualified = !technicalRequired
+        || (hasTechnicalQualification ? Boolean(technicalQualification.eligible) : confirmedCount >= confirmationTotal && confirmationTotal > 0);
+    const eventQualified = hasEventQualification && Boolean(eventQualification.eligible);
+    const technicalReason = String(
+        technicalQualification.reason || 'Indicator confirmation is not available yet.',
+    ).trim().replace(/[.!?]+$/, '');
+    const displayTechnicalReason = normalizeScreenerDisplayTerminology(technicalReason);
+    const eventReason = String(
+        eventQualification.reason || 'No qualifying catalyst.',
+    ).trim().replace(/[.!?]+$/, '');
+    const sameDirection = technicalDirection !== 'NEUTRAL'
+        && eventDirection !== 'NEUTRAL'
+        && technicalDirection === eventDirection;
+    const discoveryConflict = mode === 'discovery'
+        && technicalQualified
+        && eventQualified
+        && !sameDirection;
+    const e = escapeScreenerNewsText;
+    const technicalCountText = technicalRequired
+        ? `${confirmedCount}/${confirmationTotal} confirmed`
+        : 'not required';
+    const detailWaiting = [];
+
+    const technicalDetail = !technicalRequired
+        ? 'Not required for this policy.'
+        : technicalQualified
+            ? `Confirmed: Indicator leg is confirmed ${indicatorEvidenceDirectionLabel(technicalDirection)}.`
+            : `Not confirmed: Indicator leg is not confirmed (${indicatorEvidenceDirectionLabel(technicalDirection)}, ${technicalCountText}). Reason: ${displayTechnicalReason}.${remainingCount > 0 ? ` Waiting on ${remainingCount} more indicator confirmation${remainingCount === 1 ? '' : 's'}.` : ''}`;
+    const eventDetail = mode === 'technical'
+        ? 'Not required for this policy.'
+        : eventQualified
+        ? `Confirmed: Event leg is qualified ${indicatorEvidenceDirectionLabel(eventDirection)}${eventReason ? ` — ${eventReason}.` : '.'}`
+        : `Not confirmed: Event leg is not qualified ${indicatorEvidenceDirectionLabel(eventDirection)}. Reason: ${eventReason}. Waiting on a qualifying event catalyst.`;
+
+    const technicalBlocksPolicy = mode === 'technical'
+        || mode === 'combined'
+        || (mode === 'discovery' && !eventQualified);
+    if (technicalBlocksPolicy && !technicalQualified) {
+        detailWaiting.push(
+            remainingCount > 0
+                ? `${remainingCount} more indicator confirmation${remainingCount === 1 ? '' : 's'}`
+                : 'indicator confirmation',
+        );
+    }
+
+    if (mode === 'combined') {
+        if (!eventQualified) detailWaiting.push('a qualifying event catalyst');
+        if (!sameDirection) detailWaiting.push('both legs to qualify in the same direction');
+    } else if (mode === 'event') {
+        if (!eventQualified) detailWaiting.push('a qualifying event catalyst');
+    } else if (discoveryConflict) {
+        detailWaiting.push('the indicator/event direction conflict to clear');
+    } else if (!technicalQualified && !eventQualified) {
+        detailWaiting.push('either a qualifying indicator leg or a qualifying event leg');
+    }
+    if (!detailWaiting.length) detailWaiting.push('the next completed-candle confirmation');
+    const summaryDetail = phase === 'EXIT'
+        ? !technicalRequired
+            ? 'Indicator confirmation is not required; monitoring the configured exit condition.'
+            : technicalQualified
+                ? 'Indicator exit threshold is met; monitoring the configured exit condition.'
+                : remainingCount > 0
+                    ? `Waiting on ${remainingCount} more indicator confirmation${remainingCount === 1 ? '' : 's'} before the indicator exit can trigger.`
+                    : 'Waiting for the indicator exit condition to become valid.'
+        : mode === 'technical'
+            ? technicalQualified
+                ? 'Indicator qualification is confirmed; event evidence is not required.'
+                : `Waiting on: ${detailWaiting.join('; ')}.`
+            : `Waiting on: ${detailWaiting.join('; ')}.`;
+
+    return `<div class="flex flex-col ${compact ? 'gap-0.5' : 'gap-1.5'}">
+        <div class="${compact ? 'mt-0.5 text-[0.58rem]' : 'mt-1 text-xs'} flex flex-col gap-0.5 leading-snug text-slate-700"><div><span class="font-black">Indicator detail:</span> ${e(technicalDetail)}</div><div><span class="font-black">Event detail:</span> ${e(eventDetail)}</div><div><span class="font-black">Summary:</span> ${e(summaryDetail)}</div></div>
+    </div>`;
 }
 
 function formatProtectionBox(protection, fallbackStatus = '') {
@@ -1814,6 +2077,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
 
         let positionHtml = '';
         let scanLogHtml = '';
+        let watchSummaryHtml = '';
         const scanLog = scan?.scan_log || null;
         const scanDataStatus = String(scan?.data_status || '').toLowerCase();
         const scanDataWarningHtml = ['degraded', 'stale_reference'].includes(scanDataStatus)
@@ -1838,6 +2102,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         }
         const scanRuntimeLabel = runtimeText.startsWith('Running for ') ? runtimeText : runtimeText;
         const scanRuntimeHtml = `<div class="flex items-center gap-1 flex-wrap text-[0.52rem] text-slate-500 font-semibold leading-snug"><span class="${isPaused ? 'text-slate-400' : 'text-slate-600'}">${scanRuntimeLabel}</span><span class="text-slate-300">•</span><span class="text-slate-500 font-normal">${lastTradeText}</span></div>`;
+        let setupWatchHeaderExtras = '';
         if (activePosition) {
             const qty = activePosition.qty;
             const avgCostVal = activePosition.avg_price;
@@ -1918,6 +2183,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 : marketHoursLabel === 'Extended Hrs'
                     ? 'bg-amber-50 text-amber-700 border-amber-200'
                     : 'bg-indigo-50 text-indigo-600 border-indigo-100';
+            setupWatchHeaderExtras = `<span class="px-1.5 py-0.5 rounded border ${virtualPosition ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'} text-[0.48rem] font-black uppercase">${outlookTitle}</span><span class="px-1.5 py-0.5 rounded border ${marketHoursClass} text-[0.48rem] font-black uppercase">${marketHoursLabel}</span>`;
             const atrLevels = scan?.atr_levels || {};
             const activeSetupMode = currentDirection === 'BEARISH' ? sellMode : buyMode;
             const atrSetupModes = new Set(['atr', 'hybrid', 'hybrid_atr', 'sltp']);
@@ -2070,12 +2336,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             const buyDescriptionsHtml = renderSetupDescriptions('entry', buyMode, buyIndicatorsHtml);
             const sellDescriptionsHtml = renderSetupDescriptions('exit', sellMode, sellIndicatorsHtml);
             positionHtml = `
-                <div class="mt-1.5 pt-1.5 border-t border-slate-50 flex flex-col gap-0.5 cursor-pointer w-full min-w-0" onclick="selectTicker('${ticker}')">
-                    <div class="flex items-center gap-1.5 flex-wrap">
-                        <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Entry &amp; Exit Setup Watch</span>
-                        <span class="px-1.5 py-0.5 rounded border ${virtualPosition ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'} text-[0.48rem] font-black uppercase">${outlookTitle}</span>
-                        <span class="px-1.5 py-0.5 rounded border ${marketHoursClass} text-[0.48rem] font-black uppercase">${marketHoursLabel}</span>
-                    </div>
+                <div class="flex flex-col gap-0.5 cursor-pointer w-full min-w-0" onclick="selectTicker('${ticker}')">
                     <div class="grid grid-cols-1 gap-0.5">
                         <div class="rounded-lg border border-emerald-100 bg-emerald-50/50 px-1.5 py-0.5 min-w-0" title="${sanitizePlainText(buySettingsText)}">
                             <span class="block text-[0.46rem] font-black uppercase tracking-wider text-emerald-700">Bullish / Buy Setup - <span class="text-indigo-700">${buySettingsText}</span></span>
@@ -2091,6 +2352,10 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             `;
         }
 
+        if (activePosition) {
+            setupWatchHeaderExtras = '<span class="px-1.5 py-0.5 rounded border bg-amber-50 text-amber-700 border-amber-200 text-[0.48rem] font-black uppercase">Active position</span>';
+        }
+
         if (scanLog) {
             const indicators = Array.isArray(scanLog.indicators) ? scanLog.indicators : [];
             // Marker colors describe the signal's relationship to the direction
@@ -2102,6 +2367,12 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             const confirmedText = formatScanIndicatorGroup('Confirmed', indicators.filter(item => item.status === 'CONFIRMED'), confirmedMarker);
             const waitingText = formatScanIndicatorGroup('Waiting', indicators.filter(item => item.status === 'WAITING'), '🟡');
             const opposingText = formatScanIndicatorGroup('Opposing', indicators.filter(item => item.status === 'OPPOSING'), opposingMarker);
+            const indicatorEvidenceDirection = normalizeIndicatorEvidenceDirection(
+                scanLog.technical_direction || scanLog.target_direction,
+            );
+            const indicatorEvidenceConfirmedCount = indicators.filter(item => String(item.status || '').toUpperCase() === 'CONFIRMED').length;
+            const indicatorEvidenceTotalCount = indicators.length;
+            const indicatorEvidenceHeaderHtml = `<div class="flex items-center gap-1.5 flex-wrap"><span class="text-[0.58rem] sm:text-[0.65rem] font-black uppercase tracking-wider text-indigo-800">Indicator evidence</span><span class="inline-flex rounded border px-1.5 py-0.5 text-[0.55rem] font-black uppercase ${indicatorEvidenceToneClass(indicatorEvidenceDirection)}">${sanitizePlainText(indicatorEvidenceDirectionLabel(indicatorEvidenceDirection))}</span><span class="text-[0.58rem] font-bold text-slate-500">${indicatorEvidenceConfirmedCount}/${indicatorEvidenceTotalCount} confirmed</span></div>`;
             const blockers = Array.isArray(scanLog.blockers) ? scanLog.blockers : [];
             const protection = scanLog.exit_protection || activePosition?.exit_protection || {};
             const protectionText = protection.status || activePosition?.exit_protection_status || '';
@@ -2115,6 +2386,52 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             const screeningQualification = scanLog.strategy_qualification && typeof scanLog.strategy_qualification === 'object'
                 ? scanLog.strategy_qualification
                 : {};
+            const screeningMode = String(
+                scanLog.screening_strategy_mode
+                || scan?.screening_strategy_mode
+                || tickerSettings.strategy_mode
+                || 'combined'
+            ).toLowerCase();
+            const eventQualificationBase = scanLog.event_qualification && typeof scanLog.event_qualification === 'object'
+                ? scanLog.event_qualification
+                : (scan?.event_qualification && typeof scan.event_qualification === 'object' ? scan.event_qualification : {});
+            const newsWatchEvidence = scan?.news_watch && typeof scan.news_watch === 'object' ? scan.news_watch : {};
+            const eventQualification = { ...eventQualificationBase };
+            if (eventQualification.sentiment_pct == null && newsWatchEvidence.sentiment_pct != null) eventQualification.sentiment_pct = newsWatchEvidence.sentiment_pct;
+            if (eventQualification.confidence == null && newsWatchEvidence.sentiment_confidence != null) eventQualification.confidence = newsWatchEvidence.sentiment_confidence;
+            if (!eventQualification.analysis_direction && newsWatchEvidence.sentiment_direction) eventQualification.analysis_direction = newsWatchEvidence.sentiment_direction;
+            if (!eventQualification.ai_analysis && newsWatchEvidence.ai_analysis) eventQualification.ai_analysis = newsWatchEvidence.ai_analysis;
+            const hasNewsEvidence = Boolean(
+                newsWatchEvidence.ai_analysis
+                || newsWatchEvidence.sentiment_summary
+                || newsWatchEvidence.latest_summary
+                || newsWatchEvidence.latest?.title
+            );
+            const showEventEvidence = screeningMode !== 'technical' || hasNewsEvidence;
+            const eventEvidenceParts = [];
+            if (Object.keys(eventQualification).length || hasNewsEvidence) {
+                eventEvidenceParts.push(eventQualification.eligible ? 'QUALIFIED' : 'WAITING');
+            }
+            const eventStatus = eventEvidenceParts[0] || '';
+            const eventStatusClass = eventStatus === 'QUALIFIED'
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                : 'border-amber-200 bg-amber-50 text-amber-700';
+            const analysisDirection = String(eventQualification.analysis_direction || eventQualification.direction || 'NEUTRAL').toUpperCase();
+            const analysisLabel = analysisDirection.charAt(0) + analysisDirection.slice(1).toLowerCase();
+            const analysisToneClass = analysisDirection === 'BULLISH'
+                ? 'border-emerald-200 bg-emerald-100 text-emerald-700'
+                : analysisDirection === 'BEARISH'
+                    ? 'border-rose-200 bg-rose-100 text-rose-700'
+                    : 'border-slate-200 bg-slate-100 text-slate-600';
+            const aiAnalysis = normalizeScreenerEventAnalysis(String(
+                eventQualification.ai_analysis
+                || newsWatchEvidence.ai_analysis
+                || newsWatchEvidence.sentiment_summary
+                || ''
+            ).trim(), analysisDirection);
+            const eventEvidenceHtml = showEventEvidence && eventEvidenceParts.length
+                ? `<div class="flex flex-col gap-0.5 rounded-md border border-sky-100 bg-sky-50/70 px-1.5 py-0.5 text-sky-950"><span class="flex items-center gap-1.5 flex-wrap font-black text-sky-800"><span class="uppercase tracking-wider">Event evidence</span> <span class="inline-flex rounded border px-1.5 py-0.5 text-[0.55rem] font-black uppercase ${analysisToneClass}">${sanitizePlainText(analysisLabel)}</span> <span class="inline-flex rounded border px-1.5 py-0.5 text-[0.55rem] font-black uppercase ${eventStatusClass}">${sanitizePlainText(eventStatus)}</span></span>${aiAnalysis ? `<span class="text-sky-900">${sanitizePlainText(aiAnalysis)}</span>` : ''}</div>`
+                : '';
             const indicatorLines = [confirmedText, waitingText, opposingText].filter(Boolean);
             const strategyMode = String(scanLog.strategy_mode || '').toLowerCase();
             const structuralTitle = ({
@@ -2145,10 +2462,10 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 if (!structuralLines.length) structuralLines.push(`Waiting for ${structuralTitle} levels or a valid structural reading.`);
             }
             const indicatorSectionHtml = scanLog.uses_indicators
-                ? `<div class="flex flex-col gap-0">
-                    <span class="text-[0.58rem] sm:text-[0.65rem] font-black uppercase tracking-wider text-slate-500">Indicator</span>
+                ? `<div class="rounded-md border border-indigo-100 bg-indigo-50/70 px-1.5 py-0.5 flex flex-col gap-0.5 text-slate-950">
+                    ${indicatorEvidenceHeaderHtml}
                     ${indicatorLines.length
-                        ? indicatorLines.map(line => `<span>${line}</span>`).join('')
+                        ? indicatorLines.map(line => `<span class="leading-snug">${line}</span>`).join('')
                         : '<span>Waiting for enabled indicator readings.</span>'}
                 </div>`
                 : '';
@@ -2158,24 +2475,26 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                     ${structuralLines.map(line => `<span>${sanitizePlainText(line)}</span>`).join('')}
                 </div>`
                 : '';
-            const screeningEvidenceHtml = screeningQualification.reason
-                ? `<span>Qualification: ${sanitizePlainText(screeningQualification.reason)}</span>`
-                : '';
-            const detailHtml = indicatorSectionHtml || structuralSectionHtml || screeningEvidenceHtml || blockers.length
+            const qualificationReasonText = String(screeningQualification.reason || '').trim();
+            const visibleBlockers = blockers.filter(item => {
+                const blocker = String(item || '').trim();
+                return !qualificationReasonText
+                    || (blocker !== qualificationReasonText && !blocker.endsWith(`: ${qualificationReasonText}`));
+            });
+            const detailHtml = structuralSectionHtml || eventEvidenceHtml || visibleBlockers.length
                 ? `<div class="flex flex-col gap-0.5 text-[0.58rem] sm:text-[0.65rem] text-slate-500 font-medium leading-snug whitespace-normal break-words w-full min-w-0">
-                    ${indicatorSectionHtml}
                     ${structuralSectionHtml}
-                    ${screeningEvidenceHtml}
-                    ${blockers.length ? `<span>Waiting reason: ${blockers.map(item => sanitizePlainText(item)).join(' | ')}</span>` : ''}
+                    ${eventEvidenceHtml}
+                    ${visibleBlockers.length ? `<span>Waiting reason: ${visibleBlockers.map(item => sanitizePlainText(item)).join(' | ')}</span>` : ''}
                 </div>`
                 : '';
             const scanLogDetailsHtml = detailHtml
                 ? `<div class="flex flex-col gap-0.5 min-w-0">
-                    <span class="text-[0.48rem] font-black uppercase tracking-widest text-slate-400">Scan logs</span>
                     ${detailHtml}
                 </div>`
                 : '';
             const finalSummaryText = String(scanLog.final_summary || '').trim();
+            const finalSummaryBody = finalSummaryText.replace(/^(?:Exit|Entry) watch summary\s*[—-]\s*/i, '').trim();
             const finalSummaryIsExit = String(scanLog.phase || '').toUpperCase() === 'EXIT'
                 || String(scanLog.status || '').toUpperCase().startsWith('EXIT_');
             const finalSummaryIsEntry = !finalSummaryIsExit && String(scanLog.phase || '').toUpperCase() === 'ENTRY';
@@ -2190,13 +2509,28 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         body: 'text-emerald-950',
                     }
                     : {
-                        panel: 'border-indigo-200 bg-indigo-50/70',
-                        body: 'text-indigo-950',
-                    };
-            const finalSummaryHtml = finalSummaryText
-                ? `<div class="rounded-lg border ${finalSummaryTheme.panel} px-1.5 py-0.5 flex flex-col gap-0 text-[0.58rem] sm:text-[0.65rem] leading-snug whitespace-normal break-words w-full min-w-0">
-                            <span class="font-bold ${finalSummaryTheme.body}">${sanitizePlainText(finalSummaryText)}</span>
-                        </div>`
+                    panel: 'border-indigo-200 bg-indigo-50/70',
+                    body: 'text-indigo-950',
+                };
+            const isNeutralScan = String(scan?.direction || scanLog.decision || '').toUpperCase() === 'NEUTRAL';
+            const structuredWatchSummaryHtml = (finalSummaryIsEntry || finalSummaryIsExit || isNeutralScan)
+                ? buildScreenerPolicyWatchSummary(scanLog, screeningMode, true)
+                : '';
+            const watchSummaryKey = String(ticker || '').toUpperCase();
+            const watchSummaryPanelId = `screener-watch-summary-${String(ticker || '').replace(/[^a-zA-Z0-9_-]/g, '_')}-${index}`;
+            const watchSummaryExpanded = Boolean(window.screenerWatchSummaryExpanded?.[watchSummaryKey]);
+            watchSummaryHtml = finalSummaryText
+                ? `<section class="mt-1 rounded-lg border ${finalSummaryTheme.panel} overflow-hidden w-full min-w-0">
+                            <button type="button" data-watch-summary-key="${sanitizePlainText(watchSummaryKey)}" aria-controls="${watchSummaryPanelId}" aria-expanded="${watchSummaryExpanded ? 'true' : 'false'}" class="w-full flex items-center gap-1.5 px-1.5 py-1 text-left hover:bg-indigo-50/60 transition-colors" onclick="event.stopPropagation(); window.toggleScreenerWatchSummary('${watchSummaryPanelId}', this)">
+                                <span class="text-[0.58rem] sm:text-[0.65rem] font-black uppercase tracking-wider ${finalSummaryTheme.body} opacity-80">Watch summary</span>
+                                <svg data-watch-summary-arrow class="ml-auto h-3 w-3 shrink-0 text-indigo-500 transition-transform ${watchSummaryExpanded ? 'rotate-180' : ''}" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd" /></svg>
+                            </button>
+                            <div id="${watchSummaryPanelId}" class="${watchSummaryExpanded ? '' : 'hidden '}border-t border-current/10 px-1.5 pb-1.5 text-[0.58rem] sm:text-[0.65rem] leading-snug whitespace-normal break-words">
+                                ${structuredWatchSummaryHtml
+                                    ? structuredWatchSummaryHtml
+                                    : `<span class="font-bold ${finalSummaryTheme.body}">${sanitizePlainText(normalizeScreenerDisplayTerminology(finalSummaryText))}</span>`}
+                            </div>
+                        </section>`
                 : '';
 
             const isOptBot = scanLog.is_option || tickerSettings.options_trading || tickerSettings.is_option;
@@ -2206,16 +2540,10 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 ? `${Number.isInteger(refreshSeconds / 60) ? refreshSeconds / 60 : (refreshSeconds / 60).toFixed(1)}MIN`
                 : `${refreshSeconds}SEC`;
             const scanRefreshBadge = `<span class="px-1.5 py-0.5 rounded-md ${isOptBot ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-indigo-50 text-indigo-700 border-indigo-200'} border font-black text-[0.48rem] uppercase tracking-wide inline-flex items-center gap-0.5" title="Screener refresh interval">◷ ${refreshLabel} Refresh</span>`;
-            const screeningMode = String(
-                scanLog.screening_strategy_mode
-                || scan?.screening_strategy_mode
-                || tickerSettings.strategy_mode
-                || 'combined'
-            ).toLowerCase();
             const screeningBadgeConfig = ({
                 technical: {
-                    label: 'Technical Only',
-                    title: 'Technical-only screening policy',
+                    label: 'Indicator Only',
+                    title: 'Indicator-only screening policy',
                     tone: 'bg-indigo-50 text-indigo-700 border-indigo-200',
                 },
                 event: {
@@ -2224,8 +2552,8 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                     tone: 'bg-sky-50 text-sky-700 border-sky-200',
                 },
                 combined: {
-                    label: 'Event + Technical',
-                    title: 'Combined policy: require both event and technical qualification',
+                    label: 'Event + Indicator',
+                    title: 'Combined policy: require both event and indicator qualification',
                     tone: 'bg-emerald-50 text-emerald-700 border-emerald-200',
                 },
                 discovery: {
@@ -2234,16 +2562,21 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                     tone: 'bg-violet-50 text-violet-700 border-violet-200',
                 },
             })[screeningMode] || {
-                label: 'Event + Technical',
-                title: 'Combined policy: require both event and technical qualification',
+                label: 'Event + Indicator',
+                title: 'Combined policy: require both event and indicator qualification',
                 tone: 'bg-emerald-50 text-emerald-700 border-emerald-200',
             };
             const screeningStrategyBadge = `<span class="px-1.5 py-0.5 rounded-md ${screeningBadgeConfig.tone} border font-black text-[0.48rem] uppercase tracking-wide inline-flex items-center gap-0.5" title="${sanitizePlainText(screeningBadgeConfig.title)}">${sanitizePlainText(screeningBadgeConfig.label)}</span>`;
+            const scanLogKey = String(ticker || '').toUpperCase();
+            const scanLogPanelId = `screener-scan-log-${String(ticker || '').replace(/[^a-zA-Z0-9_-]/g, '_')}-${index}`;
+            const scanLogExpanded = window.screenerScanLogExpanded?.[scanLogKey] !== false;
+            const scanLogToggleHtml = `<button type="button" data-scan-log-key="${sanitizePlainText(scanLogKey)}" aria-controls="${scanLogPanelId}" aria-expanded="${scanLogExpanded ? 'true' : 'false'}" class="ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-slate-500 hover:bg-white/70" title="Expand or collapse scan details" onclick="event.stopPropagation(); window.toggleScreenerScanLog('${scanLogPanelId}', this)"><svg data-scan-log-arrow class="h-3 w-3 transition-transform ${scanLogExpanded ? 'rotate-180' : ''}" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd" /></svg></button>`;
             const scanContextBadgesHtml = `
                 <div class="flex items-center gap-1.5 flex-wrap pb-0.5">
                     ${scanRefreshBadge}
                     ${screeningStrategyBadge}
                     ${forceScanBadge}
+                    ${scanLogToggleHtml}
                 </div>`;
             const priceWatch = scan?.price_watch && typeof scan.price_watch === 'object'
                 ? scan.price_watch
@@ -2265,20 +2598,22 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 <div class="rounded-lg border border-slate-200 bg-slate-50/80 px-1.5 py-0.5 flex flex-col gap-0 text-[0.58rem] sm:text-[0.65rem] leading-snug text-slate-700 whitespace-normal break-words w-full min-w-0">
                     ${scanContextBadgesHtml}
                     <div class="flex items-center gap-1.5 flex-wrap">
-                        <span class="font-black uppercase tracking-wider text-slate-600">Last scan result</span>
+                        <span class="text-[0.58rem] sm:text-[0.65rem] font-black uppercase tracking-wider text-slate-600">Last scan result</span>
                         <span class="px-1.5 py-0.5 rounded border ${scanLogStatusClass(scanLog.status)} font-black text-[0.48rem] tracking-widest uppercase">${statusText}</span>
                         ${decisionBadgeHtml}
                     </div>
-                    ${priceWatchHtml}
-                    ${scanRuntimeHtml}
-                    ${scanLog.summary ? `<span>${sanitizePlainText(scanLog.summary)}</span>` : ''}
-                    ${scanLogDetailsHtml}
-                    ${finalSummaryHtml}
+                    <div id="${scanLogPanelId}" class="${scanLogExpanded ? '' : 'hidden '}mt-0.5 border-t border-slate-200/70 pt-0.5 flex flex-col gap-0">
+                        ${priceWatchHtml}
+                        ${scanRuntimeHtml}
+                        ${scanLog.summary ? `<span>${sanitizePlainText(scanLog.summary)}</span>` : ''}
+                        ${scanLogDetailsHtml}
+                        ${indicatorSectionHtml}
+                    </div>
                 </div>`;
             const isMarketClosed = scanLog.is_options_market_closed || scanLog.is_stock_market_closed || scanLog.status === 'MARKET_CLOSED';
             if (isMarketClosed) {
                 scanLogHtml = `
-                    <div class="mt-0.5 pt-0 flex flex-col gap-0.5 cursor-pointer w-full min-w-0" onclick="selectTicker('${ticker}')">
+                    <div class="mt-0.5 pt-0 flex flex-col gap-0.5 cursor-pointer w-full min-w-0" onclick="event.stopPropagation(); window.toggleScreenerScanLog('${scanLogPanelId}')">
                         ${lastScanLogHtml}
                         ${gridScanForecastHtml}
                     </div>
@@ -2301,48 +2636,45 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 }
 
                 scanLogHtml = `
-                    <div class="mt-0.5 pt-0 flex flex-col gap-0 cursor-pointer w-full min-w-0" onclick="selectTicker('${ticker}')">
+                    <div class="mt-0.5 pt-0 flex flex-col gap-0 cursor-pointer w-full min-w-0" onclick="event.stopPropagation(); window.toggleScreenerScanLog('${scanLogPanelId}')">
                         <div class="rounded-lg border border-slate-200 bg-slate-50/80 px-1.5 py-0.5 flex flex-col gap-0 text-[0.58rem] sm:text-[0.65rem] leading-snug text-slate-700 whitespace-normal break-words w-full min-w-0">
                             ${scanContextBadgesHtml}
                             <div class="flex items-center gap-1.5 flex-wrap">
-                                <span class="font-black uppercase tracking-wider text-slate-600">Last scan result</span>
+                                <span class="text-[0.58rem] sm:text-[0.65rem] font-black uppercase tracking-wider text-slate-600">Last scan result</span>
                                 <span class="px-1.5 py-0.5 rounded border ${scanLogStatusClass(scanLog.status)} font-black text-[0.48rem] tracking-widest uppercase">${statusText}</span>
                                 ${decisionBadgeHtml}
                             </div>
-                            <div class="flex items-center justify-between gap-2 min-w-0">${scanRuntimeHtml}${timeAgoText}</div>
-                            ${priceWatchHtml}
-                            ${gridScanForecastHtml}
-                            ${protectionBoxHtml}
-                            ${scanLogDetailsHtml}
-                            ${finalSummaryHtml}
+                            <div id="${scanLogPanelId}" class="${scanLogExpanded ? '' : 'hidden '}mt-0.5 border-t border-slate-200/70 pt-0.5 flex flex-col gap-0">
+                                <div class="flex items-center justify-between gap-2 min-w-0">${scanRuntimeHtml}${timeAgoText}</div>
+                                ${priceWatchHtml}
+                                ${gridScanForecastHtml}
+                                ${protectionBoxHtml}
+                                ${scanLogDetailsHtml}
+                                ${indicatorSectionHtml}
+                            </div>
                         </div>
                     </div>
                 `;
             }
         }
 
-        const newsWatchEnabled = tickerSettings.news_watch_enabled !== false;
+        // Keep the News Summary card consistent for every ticker. Screening
+        // mode controls qualification, not whether news is collected/displayed.
+        const newsWatchEnabled = true;
         const newsWatch = scan?.news_watch || {};
         let newsWatchHtml = '';
         if (newsWatchEnabled) {
             const newsStatus = String(newsWatch.status || 'waiting').toLowerCase();
-            const checkedTime = formatChicagoTime(newsWatch.checked_at);
+            const checkedTime = formatChicagoDateTime(newsWatch.checked_at);
             const newCount = Math.max(0, Number(newsWatch.new_count || 0));
             const latest = newsWatch.latest && typeof newsWatch.latest === 'object' ? newsWatch.latest : {};
-            const latestPublished = formatChicagoTime(latest.published_at);
+            // Include the calendar date.  A time-only label made a prior-day
+            // headline look like it was published today.
+            const latestPublished = formatChicagoDateTime(latest.published_at);
             const latestSource = escapeScreenerNewsText(latest.source || 'Source unavailable');
             const latestSummary = escapeScreenerNewsText(newsWatch.latest_summary || 'Checking for directly relevant ticker news…');
             const previousSummary = escapeScreenerNewsText(newsWatch.previous_summary || 'Previous ticker news will appear after the first successful check.');
-            const aiAnalysis = escapeScreenerNewsText(newsWatch.ai_analysis || 'AI analysis will run when the headline set changes.');
             const provider = escapeScreenerNewsText(newsWatch.provider || 'Yahoo Finance · Google News fallback');
-            const direction = String(newsWatch.sentiment_direction || 'NEUTRAL').toUpperCase();
-            const sentimentPct = Math.round(Number(newsWatch.sentiment_pct ?? 50));
-            const confidencePct = Math.round(Number(newsWatch.sentiment_confidence || 0) * 100);
-            const toneClass = direction === 'BULLISH'
-                ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
-                : direction === 'BEARISH'
-                    ? 'bg-rose-100 text-rose-700 border-rose-200'
-                    : 'bg-slate-100 text-slate-600 border-slate-200';
             const statusClass = newsStatus === 'stale' || newsStatus === 'unavailable'
                 ? 'border-amber-200 bg-amber-50/70'
                 : newsStatus === 'degraded'
@@ -2376,11 +2708,26 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         </div>
                         <span><strong>Latest${latestSource ? ` · ${latestSource}` : ''}${latestPublished ? ` · Published ${escapeScreenerNewsText(latestPublished)}` : ''}:</strong> ${latestBody}</span>
                         <span><strong>Previous 3:</strong> ${previousSummary}</span>
-                        <span class="flex items-center gap-1 flex-wrap"><strong>AI News Analysis:</strong> <span class="rounded border px-1 py-0.5 text-[0.48rem] font-black ${toneClass}">${escapeScreenerNewsText(direction)}</span> <span>${sentimentPct}/100 tone · ${confidencePct}% confidence · ${aiAnalysis}</span></span>
                         <span class="text-[0.5rem] text-slate-400">Source feed: ${provider}${newsWatch.error ? ` · ${escapeScreenerNewsText(newsWatch.error)}` : ''}</span>
                     </div>`;
             }
         }
+
+        const setupWatchKey = String(ticker || '').toUpperCase();
+        const setupWatchPanelId = `screener-setup-watch-${String(ticker || '').replace(/[^a-zA-Z0-9_-]/g, '_')}-${index}`;
+        const setupWatchExpanded = Boolean(window.screenerSetupWatchExpanded?.[setupWatchKey]);
+        const setupWatchGroupHtml = `
+            <section class="mt-1 rounded-lg border border-indigo-100 bg-white/70 overflow-hidden">
+                <button type="button" data-setup-watch-key="${sanitizePlainText(setupWatchKey)}" aria-controls="${setupWatchPanelId}" aria-expanded="${setupWatchExpanded ? 'true' : 'false'}" class="w-full flex items-center gap-1.5 px-1.5 py-1 text-left hover:bg-indigo-50/60 transition-colors" onclick="event.stopPropagation(); window.toggleScreenerSetupWatch('${setupWatchPanelId}', this)">
+                    <span class="text-[0.58rem] sm:text-[0.65rem] font-black uppercase tracking-wider text-indigo-800">Entry &amp; Exit Setup Watch</span>
+                    ${setupWatchHeaderExtras}
+                    <svg data-setup-watch-arrow class="ml-auto h-3 w-3 shrink-0 text-indigo-500 transition-transform ${setupWatchExpanded ? 'rotate-180' : ''}" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd" /></svg>
+                </button>
+                <div id="${setupWatchPanelId}" class="${setupWatchExpanded ? '' : 'hidden '}border-t border-indigo-100 px-1.5 pb-1.5">
+                    ${positionHtml}
+                    ${newsWatchHtml}
+                </div>
+            </section>`;
 
         const earningsWatchEnabled = tickerSettings.earnings_watch_enabled !== false && !isCryptoFlag;
         const earningsWatch = scan?.earnings_watch || {};
@@ -2523,9 +2870,9 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 ${scanDataWarningHtml}
 
                 <!-- 3rd Line: Position Details or Standing By Message -->
-                ${positionHtml}
-                ${newsWatchHtml}
+                ${setupWatchGroupHtml}
                 ${scanLogHtml}
+                ${watchSummaryHtml}
         `;
         container.appendChild(item);
     });
@@ -2552,6 +2899,51 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         window.history.replaceState({}, '', 'screener.html');
     }
 }
+
+window.screenerSetupWatchExpanded = window.screenerSetupWatchExpanded || {};
+window.toggleScreenerSetupWatch = function (panelId, button) {
+    const panel = document.getElementById(panelId);
+    if (!panel) return;
+    panel.classList.toggle('hidden');
+    const expanded = !panel.classList.contains('hidden');
+    if (button) {
+        button.setAttribute('aria-expanded', String(expanded));
+        button.querySelector('[data-setup-watch-arrow]')?.classList.toggle('rotate-180', expanded);
+        const key = String(button.dataset.setupWatchKey || '').toUpperCase();
+        if (key) window.screenerSetupWatchExpanded[key] = expanded;
+    }
+};
+
+window.screenerWatchSummaryExpanded = window.screenerWatchSummaryExpanded || {};
+window.toggleScreenerWatchSummary = function (panelId, button) {
+    const panel = document.getElementById(panelId);
+    if (!panel) return;
+    panel.classList.toggle('hidden');
+    const expanded = !panel.classList.contains('hidden');
+    if (button) {
+        button.setAttribute('aria-expanded', String(expanded));
+        button.querySelector('[data-watch-summary-arrow]')?.classList.toggle('rotate-180', expanded);
+        const key = String(button.dataset.watchSummaryKey || '').toUpperCase();
+        if (key) window.screenerWatchSummaryExpanded[key] = expanded;
+    }
+};
+
+window.screenerScanLogExpanded = window.screenerScanLogExpanded || {};
+window.toggleScreenerScanLog = function (panelId, button) {
+    const panel = document.getElementById(panelId);
+    if (!panel) return;
+    panel.classList.toggle('hidden');
+    const expanded = !panel.classList.contains('hidden');
+    const control = button?.matches?.('button[data-scan-log-key]')
+        ? button
+        : document.querySelector(`button[data-scan-log-key][aria-controls="${panelId}"]`);
+    if (control) {
+        control.setAttribute('aria-expanded', String(expanded));
+        control.querySelector('[data-scan-log-arrow]')?.classList.toggle('rotate-180', expanded);
+        const key = String(control.dataset.scanLogKey || '').toUpperCase();
+        if (key) window.screenerScanLogExpanded[key] = expanded;
+    }
+};
 
 let draggedItem = null;
 let dragPlaceholder = null;
@@ -2957,6 +3349,36 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
 
         if (currentLogTab === 'all') {
             const rawReason = String(item.reason || '');
+            const activityScanLog = item.scan_log && typeof item.scan_log === 'object' ? item.scan_log : {};
+            const activityMode = String(
+                item.screening_strategy_mode
+                || activityScanLog.screening_strategy_mode
+                || ''
+            ).toLowerCase();
+            const activityLabel = normalizeScreenerDisplayTerminology(String(
+                item.screening_strategy_label
+                || activityScanLog.screening_strategy_label
+                || ({
+                    technical: 'Indicator Only',
+                    event: 'Event-Driven Only',
+                    combined: 'Combined · Require Both Indicator + Event',
+                    discovery: 'Discovery · Either Qualifies',
+                }[activityMode] || '')
+            ).trim());
+            const activityQualification = item.strategy_qualification && typeof item.strategy_qualification === 'object'
+                ? item.strategy_qualification
+                : (activityScanLog.strategy_qualification && typeof activityScanLog.strategy_qualification === 'object' ? activityScanLog.strategy_qualification : {});
+            const activityEvent = item.event_qualification && typeof item.event_qualification === 'object'
+                ? item.event_qualification
+                : (activityScanLog.event_qualification && typeof activityScanLog.event_qualification === 'object' ? activityScanLog.event_qualification : {});
+            const activityPolicyText = activityLabel && activityMode !== 'technical'
+                ? (activityQualification.reason || 'waiting for policy conditions.')
+                : '';
+            const activityEventText = activityMode !== 'technical' && activityEvent.headline
+                ? `Event: ${activityEvent.headline}`
+                : '';
+            const activityRawReason = activityMode === 'event' ? '' : rawReason;
+            const displayReason = [activityPolicyText, activityEventText, activityRawReason].filter(Boolean).join(' · ');
             // Basic cleanup of generic prefixes
             let cleanReason = rawReason.replace(/Hybrid HOLD:/gi, 'Hybrid Waiting:').replace(/^HOLD:/gi, 'Waiting:');
             // Enhance Hybrid waiting reason with mode and structure status
@@ -3033,7 +3455,7 @@ function renderTradeLog(scanHistory, orderHistory, pendingOrders, positions) {
                 </td>
                 <td class="py-2 pr-2 text-indigo-700 font-medium text-[10px] sm:text-xs">${escapeScreenerNewsText(item.price)}</td>
                 <td class="py-2 pr-2 text-[10px] sm:text-xs flex items-center gap-1 flex-wrap">${signalBadge}</td>
-                <td class="py-2 pr-2 text-purple-600 italic text-[10px] sm:text-xs min-w-[200px] sm:min-w-[280px] whitespace-normal leading-snug" title="${escapeScreenerNewsText(cleanReason)}">${escapeScreenerNewsText(cleanReason)}</td>
+                <td class="py-2 pr-2 text-purple-600 italic text-[10px] sm:text-xs min-w-[200px] sm:min-w-[280px] whitespace-normal leading-snug" title="${escapeScreenerNewsText(displayReason || cleanReason)}">${activityLabel && activityMode !== 'technical' ? `<span class="mr-1 inline-flex rounded border border-indigo-200 bg-indigo-50 px-1 py-0.5 not-italic font-black text-[0.5rem] uppercase tracking-wide text-indigo-700">${escapeScreenerNewsText(activityLabel)}</span>` : ''}${escapeScreenerNewsText(displayReason || cleanReason)}</td>
             `;
         } else if (currentLogTab === 'trades') {
             const sideColor = item.side === 'buy' ? 'text-emerald-600 font-bold' : 'text-rose-500 font-bold';
@@ -3627,8 +4049,6 @@ function getCoreTradeGuardSettings(mode = 'regular') {
     }
     return {
         ...shared,
-        stock_max_spread_pct: parseFloat(document.getElementById('strategyStockMaxSpreadPct')?.value || '0.25'),
-        crypto_max_spread_pct: parseFloat(document.getElementById('strategyCryptoMaxSpreadPct')?.value || '0.50'),
     };
 }
 
@@ -4498,8 +4918,6 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
             const signalReset = document.getElementById(mode === 'regular' ? 'strategyRegularSignalReset' : 'strategyOptionsSignalReset');
             if (signalReset) signalReset.checked = true;
         });
-        if (document.getElementById('strategyStockMaxSpreadPct')) document.getElementById('strategyStockMaxSpreadPct').value = '0.25';
-        if (document.getElementById('strategyCryptoMaxSpreadPct')) document.getElementById('strategyCryptoMaxSpreadPct').value = '0.50';
         if (document.getElementById('strategyOptionsMaxSpreadPct')) document.getElementById('strategyOptionsMaxSpreadPct').value = '5';
         if (document.getElementById('strategyOptionsOpenBlackoutMinutes')) document.getElementById('strategyOptionsOpenBlackoutMinutes').value = '15';
 
@@ -4724,8 +5142,6 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
             if (document.getElementById(`strategyPostStopBars_${mode}`)) document.getElementById(`strategyPostStopBars_${mode}`).value = settings.post_stop_stabilization_bars ?? 3;
             if (document.getElementById(`strategyMaxConsecutiveLosses_${mode}`)) document.getElementById(`strategyMaxConsecutiveLosses_${mode}`).value = 3;
         });
-        if (document.getElementById('strategyStockMaxSpreadPct')) document.getElementById('strategyStockMaxSpreadPct').value = settings.stock_max_spread_pct ?? 0.25;
-        if (document.getElementById('strategyCryptoMaxSpreadPct')) document.getElementById('strategyCryptoMaxSpreadPct').value = settings.crypto_max_spread_pct ?? 0.50;
         if (document.getElementById('strategyOptionsMaxSpreadPct')) document.getElementById('strategyOptionsMaxSpreadPct').value = settings.options_max_entry_spread_pct ?? 5;
         if (document.getElementById('strategyOptionsOpenBlackoutMinutes')) document.getElementById('strategyOptionsOpenBlackoutMinutes').value = settings.options_market_open_blackout_minutes ?? 15;
         window.updateStrategySmartReentryFields('regular');
@@ -4900,7 +5316,7 @@ function syncScreenerIndicatorControlsForMode(screeningMode = 'combined') {
         input.classList.toggle('cursor-not-allowed', eventOnly);
         if (eventOnly) {
             input.setAttribute('tabindex', '-1');
-            input.title = 'Technical signal thresholds are not used in Event-Driven Only mode.';
+            input.title = 'Indicator signal thresholds are not used in Event-Driven Only mode.';
         } else {
             input.removeAttribute('tabindex');
             input.title = '';
@@ -4913,7 +5329,7 @@ function syncScreenerIndicatorControlsForMode(screeningMode = 'combined') {
             button.classList.toggle('cursor-not-allowed', eventOnly);
             if (eventOnly) {
                 button.setAttribute('tabindex', '-1');
-                button.title = 'Technical signal thresholds are not used in Event-Driven Only mode.';
+                button.title = 'Indicator signal thresholds are not used in Event-Driven Only mode.';
             } else {
                 button.removeAttribute('tabindex');
                 button.title = '';
@@ -4929,7 +5345,7 @@ function syncScreenerIndicatorControlsForMode(screeningMode = 'combined') {
             label.classList.toggle('bg-slate-100', eventOnly);
             label.classList.toggle('border-slate-200', eventOnly);
             label.title = eventOnly
-                ? 'Technical signal threshold is not used in Event-Driven Only mode.'
+                ? 'Indicator signal threshold is not used in Event-Driven Only mode.'
                 : '';
         }
     });
@@ -4961,15 +5377,15 @@ window.updateStrategySignalLabels = function (mode = window.activeTradingMode ||
     syncScreenerIndicatorControlsForMode(screeningMode);
     if (screeningMode.toLowerCase() === 'event' && mode === 'regular') {
         if (selectedCountBadge) {
-            selectedCountBadge.textContent = `${checkedCount} selected · technical leg inactive`;
+            selectedCountBadge.textContent = `${checkedCount} selected · indicator leg inactive`;
             selectedCountBadge.title = selectedIndicators.length
-                ? `${selectedIndicators.join(', ')} (preserved for technical modes)`
-                : 'No indicators selected; technical thresholds are inactive.';
+                ? `${selectedIndicators.join(', ')} (preserved for indicator modes)`
+                : 'No indicators selected; indicator thresholds are inactive.';
         }
         buyLabel.textContent = 'Not used in Event-Driven mode';
         sellLabel.textContent = 'Not used in Event-Driven mode';
-        buyLabel.title = 'Technical buy threshold is not used in Event-Driven Only mode.';
-        sellLabel.title = 'Technical sell threshold is not used in Event-Driven Only mode.';
+        buyLabel.title = 'Indicator buy threshold is not used in Event-Driven Only mode.';
+        sellLabel.title = 'Indicator sell threshold is not used in Event-Driven Only mode.';
         return;
     }
 
@@ -5429,7 +5845,7 @@ window.validateStrategyPreflight = function (symbol, mode = 'regular') {
             return {
                 valid: false,
                 title: "❌ Entry Strategy Error: No Indicators Selected",
-                message: `You selected [${modeName}] as your Entry Strategy for ${symbol}, which requires technical indicators to generate buy signals.\n\nHowever, 0 indicators are currently checked in your Indicator Pool!\n\nHow to fix: Scroll down to the Indicator Pool checklist and check at least 1 indicator (e.g., RSI, EMA, MACD), or switch your Entry Strategy dropdown to a standalone mode like ATR / Volatility or Swing Points.`
+                message: `You selected [${modeName}] as your Entry Strategy for ${symbol}, which requires indicators to generate buy signals.\n\nHowever, 0 indicators are currently checked in your Indicator Pool!\n\nHow to fix: Scroll down to the Indicator Pool checklist and check at least 1 indicator (e.g., RSI, EMA, MACD), or switch your Entry Strategy dropdown to a standalone mode like ATR / Volatility or Swing Points.`
             };
         }
         const buyThreshold = parseInt(document.getElementById(`strategyBuyThreshold_${mode}`)?.value || 1, 10);
@@ -5486,7 +5902,7 @@ window.validateStrategyPreflight = function (symbol, mode = 'regular') {
             return {
                 valid: false,
                 title: "❌ Exit Strategy Error: No Indicators Selected",
-                message: `You selected [${modeName}] as your Exit Strategy for ${symbol}, which requires technical indicators to generate sell signals.\n\nHowever, 0 indicators are currently checked in your Indicator Pool!\n\nHow to fix: Scroll down to the Indicator Pool checklist and check at least 1 indicator, or switch your Exit Strategy dropdown to a standalone mode.`
+                message: `You selected [${modeName}] as your Exit Strategy for ${symbol}, which requires indicators to generate sell signals.\n\nHowever, 0 indicators are currently checked in your Indicator Pool!\n\nHow to fix: Scroll down to the Indicator Pool checklist and check at least 1 indicator, or switch your Exit Strategy dropdown to a standalone mode.`
             };
         }
         const sellThreshold = parseInt(document.getElementById(`strategySellThreshold_${mode}`)?.value || 1, 10);
@@ -5599,9 +6015,7 @@ async function saveTickerSettings() {
                 strategy_mode: document.getElementById('strategyScreeningMode_regular')?.value || 'combined',
                 event_max_age_days: Math.max(1, Math.min(30, parseInt(document.getElementById('strategyEventMaxAgeDays_regular')?.value || 10, 10) || 10)),
             } : {}),
-            news_watch_enabled: mode === 'regular'
-                ? String(document.getElementById('strategyScreeningMode_regular')?.value || 'combined').toLowerCase() !== 'technical'
-                : true,
+            news_watch_enabled: true,
             earnings_watch_enabled: document.getElementById('strategyEarningsWatchEnabled')?.checked !== false,
             fundamental_watch_enabled: document.getElementById('strategyFundamentalWatchEnabled')?.checked !== false,
             min_buy_signals: mode === 'ai_autopilot' ? 4 : buyThresholdVal,
@@ -8444,17 +8858,12 @@ document.addEventListener('click', (e) => {
 
 window.syncScreenerNewsWatchForMode = function (mode = 'combined') {
     const normalizedMode = String(mode || 'combined').toLowerCase();
-    const usesEventLeg = normalizedMode !== 'technical';
     syncScreenerIndicatorControlsForMode(normalizedMode);
     const statusEl = document.getElementById('strategyNewsWatchStatus');
     if (statusEl) {
-        statusEl.textContent = usesEventLeg ? 'Enabled' : 'Disabled';
-        statusEl.className = usesEventLeg
-            ? 'px-2 py-1 rounded-lg border text-[0.58rem] font-black uppercase tracking-widest shrink-0 border-emerald-200 bg-emerald-50 text-emerald-700'
-            : 'px-2 py-1 rounded-lg border text-[0.58rem] font-black uppercase tracking-widest shrink-0 border-slate-300 bg-slate-100 text-slate-600';
-        statusEl.title = usesEventLeg
-            ? 'News watch is required by this qualification mode.'
-            : 'News watch is disabled for Technical Only mode.';
+        statusEl.textContent = 'Enabled';
+        statusEl.className = 'px-2 py-1 rounded-lg border text-[0.58rem] font-black uppercase tracking-widest shrink-0 border-emerald-200 bg-emerald-50 text-emerald-700';
+        statusEl.title = 'News Summary is collected for every Screener ticker; the selected policy controls whether it can qualify an entry.';
     }
     if (typeof window.updateStrategySignalLabels === 'function') {
         window.updateStrategySignalLabels('regular');
@@ -8559,9 +8968,7 @@ window.confirmAndDeployBot = async function () {
                 strategy_mode: document.getElementById('strategyScreeningMode_regular')?.value || 'combined',
                 event_max_age_days: Math.max(1, Math.min(30, parseInt(document.getElementById('strategyEventMaxAgeDays_regular')?.value || 10, 10) || 10)),
             } : {}),
-            news_watch_enabled: mode === 'regular'
-                ? String(document.getElementById('strategyScreeningMode_regular')?.value || 'combined').toLowerCase() !== 'technical'
-                : true,
+            news_watch_enabled: true,
             earnings_watch_enabled: document.getElementById('strategyEarningsWatchEnabled')?.checked !== false,
             fundamental_watch_enabled: document.getElementById('strategyFundamentalWatchEnabled')?.checked !== false,
             paused: window._strategyPaused || false,
@@ -9317,6 +9724,15 @@ function renderSignalActivityBucket(group, directionFilter = 'all') {
     const listText = value => Array.isArray(value) ? value.filter(Boolean).join(' · ') : String(value || '');
     const indicatorRows = item => {
         const scanLog = item.scan_log && typeof item.scan_log === 'object' ? item.scan_log : {};
+        const screeningMode = String(
+            item.screening_strategy_mode
+            || scanLog.screening_strategy_mode
+            || ''
+        ).toLowerCase();
+        const policyUsesTechnical = screeningMode !== 'event' || String(scanLog.phase || '').toUpperCase() === 'EXIT';
+        if (!policyUsesTechnical) {
+            return '<div class="text-[0.62rem] text-slate-500">Indicator leg is not used for this Event-Driven entry.</div>';
+        }
         const configured = Array.isArray(scanLog.indicators) ? scanLog.indicators : [];
         const fallback = item.signals && typeof item.signals === 'object'
             ? Object.entries(item.signals).map(([name, signal]) => ({
@@ -9344,6 +9760,28 @@ function renderSignalActivityBucket(group, directionFilter = 'all') {
         const priceEventLabel = priceEventType === 'PRICE_ENTRY' ? 'PRICE ENTRY' : 'PRICE EXIT';
         const directionClass = priceEventType === 'PRICE_EXIT' || direction === 'BEARISH' ? 'text-rose-700 bg-rose-50 border-rose-200' : 'text-emerald-700 bg-emerald-50 border-emerald-200';
         const reason = item.reason || item.scan_reason || scanLog.detail || scanLog.summary || 'Signal transition detected.';
+        const screeningLabel = normalizeScreenerDisplayTerminology(String(scanLog.screening_strategy_label || ({
+            technical: 'Indicator Only',
+            event: 'Event-Driven Only',
+            combined: 'Combined · Require Both Indicator + Event',
+            discovery: 'Discovery · Either Qualifies',
+        }[String(scanLog.screening_strategy_mode || '').toLowerCase()] || '')).trim());
+        const screeningQualification = scanLog.strategy_qualification && typeof scanLog.strategy_qualification === 'object'
+            ? scanLog.strategy_qualification
+            : {};
+        const eventQualification = scanLog.event_qualification && typeof scanLog.event_qualification === 'object'
+            ? scanLog.event_qualification
+            : {};
+        const eventAnalysisDirection = String(eventQualification.analysis_direction || eventQualification.direction || 'NEUTRAL').toUpperCase();
+        const eventAnalysisLabel = eventAnalysisDirection.charAt(0) + eventAnalysisDirection.slice(1).toLowerCase();
+        const eventAnalysisToneClass = eventAnalysisDirection === 'BULLISH'
+            ? 'border-emerald-200 bg-emerald-100 text-emerald-700'
+            : eventAnalysisDirection === 'BEARISH'
+                ? 'border-rose-200 bg-rose-100 text-rose-700'
+                : 'border-slate-200 bg-slate-100 text-slate-600';
+        const policyHtml = screeningLabel
+            ? `<div class="mt-1 rounded-md border border-indigo-100 bg-indigo-50/70 px-2 py-1 text-[0.6rem] leading-snug text-indigo-950"><span class="font-black">Screening policy:</span> ${text(screeningLabel)}${screeningQualification.reason ? ` · ${text(screeningQualification.reason)}` : ''}${String(scanLog.screening_strategy_mode || '').toLowerCase() !== 'technical' ? `<br><span class="inline-flex rounded border px-1.5 py-0.5 text-[0.55rem] font-black uppercase ${eventAnalysisToneClass}">${text(eventAnalysisLabel)}</span>` : ''}</div>`
+            : '';
         const exitLevels = scanLog.exit_levels && typeof scanLog.exit_levels === 'object' ? scanLog.exit_levels : (item.atr_levels || {});
         const atrText = item.atr != null || exitLevels.stop != null || exitLevels.target != null
             ? `ATR ${metric(item.atr)} · SL ${metric(exitLevels.stop)} · TP ${metric(exitLevels.target)}${exitLevels.text ? ` · ${text(exitLevels.text)}` : ''}`
@@ -9371,6 +9809,7 @@ function renderSignalActivityBucket(group, directionFilter = 'all') {
                 <div class="mt-1 rounded-lg border border-amber-200 bg-amber-50/70 px-2 py-1.5 text-[0.65rem] leading-snug text-amber-950">
                     <span class="font-black">Why this alert was sent:</span> ${text(reason)}
                 </div>
+                ${policyHtml}
                 ${scanLog.summary ? `<div class="mt-1 text-[0.62rem] leading-snug text-indigo-900"><span class="font-black">Scan summary:</span> ${text(scanLog.summary)}</div>` : ''}
                 ${scanLog.detail ? `<div class="mt-1 text-[0.62rem] leading-snug text-slate-600"><span class="font-black">Scan detail:</span> ${text(scanLog.detail)}</div>` : ''}
                 ${progress ? `<div class="mt-1 text-[0.62rem] leading-snug text-slate-700"><span class="font-black">Progress:</span> ${text(progress)}</div>` : ''}

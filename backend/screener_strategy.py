@@ -15,6 +15,12 @@ from typing import Any
 
 SCREENING_STRATEGY_MODES = {"technical", "event", "combined", "discovery"}
 DEFAULT_SCREENING_STRATEGY_MODE = "combined"
+SCREENING_STRATEGY_LABELS = {
+    "technical": "Indicator Only",
+    "event": "Event-Driven Only",
+    "combined": "Combined · Require Both Indicator + Event",
+    "discovery": "Discovery · Either Qualifies",
+}
 
 
 def normalize_screening_strategy_mode(value: Any, default: str = DEFAULT_SCREENING_STRATEGY_MODE) -> str:
@@ -32,6 +38,23 @@ def normalize_screening_strategy_mode(value: Any, default: str = DEFAULT_SCREENI
     candidate = str(value or "").strip().lower().replace("-", "_")
     candidate = aliases.get(candidate, candidate)
     return candidate if candidate in SCREENING_STRATEGY_MODES else default
+
+
+def screening_strategy_label(value: Any) -> str:
+    """Return one canonical label for scan logs and delivered alerts."""
+    mode = normalize_screening_strategy_mode(value)
+    return SCREENING_STRATEGY_LABELS.get(mode, SCREENING_STRATEGY_LABELS[DEFAULT_SCREENING_STRATEGY_MODE])
+
+
+def screening_strategy_logic(value: Any) -> str:
+    """Describe the exact entry qualification rule selected by the user."""
+    mode = normalize_screening_strategy_mode(value)
+    return {
+        "technical": "Indicator-only entry rule: indicator qualification is required; the event leg is not used.",
+        "event": "Event-driven entry rule: a current qualifying catalyst is required; the indicator leg is not required.",
+        "combined": "Combined entry rule: both indicator and event qualifications must be true in the same direction.",
+        "discovery": "Discovery entry rule: either leg may qualify, but an explicit opposing qualified event blocks the setup.",
+    }.get(mode, "Combined entry rule: both indicator and event qualifications must be true in the same direction.")
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -75,6 +98,25 @@ def assess_event_catalyst(
     watch = news_watch if isinstance(news_watch, dict) else {}
     latest = watch.get("latest") if isinstance(watch.get("latest"), dict) else {}
     status = str(watch.get("status") or "waiting").lower()
+    try:
+        age_limit_days = max(1, min(30, int(max_age_days)))
+    except (TypeError, ValueError):
+        age_limit_days = 10
+    try:
+        article_count = max(0, int(_safe_float(watch.get("article_count"), 0.0)))
+    except (TypeError, ValueError):
+        article_count = 0
+    latest_summary = str(
+        watch.get("latest_summary")
+        or latest.get("summary")
+        or latest.get("excerpt")
+        or ""
+    ).strip()
+    collected_news_summary = str(
+        watch.get("ai_analysis")
+        or watch.get("previous_summary")
+        or "No collected news summary is available."
+    ).strip()
     result = {
         "eligible": False,
         "direction": "NEUTRAL",
@@ -84,6 +126,14 @@ def assess_event_catalyst(
         "headline": str(latest.get("title") or ""),
         "source": str(latest.get("source") or ""),
         "published_at": latest.get("published_at") or "",
+        "latest_summary": latest_summary,
+        "collected_news_summary": collected_news_summary,
+        "previous_news_summary": str(watch.get("previous_summary") or "").strip(),
+        "ai_analysis": str(watch.get("ai_analysis") or "").strip(),
+        "analysis_direction": str(watch.get("sentiment_direction") or "NEUTRAL").upper(),
+        "article_count": article_count,
+        "collection_days": age_limit_days,
+        "checked_at": watch.get("checked_at") or "",
         "age_hours": None,
         "sentiment_pct": _safe_float(watch.get("sentiment_pct"), 50.0),
         "confidence": _safe_float(watch.get("sentiment_confidence"), 0.0),
@@ -113,10 +163,6 @@ def assess_event_catalyst(
     if relevance == "IRRELEVANT":
         result["reason"] = "The latest headline was classified as irrelevant to the ticker."
         return result
-    try:
-        age_limit_days = max(1, min(30, int(max_age_days)))
-    except (TypeError, ValueError):
-        age_limit_days = 10
     if age_hours is None or age_hours > age_limit_days * 24:
         result["reason"] = f"The latest catalyst is older than {age_limit_days} days."
         return result
@@ -195,7 +241,7 @@ def assess_swing_technical(scan: dict | None, settings: dict | None = None) -> d
         "eligible": False,
         "direction": direction if direction in {"BULLISH", "BEARISH"} else "NEUTRAL",
         "status": "WAITING",
-        "reason": "Waiting for a valid completed-candle technical setup.",
+        "reason": "Waiting for a valid completed-candle indicator setup.",
         "indicator_reason": str(scan.get("reason") or ""),
         "price": _safe_float(scan.get("price_raw"), 0.0),
         "sma20": None,
@@ -208,7 +254,7 @@ def assess_swing_technical(scan: dict | None, settings: dict | None = None) -> d
         return result
     if direction not in {"BULLISH", "BEARISH"}:
         result["status"] = "NEUTRAL"
-        result["reason"] = "Technical indicators are not directionally aligned."
+        result["reason"] = "Indicators are not directionally aligned."
         return result
 
     history = scan.get("price_history")
@@ -240,9 +286,9 @@ def assess_swing_technical(scan: dict | None, settings: dict | None = None) -> d
     result["eligible"] = bool(trend_pass)
     result["status"] = "QUALIFIED" if trend_pass else "BLOCKED"
     result["reason"] = (
-        f"Technical setup qualified: {trend_text}."
+        f"Indicator setup qualified: {trend_text}."
         if trend_pass
-        else f"Technical setup blocked: {trend_text} is not true on the latest completed candle."
+        else f"Indicator setup blocked: {trend_text} is not true on the latest completed candle."
     )
     return result
 
@@ -263,7 +309,7 @@ def combine_strategy_qualification(
     if selected_mode == "technical":
         qualified = technical_ok
         direction = technical_direction if qualified else "NEUTRAL"
-        reason = technical.get("reason") or "Technical qualification is not ready."
+        reason = technical.get("reason") or "Indicator qualification is not ready."
     elif selected_mode == "event":
         qualified = event_ok
         direction = event_direction if qualified else "NEUTRAL"
@@ -275,7 +321,7 @@ def combine_strategy_qualification(
         qualified = (technical_ok or event_ok) and not risk_veto
         direction = technical_direction if technical_ok else event_direction if event_ok else "NEUTRAL"
         reason = (
-            "Discovery blocked: technical and event directions conflict."
+            "Discovery blocked: indicator and event directions conflict."
             if risk_veto
             else technical.get("reason") if technical_ok else event.get("reason") or "No discovery qualification is ready."
         )
@@ -283,13 +329,13 @@ def combine_strategy_qualification(
         qualified = technical_ok and event_ok and same_direction
         direction = technical_direction if qualified else "NEUTRAL"
         if technical_ok and event_ok and not same_direction:
-            reason = "Combined setup blocked: technical and event directions conflict."
+            reason = "Combined setup blocked: indicator and event directions conflict."
         elif not technical_ok:
-            reason = f"Combined setup waiting on technical confirmation: {technical.get('reason') or 'not ready.'}"
+            reason = f"Combined setup waiting on indicator confirmation: {technical.get('reason') or 'not ready.'}"
         elif not event_ok:
             reason = f"Combined setup waiting on a qualifying catalyst: {event.get('reason') or 'not ready.'}"
         else:
-            reason = "Combined technical and event setup qualified."
+            reason = "Combined indicator and event setup qualified."
 
     return {
         "mode": selected_mode,

@@ -46,6 +46,7 @@ NEWS_MAX_AGE_DAYS = 10
 NEWS_MAX_AGE_SECONDS = NEWS_MAX_AGE_DAYS * 24 * 60 * 60
 NEWS_MAX_FUTURE_SKEW_SECONDS = 5 * 60
 NEWS_METADATA_CACHE_VERSION = "news-timestamp-v2-cnbc"
+FINNHUB_NEWS_ENDPOINT = "https://finnhub.io/api/v1/company-news"
 CNBC_RSS_CACHE_VERSION = "cnbc-rss-v1"
 CNBC_RSS_CACHE_SECONDS = 60
 CNBC_RSS_FAILURE_CACHE_SECONDS = 300
@@ -337,8 +338,11 @@ def attach_sentiment_metadata(sentiment: dict, cfg=None) -> dict:
 
 def canonicalize_sentiment_summary(summary: str, direction: str, percentage: float, confidence: float) -> str:
     """Prevent free-form news prose from contradicting the canonical score."""
+    direction_upper = str(direction or "NEUTRAL").upper()
     text = " ".join(str(summary or "").split()).strip()
     sentences = [sentence.strip() for sentence in re.split(r"(?<=[.!?])\s+", text) if sentence.strip()]
+    positive_evidence_pattern = r"\b(?:positive|bullish)\s+article\s+evidence\s*:"
+    negative_evidence_pattern = r"\b(?:negative|bearish)\s+article\s+evidence\s*:"
     factual_sentences = []
     for sentence in sentences:
         lower = sentence.lower()
@@ -347,6 +351,10 @@ def canonicalize_sentiment_summary(summary: str, direction: str, percentage: flo
             or "overall headline tone" in lower
             or lower.startswith("the news tone is")
         )
+        if direction_upper == "BEARISH" and re.search(positive_evidence_pattern, sentence, re.IGNORECASE):
+            continue
+        if direction_upper == "BULLISH" and re.search(negative_evidence_pattern, sentence, re.IGNORECASE):
+            continue
         if not is_classification_only:
             factual_sentences.append(sentence)
         if len(factual_sentences) == 2:
@@ -356,8 +364,32 @@ def canonicalize_sentiment_summary(summary: str, direction: str, percentage: flo
         facts = "The available headlines were evaluated as a separate news evidence stream."
     elif facts[-1] not in ".!?":
         facts += "."
+    if direction_upper == "NEUTRAL":
+        has_positive_evidence = bool(re.search(r"\b(?:positive|bullish)\s+article\s+evidence\s*:", facts, re.IGNORECASE))
+        has_negative_evidence = bool(re.search(r"\b(?:negative|bearish)\s+article\s+evidence\s*:", facts, re.IGNORECASE))
+        evidence_label = "Mixed article evidence:" if has_positive_evidence and has_negative_evidence else "Article evidence:"
+        facts = re.sub(
+            r"\b(?:positive|bullish|negative|bearish)\s+article\s+evidence\s*:\s*",
+            f"{evidence_label} ",
+            facts,
+            flags=re.IGNORECASE,
+        )
+    elif direction_upper == "BEARISH":
+        facts = re.sub(
+            negative_evidence_pattern + r"\s*",
+            "Negative article evidence: ",
+            facts,
+            flags=re.IGNORECASE,
+        )
+    elif direction_upper == "BULLISH":
+        facts = re.sub(
+            positive_evidence_pattern + r"\s*",
+            "Positive article evidence: ",
+            facts,
+            flags=re.IGNORECASE,
+        )
     return (
-        f"{facts} Aggregate headline tone is {str(direction).lower()} "
+        f"{facts} Aggregate headline tone is {direction_upper.lower()} "
         f"at {float(percentage):.0f}/100 with {float(confidence) * 100:.0f}% classifier confidence."
     )
 
@@ -576,6 +608,74 @@ def _is_crypto_news_ticker(ticker: str) -> bool:
     }
 
 
+def _fetch_finnhub_news_articles(ticker: str, max_articles: int = 8) -> list[dict]:
+    """Fetch timestamped company news from Finnhub as the primary provider."""
+    api_key = str(getattr(global_config, "FINNHUB_API_KEY", "") or "").strip()
+    if not api_key:
+        raise RuntimeError("Finnhub API key is not configured")
+
+    now_ts = time.time()
+    from_date = time.strftime("%Y-%m-%d", time.gmtime(now_ts - NEWS_MAX_AGE_SECONDS))
+    to_date = time.strftime("%Y-%m-%d", time.gmtime(now_ts))
+    query = urllib.parse.urlencode({
+        "symbol": str(ticker or "").upper(),
+        "from": from_date,
+        "to": to_date,
+        "token": api_key,
+    })
+    raw = _fetch_public_url(
+        f"{FINNHUB_NEWS_ENDPOINT}?{query}",
+        max_bytes=512_000,
+    )
+    if not raw or not raw.strip():
+        raise ValueError("Finnhub returned an empty response")
+    try:
+        payload = json.loads(raw.decode("utf-8", "ignore"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Finnhub returned a non-JSON response") from exc
+    if isinstance(payload, dict):
+        error_message = _clean_news_text(payload.get("error"), 240)
+        if error_message:
+            raise ValueError(f"Finnhub API error: {error_message}")
+        raise ValueError("Finnhub returned an invalid news payload")
+    if not isinstance(payload, list):
+        raise ValueError("Finnhub returned an invalid news payload")
+
+    articles = []
+    seen = set()
+    terms = _ticker_news_terms(ticker, _NEWS_COMPANY_NAME_CACHE.get(str(ticker).upper(), ""))
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        title = _clean_news_text(item.get("headline") or item.get("title"), 240)
+        summary = _clean_news_text(item.get("summary"), 320)
+        published_ts = _recent_news_timestamp(item.get("datetime"), now_ts)
+        # Finnhub's company endpoint can occasionally return a broad feed with
+        # an over-broad `related` symbol. Require the ticker/company alias in
+        # the headline or provider summary before accepting the article.
+        if not title or published_ts is None or not _title_mentions_ticker(
+            f"{title} {summary}", terms
+        ):
+            continue
+        dedupe_key = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        link = str(item.get("url") or "")
+        articles.append({
+            "title": title,
+            "source": _clean_news_text(item.get("source"), 80) or "Finnhub source",
+            "feed_provider": "finnhub",
+            "url": link if link.startswith(("http://", "https://")) else "",
+            "published_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(published_ts)),
+            "published_ts": published_ts,
+            "age_hours": round(max(0.0, (now_ts - published_ts) / 3600.0), 1),
+            "excerpt": summary,
+        })
+    articles.sort(key=lambda item: int(item.get("published_ts") or 0), reverse=True)
+    return articles[:max_articles]
+
+
 def _fetch_yahoo_news_articles(ticker: str, max_articles: int = 8) -> list[dict]:
     params = urllib.parse.urlencode({
         "q": str(ticker).upper(),
@@ -631,9 +731,11 @@ def _fetch_yahoo_news_articles(ticker: str, max_articles: int = 8) -> list[dict]
             "age_hours": round(max(0.0, (time.time() - published_ts) / 3600.0), 1),
             "excerpt": "",
         })
-        if len(articles) >= max_articles:
-            break
-    return articles
+    # Provider order is not a freshness contract.  Sort before truncating so
+    # an older result near the front of Yahoo's response cannot hide a newer
+    # result later in the payload.
+    articles.sort(key=lambda item: int(item.get("published_ts") or 0), reverse=True)
+    return articles[:max_articles]
 
 
 def _fetch_google_news_articles(
@@ -664,7 +766,13 @@ def _fetch_google_news_articles(
         source_node = item.find("source")
         date_node = item.find("pubDate")
         title = _clean_news_text(title_node.text if title_node is not None else "", 240)
-        if not title or not _title_mentions_ticker(title, terms):
+        # Google ranks by relevance and can place a newer story after older
+        # title matches.  For source-scoped queries (currently CNBC), retain
+        # the provider's ticker-query candidates even when the ticker is only
+        # mentioned in the article body.  The AI relevance classifier performs
+        # the final DIRECT/CONTEXT/IRRELEVANT decision after metadata previews.
+        query_candidate = bool(source_domain)
+        if not title or (not _title_mentions_ticker(title, terms) and not query_candidate):
             continue
         clean_title = title.rsplit(" - ", 1)[0].strip()
         dedupe_key = re.sub(r"[^a-z0-9]+", " ", clean_title.lower()).strip()
@@ -692,9 +800,11 @@ def _fetch_google_news_articles(
             "age_hours": round(max(0.0, (now_ts - published_ts) / 3600.0), 1),
             "excerpt": "",
         })
-        if len(articles) >= max_articles:
-            break
-    return articles
+    # Google News RSS is relevance-ranked rather than guaranteed newest-first.
+    # Timestamp validation happens before this sort, so only trusted recent
+    # publication times can become the displayed latest article.
+    articles.sort(key=lambda item: int(item.get("published_ts") or 0), reverse=True)
+    return articles[:max_articles]
 
 
 def _fetch_cnbc_rss_feed(feed_name: str, feed_url: str, max_items: int = 40) -> list[dict]:
@@ -752,9 +862,8 @@ def _fetch_cnbc_rss_feed(feed_name: str, feed_url: str, max_items: int = 40) -> 
                     320,
                 ),
             })
-            if len(entries) >= max_items:
-                break
         entries.sort(key=lambda item: int(item.get("published_ts") or 0), reverse=True)
+        entries = entries[:max_items]
         _CNBC_RSS_CACHE.set(cache_key, entries)
         return copy.deepcopy(entries)
 
@@ -829,12 +938,30 @@ def _merge_news_article_batches(batches: list[list[dict]], max_articles: int) ->
 def _fetch_news_article_metadata(ticker: str, max_articles: int = 8) -> tuple[list[dict], dict]:
     """Fetch lightweight article metadata and report provider health."""
     provider_status = {
+        "finnhub": "not_checked",
         "yahoo": "not_checked",
         "google": "not_checked",
         "cnbc": "not_checked",
         "errors": [],
     }
     batches = []
+
+    # Finnhub is the primary structured ticker-news provider.  Missing local
+    # configuration is not an error because the public-feed fallbacks remain
+    # usable; configured-provider failures are recorded and do not block them.
+    if str(getattr(global_config, "FINNHUB_API_KEY", "") or "").strip():
+        try:
+            finnhub_articles = _fetch_finnhub_news_articles(ticker, max_articles)
+            provider_status["finnhub"] = "ok" if finnhub_articles else "empty"
+            batches.append(finnhub_articles)
+        except Exception as exc:
+            provider_status["finnhub"] = "error"
+            status = getattr(exc, "status", None)
+            error_label = f"Finnhub: HTTP {status}" if status else f"Finnhub: {type(exc).__name__}"
+            provider_status["errors"].append(error_label)
+            print(f"[ai_indicator] Finnhub news unavailable for {ticker} ({error_label}); continuing with fallbacks")
+    else:
+        provider_status["finnhub"] = "not_configured"
 
     # Yahoo's search JSON endpoint currently returns HTTP 429 for crypto
     # symbols. Keep that provider skipped for crypto, while still checking
@@ -3387,6 +3514,8 @@ def _news_feed_fingerprint(articles: list[dict]) -> str:
 def _news_provider_label(articles: list[dict], provider_status: dict) -> str:
     providers = {str(article.get("feed_provider") or "").lower() for article in articles}
     labels = []
+    if "finnhub" in providers:
+        labels.append("Finnhub")
     if "yahoo" in providers:
         labels.append("Yahoo Finance")
     if "google" in providers:
@@ -3397,6 +3526,8 @@ def _news_provider_label(articles: list[dict], provider_status: dict) -> str:
         if labels == ["Google News"]:
             return "Google News fallback"
         return " + ".join(labels)
+    if provider_status.get("finnhub") in {"ok", "empty"}:
+        return "Finnhub"
     if provider_status.get("yahoo") in {"ok", "empty"}:
         return "Yahoo Finance"
     if provider_status.get("google") in {"ok", "empty"}:
@@ -3431,7 +3562,7 @@ def build_screener_news_watch(
     articles, provider_status = _fetch_news_article_metadata_cached(ticker, max_articles=8)
     successful_provider = any(
         provider_status.get(name) in {"ok", "empty"}
-        for name in ("yahoo", "google")
+        for name in ("finnhub", "yahoo", "google", "cnbc")
     )
     if not successful_provider:
         failure_count = int(previous.get("failure_count") or 0) + 1
@@ -3459,6 +3590,13 @@ def build_screener_news_watch(
     if previous.get("initialized") and feed_fingerprint == previous_fingerprint:
         current = dict(previous)
         active_new_count = int(previous.get("new_count") or 0) if checked_ts < float(previous.get("new_until_at") or 0) else 0
+        if current.get("ai_analysis"):
+            current["ai_analysis"] = canonicalize_sentiment_summary(
+                current.get("ai_analysis"),
+                current.get("sentiment_direction", "NEUTRAL"),
+                current.get("sentiment_pct", 50.0),
+                current.get("sentiment_confidence", 0.0),
+            )
         current.update({
             "enabled": True,
             "status": "degraded" if degraded else "current",
@@ -3487,6 +3625,10 @@ def build_screener_news_watch(
         normalized = dict(article)
         normalized["id"] = _news_article_id(normalized)
         analyzed_articles.append(normalized)
+
+    # Keep the UI's Latest row tied to the greatest validated provider
+    # timestamp, regardless of the order returned by an AI provider or feed.
+    analyzed_articles.sort(key=lambda item: int(item.get("published_ts") or 0), reverse=True)
 
     display_articles = [
         article for article in analyzed_articles
