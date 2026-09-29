@@ -23,6 +23,7 @@ jobs:
         uses: appleboy/ssh-action@2ead5e36573f08b82fbfce1504f1a4b05a647c6f # v1.2.2
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           WEBULL_APP_KEY: ${{ secrets.WEBULL_APP_KEY }}
           WEBULL_APP_SECRET: ${{ secrets.WEBULL_APP_SECRET }}
           VAULT_SECRET_KEY: ${{ secrets.VAULT_SECRET_KEY }}
@@ -35,7 +36,7 @@ jobs:
           host: ${{ secrets.ORACLE_HOST }}
           username: ${{ secrets.ORACLE_USER }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
-          envs: GROQ_API_KEY,WEBULL_APP_KEY,WEBULL_APP_SECRET,VAULT_SECRET_KEY,VAULT_SECRET_KEY_PREVIOUS,VAULT_SECRET_KEY_PREVIOUS_VERSION,BROKER_LIVE_TENANT_UID,BROKER_LIVE_ACCOUNT_FINGERPRINT,GITHUB_SHA
+          envs: GROQ_API_KEY,FINNHUB_API_KEY,WEBULL_APP_KEY,WEBULL_APP_SECRET,VAULT_SECRET_KEY,VAULT_SECRET_KEY_PREVIOUS,VAULT_SECRET_KEY_PREVIOUS_VERSION,BROKER_LIVE_TENANT_UID,BROKER_LIVE_ACCOUNT_FINGERPRINT,GITHUB_SHA
           script: |
             # Do not restart the service or overwrite its environment file when
             # the required encryption key was not supplied by GitHub Actions.
@@ -107,6 +108,7 @@ jobs:
             umask 077
             {
               printf 'GROQ_API_KEY=%s\n' "$GROQ_API_KEY"
+              printf 'FINNHUB_API_KEY=%s\n' "$FINNHUB_API_KEY"
               printf 'WEBULL_APP_KEY=%s\n' "$WEBULL_APP_KEY"
               printf 'WEBULL_APP_SECRET=%s\n' "$WEBULL_APP_SECRET"
               printf 'WEBULL_DATA_ONLY=true\n'
