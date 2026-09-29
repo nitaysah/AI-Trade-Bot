@@ -1759,7 +1759,7 @@ def _normalize_screener_market_session(symbol: str, session: str = None, is_opti
         return "24h"
     if is_options:
         return "Regular"
-    value = str(session or "Regular").strip().lower()
+    value = str(session or "Extended").strip().lower()
     if value in {"extended", "all", "24h", "crypto24", "24/5", "overnight"}:
         return "Extended"
     return "Regular"
@@ -5524,7 +5524,7 @@ _HYBRID_EXIT_MODES = {
 
 
 def _screener_scan_interval_seconds(settings: dict) -> int:
-    default = 10 if (settings or {}).get("options_trading") else 60
+    default = 10 if (settings or {}).get("options_trading") else 1800
     try:
         return max(10, min(14400, int((settings or {}).get("scan_interval_seconds", default))))
     except (TypeError, ValueError):
@@ -11429,6 +11429,8 @@ def _screener_profile_from_request(data: dict, state: ScreenerUserState, symbol:
     ):
         incoming.pop(key, None)
     settings = _normalize_draft_bot_settings(symbol, incoming, state)
+    if not settings.get("timeframe"):
+        settings["timeframe"] = "5Min" if settings.get("options_trading") else "30Min"
     for key in (
         "amount", "capital", "allocation_mode", "compound_amount", "max_trades",
         "risk_per_trade", "max_daily_drawdown", "max_position_pct", "global_hard_stop_pct",
@@ -11455,7 +11457,7 @@ def _screener_profile_from_request(data: dict, state: ScreenerUserState, symbol:
     settings["paused"] = not settings["enabled"]
     settings.setdefault("started_at", datetime.now(pytz.UTC).isoformat())
     settings.setdefault("asset_class", "crypto" if _is_crypto_symbol(symbol) else "stock")
-    default_scan_interval = 10 if settings.get("options_trading") else 60
+    default_scan_interval = 10 if settings.get("options_trading") else 1800
     try:
         settings["scan_interval_seconds"] = max(10, min(14400, int(incoming.get("scan_interval_seconds", settings.get("scan_interval_seconds", default_scan_interval)))))
     except (TypeError, ValueError):
@@ -11575,7 +11577,7 @@ def _empty_screener_scan(symbol: str, settings: dict) -> dict:
     return {
         "ticker": symbol,
         "time": "",
-        "timeframe": settings.get("timeframe", "5Min"),
+        "timeframe": settings.get("timeframe", "30Min"),
         "price": "---",
         "price_raw": 0.0,
         "action": "HOLD",
@@ -11946,7 +11948,7 @@ def _project_screener_scan(state, symbol):
         scan.setdefault("data_status", "waiting")
     elif scan.get("data_status") not in {"degraded", "stale_reference"}:
         session = _screener_market_status(symbol, settings)
-        if not _screener_candle_is_usable(scan.get("candle_meta") or {}, settings.get("timeframe", "5Min"), session["is_active_window"]):
+        if not _screener_candle_is_usable(scan.get("candle_meta") or {}, settings.get("timeframe", "30Min"), session["is_active_window"]):
             scan.update(data_status="degraded", stale_reason="The last completed-candle analysis is no longer current. Waiting for fresh data.")
         else:
             scan["data_status"] = "current" if session["is_active_window"] else "session_closed"
@@ -12313,19 +12315,20 @@ async def reset_screener_profile(ticker: str, state: ScreenerUserState = Depends
         "source": "screener",
         "enabled": True,
         "paused": False,
-        "timeframe": "4Hour" if _is_crypto_symbol(symbol) else "1Day",
+        "timeframe": "30Min",
         "asset_class": "crypto" if _is_crypto_symbol(symbol) else "stock",
         "strategy_mode": "combined",
         "event_max_age_days": 10,
         "event_min_confidence": 0.55,
-        # Keep the API reset path aligned with the UI's low-frequency swing
-        # defaults. These are conservative starting settings, not an
-        # optimized performance claim.
+        # Keep the API reset path aligned with the UI's 30-minute Screener
+        # defaults. These are starting settings, not an optimized performance
+        # claim.
         "indicators": ["EMA Cross", "SMA", "RSI", "ADX Trend"],
         "indicator_overrides": {},
         "min_buy_signals": 3,
         "min_sell_signals": 3,
-        "scan_interval_seconds": 900,
+        "scan_interval_seconds": 1800,
+        "market_session": "Extended" if not _is_crypto_symbol(symbol) else "24h",
         "price_watch_interval_seconds": 5,
         "news_watch_enabled": True,
         "earnings_watch_enabled": True,

@@ -104,9 +104,9 @@ class ScreenerUserState:
             "sms_failed": 0,
         }
         self.page_settings: dict[str, Any] = {
-            "scan_interval_seconds": 60,
-            "chart_timeframe": self.config.DEFAULT_TIMEFRAME,
-            "chart_session": "regular",
+            "scan_interval_seconds": 1800,
+            "chart_timeframe": "30Min",
+            "chart_session": "extended",
         }
         self.loaded = False
         self.load_lock = asyncio.Lock()

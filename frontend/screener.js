@@ -954,7 +954,7 @@ function isCrypto(ticker) {
 function getMarketSessionForStrategy(mode = 'regular') {
     const symbol = (window.currentStrategySymbol || '').toUpperCase();
     if (isCrypto(symbol)) return '24h';
-    return document.getElementById(`strategyMarketSession_${mode}`)?.value || 'Regular';
+    return document.getElementById(`strategyMarketSession_${mode}`)?.value || (mode === 'options' ? 'Regular' : 'Extended');
 }
 
 function getDashboardWatchlistSelectionForSave() {
@@ -2169,6 +2169,12 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                     ${blockers.length ? `<span>Waiting reason: ${blockers.map(item => sanitizePlainText(item)).join(' | ')}</span>` : ''}
                 </div>`
                 : '';
+            const scanLogDetailsHtml = detailHtml
+                ? `<div class="flex flex-col gap-0.5 min-w-0">
+                    <span class="text-[0.48rem] font-black uppercase tracking-widest text-slate-400">Scan logs</span>
+                    ${detailHtml}
+                </div>`
+                : '';
             const finalSummaryText = String(scanLog.final_summary || '').trim();
             const finalSummaryIsExit = String(scanLog.phase || '').toUpperCase() === 'EXIT'
                 || String(scanLog.status || '').toUpperCase().startsWith('EXIT_');
@@ -2194,12 +2200,51 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 : '';
 
             const isOptBot = scanLog.is_option || tickerSettings.options_trading || tickerSettings.is_option;
-            const configuredRefreshSeconds = Number(tickerSettings.scan_interval_seconds || scanLog.refresh_rate_sec || (isOptBot ? 10 : 60));
-            const refreshSeconds = Number.isFinite(configuredRefreshSeconds) && configuredRefreshSeconds >= 10 ? configuredRefreshSeconds : (isOptBot ? 10 : 60);
+            const configuredRefreshSeconds = Number(tickerSettings.scan_interval_seconds || scanLog.refresh_rate_sec || (isOptBot ? 10 : 1800));
+            const refreshSeconds = Number.isFinite(configuredRefreshSeconds) && configuredRefreshSeconds >= 10 ? configuredRefreshSeconds : (isOptBot ? 10 : 1800);
             const refreshLabel = refreshSeconds >= 60
                 ? `${Number.isInteger(refreshSeconds / 60) ? refreshSeconds / 60 : (refreshSeconds / 60).toFixed(1)}MIN`
                 : `${refreshSeconds}SEC`;
             const scanRefreshBadge = `<span class="px-1.5 py-0.5 rounded-md ${isOptBot ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-indigo-50 text-indigo-700 border-indigo-200'} border font-black text-[0.48rem] uppercase tracking-wide inline-flex items-center gap-0.5" title="Screener refresh interval">◷ ${refreshLabel} Refresh</span>`;
+            const screeningMode = String(
+                scanLog.screening_strategy_mode
+                || scan?.screening_strategy_mode
+                || tickerSettings.strategy_mode
+                || 'combined'
+            ).toLowerCase();
+            const screeningBadgeConfig = ({
+                technical: {
+                    label: 'Technical Only',
+                    title: 'Technical-only screening policy',
+                    tone: 'bg-indigo-50 text-indigo-700 border-indigo-200',
+                },
+                event: {
+                    label: 'Event-Driven',
+                    title: 'Event-driven screening policy',
+                    tone: 'bg-sky-50 text-sky-700 border-sky-200',
+                },
+                combined: {
+                    label: 'Event + Technical',
+                    title: 'Combined policy: require both event and technical qualification',
+                    tone: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+                },
+                discovery: {
+                    label: 'Discovery · Either',
+                    title: 'Discovery policy: either leg can qualify unless the legs conflict',
+                    tone: 'bg-violet-50 text-violet-700 border-violet-200',
+                },
+            })[screeningMode] || {
+                label: 'Event + Technical',
+                title: 'Combined policy: require both event and technical qualification',
+                tone: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+            };
+            const screeningStrategyBadge = `<span class="px-1.5 py-0.5 rounded-md ${screeningBadgeConfig.tone} border font-black text-[0.48rem] uppercase tracking-wide inline-flex items-center gap-0.5" title="${sanitizePlainText(screeningBadgeConfig.title)}">${sanitizePlainText(screeningBadgeConfig.label)}</span>`;
+            const scanContextBadgesHtml = `
+                <div class="flex items-center gap-1.5 flex-wrap pb-0.5">
+                    ${scanRefreshBadge}
+                    ${screeningStrategyBadge}
+                    ${forceScanBadge}
+                </div>`;
             const priceWatch = scan?.price_watch && typeof scan.price_watch === 'object'
                 ? scan.price_watch
                 : (scanLog?.price_watch && typeof scanLog.price_watch === 'object' ? scanLog.price_watch : null);
@@ -2218,16 +2263,16 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 : '';
             const lastScanLogHtml = `
                 <div class="rounded-lg border border-slate-200 bg-slate-50/80 px-1.5 py-0.5 flex flex-col gap-0 text-[0.58rem] sm:text-[0.65rem] leading-snug text-slate-700 whitespace-normal break-words w-full min-w-0">
+                    ${scanContextBadgesHtml}
                     <div class="flex items-center gap-1.5 flex-wrap">
                         <span class="font-black uppercase tracking-wider text-slate-600">Last scan result</span>
                         <span class="px-1.5 py-0.5 rounded border ${scanLogStatusClass(scanLog.status)} font-black text-[0.48rem] tracking-widest uppercase">${statusText}</span>
                         ${decisionBadgeHtml}
-                        ${scanRefreshBadge}
                     </div>
                     ${priceWatchHtml}
                     ${scanRuntimeHtml}
                     ${scanLog.summary ? `<span>${sanitizePlainText(scanLog.summary)}</span>` : ''}
-                    ${detailHtml}
+                    ${scanLogDetailsHtml}
                     ${finalSummaryHtml}
                 </div>`;
             const isMarketClosed = scanLog.is_options_market_closed || scanLog.is_stock_market_closed || scanLog.status === 'MARKET_CLOSED';
@@ -2239,7 +2284,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                     </div>
                 `;
             } else {
-                const refreshRate = Number(tickerSettings.scan_interval_seconds || scanLog.refresh_rate_sec) || (isOptBot ? 10 : 60);
+                const refreshRate = Number(tickerSettings.scan_interval_seconds || scanLog.refresh_rate_sec) || (isOptBot ? 10 : 1800);
                 let timeAgoText = '';
                 if (scanLog.updated_at) {
                     try {
@@ -2258,18 +2303,17 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 scanLogHtml = `
                     <div class="mt-0.5 pt-0 flex flex-col gap-0 cursor-pointer w-full min-w-0" onclick="selectTicker('${ticker}')">
                         <div class="rounded-lg border border-slate-200 bg-slate-50/80 px-1.5 py-0.5 flex flex-col gap-0 text-[0.58rem] sm:text-[0.65rem] leading-snug text-slate-700 whitespace-normal break-words w-full min-w-0">
+                            ${scanContextBadgesHtml}
                             <div class="flex items-center gap-1.5 flex-wrap">
-                                <span class="text-[0.52rem] text-slate-400 font-bold uppercase tracking-wider">Scan Log</span>
+                                <span class="font-black uppercase tracking-wider text-slate-600">Last scan result</span>
                                 <span class="px-1.5 py-0.5 rounded border ${scanLogStatusClass(scanLog.status)} font-black text-[0.48rem] tracking-widest uppercase">${statusText}</span>
                                 ${decisionBadgeHtml}
-                                ${scanRefreshBadge}
-                                ${forceScanBadge}
                             </div>
                             <div class="flex items-center justify-between gap-2 min-w-0">${scanRuntimeHtml}${timeAgoText}</div>
                             ${priceWatchHtml}
                             ${gridScanForecastHtml}
                             ${protectionBoxHtml}
-                            ${detailHtml}
+                            ${scanLogDetailsHtml}
                             ${finalSummaryHtml}
                         </div>
                     </div>
@@ -4326,7 +4370,7 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategyBuyThreshold_options').value = 0;
         document.getElementById('strategySellThreshold_regular').value = 0;
         document.getElementById('strategySellThreshold_options').value = 0;
-        document.getElementById('strategyTimeframe_regular').value = "1Day";
+        document.getElementById('strategyTimeframe_regular').value = "30Min";
         document.getElementById('strategyTimeframe_options').value = "5Min";
         if (document.getElementById('strategyTimeframe_ai_autopilot')) document.getElementById('strategyTimeframe_ai_autopilot').value = "1Hour";
         if (document.getElementById('strategyAiModel')) document.getElementById('strategyAiModel').value = "llama-3.3-70b-versatile";
@@ -4334,7 +4378,7 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         if (document.getElementById('strategyBuyMode_options')) document.getElementById('strategyBuyMode_options').value = "indicator";
         if (document.getElementById('strategyScreeningMode_regular')) document.getElementById('strategyScreeningMode_regular').value = "combined";
         if (document.getElementById('strategyEventMaxAgeDays_regular')) document.getElementById('strategyEventMaxAgeDays_regular').value = "10";
-        if (document.getElementById('strategyScanInterval_regular')) document.getElementById('strategyScanInterval_regular').value = "900";
+        if (document.getElementById('strategyScanInterval_regular')) document.getElementById('strategyScanInterval_regular').value = "1800";
         if (document.getElementById('strategyCustomBuyPrice_regular')) document.getElementById('strategyCustomBuyPrice_regular').value = "";
         if (document.getElementById('strategyCustomBuyPrice_options')) document.getElementById('strategyCustomBuyPrice_options').value = "";
         if (document.getElementById('strategyCustomStopLossPrice_regular')) document.getElementById('strategyCustomStopLossPrice_regular').value = "";
@@ -4376,7 +4420,7 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         window.updateContinuousGridUi?.('regular', 'exit');
         loadContinuousAtrGridSettings({});
         loadSmartDynamicGridSettings({}, true);
-        applyMarketSessionForSymbol(currentStrategySymbol, {});
+        applyMarketSessionForSymbol(currentStrategySymbol, { market_session: 'Extended' });
         if (document.getElementById('strategySwingEntryMode_regular')) document.getElementById('strategySwingEntryMode_regular').value = "bounce_retest";
         if (document.getElementById('strategySwingEntryMode_options')) document.getElementById('strategySwingEntryMode_options').value = "bounce_retest";
         if (document.getElementById('strategySwingEntryLookback_regular')) document.getElementById('strategySwingEntryLookback_regular').value = "20D";
@@ -4516,11 +4560,11 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         const sellSignals = settings.min_sell_signals !== undefined ? settings.min_sell_signals : (INDICATOR_DEFAULTS['MIN_BEARISH_SIGNALS'] || 4);
         document.getElementById('strategySellThreshold_regular').value = sellSignals;
         document.getElementById('strategySellThreshold_options').value = sellSignals;
-        document.getElementById('strategyTimeframe_regular').value = settings.timeframe || '1Day';
+        document.getElementById('strategyTimeframe_regular').value = settings.timeframe || '30Min';
         document.getElementById('strategyTimeframe_options').value = settings.timeframe || '1Hour';
         const configuredScanInterval = Number(settings.scan_interval_seconds);
         if (document.getElementById('strategyScanInterval_regular')) {
-            document.getElementById('strategyScanInterval_regular').value = !settings.options_trading && configuredScanInterval >= 10 ? configuredScanInterval : 900;
+            document.getElementById('strategyScanInterval_regular').value = !settings.options_trading && configuredScanInterval >= 10 ? configuredScanInterval : 1800;
         }
         if (document.getElementById('strategyScanInterval_options')) {
             document.getElementById('strategyScanInterval_options').value = settings.options_trading && configuredScanInterval >= 10 ? configuredScanInterval : 10;
@@ -4615,7 +4659,10 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         loadContinuousAtrGridSettings(settings);
         loadSmartDynamicGridSettings(settings, false);
 
-        applyMarketSessionForSymbol(currentStrategySymbol, settings);
+        applyMarketSessionForSymbol(currentStrategySymbol, {
+            ...settings,
+            market_session: settings.market_session || 'Extended',
+        });
         if (document.getElementById('strategySellMode_regular')) if (document.getElementById('strategySellMode_regular')) document.getElementById('strategySellMode_regular').value = settings.sell_mode || 'indicator';
         if (document.getElementById('strategySwingEntryMode_regular')) document.getElementById('strategySwingEntryMode_regular').value = settings.swing_entry_mode || 'bounce_retest';
         if (document.getElementById('strategySwingEntryMode_options')) document.getElementById('strategySwingEntryMode_options').value = settings.swing_entry_mode || 'bounce_retest';
@@ -4833,6 +4880,61 @@ window.closeRiskAgreementModal = function () {
     if (modal) modal.classList.add('hidden');
 };
 
+function syncScreenerIndicatorControlsForMode(screeningMode = 'combined') {
+    const eventOnly = String(screeningMode || 'combined').toLowerCase() === 'event';
+    const controls = [
+        { inputId: 'strategyBuyThreshold_regular', labelId: 'strategyBuyLabel_regular' },
+        { inputId: 'strategySellThreshold_regular', labelId: 'strategySellLabel_regular' },
+    ];
+
+    controls.forEach(({ inputId, labelId }) => {
+        const input = document.getElementById(inputId);
+        const label = document.getElementById(labelId);
+        if (!input) return;
+
+        const row = input.parentElement;
+        const panel = row?.parentElement;
+        input.disabled = eventOnly;
+        input.setAttribute('aria-disabled', String(eventOnly));
+        input.classList.toggle('opacity-50', eventOnly);
+        input.classList.toggle('cursor-not-allowed', eventOnly);
+        if (eventOnly) {
+            input.setAttribute('tabindex', '-1');
+            input.title = 'Technical signal thresholds are not used in Event-Driven Only mode.';
+        } else {
+            input.removeAttribute('tabindex');
+            input.title = '';
+        }
+
+        row?.querySelectorAll('button').forEach(button => {
+            button.disabled = eventOnly;
+            button.setAttribute('aria-disabled', String(eventOnly));
+            button.classList.toggle('opacity-50', eventOnly);
+            button.classList.toggle('cursor-not-allowed', eventOnly);
+            if (eventOnly) {
+                button.setAttribute('tabindex', '-1');
+                button.title = 'Technical signal thresholds are not used in Event-Driven Only mode.';
+            } else {
+                button.removeAttribute('tabindex');
+                button.title = '';
+            }
+        });
+
+        panel?.classList.toggle('opacity-50', eventOnly);
+        panel?.classList.toggle('grayscale', eventOnly);
+        panel?.classList.toggle('pointer-events-none', eventOnly);
+        panel?.setAttribute('aria-disabled', String(eventOnly));
+        if (label) {
+            label.classList.toggle('text-slate-500', eventOnly);
+            label.classList.toggle('bg-slate-100', eventOnly);
+            label.classList.toggle('border-slate-200', eventOnly);
+            label.title = eventOnly
+                ? 'Technical signal threshold is not used in Event-Driven Only mode.'
+                : '';
+        }
+    });
+}
+
 window.updateStrategySignalLabels = function (mode = window.activeTradingMode || 'regular') {
     if (!mode) return;
     const container = document.getElementById(`indicatorChecksContainer_${mode}`);
@@ -4852,6 +4954,24 @@ window.updateStrategySignalLabels = function (mode = window.activeTradingMode ||
     const sellLabel = document.getElementById(`strategySellLabel_${mode}`);
 
     if (!buyInput || !sellInput || !buyLabel || !sellLabel) return;
+
+    const screeningMode = mode === 'regular'
+        ? (document.getElementById('strategyScreeningMode_regular')?.value || 'combined')
+        : 'combined';
+    syncScreenerIndicatorControlsForMode(screeningMode);
+    if (screeningMode.toLowerCase() === 'event' && mode === 'regular') {
+        if (selectedCountBadge) {
+            selectedCountBadge.textContent = `${checkedCount} selected · technical leg inactive`;
+            selectedCountBadge.title = selectedIndicators.length
+                ? `${selectedIndicators.join(', ')} (preserved for technical modes)`
+                : 'No indicators selected; technical thresholds are inactive.';
+        }
+        buyLabel.textContent = 'Not used in Event-Driven mode';
+        sellLabel.textContent = 'Not used in Event-Driven mode';
+        buyLabel.title = 'Technical buy threshold is not used in Event-Driven Only mode.';
+        sellLabel.title = 'Technical sell threshold is not used in Event-Driven Only mode.';
+        return;
+    }
 
     const indicatorModes = ['indicator', 'hybrid', 'hybrid_atr', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'];
     const buyModeSelect = document.getElementById(`strategyBuyMode_${mode}`)?.value || 'indicator';
@@ -5220,6 +5340,8 @@ window.validateStrategyPreflight = function (symbol, mode = 'regular') {
     const indicatorModes = ['indicator', 'hybrid', 'hybrid_atr', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'];
     const buyMode = document.getElementById(mode === 'options' ? 'strategyBuyMode_options' : 'strategyBuyMode_regular')?.value || 'indicator';
     const sellMode = document.getElementById(mode === 'options' ? 'strategySellMode_options' : 'strategySellMode_regular')?.value || 'hybrid';
+    const eventDrivenOnly = mode === 'regular'
+        && String(document.getElementById('strategyScreeningMode_regular')?.value || 'combined').toLowerCase() === 'event';
 
     // 1. TOP OF FORM: Capital & Options Sizing (if present)
     if (mode === 'regular' && document.getElementById('strategyCapital')) {
@@ -5301,7 +5423,7 @@ window.validateStrategyPreflight = function (symbol, mode = 'regular') {
             };
         }
     }
-    if (indicatorModes.includes(buyMode)) {
+    if (!eventDrivenOnly && indicatorModes.includes(buyMode)) {
         if (checkedIndicators === 0) {
             const modeName = buyMode.replace(/_/g, ' ').toUpperCase();
             return {
@@ -5358,7 +5480,7 @@ window.validateStrategyPreflight = function (symbol, mode = 'regular') {
             return { valid: false, title: '❌ Invalid Trailing Stop', message: 'Trailing Stop must be between 0.1% and 99%, or disable Trail.' };
         }
     }
-    if (indicatorModes.includes(sellMode)) {
+    if (!eventDrivenOnly && indicatorModes.includes(sellMode)) {
         if (checkedIndicators === 0) {
             const modeName = sellMode.replace(/_/g, ' ').toUpperCase();
             return {
@@ -5472,7 +5594,7 @@ async function saveTickerSettings() {
             ...getStrategyModeSettings(mode),
             amount: mode === 'regular' ? (parseFloat(document.getElementById('strategyCapital')?.value || '') || null) : mode === 'ai_autopilot' ? (parseFloat(document.getElementById('strategyCapital_ai_autopilot')?.value || '') || null) : undefined,
             timeframe: document.getElementById(`strategyTimeframe_${mode}`)?.value || null,
-            scan_interval_seconds: Math.max(10, Math.min(14400, parseInt(document.getElementById(`strategyScanInterval_${mode}`)?.value || (mode === 'options' ? 10 : 60), 10) || (mode === 'options' ? 10 : 60))),
+            scan_interval_seconds: Math.max(10, Math.min(14400, parseInt(document.getElementById(`strategyScanInterval_${mode}`)?.value || (mode === 'options' ? 10 : 1800), 10) || (mode === 'options' ? 10 : 1800))),
             ...(mode === 'regular' ? {
                 strategy_mode: document.getElementById('strategyScreeningMode_regular')?.value || 'combined',
                 event_max_age_days: Math.max(1, Math.min(30, parseInt(document.getElementById('strategyEventMaxAgeDays_regular')?.value || 10, 10) || 10)),
@@ -8323,16 +8445,20 @@ document.addEventListener('click', (e) => {
 window.syncScreenerNewsWatchForMode = function (mode = 'combined') {
     const normalizedMode = String(mode || 'combined').toLowerCase();
     const usesEventLeg = normalizedMode !== 'technical';
+    syncScreenerIndicatorControlsForMode(normalizedMode);
     const statusEl = document.getElementById('strategyNewsWatchStatus');
-    if (!statusEl) return;
-
-    statusEl.textContent = usesEventLeg ? 'Enabled' : 'Disabled';
-    statusEl.className = usesEventLeg
-        ? 'px-2 py-1 rounded-lg border text-[0.58rem] font-black uppercase tracking-widest shrink-0 border-emerald-200 bg-emerald-50 text-emerald-700'
-        : 'px-2 py-1 rounded-lg border text-[0.58rem] font-black uppercase tracking-widest shrink-0 border-slate-300 bg-slate-100 text-slate-600';
-    statusEl.title = usesEventLeg
-        ? 'News watch is required by this qualification mode.'
-        : 'News watch is disabled for Technical Only mode.';
+    if (statusEl) {
+        statusEl.textContent = usesEventLeg ? 'Enabled' : 'Disabled';
+        statusEl.className = usesEventLeg
+            ? 'px-2 py-1 rounded-lg border text-[0.58rem] font-black uppercase tracking-widest shrink-0 border-emerald-200 bg-emerald-50 text-emerald-700'
+            : 'px-2 py-1 rounded-lg border text-[0.58rem] font-black uppercase tracking-widest shrink-0 border-slate-300 bg-slate-100 text-slate-600';
+        statusEl.title = usesEventLeg
+            ? 'News watch is required by this qualification mode.'
+            : 'News watch is disabled for Technical Only mode.';
+    }
+    if (typeof window.updateStrategySignalLabels === 'function') {
+        window.updateStrategySignalLabels('regular');
+    }
 };
 
 function selectSearchResult(item) {
@@ -8371,8 +8497,8 @@ window.confirmAndDeployBot = async function () {
     const threshold = document.getElementById(`strategyBuyThreshold_${mode}`)?.value || 4;
     const sellThreshold = document.getElementById(`strategySellThreshold_${mode}`)?.value || 4;
     const sellMode = document.getElementById(`strategySellMode_${mode}`)?.value || 'hybrid';
-    const timeframe = document.getElementById(`strategyTimeframe_${mode}`)?.value || '1Hour';
-    const scanIntervalSeconds = Math.max(10, Math.min(14400, parseInt(document.getElementById(`strategyScanInterval_${mode}`)?.value || (mode === 'options' ? 10 : 60), 10) || (mode === 'options' ? 10 : 60)));
+    const timeframe = document.getElementById(`strategyTimeframe_${mode}`)?.value || (mode === 'options' ? '5Min' : '30Min');
+    const scanIntervalSeconds = Math.max(10, Math.min(14400, parseInt(document.getElementById(`strategyScanInterval_${mode}`)?.value || (mode === 'options' ? 10 : 1800), 10) || (mode === 'options' ? 10 : 1800)));
 
     // Gather Indicators
     const indicators = getSelectedStrategyIndicators(mode);

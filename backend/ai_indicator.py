@@ -40,10 +40,25 @@ from cache_manager import TTLCacheStore
 
 _AI_CACHE = TTLCacheStore(maxsize=128)
 _NEWS_METADATA_CACHE = TTLCacheStore(maxsize=512)
+_CNBC_RSS_CACHE = TTLCacheStore(maxsize=16)
+_CNBC_RSS_FAILURE_CACHE = TTLCacheStore(maxsize=16)
 NEWS_MAX_AGE_DAYS = 10
 NEWS_MAX_AGE_SECONDS = NEWS_MAX_AGE_DAYS * 24 * 60 * 60
 NEWS_MAX_FUTURE_SKEW_SECONDS = 5 * 60
-NEWS_METADATA_CACHE_VERSION = "news-timestamp-v1"
+NEWS_METADATA_CACHE_VERSION = "news-timestamp-v2-cnbc"
+CNBC_RSS_CACHE_VERSION = "cnbc-rss-v1"
+CNBC_RSS_CACHE_SECONDS = 60
+CNBC_RSS_FAILURE_CACHE_SECONDS = 300
+
+# CNBC publishes public section feeds rather than a per-ticker feed. Keep the
+# set focused on market-moving coverage and cache each feed once per poll
+# window so a watchlist does not multiply the same network requests.
+CNBC_RSS_FEEDS = (
+    ("top", "https://www.cnbc.com/id/100003114/device/rss/rss.html"),
+    ("autos", "https://www.cnbc.com/id/10000101/device/rss/rss.html"),
+    ("investing", "https://www.cnbc.com/id/15839069/device/rss/rss.html"),
+    ("market-insider", "https://www.cnbc.com/id/20409666/device/rss/rss.html"),
+)
 
 try:
     from groq import Groq
@@ -532,7 +547,7 @@ def _ticker_news_terms(ticker: str, company_name: str = "") -> set[str]:
         "NFLX": {"NFLX", "NETFLIX"},
         "NVDA": {"NVDA", "NVIDIA"},
         "SPY": {"SPY", "S&P 500", "SPDR S&P 500"},
-        "TSLA": {"TSLA", "TESLA", "TESLA INC"},
+        "TSLA": {"TSLA", "TESLA", "TESLA INC", "ROADSTER"},
         "QQQ": {"QQQ", "NASDAQ 100", "NASDAQ-100", "INVESCO QQQ"},
         "IWM": {"IWM", "RUSSELL 2000"},
         "DIA": {"DIA", "DOW JONES", "DOW 30"},
@@ -621,14 +636,21 @@ def _fetch_yahoo_news_articles(ticker: str, max_articles: int = 8) -> list[dict]
     return articles
 
 
-def _fetch_google_news_articles(ticker: str, max_articles: int = 8) -> list[dict]:
+def _fetch_google_news_articles(
+    ticker: str,
+    max_articles: int = 8,
+    *,
+    source_domain: str = "",
+    feed_provider: str = "google",
+) -> list[dict]:
     company_name = _NEWS_COMPANY_NAME_CACHE.get(str(ticker).upper(), "")
     alias_terms = sorted(
         _ticker_news_terms(ticker, company_name) - {str(ticker).upper()},
         key=lambda value: (len(value), value),
     )
     company_term = alias_terms[0] if alias_terms else ""
-    query_text = f'"{str(ticker).upper()}" {company_term} stock when:{NEWS_MAX_AGE_DAYS}d'.strip()
+    source_prefix = f"site:{source_domain} " if source_domain else ""
+    query_text = f'{source_prefix}"{str(ticker).upper()}" {company_term} stock when:{NEWS_MAX_AGE_DAYS}d'.strip()
     query = urllib.parse.quote(query_text)
     url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
     root = ET.fromstring(_fetch_public_url(url, max_bytes=256_000))
@@ -663,7 +685,7 @@ def _fetch_google_news_articles(ticker: str, max_articles: int = 8) -> list[dict
         articles.append({
             "title": clean_title,
             "source": _clean_news_text(source_node.text if source_node is not None else "", 80) or "Google News source",
-            "feed_provider": "google",
+            "feed_provider": feed_provider,
             "url": link if link.startswith(("http://", "https://")) else "",
             "published_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(published_ts)),
             "published_ts": published_ts,
@@ -675,53 +697,175 @@ def _fetch_google_news_articles(ticker: str, max_articles: int = 8) -> list[dict
     return articles
 
 
+def _fetch_cnbc_rss_feed(feed_name: str, feed_url: str, max_items: int = 40) -> list[dict]:
+    """Fetch one public CNBC RSS section and retain bounded item metadata."""
+    cache_key = (CNBC_RSS_CACHE_VERSION, str(feed_name), str(feed_url))
+    cached = _CNBC_RSS_CACHE.get(cache_key, CNBC_RSS_CACHE_SECONDS)
+    if cached is not None:
+        return copy.deepcopy(cached)
+    cached_failure = _CNBC_RSS_FAILURE_CACHE.get(cache_key, CNBC_RSS_FAILURE_CACHE_SECONDS)
+    if cached_failure is not None:
+        raise RuntimeError(str(cached_failure))
+
+    with _CNBC_RSS_CACHE.with_inflight_lock(cache_key):
+        cached = _CNBC_RSS_CACHE.get(cache_key, CNBC_RSS_CACHE_SECONDS)
+        if cached is not None:
+            return copy.deepcopy(cached)
+        cached_failure = _CNBC_RSS_FAILURE_CACHE.get(cache_key, CNBC_RSS_FAILURE_CACHE_SECONDS)
+        if cached_failure is not None:
+            raise RuntimeError(str(cached_failure))
+
+        try:
+            root = ET.fromstring(_fetch_public_url(feed_url, max_bytes=512_000))
+        except Exception as exc:
+            _CNBC_RSS_FAILURE_CACHE.set(cache_key, type(exc).__name__)
+            raise
+        now_ts = time.time()
+        entries = []
+        for item in root.findall(".//item"):
+            title_node = item.find("title")
+            link_node = item.find("link")
+            date_node = item.find("pubDate")
+            description_node = item.find("description")
+            title = _clean_news_text(title_node.text if title_node is not None else "", 240)
+            if not title or date_node is None or not date_node.text:
+                continue
+            try:
+                from email.utils import parsedate_to_datetime
+                parsed_ts = parsedate_to_datetime(date_node.text).timestamp()
+                published_ts = _recent_news_timestamp(parsed_ts, now_ts)
+            except Exception:
+                published_ts = None
+            if published_ts is None:
+                continue
+            link = _clean_news_text(link_node.text if link_node is not None else "", 500)
+            entries.append({
+                "title": title,
+                "source": "CNBC",
+                "feed_provider": "cnbc",
+                "url": link if link.startswith(("http://", "https://")) else "",
+                "published_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(published_ts)),
+                "published_ts": published_ts,
+                "age_hours": round(max(0.0, (now_ts - published_ts) / 3600.0), 1),
+                "excerpt": _clean_news_text(
+                    description_node.text if description_node is not None else "",
+                    320,
+                ),
+            })
+            if len(entries) >= max_items:
+                break
+        entries.sort(key=lambda item: int(item.get("published_ts") or 0), reverse=True)
+        _CNBC_RSS_CACHE.set(cache_key, entries)
+        return copy.deepcopy(entries)
+
+
+def _fetch_cnbc_news_articles(ticker: str, max_articles: int = 8) -> tuple[list[dict], list[str]]:
+    """Find recent ticker headlines across CNBC's market and autos feeds."""
+    company_name = _NEWS_COMPANY_NAME_CACHE.get(str(ticker).upper(), "")
+    terms = _ticker_news_terms(ticker, company_name)
+    articles = []
+    errors = []
+    seen = set()
+    for feed_name, feed_url in CNBC_RSS_FEEDS:
+        try:
+            feed_items = _fetch_cnbc_rss_feed(feed_name, feed_url)
+        except Exception as exc:
+            errors.append(f"CNBC {feed_name}: {type(exc).__name__}")
+            continue
+        for item in feed_items:
+            title = _clean_news_text(item.get("title"), 240)
+            if not title or not _title_mentions_ticker(title, terms):
+                continue
+            dedupe_key = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            articles.append(dict(item))
+    # CNBC's public RSS endpoints can return 403 from cloud-hosted IP ranges.
+    # Use Google's public RSS index restricted to CNBC as a source-preserving
+    # fallback; this still consumes headline metadata only and never scrapes
+    # the article body.
+    if len(articles) < max_articles:
+        try:
+            indexed_articles = _fetch_google_news_articles(
+                ticker,
+                max_articles,
+                source_domain="cnbc.com",
+                feed_provider="cnbc",
+            )
+            for item in indexed_articles:
+                title = _clean_news_text(item.get("title"), 240)
+                dedupe_key = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+                if not title or dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                articles.append(dict(item))
+        except Exception as exc:
+            errors.append(f"CNBC Google index: {type(exc).__name__}")
+    articles.sort(key=lambda item: int(item.get("published_ts") or 0), reverse=True)
+    return articles[:max_articles], errors
+
+
+def _merge_news_article_batches(batches: list[list[dict]], max_articles: int) -> list[dict]:
+    """Merge provider batches, dedupe headlines, and preserve newest first."""
+    merged = []
+    seen = set()
+    for batch in batches:
+        for article in batch or []:
+            if not isinstance(article, dict):
+                continue
+            title = _clean_news_text(article.get("title"), 240)
+            if not title:
+                continue
+            key = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(dict(article))
+    merged.sort(key=lambda item: int(item.get("published_ts") or 0), reverse=True)
+    return merged[:max_articles]
+
+
 def _fetch_news_article_metadata(ticker: str, max_articles: int = 8) -> tuple[list[dict], dict]:
     """Fetch lightweight article metadata and report provider health."""
-    articles = []
-    provider_status = {"yahoo": "not_checked", "google": "not_checked", "errors": []}
+    provider_status = {
+        "yahoo": "not_checked",
+        "google": "not_checked",
+        "cnbc": "not_checked",
+        "errors": [],
+    }
+    batches = []
 
     # Yahoo's search JSON endpoint currently returns HTTP 429 for crypto
-    # symbols. Google News RSS provides the same recent headline evidence and
-    # is already the normal fallback for stocks, so use it as the primary
-    # crypto provider and avoid a guaranteed JSON parse failure.
-    if _is_crypto_news_ticker(ticker):
+    # symbols. Keep that provider skipped for crypto, while still checking
+    # Google and CNBC for fresh public headline metadata.
+    if not _is_crypto_news_ticker(ticker):
         try:
-            articles = _fetch_google_news_articles(ticker, max_articles)
-            provider_status["google"] = "ok" if articles else "empty"
+            yahoo_articles = _fetch_yahoo_news_articles(ticker, max_articles)
+            provider_status["yahoo"] = "ok" if yahoo_articles else "empty"
+            batches.append(yahoo_articles)
         except Exception as exc:
-            provider_status["google"] = "error"
-            provider_status["errors"].append(f"Google: {type(exc).__name__}")
-            print(f"[ai_indicator] Google news fetch error for {ticker}: {exc}")
-        articles.sort(key=lambda item: int(item.get("published_ts") or 0), reverse=True)
-        return articles[:max_articles], provider_status
+            provider_status["yahoo"] = "error"
+            status = getattr(exc, "status", None)
+            error_label = f"Yahoo: HTTP {status}" if status else f"Yahoo: {type(exc).__name__}"
+            provider_status["errors"].append(error_label)
+            print(f"[ai_indicator] Yahoo news unavailable for {ticker} ({error_label}); continuing with other providers")
 
     try:
-        articles = _fetch_yahoo_news_articles(ticker, max_articles)
-        provider_status["yahoo"] = "ok" if articles else "empty"
+        google_articles = _fetch_google_news_articles(ticker, max_articles)
+        provider_status["google"] = "ok" if google_articles else "empty"
+        batches.append(google_articles)
     except Exception as exc:
-        provider_status["yahoo"] = "error"
-        status = getattr(exc, "status", None)
-        error_label = f"Yahoo: HTTP {status}" if status else f"Yahoo: {type(exc).__name__}"
-        provider_status["errors"].append(error_label)
-        print(f"[ai_indicator] Yahoo news unavailable for {ticker} ({error_label}); trying Google News fallback")
-    if len(articles) < 3:
-        try:
-            google_articles = _fetch_google_news_articles(ticker, max_articles)
-            provider_status["google"] = "ok" if google_articles else "empty"
-            existing = {re.sub(r"[^a-z0-9]+", " ", article["title"].lower()).strip() for article in articles}
-            for article in google_articles:
-                key = re.sub(r"[^a-z0-9]+", " ", article["title"].lower()).strip()
-                if key not in existing:
-                    articles.append(article)
-                    existing.add(key)
-                if len(articles) >= max_articles:
-                    break
-        except Exception as exc:
-            provider_status["google"] = "error"
-            provider_status["errors"].append(f"Google: {type(exc).__name__}")
-            print(f"[ai_indicator] Google news fetch error for {ticker}: {exc}")
-    articles.sort(key=lambda item: int(item.get("published_ts") or 0), reverse=True)
-    return articles[:max_articles], provider_status
+        provider_status["google"] = "error"
+        provider_status["errors"].append(f"Google: {type(exc).__name__}")
+        print(f"[ai_indicator] Google news fetch error for {ticker}: {exc}")
+
+    cnbc_articles, cnbc_errors = _fetch_cnbc_news_articles(ticker, max_articles)
+    provider_status["cnbc"] = "ok" if cnbc_articles else "empty" if not cnbc_errors else "error"
+    provider_status["errors"].extend(cnbc_errors)
+    batches.append(cnbc_articles)
+
+    return _merge_news_article_batches(batches, max_articles), provider_status
 
 
 def _fetch_news_article_metadata_cached(ticker: str, max_articles: int = 8) -> tuple[list[dict], dict]:
@@ -2884,7 +3028,7 @@ def _fallback_sentiment(ticker: str, news_items: list) -> dict:
         }
 
     pos_words = ["beat", "beats", "surge", "surged", "growth", "upgrade", "upgraded", "gain", "gains", "climb", "climbs", "record high", "success", "profit", "profits", "launch", "bullish", "strong", "outperform", "rise", "rises", "positive", "expand", "acquisition", "rally", "soar", "soars"]
-    neg_words = ["miss", "misses", "drop", "drops", "plunge", "plunges", "decline", "declines", "fall", "falls", "loss", "losses", "lawsuit", "complaint", "downgrade", "downgraded", "bearish", "weak", "underperform", "negative", "shrink", "debt", "risk", "hazard", "crack", "struggle", "inflation", "constraint", "constraints", "slow", "slows", "less"]
+    neg_words = ["miss", "misses", "drop", "drops", "plunge", "plunges", "decline", "declines", "fall", "falls", "loss", "losses", "lawsuit", "complaint", "downgrade", "downgraded", "bearish", "weak", "underperform", "negative", "shrink", "debt", "risk", "hazard", "crack", "struggle", "inflation", "constraint", "constraints", "slow", "slows", "less", "delay", "delays", "delayed", "postpone", "postponed", "reschedule", "rescheduled", "cancel", "canceled", "cancelled", "warning", "warns", "missed", "failure"]
     
     score = 0.0
     pos_count = 0
@@ -3242,15 +3386,24 @@ def _news_feed_fingerprint(articles: list[dict]) -> str:
 
 def _news_provider_label(articles: list[dict], provider_status: dict) -> str:
     providers = {str(article.get("feed_provider") or "").lower() for article in articles}
-    if "yahoo" in providers and "google" in providers:
-        return "Yahoo Finance + Google News fallback"
-    if "google" in providers:
-        return "Google News fallback"
+    labels = []
     if "yahoo" in providers:
-        return "Yahoo Finance"
+        labels.append("Yahoo Finance")
+    if "google" in providers:
+        labels.append("Google News")
+    if "cnbc" in providers:
+        labels.append("CNBC")
+    if labels:
+        if labels == ["Google News"]:
+            return "Google News fallback"
+        return " + ".join(labels)
     if provider_status.get("yahoo") in {"ok", "empty"}:
         return "Yahoo Finance"
-    return "Google News fallback"
+    if provider_status.get("google") in {"ok", "empty"}:
+        return "Google News fallback"
+    if provider_status.get("cnbc") in {"ok", "empty"}:
+        return "CNBC"
+    return "News providers"
 
 
 def _news_article_summary(article: dict) -> str:
@@ -3299,7 +3452,10 @@ def build_screener_news_watch(
     feed_fingerprint = _news_feed_fingerprint(articles)
     previous_fingerprint = str(previous.get("feed_fingerprint") or "")
     provider_label = _news_provider_label(articles, provider_status)
-    degraded = bool(provider_status.get("errors"))
+    # A provider error is non-fatal when another provider supplied fresh,
+    # timestamp-validated articles. Keep the fallback visible in `provider`
+    # and `error`, but allow the current evidence to reach the event gate.
+    degraded = bool(provider_status.get("errors")) and not bool(articles)
     if previous.get("initialized") and feed_fingerprint == previous_fingerprint:
         current = dict(previous)
         active_new_count = int(previous.get("new_count") or 0) if checked_ts < float(previous.get("new_until_at") or 0) else 0
