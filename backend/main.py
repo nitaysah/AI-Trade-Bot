@@ -93,6 +93,9 @@ from screener_strategy import (
     assess_event_catalyst,
     assess_swing_technical,
     combine_strategy_qualification,
+    direction_watch_directions,
+    direction_watch_label,
+    direction_watch_mode,
     normalize_screening_strategy_mode,
     screening_strategy_label,
     screening_strategy_logic,
@@ -2220,16 +2223,41 @@ async def _scan_screener_state(
                     continue
                 scan_profile_revision = state.profile_revision(symbol)
                 timeframe = settings.get("timeframe") or state.page_settings.get("chart_timeframe") or state.config.DEFAULT_TIMEFRAME
+                screening_mode = normalize_screening_strategy_mode(
+                    settings.get("strategy_mode", "combined")
+                )
                 evaluation_state = state.evaluation_state.setdefault(symbol, {})
+                direction_watch = _screener_direction_watch_config(
+                    settings,
+                    evaluation_state,
+                    state.notification_settings,
+                )
+                # Keep the effective global fallback beside the evaluation
+                # ledger so cached/degraded card rebuilds show the same watch
+                # mode without needing to re-read a delivery settings request.
+                evaluation_state.update({
+                    "direction_watch_mode": direction_watch["mode"],
+                    "direction_watch_label": direction_watch["label"],
+                    "direction_watch_directions": direction_watch["directions"],
+                    "direction_watch_bullish_enabled": direction_watch["bullish_enabled"],
+                    "direction_watch_bearish_enabled": direction_watch["bearish_enabled"],
+                })
                 scan_generation = evaluation_state.get("generation")
                 scan_interval = _screener_scan_interval_seconds(settings)
                 # Failure paths must also respect the configured cadence.
                 evaluation_state["next_due_at"] = time.time() + scan_interval
                 session_status = _screener_market_status(symbol, settings)
                 probe_key = ""
-                if not session_status["is_active_window"] and not force_scan:
+                event_only_closed = (
+                    not session_status["is_active_window"]
+                    and screening_mode == "event"
+                )
+                if not session_status["is_active_window"] and not event_only_closed:
                     # Match Bots: do not fetch candles or run technical
                     # evaluation while the configured market session is shut.
+                    # A force request must not bypass this gate. Event-only
+                    # profiles are handled below from their cached scan and
+                    # refreshed news state without touching indicators.
                     # Keep the latest price/analysis in place so reopening the
                     # session can restore it until a new candle is available.
                     next_due_at = time.time() + scan_interval
@@ -2255,6 +2283,9 @@ async def _scan_screener_state(
                         "refresh_rate_sec": scan_interval,
                         "next_due_at": next_due_at,
                         "session_paused": True,
+                        "direction_watch_mode": direction_watch["mode"],
+                        "direction_watch_label": direction_watch["label"],
+                        "watch_directions": direction_watch["directions"],
                     })
                     cached_scan["scan_log"] = scan_log
                     state.latest_scans[symbol] = cached_scan
@@ -2262,9 +2293,14 @@ async def _scan_screener_state(
                     evaluation_state["last_data_check_at"] = datetime.now(pytz.UTC).isoformat()
                     evaluation_state["session_paused"] = True
                     continue
-                evaluation_state["session_paused"] = False
+                evaluation_state["session_paused"] = bool(event_only_closed)
                 previous_candle_key = str(evaluation_state.get("last_candle_key") or "")
-                if previous_candle_key and not evaluation_state.get("baseline_required") and not force_scan:
+                if (
+                    not event_only_closed
+                    and previous_candle_key
+                    and not evaluation_state.get("baseline_required")
+                    and not force_scan
+                ):
                     # Poll only the newest bars after the first valid analysis.
                     # A repeated completed-candle key must not trigger another
                     # 1,200-bar fetch and full indicator calculation.
@@ -2330,16 +2366,28 @@ async def _scan_screener_state(
                             print(f"[screener] Skip: {symbol} no new completed candle (candle_key={previous_candle_key})")
                         continue
                 try:
-                    state.health["full_evaluation_count"] = int(state.health.get("full_evaluation_count", 0) or 0) + 1
-                    scan = await screener_manager.work_tracker.run(
-                        (state.uid, symbol, "technical"),
-                        screener_manager.evaluation_semaphore,
-                        evaluate_screener_profile,
-                        state.uid,
-                        {**copy.deepcopy(settings), "symbol": symbol},
-                        copy.deepcopy(state.config.contexts.get("screener", {})),
-                        timeout=45.0,
-                    )
+                    if event_only_closed:
+                        # Event-only monitoring remains live outside the
+                        # configured market session, but it must not fetch
+                        # candles or recalculate indicators. Reuse the last
+                        # completed-candle result only as display context;
+                        # the event leg below is refreshed independently.
+                        scan = copy.deepcopy(
+                            state.latest_scans.get(symbol)
+                            or _empty_screener_scan(symbol, settings)
+                        )
+                        scan["event_only_market_closed"] = True
+                    else:
+                        state.health["full_evaluation_count"] = int(state.health.get("full_evaluation_count", 0) or 0) + 1
+                        scan = await screener_manager.work_tracker.run(
+                            (state.uid, symbol, "technical"),
+                            screener_manager.evaluation_semaphore,
+                            evaluate_screener_profile,
+                            state.uid,
+                            {**copy.deepcopy(settings), "symbol": symbol},
+                            copy.deepcopy(state.config.contexts.get("screener", {})),
+                            timeout=45.0,
+                        )
                     if not isinstance(scan, dict):
                         scan = {"evaluation_status": "error", "reason": "Screener evaluation returned no result."}
                     # A settings save or profile disable may race an in-flight
@@ -2350,7 +2398,7 @@ async def _scan_screener_state(
                     evaluation_status = str(scan.get("evaluation_status") or "waiting").lower()
                     raw_candle_meta = scan.get("candle_meta") if isinstance(scan.get("candle_meta"), dict) else {}
                     candle_key = str(raw_candle_meta.get("candle_key") or "")
-                    if evaluation_status != "valid" or not candle_key:
+                    if (evaluation_status != "valid" or not candle_key) and not event_only_closed:
                         cycle_error = True
                         state.health["last_error"] = (
                             f"Screener data unavailable for {symbol}; retained last valid analysis"
@@ -2358,8 +2406,11 @@ async def _scan_screener_state(
                         _mark_screener_scan_degraded(state, symbol, settings, "Evaluation did not produce valid completed-candle analysis.")
                         state.health["data_quality_rejections"] = int(state.health.get("data_quality_rejections", 0) or 0) + 1
                         continue
-                    stale_candle = not _screener_candle_is_usable(
-                        raw_candle_meta, timeframe, session_status["is_active_window"]
+                    stale_candle = (
+                        not event_only_closed
+                        and not _screener_candle_is_usable(
+                            raw_candle_meta, timeframe, session_status["is_active_window"]
+                        )
                     )
                     if stale_candle:
                         cycle_error = True
@@ -2395,6 +2446,18 @@ async def _scan_screener_state(
                     if current_candle_ts <= 0 or (
                         previous_candle_ts > 0 and current_candle_ts < previous_candle_ts
                     ):
+                        retry_count = int(evaluation_state.get("out_of_order_candle_retries", 0) or 0) + 1
+                        evaluation_state["out_of_order_candle_retries"] = retry_count
+                        # Probe and full-analysis requests can observe different
+                        # provider snapshots. Retry briefly before surfacing a
+                        # degraded card, so a transient LTCUSD race does not
+                        # look like a persistent market-data failure.
+                        if retry_count < 3:
+                            evaluation_state["next_due_at"] = time.time() + 10
+                            state.health["last_error"] = (
+                                f"Out-of-order completed candle for {symbol}; retrying market-data fetch"
+                            )
+                            continue
                         cycle_error = True
                         cached_scan = copy.deepcopy(
                             state.latest_scans.get(symbol) or _empty_screener_scan(symbol, settings)
@@ -2406,8 +2469,10 @@ async def _scan_screener_state(
                             f"Out-of-order completed candle for {symbol}; retained last valid analysis"
                         )
                         continue
+                    evaluation_state.pop("out_of_order_candle_retries", None)
                     formatted = _format_scan_for_ui(scan or {}, use_global_settings=False)
                     formatted["evaluation_status"] = evaluation_status
+                    formatted["event_only_market_closed"] = event_only_closed
                     direction = scan.get("direction", "NEUTRAL")
                     formatted["candle_meta"] = scan.get("candle_meta", {})
                     formatted["atr_levels"] = scan.get("atr_levels", {})
@@ -2426,10 +2491,16 @@ async def _scan_screener_state(
                     # one leg of an explicit policy. News is refreshed by the
                     # independent watcher and is read here only; this path
                     # never fetches news or places an order as a side effect.
-                    screening_mode = normalize_screening_strategy_mode(
-                        settings.get("strategy_mode", "combined")
+                    technical_assessment = (
+                        copy.deepcopy(scan.get("technical_qualification") or {
+                            "eligible": False,
+                            "direction": "NEUTRAL",
+                            "status": "MARKET_CLOSED",
+                            "reason": "Indicator evaluation is paused while the market is closed.",
+                        })
+                        if event_only_closed
+                        else assess_swing_technical(scan, settings)
                     )
-                    technical_assessment = assess_swing_technical(scan, settings)
                     event_assessment = assess_event_catalyst(
                         state.news_watch.get(symbol) or {},
                         max_age_days=settings.get("event_max_age_days", 10),
@@ -2440,20 +2511,6 @@ async def _scan_screener_state(
                         technical_assessment,
                         event_assessment,
                     )
-                    # Entry policy must not disable an already active virtual
-                    # lifecycle's technical exit monitoring. The event gate
-                    # applies to opening a new Screener cycle; bearish exits
-                    # remain visible when the catalyst later becomes stale.
-                    if evaluation_state.get("virtual_position") and direction in {"BULLISH", "BEARISH"}:
-                        strategy_qualification = {
-                            **strategy_qualification,
-                            "qualified": True,
-                            "direction": direction,
-                            "reason": (
-                                "Existing virtual cycle: technical exit monitoring remains active; "
-                                "event policy applies to new entries."
-                            ),
-                        }
                     raw_technical_direction = direction
                     direction = strategy_qualification.get("direction", "NEUTRAL")
                     scan.update({
@@ -2463,6 +2520,9 @@ async def _scan_screener_state(
                         "event_qualification": event_assessment,
                         "strategy_qualification": strategy_qualification,
                         "direction": direction,
+                        "direction_watch_mode": direction_watch["mode"],
+                        "direction_watch_label": direction_watch["label"],
+                        "watch_directions": direction_watch["directions"],
                         "action": {"BULLISH": "BUY", "BEARISH": "SELL"}.get(direction, "HOLD"),
                     })
                     if direction != raw_technical_direction:
@@ -2476,6 +2536,9 @@ async def _scan_screener_state(
                     formatted["event_qualification"] = event_assessment
                     formatted["strategy_qualification"] = strategy_qualification
                     formatted["direction"] = direction
+                    formatted["direction_watch_mode"] = direction_watch["mode"]
+                    formatted["direction_watch_label"] = direction_watch["label"]
+                    formatted["watch_directions"] = direction_watch["directions"]
                     formatted["action"] = {"BULLISH": "BUY", "BEARISH": "SELL"}.get(direction, "HOLD")
                     bullish = int(formatted.get("bullish_count", 0) or 0)
                     bearish = int(formatted.get("bearish_count", 0) or 0)
@@ -2572,12 +2635,11 @@ async def _scan_screener_state(
                             or evaluation_for_commit.get("reason")
                             or "Configured structural exit reached."
                         )
-                    # Keep the lifecycle state from before this transition for
-                    # the historical alert explanation. commit_evaluation
-                    # advances a bullish cycle into bearish exit-watch (and a
-                    # bearish cycle back into bullish entry-watch), which is
-                    # correct for the live card but wrong for the alert that
-                    # just fired.
+                    # Keep the lifecycle/price state from before this
+                    # transition for the historical alert explanation. The
+                    # directional alert watch itself is independent; this
+                    # snapshot only preserves any analysis-only structural
+                    # exit context for the alert that just fired.
                     alert_snapshot_state = copy.deepcopy(evaluation_state)
                     alert_event_direction = "BEARISH" if exit_event else direction
                     alert_snapshot_state["virtual_position"] = alert_event_direction == "BEARISH"
@@ -2585,6 +2647,17 @@ async def _scan_screener_state(
                         "BULLISH" if alert_event_direction == "BEARISH" else ""
                     )
                     notification = state.commit_evaluation(symbol, evaluation_for_commit)
+                    # commit_evaluation may rebuild a state ledger after a
+                    # profile revision change. Re-attach the effective watch
+                    # metadata so the next cached scan still reflects the
+                    # user's bullish/bearish switches.
+                    evaluation_state.update({
+                        "direction_watch_mode": direction_watch["mode"],
+                        "direction_watch_label": direction_watch["label"],
+                        "direction_watch_directions": direction_watch["directions"],
+                        "direction_watch_bullish_enabled": direction_watch["bullish_enabled"],
+                        "direction_watch_bearish_enabled": direction_watch["bearish_enabled"],
+                    })
                     event_direction = alert_event_direction
                     print(
                         f"[screener] Scan: {symbol} direction={direction} "
@@ -3179,6 +3252,7 @@ async def _watch_screener_news_state(state: ScreenerUserState, symbols: list[str
         async def _refresh_symbol(symbol: str):
             settings = state.profiles.get(symbol, {})
             previous = copy.deepcopy(state.news_watch.get(symbol) or {})
+            refresh_seconds = _screener_news_refresh_interval_seconds(settings)
             model = settings.get("ai_model") or getattr(state.config, "AI_INDICATOR_MODEL", None)
             try:
                 async with screener_manager.news_semaphore:
@@ -3188,7 +3262,7 @@ async def _watch_screener_news_state(state: ScreenerUserState, symbols: list[str
                             symbol,
                             previous,
                             model,
-                            60,
+                            refresh_seconds,
                         ),
                         timeout=50.0,
                     )
@@ -3207,6 +3281,7 @@ async def _watch_screener_news_state(state: ScreenerUserState, symbols: list[str
                     "new_count": 0,
                     "error": f"{_safe_exception_type(exc)}",
                     "next_check_at": now_ts + retry_seconds,
+                    "refresh_interval_seconds": refresh_seconds,
                 })
                 print(f"[screener] News watch failed for {symbol}: {_safe_exception_type(exc)}")
                 return symbol, payload
@@ -3226,6 +3301,9 @@ async def _watch_screener_news_state(state: ScreenerUserState, symbols: list[str
                 return_exceptions=False,
             )
             for symbol, payload in results:
+                payload["refresh_interval_seconds"] = _screener_news_refresh_interval_seconds(
+                    state.profiles.get(symbol, {})
+                )
                 previous = state.news_watch.get(symbol) or {}
                 feed_changed = bool(
                     previous.get("initialized")
@@ -3238,10 +3316,10 @@ async def _watch_screener_news_state(state: ScreenerUserState, symbols: list[str
                     state.profiles.get(symbol, {}).get("strategy_mode", "combined")
                 )
                 if feed_changed and int(payload.get("new_count") or 0) > 0 and strategy_mode in {"event", "combined", "discovery"}:
-                    # The news worker owns headline freshness; the scan worker
-                    # owns completed-candle technical evidence and alert
-                    # persistence. The force flag only requests an immediate
-                    # analysis refresh and never places an order.
+                    # The news worker owns headline freshness.  The follow-up
+                    # refresh lets event-only profiles update immediately;
+                    # closed-market technical/combined/discovery profiles are
+                    # still stopped by _scan_screener_state's session gate.
                     event_scan_symbols.append(symbol)
             await state.save()
             for symbol in event_scan_symbols:
@@ -5641,8 +5719,12 @@ _HYBRID_EXIT_MODES = {
 
 def _screener_scan_interval_seconds(settings: dict) -> int:
     default = 10 if (settings or {}).get("options_trading") else 1800
+    raw = (settings or {}).get("scan_interval_seconds")
+    auto = (settings or {}).get("scan_interval_auto", True)
+    if auto:
+        return max(10, min(14400, _screener_timeframe_seconds((settings or {}).get("timeframe", "30Min"))))
     try:
-        return max(10, min(14400, int((settings or {}).get("scan_interval_seconds", default))))
+        return max(10, min(14400, int(raw if raw not in (None, "") else default)))
     except (TypeError, ValueError):
         return default
 
@@ -5663,6 +5745,19 @@ def _screener_timeframe_seconds(timeframe: str) -> int:
     if unit in {"week", "w"}:
         return amount * 7 * 86400
     return amount * 60
+
+
+def _screener_news_refresh_interval_seconds(settings: dict) -> int:
+    """Return the configured news cadence, defaulting to the candle cadence."""
+    settings = settings or {}
+    raw = settings.get("news_refresh_interval_seconds")
+    auto = settings.get("news_refresh_interval_auto", True)
+    if auto:
+        return max(60, min(86400, _screener_timeframe_seconds(settings.get("timeframe", "30Min"))))
+    try:
+        return max(60, min(86400, int(raw)))
+    except (TypeError, ValueError):
+        return max(60, min(86400, _screener_timeframe_seconds(settings.get("timeframe", "30Min"))))
 
 
 def _screener_candle_key_timestamp(candle_key: str) -> float:
@@ -5920,6 +6015,44 @@ def _selected_indicator_names(settings: dict) -> list[str]:
     if not isinstance(indicators, list):
         return []
     return [str(name).strip() for name in indicators if str(name).strip()]
+
+
+def _screener_direction_watch_config(
+    settings: dict | None = None,
+    evaluation_state: dict | None = None,
+    notification_settings: dict | None = None,
+) -> dict:
+    """Resolve the independent bullish/bearish alert watch for one ticker.
+
+    A ticker-level preference, when present, wins over the user's global
+    delivery preference.  The resulting mode is descriptive only: it does
+    not create a brokerage position and it never changes the selected
+    indicator/event qualification policy.
+    """
+    settings = settings if isinstance(settings, dict) else {}
+    evaluation_state = evaluation_state if isinstance(evaluation_state, dict) else {}
+    notification_settings = notification_settings if isinstance(notification_settings, dict) else {}
+
+    def enabled(direction: str) -> bool:
+        key = f"alert_{direction.lower()}_enabled"
+        global_key = f"{direction.lower()}_enabled"
+        if key in settings:
+            return bool(settings.get(key))
+        state_key = f"direction_watch_{global_key}"
+        if state_key in evaluation_state:
+            return bool(evaluation_state.get(state_key))
+        return bool(notification_settings.get(global_key, True))
+
+    bullish_enabled = enabled("BULLISH")
+    bearish_enabled = enabled("BEARISH")
+    mode = direction_watch_mode(bullish_enabled, bearish_enabled)
+    return {
+        "mode": mode,
+        "label": direction_watch_label(mode),
+        "directions": direction_watch_directions(mode),
+        "bullish_enabled": bullish_enabled,
+        "bearish_enabled": bearish_enabled,
+    }
 
 
 def _scan_log_strategy_context(settings: dict, position: dict) -> dict:
@@ -11574,8 +11707,18 @@ def _screener_profile_from_request(data: dict, state: ScreenerUserState, symbol:
     settings.setdefault("started_at", datetime.now(pytz.UTC).isoformat())
     settings.setdefault("asset_class", "crypto" if _is_crypto_symbol(symbol) else "stock")
     default_scan_interval = 10 if settings.get("options_trading") else 1800
+    raw_scan_interval = incoming.get("scan_interval_seconds", settings.get("scan_interval_seconds"))
+    auto_scan_interval = incoming.get(
+        "scan_interval_auto",
+        settings.get("scan_interval_auto", True),
+    )
+    settings["scan_interval_auto"] = bool(auto_scan_interval)
     try:
-        settings["scan_interval_seconds"] = max(10, min(14400, int(incoming.get("scan_interval_seconds", settings.get("scan_interval_seconds", default_scan_interval)))))
+        settings["scan_interval_seconds"] = _screener_scan_interval_seconds({
+            **settings,
+            "scan_interval_seconds": raw_scan_interval,
+            "scan_interval_auto": bool(auto_scan_interval),
+        })
     except (TypeError, ValueError):
         settings["scan_interval_seconds"] = default_scan_interval
     try:
@@ -11595,6 +11738,17 @@ def _screener_profile_from_request(data: dict, state: ScreenerUserState, symbol:
     # Summary card is consistent across the watchlist. The selected policy
     # still decides whether this evidence can qualify an entry.
     settings["news_watch_enabled"] = True
+    raw_news_interval = incoming.get("news_refresh_interval_seconds", settings.get("news_refresh_interval_seconds"))
+    auto_news_interval = incoming.get(
+        "news_refresh_interval_auto",
+        settings.get("news_refresh_interval_auto", True),
+    )
+    settings["news_refresh_interval_auto"] = bool(auto_news_interval)
+    settings["news_refresh_interval_seconds"] = _screener_news_refresh_interval_seconds({
+        **settings,
+        "news_refresh_interval_seconds": raw_news_interval,
+        "news_refresh_interval_auto": bool(auto_news_interval),
+    })
     try:
         settings["event_max_age_days"] = max(
             1,
@@ -11691,6 +11845,7 @@ def _screener_profile_from_request(data: dict, state: ScreenerUserState, symbol:
 
 def _empty_screener_scan(symbol: str, settings: dict) -> dict:
     screening_mode = normalize_screening_strategy_mode(settings.get("strategy_mode", "combined"))
+    direction_watch = _screener_direction_watch_config(settings)
     return {
         "ticker": symbol,
         "time": "",
@@ -11706,12 +11861,15 @@ def _empty_screener_scan(symbol: str, settings: dict) -> dict:
         "log_type": "Screener",
         "scan_log": {
             "status": "WAITING_DATA",
-            "phase": "ENTRY",
-            "target_direction": "BULLISH",
+            "phase": "WATCH",
+            "target_direction": direction_watch["mode"],
             "decision": "NEUTRAL",
             "summary": "Waiting for the first completed-candle Screener evaluation.",
             "detail": "No trade is placed. The independent Screener is establishing its initial signal baseline.",
-            "progress_label": "Waiting for bullish setup",
+            "progress_label": f"{direction_watch['label']} watch",
+            "direction_watch_mode": direction_watch["mode"],
+            "direction_watch_label": direction_watch["label"],
+            "watch_directions": direction_watch["directions"],
             "screening_strategy_mode": screening_mode,
             "screening_strategy_label": screening_strategy_label(screening_mode),
             "screening_strategy_logic": screening_strategy_logic(screening_mode),
@@ -11719,7 +11877,7 @@ def _empty_screener_scan(symbol: str, settings: dict) -> dict:
             "blockers": ["Initial completed-candle evaluation pending."],
             "refresh_rate_sec": _screener_scan_interval_seconds(settings),
             "virtual_position": False,
-            "position_source": "virtual_signal_lifecycle",
+            "position_source": "directional_alert_watch",
             "no_trade_placed": True,
         },
     }
@@ -11736,14 +11894,31 @@ def _build_screener_scan_log(
 ) -> dict:
     """Build a position-free scan log for the independent Screener card.
 
-    A bullish setup activates a virtual long-cycle watch; its next target is a
-    bearish transition. A bearish setup closes that virtual cycle and returns
-    the watch to bullish. This deliberately never reads broker positions.
+    Directional alerts are watched independently.  The virtual lifecycle is
+    retained only for optional analysis-only price-level monitoring; it must
+    never force a bullish-first/bearish-second alert sequence or override the
+    selected indicator/event qualification policy.
     """
     direction = str(formatted_scan.get("direction") or "NEUTRAL").upper()
     evaluation_status = str(formatted_scan.get("evaluation_status") or "waiting").lower()
+    event_only_market_closed = bool(
+        formatted_scan.get("event_only_market_closed")
+        and normalize_screening_strategy_mode(
+            formatted_scan.get("screening_strategy_mode", settings.get("strategy_mode", "combined"))
+        ) == "event"
+    )
     last_actionable = str(evaluation_state.get("last_actionable_direction") or "").upper()
     virtual_position = bool(evaluation_state.get("virtual_position", last_actionable == "BULLISH"))
+    direction_watch = _screener_direction_watch_config(settings, evaluation_state)
+    formatted_watch_mode = str(formatted_scan.get("direction_watch_mode") or "").strip().upper()
+    if formatted_watch_mode in {"BOTH", "BULLISH", "BEARISH", "NONE"}:
+        direction_watch = {
+            "mode": formatted_watch_mode,
+            "label": str(formatted_scan.get("direction_watch_label") or direction_watch_label(formatted_watch_mode)),
+            "directions": list(formatted_scan.get("watch_directions") or direction_watch_directions(formatted_watch_mode)),
+            "bullish_enabled": formatted_watch_mode in {"BOTH", "BULLISH"},
+            "bearish_enabled": formatted_watch_mode in {"BOTH", "BEARISH"},
+        }
     price_event = price_event or (
         exit_event
         if exit_event and str(exit_event.get("event_type") or "").upper() in {"PRICE_EXIT", "PRICE_ENTRY"}
@@ -11753,12 +11928,10 @@ def _build_screener_scan_log(
     is_price_exit_event = price_event_type == "PRICE_EXIT"
     is_price_entry_event = price_event_type == "PRICE_ENTRY"
     exit_event_active = bool(is_price_exit_event and exit_event and exit_event.get("triggered"))
-    target_direction = (
-        str(price_event.get("event_direction") or "BULLISH").upper()
-        if is_price_entry_event
-        else "BEARISH" if virtual_position or exit_event_active else "BULLISH"
+    target_direction = str(price_event.get("event_direction") or "BULLISH").upper() if is_price_entry_event else (
+        "BEARISH" if is_price_exit_event or exit_event_active else direction_watch["mode"]
     )
-    phase = "ENTRY" if is_price_entry_event else "EXIT" if virtual_position or exit_event_active else "ENTRY"
+    phase = "ENTRY" if is_price_entry_event else "EXIT" if is_price_exit_event or exit_event_active else "WATCH"
     screening_mode = normalize_screening_strategy_mode(
         formatted_scan.get("screening_strategy_mode", settings.get("strategy_mode", "combined"))
     )
@@ -11781,12 +11954,10 @@ def _build_screener_scan_log(
     screening_logic = screening_strategy_logic(screening_mode)
     strategy_context = _scan_log_strategy_context(
         settings,
-        {"screener_virtual_signal": True} if virtual_position or exit_event_active else {},
+        {"screener_virtual_signal": True} if is_price_exit_event or exit_event_active else {},
     )
-    # Event-only entry scans must not report the technical/bot leg as the
-    # active setup. Once a virtual entry exists, the normal technical exit
-    # watcher remains visible and is intentionally handled by the exit branch.
-    if phase == "ENTRY" and screening_mode == "event":
+    # Event-only watches must not report the technical/bot leg as active.
+    if phase in {"ENTRY", "WATCH"} and screening_mode == "event":
         strategy_context = {
             **strategy_context,
             "mode": "event_driven",
@@ -11798,7 +11969,7 @@ def _build_screener_scan_log(
     strategy_mode = str(strategy_context["mode"] or "indicator")
     strategy_label = str(strategy_context["label"] or "Indicator")
     condition_logic = _scan_log_condition_logic(strategy_context)
-    if phase == "ENTRY" and screening_mode != "technical":
+    if phase in {"ENTRY", "WATCH"} and screening_mode != "technical":
         condition_logic = screening_logic if not condition_logic else f"{screening_logic} {condition_logic}"
     strategy_uses_indicators = bool(strategy_context["uses_indicators"])
     strategy_uses_structural = bool(strategy_context["uses_structural"])
@@ -11814,12 +11985,17 @@ def _build_screener_scan_log(
         if phase == "EXIT" and strategy_uses_structural
         else None
     )
-    threshold_keys = (
-        ("min_sell_signals", "sell_threshold")
+    bullish_required_count = _get_threshold_setting(
+        settings, ("min_buy_signals", "threshold", "buy_threshold"), 1
+    ) if strategy_uses_indicators else 0
+    bearish_required_count = _get_threshold_setting(
+        settings, ("min_sell_signals", "sell_threshold"), 1
+    ) if strategy_uses_indicators else 0
+    required_count = (
+        bearish_required_count
         if target_direction == "BEARISH"
-        else ("min_buy_signals", "threshold", "buy_threshold")
-    )
-    required_count = _get_threshold_setting(settings, threshold_keys, 1) if strategy_uses_indicators else 0
+        else bullish_required_count
+    ) if strategy_uses_indicators and target_direction != "BOTH" else 0
 
     selected = settings.get("indicators")
     selected_names = (
@@ -11830,6 +12006,8 @@ def _build_screener_scan_log(
     has_indicator_pool = selected_names is None or bool(selected_names)
     indicators = []
     confirmed_weight = 0
+    bullish_confirmed_weight = 0
+    bearish_confirmed_weight = 0
     if strategy_uses_indicators:
         for name, raw in (formatted_scan.get("signals") or {}).items():
             if not isinstance(raw, dict) or raw.get("enabled") is False:
@@ -11838,33 +12016,48 @@ def _build_screener_scan_log(
                 continue
             signal = str(raw.get("signal") or "NEUTRAL").upper()
             weight = max(1, int(raw.get("weight", 1) or 1))
-            if signal == target_direction:
-                status = "CONFIRMED"
-                confirmed_weight += weight
+            if target_direction == "BOTH":
+                if signal == "BULLISH":
+                    status = "BULLISH"
+                    bullish_confirmed_weight += weight
+                elif signal == "BEARISH":
+                    status = "BEARISH"
+                    bearish_confirmed_weight += weight
+                else:
+                    status = "WAITING"
             elif signal == "NEUTRAL":
                 status = "WAITING"
             else:
                 status = "OPPOSING"
+            if target_direction != "BOTH" and signal == target_direction:
+                status = "CONFIRMED"
+                confirmed_weight += weight
             indicators.append({
                 "name": name,
                 "signal": signal,
                 "status": status,
                 "reason": str(raw.get("reason") or ""),
                 "enabled": True,
-                "supports_target": status == "CONFIRMED",
+                "supports_target": status == "CONFIRMED" or (target_direction == "BOTH" and status in {"BULLISH", "BEARISH"}),
                 "weight": weight,
             })
 
+    if target_direction == "BOTH":
+        bullish_confirmed_weight = int(bullish_confirmed_weight)
+        bearish_confirmed_weight = int(bearish_confirmed_weight)
+
     remaining_count = max(0, required_count - confirmed_weight)
+    bullish_remaining_count = max(0, bullish_required_count - bullish_confirmed_weight)
+    bearish_remaining_count = max(0, bearish_required_count - bearish_confirmed_weight)
     blockers = []
     candle_meta = formatted_scan.get("candle_meta") or {}
-    if evaluation_status != "valid" or not candle_meta.get("candle_key"):
+    if (evaluation_status != "valid" or not candle_meta.get("candle_key")) and not event_only_market_closed:
         blockers.append(str(formatted_scan.get("reason") or "Waiting for sufficient completed-candle market data."))
     if strategy_uses_indicators and not has_indicator_pool:
         blockers.append("No indicators selected. Select at least one indicator to enable this setup.")
     elif strategy_uses_indicators and not indicators:
         blockers.append("No enabled indicators have produced a valid reading yet.")
-    elif phase == "ENTRY" and strategy_uses_structural and evaluation_status == "valid":
+    elif phase in {"ENTRY", "WATCH"} and strategy_uses_structural and evaluation_status == "valid":
         structural_reason = str(formatted_scan.get("reason") or "").strip()
         if structural_reason:
             blockers.append(structural_reason)
@@ -11874,13 +12067,13 @@ def _build_screener_scan_log(
     if anti_chasing_blocked:
         blockers.append(str(formatted_scan.get("reason")))
     if (
-        phase == "ENTRY"
+        phase in {"ENTRY", "WATCH"}
         and screening_qualification
         and not bool(screening_qualification.get("qualified"))
     ):
         blockers.insert(0, f"{screening_label}: {screening_qualification.get('reason') or 'waiting for policy conditions.'}")
 
-    policy_entry = phase == "ENTRY" and screening_mode in {"event", "combined", "discovery"} and bool(screening_qualification)
+    policy_entry = phase in {"ENTRY", "WATCH"} and screening_mode in {"event", "combined", "discovery"} and bool(screening_qualification)
     policy_qualified = bool(screening_qualification.get("qualified")) if policy_entry else False
     policy_reason = str(
         screening_qualification.get("reason")
@@ -11893,10 +12086,24 @@ def _build_screener_scan_log(
     if strategy_uses_indicators:
         if not has_indicator_pool:
             technical_watch_summary = "No indicators are selected."
+        elif target_direction == "BOTH":
+            bullish_text = f"{bullish_confirmed_weight}/{bullish_required_count} bullish"
+            bearish_text = f"{bearish_confirmed_weight}/{bearish_required_count} bearish"
+            needed = []
+            if bullish_remaining_count:
+                needed.append(f"{bullish_remaining_count} bullish confirmation{'s' if bullish_remaining_count != 1 else ''}")
+            if bearish_remaining_count:
+                needed.append(f"{bearish_remaining_count} bearish confirmation{'s' if bearish_remaining_count != 1 else ''}")
+            technical_watch_summary = (
+                f"Both-direction indicators: {bullish_text} and {bearish_text} confirmed"
+                + (f"; waiting on {', '.join(needed)} confirmations." if needed else ".")
+            )
         elif remaining_count:
+            confirmation_word = "confirmation" if remaining_count == 1 else "confirmations"
+            confirmation_verb = "is" if remaining_count == 1 else "are"
             technical_watch_summary = (
                 f"{target_direction.title()} indicators are {confirmed_weight}/{required_count} confirmed; "
-                f"{remaining_count} more confirmation{'s' if remaining_count != 1 else ''} needed."
+                f"{remaining_count} more {confirmation_word} {confirmation_verb} needed."
             )
         else:
             technical_watch_summary = (
@@ -11921,7 +12128,7 @@ def _build_screener_scan_log(
         summary = "Live custom-price entry triggered — " + str(
             price_event.get("text") or "configured entry price reached"
         ).rstrip(".") + "."
-    elif evaluation_status != "valid" or not candle_meta.get("candle_key"):
+    elif (evaluation_status != "valid" or not candle_meta.get("candle_key")) and not event_only_market_closed:
         status = "WAITING_DATA"
         summary = f"Waiting for completed-candle data before checking the {strategy_label.lower()} {phase.lower()} setup."
     elif anti_chasing_blocked:
@@ -11937,12 +12144,13 @@ def _build_screener_scan_log(
     elif strategy_uses_indicators and not has_indicator_pool:
         status = "NO_INDICATORS"
         summary = f"{strategy_label} {phase.lower()} is unavailable until at least one indicator is selected."
-    elif phase == "ENTRY" and direction == "BULLISH":
-        status = "BULLISH_SIGNAL"
-        summary = "Bullish signal active. Virtual signal cycle is now watching for a bearish transition."
-    elif phase == "ENTRY" and direction == "BEARISH":
-        status = "BEARISH_SIGNAL"
-        summary = "Bearish signal active. Virtual signal cycle is now watching for the next bullish transition."
+    elif phase == "WATCH" and direction_watch["mode"] != "NONE":
+        status = f"WATCHING_{direction_watch['mode']}"
+        current_signal = direction.title() if direction in {"BULLISH", "BEARISH"} else "Neutral"
+        summary = (
+            f"{direction_watch['label']} is active. Current completed-candle result: {current_signal}. "
+            "Bullish and bearish confirmations are evaluated independently; the first selected direction that qualifies can alert."
+        )
     elif phase == "EXIT" and is_price_exit_event:
         status = "PRICE_EXIT_TRIGGERED"
         summary = f"Live price exit triggered — {str(exit_levels.get('text') or 'configured price level reached.').rstrip('.')}."
@@ -11956,18 +12164,30 @@ def _build_screener_scan_log(
         status = f"WAITING_{strategy_mode.upper()}_{phase}"
         summary = f"Waiting for {strategy_label} {phase.lower()} setup on the latest completed candle."
     else:
-        status = "WAITING_BEARISH" if virtual_position else "WAITING_BULLISH"
-        cycle_label = "bullish cycle active" if virtual_position else "no bullish cycle active"
-        summary = f"Waiting for {target_direction.lower()} signal ({cycle_label})."
+        status = "ALERTS_DISABLED" if direction_watch["mode"] == "NONE" else f"WAITING_{direction_watch['mode']}"
+        summary = (
+            "Directional alerts are disabled."
+            if direction_watch["mode"] == "NONE"
+            else f"Waiting for {direction_watch['label'].lower()} confirmation."
+        )
 
     indicator_progress_label = (
         "No indicator pool selected"
         if strategy_uses_indicators and not has_indicator_pool
+        else f"Bullish {bullish_confirmed_weight}/{bullish_required_count} · Bearish {bearish_confirmed_weight}/{bearish_required_count}"
+        if strategy_uses_indicators and target_direction == "BOTH"
         else f"{target_direction} {confirmed_weight}/{required_count} confirmed"
         if strategy_uses_indicators
         else f"{strategy_label} {phase.title()} condition"
     )
-    if strategy_uses_indicators and remaining_count:
+    if strategy_uses_indicators and target_direction == "BOTH" and (bullish_remaining_count or bearish_remaining_count):
+        needed = []
+        if bullish_remaining_count:
+            needed.append(f"{bullish_remaining_count} bullish")
+        if bearish_remaining_count:
+            needed.append(f"{bearish_remaining_count} bearish")
+        indicator_progress_label += f", needs {', '.join(needed)}"
+    elif strategy_uses_indicators and remaining_count:
         indicator_progress_label += f", needs {remaining_count}"
     progress_label = indicator_progress_label
     if entry_levels:
@@ -11977,10 +12197,15 @@ def _build_screener_scan_log(
     if condition_logic:
         progress_label += f" · {condition_logic}"
     detail_parts = [
-        f"Current completed-candle direction: {direction.title()}.",
+        (
+            f"Current event-driven qualification: {direction.title()}; indicator evaluation is paused while the market is closed."
+            if event_only_market_closed
+            else f"Current completed-candle direction: {direction.title()}."
+        ),
         f"{progress_label.rstrip('.') }.",
+        f"Direction watch: {direction_watch['label']}; selected directions are evaluated independently.",
         f"Screening policy: {screening_label}.",
-        "Virtual lifecycle only; no brokerage position or order is used.",
+        "No brokerage position or order is used by the Screener.",
     ]
     if alert_created:
         detail_parts.insert(
@@ -12033,7 +12258,7 @@ def _build_screener_scan_log(
         elif screening_mode == "combined":
             policy_watch_parts.append("Both legs must qualify in the same direction.")
         final_summary = (
-            "Entry watch summary — " + " ".join(policy_watch_parts)
+            f"Watch summary — {direction_watch['label']}. " + " ".join(policy_watch_parts)
         )
     elif strategy_uses_indicators and not has_indicator_pool:
         final_summary = (
@@ -12058,6 +12283,26 @@ def _build_screener_scan_log(
                 f"{remaining_count} more confirmation{'s' if remaining_count != 1 else ''} are needed before "
                 "the indicator exit can trigger."
             )
+    elif phase == "WATCH" and strategy_uses_indicators:
+        if target_direction == "BOTH":
+            final_summary = (
+                f"Watch summary — Both directions. Bullish indicators are {bullish_confirmed_weight}/{bullish_required_count} confirmed; "
+                f"bearish indicators are {bearish_confirmed_weight}/{bearish_required_count} confirmed. "
+                "Either selected direction can alert independently when its qualification policy is met."
+            )
+        elif remaining_count:
+            confirmation_word = "confirmation" if remaining_count == 1 else "confirmations"
+            confirmation_verb = "is" if remaining_count == 1 else "are"
+            final_summary = (
+                f"Watch summary — {direction_watch['label']}. {target_direction.title()} indicators are "
+                f"{confirmed_weight}/{required_count} confirmed; {remaining_count} more {confirmation_word} "
+                f"{confirmation_verb} needed before this direction can alert."
+            )
+        else:
+            final_summary = (
+                f"Watch summary — {direction_watch['label']}. {target_direction.title()} indicators met the configured threshold "
+                f"({confirmed_weight}/{required_count} confirmed); this direction can alert independently."
+            )
     elif phase == "ENTRY" and strategy_uses_indicators:
         if remaining_count:
             final_summary = (
@@ -12080,6 +12325,9 @@ def _build_screener_scan_log(
         "phase": phase,
         "decision": target_direction if is_price_entry_event else direction,
         "target_direction": target_direction,
+        "direction_watch_mode": direction_watch["mode"],
+        "direction_watch_label": direction_watch["label"],
+        "watch_directions": direction_watch["directions"],
         "strategy_mode": strategy_mode,
         "strategy_label": strategy_label,
         "screening_strategy_mode": screening_mode,
@@ -12098,6 +12346,12 @@ def _build_screener_scan_log(
         "confirmed_count": sum(item["status"] == "CONFIRMED" for item in indicators),
         "confirmed_weight": confirmed_weight,
         "remaining_count": remaining_count,
+        "bullish_required_count": bullish_required_count,
+        "bullish_confirmed_weight": bullish_confirmed_weight,
+        "bullish_remaining_count": bullish_remaining_count,
+        "bearish_required_count": bearish_required_count,
+        "bearish_confirmed_weight": bearish_confirmed_weight,
+        "bearish_remaining_count": bearish_remaining_count,
         "indicator_progress_label": indicator_progress_label if strategy_uses_indicators else "",
         "progress_label": progress_label,
         "final_summary": final_summary,
@@ -12109,11 +12363,12 @@ def _build_screener_scan_log(
         "candle_key": candle_meta.get("candle_key"),
         "candle_open_ts": candle_meta.get("candle_open_ts"),
         "candle_close_ts": candle_meta.get("candle_close_ts"),
+        "event_only_market_closed": event_only_market_closed,
         "virtual_position": virtual_position,
         "exit_event_active": exit_event_active,
         "event_type": price_event_type if price_event_type in {"PRICE_EXIT", "PRICE_ENTRY"} else "CANDLE_SIGNAL",
         "price_watch": formatted_scan.get("price_watch") or {},
-        "position_source": "virtual_signal_lifecycle",
+        "position_source": "virtual_price_level_watch" if phase == "EXIT" else "directional_alert_watch",
         "no_trade_placed": True,
     }
 
@@ -12230,17 +12485,21 @@ def _screener_summary(state: ScreenerUserState, symbols: list[str], scans: Optio
 async def get_screener_snapshot(
     response: Response,
     partition: str = "all",
+    ticker: str = None,
     force: bool = False,
     state: ScreenerUserState = Depends(get_screener_state),
 ):
     snapshot_started = time.perf_counter()
-    partition_norm = partition if partition in {"all", "regular", "options"} else "all"
+    partition_norm = partition if partition in {"all", "regular", "options", "ticker"} else "all"
+    ticker_norm = normalize_screener_symbol(ticker) if ticker else ""
     # GET must remain a read-only projection. In particular, a browser refresh
     # or preview request must not create a technical alert as a side effect.
     # Use POST /api/screener/scan for an explicit, user-requested scan.
 
     symbols = []
     for symbol in state.order:
+        if partition_norm == "ticker" and symbol != ticker_norm:
+            continue
         is_option = bool(state.profiles.get(symbol, {}).get("options_trading", False))
         if partition_norm == "options" and not is_option:
             continue
@@ -12298,6 +12557,8 @@ async def get_screener_snapshot(
     buy_count = summary["setups"]["bullish"]
     sell_count = summary["setups"]["bearish"]
     neutral_count = summary["setups"]["neutral"]
+    dashboard_engine = await _dashboard_engine_for_screener(state)
+    dashboard_watchlist = list(getattr(dashboard_engine.config, "WATCHLIST", []) or [])
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
     response.headers["X-Snapshot-Time-MS"] = str(round((time.perf_counter() - snapshot_started) * 1000, 1))
     return {
@@ -12322,6 +12583,7 @@ async def get_screener_snapshot(
         "indicator_parameters": state.config.contexts.get("screener", {}).get("parameters", {}),
         "global_risk_status": {},
         "page_settings": state.page_settings,
+        "watchlist": dashboard_watchlist,
         "screener_summary": summary,
         "notifications": {
             "unread_count": summary["unread_alerts"],
@@ -12415,6 +12677,7 @@ async def save_screener_profile(data: dict, state: ScreenerUserState = Depends(g
     previous_revision = state.profile_revision(symbol) if exists else None
     previous_enabled = bool(previous_profile.get("enabled", False)) if exists else False
     previous_news_enabled = bool(previous_profile.get("news_watch_enabled", True)) if exists else False
+    previous_news_interval = _screener_news_refresh_interval_seconds(previous_profile) if exists else None
     previous_earnings_enabled = bool(previous_profile.get("earnings_watch_enabled", True)) if exists else False
     previous_fundamental_enabled = bool(previous_profile.get("fundamental_watch_enabled", True)) if exists else False
     next_profile = _screener_profile_from_request(data, state, symbol)
@@ -12453,7 +12716,8 @@ async def save_screener_profile(data: dict, state: ScreenerUserState = Depends(g
         # completed-candle-gated.
         state.force_scan.set()
         asyncio.create_task(_scan_screener_state(state, [symbol], force_scan=True))
-    if news_enabled and (not previous_news_enabled or symbol not in state.news_watch):
+    news_interval_changed = previous_news_interval != _screener_news_refresh_interval_seconds(state.profiles[symbol])
+    if news_enabled and (not previous_news_enabled or symbol not in state.news_watch or news_interval_changed):
         asyncio.create_task(_watch_screener_news_state(state, [symbol]))
     if earnings_enabled and (not previous_earnings_enabled or symbol not in state.earnings_watch):
         asyncio.create_task(_watch_screener_earnings_state(state, [symbol]))
@@ -12467,6 +12731,7 @@ async def save_screener_profile(data: dict, state: ScreenerUserState = Depends(g
         "settings_changed": settings_changed,
         "technical_scan_changed": technical_scan_changed,
         "news_watch_enabled": news_enabled,
+        "news_refresh_interval_seconds": _screener_news_refresh_interval_seconds(state.profiles[symbol]),
         "earnings_watch_enabled": earnings_enabled,
         "fundamental_watch_enabled": fundamental_enabled,
         "dashboard_watchlist": dashboard_watchlist.get("watchlist", []) if dashboard_watchlist else None,
@@ -12522,9 +12787,12 @@ async def reset_screener_profile(ticker: str, state: ScreenerUserState = Depends
         "min_buy_signals": 3,
         "min_sell_signals": 3,
         "scan_interval_seconds": 1800,
+        "scan_interval_auto": True,
         "market_session": "Extended" if not _is_crypto_symbol(symbol) else "24h",
         "price_watch_interval_seconds": 5,
         "news_watch_enabled": True,
+        "news_refresh_interval_auto": True,
+        "news_refresh_interval_seconds": 1800,
         "earnings_watch_enabled": True,
         "fundamental_watch_enabled": True,
         "started_at": datetime.now(pytz.UTC).isoformat(),

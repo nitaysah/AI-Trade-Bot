@@ -743,6 +743,7 @@ def _evaluation_candle_metadata(chart_df, timeframe):
             "candle_key": None,
             "candle_status": "waiting",
         }
+
     try:
         candle_open_ts = _unix_timestamp(chart_df.index[-1])
         candle_close_ts = candle_open_ts + _timeframe_seconds(timeframe)
@@ -766,6 +767,33 @@ def _evaluation_candle_metadata(chart_df, timeframe):
             "candle_key": None,
             "candle_status": "waiting",
         }
+
+
+def _provider_time_to_datetime(values):
+    """Normalize provider timestamps delivered as epochs or date strings.
+
+    Webull can return epoch timestamps as strings.  Calling ``pd.to_datetime``
+    directly on those strings makes pandas interpret them as years instead of
+    epoch seconds, which silently empties the completed-candle probe.  Parse
+    numeric-looking values as one epoch unit and retain ISO/date parsing for
+    genuinely textual timestamps.
+    """
+    raw = pd.Series(values)
+    numeric = pd.to_numeric(raw, errors="coerce")
+    finite = numeric.dropna()
+    result = pd.Series(pd.NaT, index=raw.index, dtype="datetime64[ns, UTC]")
+    if not finite.empty:
+        unit = "ms" if float(finite.abs().median()) > 1e11 else "s"
+        numeric_mask = numeric.notna()
+        result.loc[numeric_mask] = pd.to_datetime(
+            numeric.loc[numeric_mask], unit=unit, utc=True, errors="coerce"
+        )
+    non_numeric_mask = numeric.isna()
+    if non_numeric_mask.any():
+        result.loc[non_numeric_mask] = pd.to_datetime(
+            raw.loc[non_numeric_mask], utc=True, errors="coerce"
+        )
+    return result
 
 
 def get_latest_completed_candle_metadata(ticker, timeframe="5Min", market_session="extended"):
@@ -798,10 +826,7 @@ def get_latest_completed_candle_metadata(ticker, timeframe="5Min", market_sessio
     if frame.empty or "time" not in frame.columns:
         return {"candle_open_ts": None, "candle_close_ts": None, "candle_key": None, "candle_status": "unavailable"}
     try:
-        if pd.api.types.is_numeric_dtype(frame["time"]):
-            frame["timestamp"] = pd.to_datetime(frame["time"], unit="s", utc=True)
-        else:
-            frame["timestamp"] = pd.to_datetime(frame["time"], utc=True)
+        frame["timestamp"] = _provider_time_to_datetime(frame["time"])
         frame = frame.set_index("timestamp").sort_index()
         frame = frame[~frame.index.duplicated(keep="last")]
         completed = _completed_candles_for_live_chart(frame, timeframe_key, safety_delay_seconds=5, ticker=ticker)
@@ -1523,11 +1548,9 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca", settings=N
                 
                 df = pd.DataFrame(bars)
                 
-                # Handle both string and numeric timestamps
-                if pd.api.types.is_numeric_dtype(df['time']):
-                    df['timestamp'] = pd.to_datetime(df['time'], unit='s', utc=True)
-                else:
-                    df['timestamp'] = pd.to_datetime(df['time'], utc=True)
+                # Handle epoch timestamps delivered as numbers or strings,
+                # plus providers that return ISO timestamps.
+                df['timestamp'] = _provider_time_to_datetime(df['time'])
                     
                 df.set_index('timestamp', inplace=True)
                 df.columns = [c.capitalize() for c in df.columns]

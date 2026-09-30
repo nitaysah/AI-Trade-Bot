@@ -23,6 +23,47 @@ SCREENING_STRATEGY_LABELS = {
 }
 
 
+def direction_watch_mode(bullish_enabled: Any = True, bearish_enabled: Any = True) -> str:
+    """Return the independent directional alert watch selected by the user.
+
+    Directional alert preferences are intentionally independent from the
+    analysis-only virtual price lifecycle.  With both switches enabled, a
+    bullish or bearish qualification can alert on its own; the Screener does
+    not have to wait for one side to close before evaluating the other.
+    """
+    bullish = bool(bullish_enabled)
+    bearish = bool(bearish_enabled)
+    if bullish and bearish:
+        return "BOTH"
+    if bullish:
+        return "BULLISH"
+    if bearish:
+        return "BEARISH"
+    return "NONE"
+
+
+def direction_watch_label(mode: Any) -> str:
+    """Return concise, user-facing copy for the directional alert watch."""
+    normalized = str(mode or "BOTH").strip().upper()
+    return {
+        "BOTH": "Both directions",
+        "BULLISH": "Bullish only",
+        "BEARISH": "Bearish only",
+        "NONE": "Alerts disabled",
+    }.get(normalized, "Both directions")
+
+
+def direction_watch_directions(mode: Any) -> list[str]:
+    """Return the allowed alert directions in deterministic display order."""
+    normalized = str(mode or "BOTH").strip().upper()
+    return {
+        "BOTH": ["BULLISH", "BEARISH"],
+        "BULLISH": ["BULLISH"],
+        "BEARISH": ["BEARISH"],
+        "NONE": [],
+    }.get(normalized, ["BULLISH", "BEARISH"])
+
+
 def normalize_screening_strategy_mode(value: Any, default: str = DEFAULT_SCREENING_STRATEGY_MODE) -> str:
     """Normalize persisted/UI strategy names without silently enabling execution."""
     aliases = {

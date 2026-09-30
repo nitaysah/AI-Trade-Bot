@@ -1112,6 +1112,17 @@ class WebullBroker:
             self._persist_bar_history(history_key, result, history_meta.get(history_key) or {})
             return result
         except Exception as e:
+            # A refresh failure must not erase a recent persisted page. The
+            # caller still validates candle freshness, so an old cache is
+            # reported as stale/degraded rather than being mistaken for an
+            # empty provider response and turning the probe unavailable.
+            fallback_history = locals().get("cached_history") or []
+            if fallback_history:
+                print(
+                    f"[webull] Bar refresh unavailable; using cached page: "
+                    f"{_safe_error_type(e)}"
+                )
+                return list(fallback_history[-requested_count:])
             print(f"[webull] Error fetching bars: {_safe_error_type(e)}")
             return []
 

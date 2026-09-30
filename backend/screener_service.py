@@ -438,7 +438,12 @@ class ScreenerUserState:
         revision = self.profile_revision(symbol)
         old_revision = current.get("profile_revision")
         generation = int(current.get("generation") or 0)
-        last_observed_candle_key = current.get("last_observed_candle_key") or current.get("last_candle_key")
+        # A timeframe/settings change starts a new candle baseline. Keeping the
+        # prior timeframe's observed timestamp would make a valid 30-minute or
+        # 1-hour candle look older than the last 5-minute candle.
+        last_observed_candle_key = None if reason in {"profile_activated", "profile_settings_changed"} else (
+            current.get("last_observed_candle_key") or current.get("last_candle_key")
+        )
         if old_revision and (old_revision != revision or reason in {"profile_activated", "profile_settings_changed"}):
             generation += 1
         current.update({
@@ -509,8 +514,8 @@ class ScreenerUserState:
             return None
         if state.get("last_candle_key") == candle_key:
             # Keep a structural exit latched for the completed candle. A
-            # repeated scan must not immediately reopen a bullish cycle from
-            # the same candle after the virtual cycle has exited.
+            # repeated scan must not create a second alert for the same
+            # directional evaluation.
             if state.get("last_exit_event_candle_key") == candle_key and direction == "BULLISH":
                 return None
             generation = str(state.get("generation") or 1)
@@ -541,16 +546,16 @@ class ScreenerUserState:
         if state.get("last_exit_event_candle_key") and state.get("last_exit_event_candle_key") != candle_key:
             state_update["last_exit_event_candle_key"] = None
             state_update["last_exit_event"] = None
-        # This is a virtual signal lifecycle, not a brokerage position. It lets
-        # the independent Screener alternate between bullish-entry and
-        # bearish-exit watches without reading Bots or account holdings.
+        # These fields support optional analysis-only price-level monitoring;
+        # they are not brokerage positions and must not gate independent
+        # bullish/bearish directional alerts.
         if direction in {"BULLISH", "BEARISH"}:
             state_update["last_actionable_direction"] = direction
             state_update["virtual_position"] = direction == "BULLISH"
         # A Screener cycle is analysis-only, but a virtual entry reference is
         # needed to evaluate its configured exit levels truthfully. Capture it
-        # only when a bullish cycle starts; do not move the reference on each
-        # subsequent bullish candle.
+        # only when an optional bullish price watch starts; do not move the
+        # reference on each subsequent bullish candle.
         if direction == "BULLISH" and not bool(state.get("virtual_position")):
             state_update.update({
                 "virtual_entry_price": _safe_float(evaluation.get("price_raw"), 0.0) or None,

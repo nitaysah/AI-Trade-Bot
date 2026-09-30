@@ -245,8 +245,9 @@
                 <label class="flex items-center justify-between gap-3 py-2 text-sm font-bold text-indigo-900"><span>Enable phone/SMS alerts</span><input id="screenerSmsEnabled" type="checkbox" class="h-5 w-5 accent-fuchsia-600"></label>
                 <label class="block py-2 text-sm font-bold text-indigo-900">Phone number <span class="font-normal text-slate-400">(E.164)</span><input id="screenerSmsPhoneNumber" type="tel" inputmode="tel" autocomplete="tel" placeholder="+12125551234" class="mt-1 w-full rounded-xl border border-indigo-100 px-3 py-2 font-mono text-sm"></label>
                 <p id="screenerSmsProviderStatus" class="text-xs font-semibold text-slate-500">SMS provider status loading…</p>
-                <label class="flex items-center justify-between gap-3 py-2 text-sm font-bold text-indigo-900"><span>Bullish transitions</span><input id="screenerBullishEnabled" type="checkbox" class="h-5 w-5 accent-emerald-600" checked></label>
-                <label class="flex items-center justify-between gap-3 py-2 text-sm font-bold text-indigo-900"><span>Bearish transitions</span><input id="screenerBearishEnabled" type="checkbox" class="h-5 w-5 accent-rose-600" checked></label>
+                <label class="flex items-center justify-between gap-3 py-2 text-sm font-bold text-indigo-900"><span>Watch bullish alerts</span><input id="screenerBullishEnabled" type="checkbox" class="h-5 w-5 accent-emerald-600" checked></label>
+                <label class="flex items-center justify-between gap-3 py-2 text-sm font-bold text-indigo-900"><span>Watch bearish alerts</span><input id="screenerBearishEnabled" type="checkbox" class="h-5 w-5 accent-rose-600" checked></label>
+                <p class="text-[0.68rem] font-semibold leading-snug text-slate-500">Keep both enabled to evaluate bullish and bearish confirmations in parallel. Whichever selected direction qualifies can alert first.</p>
                 <label class="block py-2 text-sm font-bold text-indigo-900">Cooldown minutes<input id="screenerCooldownMinutes" type="number" min="0" max="1440" step="1" class="mt-1 w-full rounded-xl border border-indigo-100 px-3 py-2"></label>
                 <div class="flex justify-end gap-2 mt-5"><button type="button" onclick="sendScreenerTestEmail()" class="rounded-xl border border-indigo-200 px-3 py-2 text-xs font-black text-indigo-700">Send email test</button><button type="button" onclick="saveScreenerEmailSettings()" class="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-black text-white">Save</button></div>
                 <p id="screenerEmailMessage" class="mt-3 text-xs font-bold"></p>
@@ -324,25 +325,25 @@
             <!-- ═══════════════ EQUITY PERFORMANCE GRAPH ═══════════════ -->
             <div id="signalActivityPanel" class="panel-glass relative overflow-hidden mb-6">
                 <div class="panel-top-bar bg-gradient-to-r from-fuchsia-500 via-purple-500 to-indigo-500"></div>
-                <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
-                    <div>
-                        <h2 class="text-lg font-black text-indigo-900 uppercase tracking-tight">📈 Signal Activity</h2>
+                <div class="flex flex-row justify-between items-start gap-1.5 mb-4 min-w-0">
+                    <div class="min-w-0">
+                        <h2 class="text-lg font-black text-indigo-900 uppercase tracking-tight">Signal Activity</h2>
                         <p class="text-[0.65rem] font-bold text-purple-400 uppercase tracking-widest mt-0.5"
                             id="equityPerformanceSub">Independent screener history</p>
                     </div>
                     <!-- Timeframe buttons: 1D, 1W, 1M, 1Y, ALL -->
-                    <div class="flex bg-indigo-50/50 p-1 rounded-xl border border-indigo-100 self-end sm:self-auto"
+                    <div class="flex shrink-0 mt-0.5 bg-indigo-50/50 p-0.5 rounded-lg border border-indigo-100"
                         id="chartPeriodContainer">
                         <button onclick="setChartPeriod('1D')" id="period-1D"
-                            class="px-3.5 py-1.5 text-[0.65rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600">1D</button>
+                            class="px-1.5 sm:px-3.5 py-1 text-[0.55rem] sm:text-[0.65rem] font-black uppercase rounded-md transition-all text-indigo-400 hover:text-indigo-600">1D</button>
                         <button onclick="setChartPeriod('1W')" id="period-1W"
-                            class="px-3.5 py-1.5 text-[0.65rem] font-black uppercase rounded-lg transition-all bg-white text-indigo-600 shadow-sm border border-indigo-100">1W</button>
+                            class="px-1.5 sm:px-3.5 py-1 text-[0.55rem] sm:text-[0.65rem] font-black uppercase rounded-md transition-all bg-white text-indigo-600 shadow-sm border border-indigo-100">1W</button>
                         <button onclick="setChartPeriod('1M')" id="period-1M"
-                            class="px-3.5 py-1.5 text-[0.65rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600">1M</button>
+                            class="px-1.5 sm:px-3.5 py-1 text-[0.55rem] sm:text-[0.65rem] font-black uppercase rounded-md transition-all text-indigo-400 hover:text-indigo-600">1M</button>
                         <button onclick="setChartPeriod('1Y')" id="period-1Y"
-                            class="px-3.5 py-1.5 text-[0.65rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600">1Y</button>
+                            class="px-1.5 sm:px-3.5 py-1 text-[0.55rem] sm:text-[0.65rem] font-black uppercase rounded-md transition-all text-indigo-400 hover:text-indigo-600">1Y</button>
                         <button onclick="setChartPeriod('ALL')" id="period-ALL"
-                            class="px-3.5 py-1.5 text-[0.65rem] font-black uppercase rounded-lg transition-all text-indigo-400 hover:text-indigo-600">ALL</button>
+                            class="px-1.5 sm:px-3.5 py-1 text-[0.55rem] sm:text-[0.65rem] font-black uppercase rounded-md transition-all text-indigo-400 hover:text-indigo-600">ALL</button>
                     </div>
                 </div>
                 <div class="flex flex-wrap items-center gap-2 mb-3">
@@ -737,7 +738,7 @@
                                     Timeframe</label>
                                 <div class="relative">
                                     <select id="strategyTimeframe_regular"
-                                        onchange="if(window.fetchLiveAtrForPreview && window.currentStrategySymbol) window.fetchLiveAtrForPreview(window.currentStrategySymbol, this.value)"
+                                        onchange="window.updateTradingTimeframeHelp?.(this.value); if(window.fetchLiveAtrForPreview && window.currentStrategySymbol) window.fetchLiveAtrForPreview(window.currentStrategySymbol, this.value)"
                                         class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none cursor-pointer appearance-none transition-all">
                                         <option value="1Min">1 Minute (Scalp)</option>
                                         <option value="5Min">5 Minutes (Intraday)</option>
@@ -755,6 +756,7 @@
                                         </svg>
                                     </div>
                                 </div>
+                                <p id="strategyTimeframeHelp_regular" class="text-[0.5rem] text-indigo-500 mt-1 pl-1">30-minute candles are suitable for daily swing screening.</p>
                             </div>
                             <div class="space-y-2">
                                 <label
@@ -783,14 +785,16 @@
                             <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Scan Interval</label>
                             <div class="relative">
                                 <select id="strategyScanInterval_regular"
+                                    onchange="window.updateScanIntervalHelp?.(this.value)"
                                     class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-2 sm:pl-4 pr-7 sm:pr-10 py-2 sm:py-3 text-[0.55rem] sm:text-xs font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none cursor-pointer appearance-none transition-all">
+                                    <option value="auto" selected>Auto · Trading timeframe</option>
                                     <option value="10">10 seconds</option>
                                     <option value="30">30 seconds</option>
                                     <option value="60">60 seconds</option>
                                     <option value="300">5 minutes</option>
                                     <option value="600">10 minutes</option>
                                     <option value="900">15 minutes</option>
-                                    <option value="1800" selected>30 minutes</option>
+                                    <option value="1800">30 minutes</option>
                                     <option value="3600">1 hour</option>
                                     <option value="14400">4 hours</option>
                                 </select>
@@ -800,7 +804,7 @@
                                     </svg>
                                 </div>
                             </div>
-                            <p class="text-[0.5rem] text-indigo-500 mt-1 pl-1">30-minute refresh is suitable for daily swing screening</p>
+                            <p id="strategyScanIntervalHelp_regular" class="text-[0.5rem] text-indigo-500 mt-1 pl-1">Auto refresh follows the Trading Timeframe.</p>
                         </div>
                         </div>
                     </div>
@@ -832,14 +836,26 @@
                             <p class="screener-policy-help text-[0.55rem] text-indigo-600 font-semibold">Older headlines cannot qualify a new event setup.</p>
                         </div>
                     <div class="sm:col-span-3 pt-1">
-                        <div
-                            class="flex items-center justify-between gap-3 p-3 bg-white/45 backdrop-blur-md rounded-xl border border-emerald-200/60 shadow-sm">
+                        <div id="strategyNewsWatchBox"
+                            class="flex items-center justify-between gap-3 p-3 bg-white/45 backdrop-blur-md rounded-xl border border-emerald-200/60 shadow-sm transition-colors">
                             <div class="flex flex-col pr-3">
                                 <span class="text-[0.65rem] font-black text-indigo-950 uppercase tracking-widest">Ticker News Watch</span>
-                                <span class="text-[0.56rem] text-indigo-600 font-bold mt-0.5">Enabled for every ticker; headlines are checked every 60s and summarized only when they change. The qualification mode controls whether news can qualify an entry.</span>
+                                <span id="strategyNewsWatchHelp" class="text-[0.56rem] text-indigo-600 font-bold mt-0.5">For this ticker, fetches 1 latest relevant headline plus the 3 previous headlines.</span>
                             </div>
-                            <span id="strategyNewsWatchStatus"
-                                class="px-2 py-1 rounded-lg border text-[0.58rem] font-black uppercase tracking-widest shrink-0 border-emerald-200 bg-emerald-50 text-emerald-700">Enabled</span>
+                            <div class="flex flex-col items-end gap-0.5 shrink-0">
+                                <select id="strategyNewsRefreshInterval_regular" onchange="window.updateNewsRefreshHelp?.(this.value)"
+                                    class="bg-white/80 border border-emerald-200 rounded-lg px-2 py-1.5 text-[0.58rem] font-black text-indigo-950 outline-none focus:border-emerald-400">
+                                    <option value="auto">Auto · Trading timeframe</option>
+                                    <option value="60">1 minute</option>
+                                    <option value="300">5 minutes</option>
+                                    <option value="900">15 minutes</option>
+                                    <option value="1800">30 minutes</option>
+                                    <option value="3600">1 hour</option>
+                                    <option value="14400">4 hours</option>
+                                    <option value="86400">1 day</option>
+                                </select>
+                                <span id="strategyNewsRefreshHelp" class="block text-[0.5rem] text-indigo-600 font-bold mt-1 text-right">Auto: follows Trading Timeframe.</span>
+                            </div>
                         </div>
                     </div>
                     </div>
@@ -3689,14 +3705,13 @@
             <!-- Dashboard watchlist option, placed like the Bots strategy settings -->
             <div id="strategyWatchlistOption" class="mt-4 mb-4">
                 <label
-                    class="flex items-center gap-3 p-3 bg-white/20 backdrop-blur-md rounded-2xl border border-white/40 shadow-sm cursor-pointer hover:bg-white/30 transition-colors">
-                    <input type="checkbox" id="strategyAddWatchlist"
-                        class="w-5 h-5 accent-indigo-600 rounded cursor-pointer">
-                    <div class="flex flex-col min-w-0">
+                    class="flex items-center justify-between gap-3 p-3 bg-white/20 backdrop-blur-md rounded-2xl border border-white/40 shadow-sm cursor-pointer hover:bg-white/30 transition-colors">
+                    <div class="flex flex-col min-w-0 pr-3">
                         <span class="text-[0.7rem] font-black text-indigo-950 uppercase tracking-widest">Also add to Dashboard Watchlist</span>
                         <span class="text-[0.6rem] text-indigo-600 font-bold">Monitor this ticker globally on the dashboard</span>
-                        <span id="strategyDashboardWatchlistStatus" class="text-[0.56rem] text-slate-500 font-semibold mt-0.5">New profiles are added by default.</span>
                     </div>
+                    <input type="checkbox" id="strategyAddWatchlist"
+                        class="w-5 h-5 accent-indigo-600 rounded cursor-pointer shrink-0">
                 </label>
             </div>
 

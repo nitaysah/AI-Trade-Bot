@@ -39,12 +39,15 @@ const API_BASE = window.location.hostname === 'localhost' || window.location.hos
     ? 'http://localhost:8000'
     : CLOUD_URL;
 const OPTIONS_REFRESH_INTERVAL = 10000;
-const REGULAR_REFRESH_INTERVAL = 60000;
+// UI polling is intentionally slower than the screener's market scan cadence.
+// The backend owns scan timing; these timers only read cached results.
+const REGULAR_REFRESH_INTERVAL = 2 * 60 * 1000;
 const SCAN_ACTIVITY_REFRESH_INTERVAL = 10000;
 const ORDER_ACTIVITY_REFRESH_INTERVAL = 30000;
 const DASHBOARD_FETCH_TIMEOUT_MS = 15000;
 const PORTFOLIO_FETCH_TIMEOUT_MS = 15000;
-const PORTFOLIO_SHORT_REFRESH_INTERVAL = 30000;
+const NOTIFICATIONS_REFRESH_INTERVAL = 2 * 60 * 1000;
+const PORTFOLIO_SHORT_REFRESH_INTERVAL = 5 * 60 * 1000;
 const PORTFOLIO_LONG_REFRESH_INTERVAL = 5 * 60 * 1000;
 const BOT_CHART_CACHE_VERSION = 'v8';
 // Preview calculations can include a fresh provider fetch plus indicator
@@ -71,6 +74,7 @@ let botsRegularRefreshTimerId = null;
 let botsOptionsRefreshTimerId = null;
 let botsActivityRefreshTimerId = null;
 let botsPortfolioRefreshTimerId = null;
+let botsNotificationsRefreshTimerId = null;
 let botsCountdownTimerId = null;
 let botsSoftRefreshTimerId = null;
 let botChartPreviewIndexedDbPromise = null;
@@ -93,6 +97,11 @@ let lastObservedTradeEventSeq = null;
 let crossPartitionRefreshTimerId = null;
 const pendingForceScans = new Map();
 const forceScanPollTimers = new Map();
+const dashboardWatchlistOverrides = new Map();
+
+function normalizeDashboardWatchlistSymbol(value) {
+    return String(value || '').toUpperCase().replace('/', '').trim();
+}
 
 function clearPendingForceScan(ticker) {
     const symbol = String(ticker || '').toUpperCase();
@@ -103,12 +112,45 @@ function clearPendingForceScan(ticker) {
     forceScanPollTimers.delete(symbol);
 }
 
-function isForceScanPending(ticker, scanLog = null) {
+async function fetchScreenerTickerSnapshot(ticker) {
+    const symbol = String(ticker || '').toUpperCase().trim();
+    if (!symbol) return false;
+    const headers = await getAuthHeaders();
+    const response = await fetchWithTimeout(
+        `${API_BASE}/api/screener/snapshot?partition=ticker&ticker=${encodeURIComponent(symbol)}`,
+        { headers, cache: 'no-store' },
+        DASHBOARD_FETCH_TIMEOUT_MS,
+    );
+    if (!response.ok) throw new Error(`Ticker snapshot HTTP ${response.status}`);
+    const data = normalizeBotsSnapshot(await response.json());
+    const current = window.lastBotsData || {};
+    const merged = {
+        ...current,
+        ...data,
+        partition: 'all',
+        tradelist: current.tradelist || data.tradelist || [],
+        botScans: { ...(current.botScans || {}), ...(data.botScans || {}) },
+        ticker_settings: { ...(current.ticker_settings || {}), ...(data.ticker_settings || {}) },
+        watchlist: Array.isArray(data.watchlist) ? data.watchlist : (current.watchlist || []),
+    };
+    window.lastBotsData = window.lastDashboardData = merged;
+    applyBotsData(merged);
+    return true;
+}
+
+function isForceScanPending(ticker, scanLog = null, scan = null) {
     const symbol = String(ticker || '').toUpperCase();
     const pending = pendingForceScans.get(symbol);
     if (!pending) return false;
     const updatedAt = Date.parse(String(scanLog?.updated_at || ''));
-    if (Number.isFinite(updatedAt) && updatedAt >= pending.requestedAt - 1000) {
+    const priceValue = Number(scan?.price_raw ?? scan?.price ?? 0);
+    const candleKey = String(scan?.candle_meta?.candle_key || '');
+    const dataStatus = String(scan?.data_status || '').toLowerCase();
+    const hasUsableData = Number.isFinite(priceValue) && priceValue > 0
+        && Boolean(candleKey)
+        && String(scan?.evaluation_status || '').toLowerCase() === 'valid'
+        && !['degraded', 'stale_reference'].includes(dataStatus);
+    if (Number.isFinite(updatedAt) && updatedAt >= pending.requestedAt - 1000 && hasUsableData) {
         clearPendingForceScan(symbol);
         return false;
     }
@@ -120,25 +162,26 @@ function markScreenerForceScanPending(ticker) {
     if (!symbol) return;
     pendingForceScans.set(symbol, {
         requestedAt: Date.now(),
-        deadline: Date.now() + 60000,
+        // Keep the visible state long enough for the backend's market-data
+        // fetch and completed-candle evaluation.  The pending state is still
+        // cleared as soon as a valid price/candle result is observed.
+        deadline: Date.now() + 180000,
     });
     setBotCardRefreshing(symbol, 'Refreshing scan results...');
+    // The backend starts the scan asynchronously. Poll only this ticker's
+    // lightweight snapshot until its price and completed-candle result exist;
+    // never refresh the full watchlist while waiting.
     if (forceScanPollTimers.has(symbol)) return;
     const poll = async () => {
-        const pending = pendingForceScans.get(symbol);
-        if (!pending) return;
-        if (Date.now() >= pending.deadline) {
-            clearPendingForceScan(symbol);
-            return;
-        }
+        forceScanPollTimers.delete(symbol);
+        if (!pendingForceScans.has(symbol)) return;
         try {
-            await fetchBotsData({ force: true });
-        } finally {
-            if (pendingForceScans.has(symbol)) {
-                forceScanPollTimers.set(symbol, setTimeout(poll, 2000));
-            } else {
-                forceScanPollTimers.delete(symbol);
-            }
+            await fetchScreenerTickerSnapshot(symbol);
+        } catch (error) {
+            console.warn(`[screener] Ticker snapshot refresh failed for ${symbol}:`, error);
+        }
+        if (pendingForceScans.has(symbol)) {
+            forceScanPollTimers.set(symbol, setTimeout(poll, 5000));
         }
     };
     forceScanPollTimers.set(symbol, setTimeout(poll, 1200));
@@ -322,7 +365,9 @@ function openScreenerAlertDetail(item) {
         || newsWatchEvidence.latest_summary
         || newsWatchEvidence.latest?.title
     );
-    const showEventEvidence = screeningMode !== 'technical' || hasNewsEvidence;
+    // Indicator Only mode must not display stale or incidental news evidence;
+    // the selected policy does not use the event leg.
+    const showEventEvidence = screeningMode !== 'technical';
     const eventEvidenceParts = [];
     if (eventQualification && (Object.keys(eventQualification).length || hasNewsEvidence)) {
         const eventStatus = eventQualification.eligible ? 'QUALIFIED' : 'WAITING';
@@ -401,20 +446,21 @@ function openScreenerAlertDetail(item) {
     const createdAt = Number.isFinite(createdValue) ? new Date(createdValue).toLocaleString('en-US', { timeZone: 'America/Chicago', dateStyle: 'medium', timeStyle: 'medium' }) : '';
     const finalSummaryText = String(scanLog.final_summary || '').trim();
     const isExitWatchSummary = /^Exit watch summary\s*[—-]/i.test(finalSummaryText);
-    const isEntryWatchSummary = /^Entry watch summary\s*[—-]/i.test(finalSummaryText);
+    const isEntryWatchSummary = /^(?:Entry watch summary|Watch summary)\s*[—-]/i.test(finalSummaryText);
     const finalSummaryLabel = isExitWatchSummary
         ? 'Exit watch summary:'
         : isEntryWatchSummary
-            ? 'Entry watch summary:'
+            ? (/^Watch summary\s*[—-]/i.test(finalSummaryText) ? 'Watch summary:' : 'Entry watch summary:')
             : 'Final scan assessment:';
     const finalSummaryBody = (isExitWatchSummary || isEntryWatchSummary)
-        ? finalSummaryText.replace(/^(?:Exit|Entry) watch summary\s*[—-]\s*/i, '')
+        ? finalSummaryText.replace(/^(?:Exit|Entry) watch summary\s*[—-]\s*/i, '').replace(/^Watch summary\s*[—-]\s*/i, '')
         : finalSummaryText;
-    const finalSummaryClass = isExitWatchSummary
-        ? 'border-red-300 bg-red-100 text-red-950'
-        : isEntryWatchSummary
-            ? 'border-emerald-200 bg-emerald-50 text-emerald-950'
-            : 'border-purple-200 bg-purple-50 text-purple-900';
+    const finalSummaryTone = screenerWatchSummaryTone(
+        scanLog.direction_watch_mode || item.direction_watch_mode,
+        direction,
+    );
+    const finalSummaryClass = finalSummaryTone.panel;
+    const finalSummaryBodyClass = finalSummaryTone.body;
     const isNeutralScan = String(item.direction || scanLog.decision || '').toUpperCase() === 'NEUTRAL';
     const structuredWatchSummaryHtml = (isEntryWatchSummary || isExitWatchSummary || isNeutralScan)
         ? buildScreenerPolicyWatchSummary(scanLog, screeningMode)
@@ -447,7 +493,7 @@ function openScreenerAlertDetail(item) {
         ${scanLog.summary ? `<div class="mt-3 rounded-xl border border-indigo-100 bg-white p-3 text-xs leading-relaxed text-indigo-900"><span class="font-black">Scan summary:</span> ${text(scanLog.summary)}</div>` : ''}
         ${scanLog.detail ? `<div class="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-700"><span class="font-black">Scan detail:</span> ${text(scanLog.detail)}</div>` : ''}
         ${legacySnapshotWarning}
-        ${finalSummaryText ? `<div class="mt-2 rounded-xl border ${finalSummaryClass} p-3 text-xs leading-relaxed"><div class="font-black">${finalSummaryLabel}</div>${structuredWatchSummaryHtml ? `<div class="mt-1">${structuredWatchSummaryHtml}</div>` : `<div class="mt-1">${text(normalizeScreenerDisplayTerminology(finalSummaryBody))}</div>`}</div>` : ''}
+        ${finalSummaryText ? `<div class="mt-2 rounded-xl border ${finalSummaryClass} p-3 text-xs leading-relaxed"><div class="font-black ${finalSummaryBodyClass}">${finalSummaryLabel}</div>${structuredWatchSummaryHtml ? `<div class="mt-1">${structuredWatchSummaryHtml}</div>` : `<div class="mt-1 ${finalSummaryBodyClass}">${text(normalizeScreenerDisplayTerminology(finalSummaryBody))}</div>`}</div>` : ''}
         ${scanLog.progress_label || scanLog.indicator_progress_label ? `<div class="mt-2 text-xs leading-relaxed text-slate-700"><span class="font-black">Confirmation progress:</span> ${text(scanLog.progress_label || scanLog.indicator_progress_label)}</div>` : ''}
         ${levelText ? `<div class="mt-2 text-xs leading-relaxed text-slate-700"><span class="font-black">Rule and levels:</span> ${text(levelText)}</div>` : ''}
         ${policyUsesTechnical ? `<div class="mt-3">${indicatorEvidenceHeaderHtml}<div class="grid gap-2 sm:grid-cols-2">${indicatorsHtml}</div></div>` : '<div class="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs font-semibold text-slate-600">Indicator leg is not used for this Event-Driven entry.</div>'}
@@ -1010,6 +1056,13 @@ function formatDurationCompactJs(seconds) {
     return `${s}s`;
 }
 
+function formatScanCountdownJs(seconds) {
+    const rem = Math.max(0, Math.floor(Number(seconds) || 0));
+    const minutes = Math.floor(rem / 60);
+    const secs = rem % 60;
+    return minutes > 0 ? `${minutes}M${secs}S` : `${secs}S`;
+}
+
 // ──────────────────────────────────────────────
 // Render Active Bots List
 // ──────────────────────────────────────────────
@@ -1084,14 +1137,23 @@ async function loadDashboardWatchlistSetting(symbol) {
 
 function applyDashboardWatchlistSaveResult(payload, ticker) {
     if (!Array.isArray(payload?.dashboard_watchlist)) return;
+    const symbol = normalizeDashboardWatchlistSymbol(ticker);
+    const enabled = Boolean(payload.dashboard_watchlist_enabled);
+    dashboardWatchlistOverrides.set(symbol, enabled);
     window.lastBotsData = {
         ...(window.lastBotsData || {}),
         watchlist: payload.dashboard_watchlist,
     };
+    if (window.lastBotsData?.tradelist) {
+        renderTradelist(
+            window.lastBotsData.botScans || window.lastBotsData.watchlistScans || {},
+            window.lastBotsData.tradelist,
+            window.lastBotsData.tickerAmounts || {},
+        );
+    }
     const checkbox = document.getElementById('strategyAddWatchlist');
     const status = document.getElementById('strategyDashboardWatchlistStatus');
     if (!checkbox || currentStrategySymbol !== ticker) return;
-    const enabled = Boolean(payload.dashboard_watchlist_enabled);
     checkbox.checked = enabled;
     checkbox.dataset.dashboardWatchlistLoaded = 'true';
     if (status) status.textContent = enabled
@@ -1156,7 +1218,7 @@ window.updateMarketSessionNotice = async function () {
 
     const session = getMarketSessionForStrategy(mode);
     if (session === 'Extended') {
-        setMarketSessionNotice('Extended-hours stock alerts use completed candles from 4:00 AM–8:00 PM ET. Live 24/5 overnight candles are not enabled on the free feed.', 'warning');
+        setMarketSessionNotice('Extended-hours stock alerts use completed candles from 4:00 AM–8:00 PM ET.', 'warning');
         return { allowed: true };
     }
 
@@ -1515,11 +1577,37 @@ function normalizeScreenerDisplayTerminology(value) {
         .replace(/\btechnical\b/gi, 'indicator');
 }
 
-function buildScreenerPolicyWatchSummary(scanLog, screeningMode, compact = false) {
+function screenerWatchSummaryTone(directionWatchMode, fallbackDirection = '') {
+    const watchDirection = String(directionWatchMode || '').toUpperCase();
+    const fallback = String(fallbackDirection || '').toUpperCase();
+    const direction = ['BULLISH', 'BEARISH', 'BOTH', 'NONE'].includes(watchDirection)
+        ? (watchDirection === 'NONE' ? 'NEUTRAL' : watchDirection)
+        : (['BULLISH', 'BEARISH'].includes(fallback) ? fallback : 'NEUTRAL');
+    if (direction === 'BULLISH') {
+        return {
+            panel: 'border-emerald-200 bg-emerald-50/80',
+            body: 'text-emerald-950',
+        };
+    }
+    if (direction === 'BEARISH') {
+        return {
+            panel: 'border-rose-300 bg-rose-100/80',
+            body: 'text-rose-950',
+        };
+    }
+    return {
+        panel: 'border-slate-300 bg-slate-100/80',
+        body: 'text-slate-900',
+    };
+}
+
+function buildScreenerPolicyWatchSummary(scanLog, screeningMode, compact = false, summaryOnly = false, includeSummary = true) {
     const log = scanLog && typeof scanLog === 'object' ? scanLog : {};
     const mode = String(screeningMode || log.screening_strategy_mode || '').toLowerCase();
+    const watchMode = String(log.direction_watch_mode || 'BOTH').toUpperCase();
+    const bothDirectionWatch = watchMode === 'BOTH' || String(log.target_direction || '').toUpperCase() === 'BOTH';
     const recordedPhase = String(log.phase || '').toUpperCase();
-    const phase = ['ENTRY', 'EXIT'].includes(recordedPhase)
+    const phase = ['ENTRY', 'EXIT', 'WATCH'].includes(recordedPhase)
         ? recordedPhase
         : (String(log.status || '').toUpperCase().startsWith('EXIT_') || Boolean(log.virtual_position) ? 'EXIT' : 'ENTRY');
     if (!['technical', 'event', 'combined', 'discovery'].includes(mode)) return '';
@@ -1532,9 +1620,14 @@ function buildScreenerPolicyWatchSummary(scanLog, screeningMode, compact = false
         ? log.event_qualification
         : {};
     const technicalRequired = mode !== 'event';
-    const technicalDirection = normalizeIndicatorEvidenceDirection(
-        log.target_direction || log.technical_direction || technicalQualification.direction,
+    const qualificationTechnicalDirection = normalizeIndicatorEvidenceDirection(
+        log.technical_direction || technicalQualification.direction,
     );
+    const technicalDirection = bothDirectionWatch
+        ? 'BOTH'
+        : normalizeIndicatorEvidenceDirection(
+            log.target_direction || qualificationTechnicalDirection,
+        );
     const eventDirection = normalizeIndicatorEvidenceDirection(
         eventQualification.direction || eventQualification.analysis_direction,
     );
@@ -1551,8 +1644,24 @@ function buildScreenerPolicyWatchSummary(scanLog, screeningMode, compact = false
         : Math.max(0, confirmationTotal - confirmedCount);
     const hasTechnicalQualification = Object.prototype.hasOwnProperty.call(technicalQualification, 'eligible');
     const hasEventQualification = Object.prototype.hasOwnProperty.call(eventQualification, 'eligible');
+    const bullishConfirmed = Number.isFinite(Number(log.bullish_confirmed_weight))
+        ? Number(log.bullish_confirmed_weight)
+        : indicators.filter(item => String(item.signal || '').toUpperCase() === 'BULLISH').length;
+    const bearishConfirmed = Number.isFinite(Number(log.bearish_confirmed_weight))
+        ? Number(log.bearish_confirmed_weight)
+        : indicators.filter(item => String(item.signal || '').toUpperCase() === 'BEARISH').length;
+    const bullishRequired = Number.isFinite(Number(log.bullish_required_count))
+        ? Number(log.bullish_required_count)
+        : confirmationTotal;
+    const bearishRequired = Number.isFinite(Number(log.bearish_required_count))
+        ? Number(log.bearish_required_count)
+        : confirmationTotal;
     const technicalQualified = !technicalRequired
-        || (hasTechnicalQualification ? Boolean(technicalQualification.eligible) : confirmedCount >= confirmationTotal && confirmationTotal > 0);
+        || (hasTechnicalQualification
+            ? Boolean(technicalQualification.eligible)
+            : bothDirectionWatch
+                ? (bullishConfirmed >= bullishRequired || bearishConfirmed >= bearishRequired)
+                : confirmedCount >= confirmationTotal && confirmationTotal > 0);
     const eventQualified = hasEventQualification && Boolean(eventQualification.eligible);
     const technicalReason = String(
         technicalQualification.reason || 'Indicator confirmation is not available yet.',
@@ -1561,21 +1670,27 @@ function buildScreenerPolicyWatchSummary(scanLog, screeningMode, compact = false
     const eventReason = String(
         eventQualification.reason || 'No qualifying catalyst.',
     ).trim().replace(/[.!?]+$/, '');
-    const sameDirection = technicalDirection !== 'NEUTRAL'
+    const sameDirection = qualificationTechnicalDirection !== 'NEUTRAL'
         && eventDirection !== 'NEUTRAL'
-        && technicalDirection === eventDirection;
+        && qualificationTechnicalDirection === eventDirection;
     const discoveryConflict = mode === 'discovery'
         && technicalQualified
         && eventQualified
         && !sameDirection;
     const e = escapeScreenerNewsText;
     const technicalCountText = technicalRequired
-        ? `${confirmedCount}/${confirmationTotal} confirmed`
+        ? bothDirectionWatch
+            ? `Bullish ${bullishConfirmed}/${bullishRequired}; Bearish ${bearishConfirmed}/${bearishRequired}`
+            : `${confirmedCount}/${confirmationTotal} confirmed`
         : 'not required';
     const detailWaiting = [];
 
     const technicalDetail = !technicalRequired
         ? 'Not required for this policy.'
+        : bothDirectionWatch
+            ? technicalQualified
+                ? `Confirmed: Indicator watch has a qualifying direction (${technicalCountText}).`
+                : `Not confirmed: Neither watched direction is confirmed (${technicalCountText}). Reason: ${displayTechnicalReason}.`
         : technicalQualified
             ? `Confirmed: Indicator leg is confirmed ${indicatorEvidenceDirectionLabel(technicalDirection)}.`
             : `Not confirmed: Indicator leg is not confirmed (${indicatorEvidenceDirectionLabel(technicalDirection)}, ${technicalCountText}). Reason: ${displayTechnicalReason}.${remainingCount > 0 ? ` Waiting on ${remainingCount} more indicator confirmation${remainingCount === 1 ? '' : 's'}.` : ''}`;
@@ -1589,11 +1704,18 @@ function buildScreenerPolicyWatchSummary(scanLog, screeningMode, compact = false
         || mode === 'combined'
         || (mode === 'discovery' && !eventQualified);
     if (technicalBlocksPolicy && !technicalQualified) {
-        detailWaiting.push(
-            remainingCount > 0
-                ? `${remainingCount} more indicator confirmation${remainingCount === 1 ? '' : 's'}`
-                : 'indicator confirmation',
-        );
+        if (bothDirectionWatch) {
+            const directionalWaiting = [];
+            if (bullishConfirmed < bullishRequired) directionalWaiting.push(`${bullishRequired - bullishConfirmed} bullish confirmation${bullishRequired - bullishConfirmed === 1 ? '' : 's'}`);
+            if (bearishConfirmed < bearishRequired) directionalWaiting.push(`${bearishRequired - bearishConfirmed} bearish confirmation${bearishRequired - bearishConfirmed === 1 ? '' : 's'}`);
+            detailWaiting.push(directionalWaiting.length ? directionalWaiting.join(' and ') : 'indicator confirmation');
+        } else {
+            detailWaiting.push(
+                remainingCount > 0
+                    ? `${remainingCount} more indicator confirmation${remainingCount === 1 ? '' : 's'}`
+                    : 'indicator confirmation',
+            );
+        }
     }
 
     if (mode === 'combined') {
@@ -1619,10 +1741,21 @@ function buildScreenerPolicyWatchSummary(scanLog, screeningMode, compact = false
             ? technicalQualified
                 ? 'Indicator qualification is confirmed; event evidence is not required.'
                 : `Waiting on: ${detailWaiting.join('; ')}.`
+            : mode === 'event'
+                ? eventQualified
+                    ? 'Event qualification is confirmed; monitoring for the next qualifying catalyst update.'
+                    : 'Waiting on: a qualifying event catalyst.'
             : `Waiting on: ${detailWaiting.join('; ')}.`;
 
+    const watchDetail = bothDirectionWatch
+        ? 'Both bullish and bearish alerts are watched independently; the first selected direction that qualifies can alert.'
+        : `Watching ${watchMode === 'BULLISH' ? 'bullish' : watchMode === 'BEARISH' ? 'bearish' : 'no'} alerts only.`;
+    const indicatorDetailHtml = mode === 'event'
+        ? ''
+        : `<div><span class="font-black">Indicator detail:</span> ${e(technicalDetail)}</div>`;
+    if (summaryOnly) return e(summaryDetail);
     return `<div class="flex flex-col ${compact ? 'gap-0.5' : 'gap-1.5'}">
-        <div class="${compact ? 'mt-0.5 text-[0.58rem]' : 'mt-1 text-xs'} flex flex-col gap-0.5 leading-snug text-slate-700"><div><span class="font-black">Indicator detail:</span> ${e(technicalDetail)}</div><div><span class="font-black">Event detail:</span> ${e(eventDetail)}</div><div><span class="font-black">Summary:</span> ${e(summaryDetail)}</div></div>
+        <div class="${compact ? 'mt-0.5 text-[0.58rem]' : 'mt-1 text-xs'} flex flex-col gap-0.5 leading-snug text-slate-700"><div><span class="font-black">Direction watch:</span> ${e(watchDetail)}</div>${indicatorDetailHtml}<div><span class="font-black">Event detail:</span> ${e(eventDetail)}</div>${includeSummary ? `<div><span class="font-black">Summary:</span> ${e(summaryDetail)}</div>` : ''}</div>
     </div>`;
 }
 
@@ -1775,6 +1908,14 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
     filteredTradelist.forEach((ticker, index) => {
         const scan = (scans || {})[ticker];
         const tickerSettings = (window.lastBotsData?.ticker_settings || {})[ticker] || {};
+        const scanLog = scan?.scan_log || null;
+        const screeningMode = String(
+            scanLog?.screening_strategy_mode
+            || scan?.screening_strategy_mode
+            || tickerSettings.strategy_mode
+            || 'combined'
+        ).toLowerCase();
+        const eventOnlyMode = screeningMode === 'event';
         const isCryptoFlag = isCrypto(ticker);
         const isOptions = !isCryptoFlag && Boolean(tickerSettings.options_trading);
         const premiumCardClass = isCryptoFlag ? 'crypto-premium-card' : (isOptions ? 'options-premium-card' : '');
@@ -1855,8 +1996,8 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         const sellMode = isAiAutopilot ? 'ai_autopilot' : (tickerSettings.sell_mode || tickerSettings.options_exit_strategy || 'indicator');
 
         // ── Determine whether each side actively uses indicator pool ──
-        const isEntryIndActive = !isAiAutopilot && !PURE_STRUCTURAL_ENTRY_MODES.has(buyMode);
-        const isExitIndActive = !isAiAutopilot && !PURE_STRUCTURAL_EXIT_MODES.has(sellMode);
+        const isEntryIndActive = !eventOnlyMode && !isAiAutopilot && !PURE_STRUCTURAL_ENTRY_MODES.has(buyMode);
+        const isExitIndActive = !eventOnlyMode && !isAiAutopilot && !PURE_STRUCTURAL_EXIT_MODES.has(sellMode);
 
         // ── Label prefixes ──
         const entryLabel = isAiAutopilot ? 'Bullish AI' : (HYBRID_ENTRY_MODES.has(buyMode) ? 'Bullish Hybrid' : 'Bullish Signals');
@@ -1901,7 +2042,9 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         const isLocallyPaused = (window.lastBotsData?.ticker_settings || {})[ticker]?.paused || false;
         const isGlobalRiskHalted = Boolean(window.lastBotsData?.global_risk_status?.halted);
         const isPaused = isLocallyPaused || isGlobalRiskHalted;
-        const inWatchlist = (window.lastBotsData?.watchlist || []).includes(ticker);
+        const normalizeWatchlistSymbol = value => String(value || '').toUpperCase().replace('/', '').trim();
+        const inWatchlist = (window.lastBotsData?.watchlist || [])
+            .some(item => normalizeWatchlistSymbol(item) === normalizeWatchlistSymbol(ticker));
         const dotClass = isPaused
             ? 'h-2 w-2 bg-slate-300 rounded-full'
             : 'h-2 w-2 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]';
@@ -2078,14 +2221,37 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
         let positionHtml = '';
         let scanLogHtml = '';
         let watchSummaryHtml = '';
-        const scanLog = scan?.scan_log || null;
+        const directionWatchMode = String(
+            scanLog?.direction_watch_mode
+            || scan?.direction_watch_mode
+            || tickerSettings.direction_watch_mode
+            || 'BOTH'
+        ).toUpperCase();
+        const directionWatchLabel = String(
+            scanLog?.direction_watch_label
+            || scan?.direction_watch_label
+            || ({ BOTH: 'Both directions', BULLISH: 'Bullish only', BEARISH: 'Bearish only', NONE: 'Alerts disabled' }[directionWatchMode] || 'Both directions')
+        );
+        const directionWatchTone = directionWatchMode === 'BULLISH'
+            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+            : directionWatchMode === 'BEARISH'
+                ? 'bg-rose-50 text-rose-700 border-rose-200'
+                : directionWatchMode === 'NONE'
+                    ? 'bg-slate-50 text-slate-500 border-slate-200'
+                    : 'bg-violet-50 text-violet-700 border-violet-200';
+        const directionWatchBadge = `<span class="px-1.5 py-0.5 rounded-md border ${directionWatchTone} font-black text-[0.48rem] uppercase tracking-wide inline-flex items-center gap-0.5" title="Directional alerts are evaluated independently">↕ ${sanitizePlainText(directionWatchLabel)}</span>`;
         const scanDataStatus = String(scan?.data_status || '').toLowerCase();
         const scanDataWarningHtml = ['degraded', 'stale_reference'].includes(scanDataStatus)
             ? `<div class="mt-0.5 rounded-lg border border-rose-200 bg-rose-50 px-1.5 py-1 text-[0.58rem] font-bold leading-snug text-rose-800">⚠ Market data needs attention. ${sanitizePlainText(scan?.stale_reason || 'The last valid scan is being retained until a current completed candle is available.')}</div>`
             : '';
-        const forceScanRefreshing = isForceScanPending(ticker, scanLog);
+        const forceScanRefreshing = isForceScanPending(ticker, scanLog, scan);
         const forceScanBadge = forceScanRefreshing
             ? '<span class="px-1.5 py-0.5 rounded-md border border-indigo-200 bg-indigo-50 text-indigo-700 font-black text-[0.48rem] uppercase tracking-wide inline-flex items-center gap-0.5"><span class="animate-spin">⟳</span> Refreshing scan results...</span>'
+            : '';
+        // Keep the full-width refresh row in the card render so a ticker
+        // snapshot rerender cannot remove it while polling is in progress.
+        const renderedRefreshRow = forceScanRefreshing
+            ? '<div class="bot-refreshing-badge mt-2 p-2 bg-indigo-50/95 border border-indigo-200/80 rounded-lg flex items-center justify-center gap-2 text-xs font-bold text-indigo-800 shadow-sm"><svg class="animate-spin h-3.5 w-3.5 text-indigo-600 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg><span>Refreshing scan results...</span></div>'
             : '';
         const continuousGridForecast = scan?.continuous_grid_forecast || scan?.scan_log?.continuous_grid_forecast || null;
         const continuousGridForecastHtml = formatContinuousGridForecastBox(continuousGridForecast, false, isCryptoAsset);
@@ -2169,9 +2335,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 </div>
             `;
         } else {
-            const virtualPosition = Boolean(scanLog?.virtual_position);
             const currentDirection = String(scan?.direction || 'NEUTRAL').toUpperCase();
-            const outlookTitle = virtualPosition ? 'Bearish Reversal Watch' : 'Bullish Setup Watch';
             const configuredMarketSession = String(scanLog?.market_session || tickerSettings.market_session || '').trim().toLowerCase();
             const marketHoursLabel = isCryptoAsset
                 ? '24 Hrs'
@@ -2183,7 +2347,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 : marketHoursLabel === 'Extended Hrs'
                     ? 'bg-amber-50 text-amber-700 border-amber-200'
                     : 'bg-indigo-50 text-indigo-600 border-indigo-100';
-            setupWatchHeaderExtras = `<span class="px-1.5 py-0.5 rounded border ${virtualPosition ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'} text-[0.48rem] font-black uppercase">${outlookTitle}</span><span class="px-1.5 py-0.5 rounded border ${marketHoursClass} text-[0.48rem] font-black uppercase">${marketHoursLabel}</span>`;
+            setupWatchHeaderExtras = `${directionWatchBadge}<span class="px-1.5 py-0.5 rounded border ${marketHoursClass} text-[0.48rem] font-black uppercase">${marketHoursLabel}</span>`;
             const atrLevels = scan?.atr_levels || {};
             const activeSetupMode = currentDirection === 'BEARISH' ? sellMode : buyMode;
             const atrSetupModes = new Set(['atr', 'hybrid', 'hybrid_atr', 'sltp']);
@@ -2333,9 +2497,16 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             const sellIndicatorsHtml = isExitIndActive
                 ? `<span class="block text-[0.49rem] font-semibold text-slate-600 leading-snug whitespace-normal break-words">Indicators Config: ${indicatorListHtml} (${sellThreshold || '—'} bearish confirmation${sellThreshold === 1 ? '' : 's'} needed)</span>`
                 : '';
-            const buyDescriptionsHtml = renderSetupDescriptions('entry', buyMode, buyIndicatorsHtml);
-            const sellDescriptionsHtml = renderSetupDescriptions('exit', sellMode, sellIndicatorsHtml);
-            positionHtml = `
+            if (eventOnlyMode) {
+                positionHtml = `
+                    <div class="rounded-lg border border-sky-100 bg-sky-50/60 px-1.5 py-1 min-w-0">
+                        <span class="block text-[0.46rem] font-black uppercase tracking-wider text-sky-700">Event-Driven Setup</span>
+                        <span class="block text-[0.49rem] font-semibold text-slate-600 leading-snug whitespace-normal break-words">Watching current ticker news and catalyst qualification only. Indicator scans are hidden for Event-Driven Only.</span>
+                    </div>`;
+            } else {
+                const buyDescriptionsHtml = renderSetupDescriptions('entry', buyMode, buyIndicatorsHtml);
+                const sellDescriptionsHtml = renderSetupDescriptions('exit', sellMode, sellIndicatorsHtml);
+                positionHtml = `
                 <div class="flex flex-col gap-0.5 cursor-pointer w-full min-w-0" onclick="selectTicker('${ticker}')">
                     <div class="grid grid-cols-1 gap-0.5">
                         <div class="rounded-lg border border-emerald-100 bg-emerald-50/50 px-1.5 py-0.5 min-w-0" title="${sanitizePlainText(buySettingsText)}">
@@ -2350,6 +2521,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                     ${showAtrLevels ? `<span class="text-[0.48rem] font-bold text-slate-500 font-mono">ATR reference for the active ${atrReferenceLabel}: stop ${formatAssetPrice(atrLevels.stop, isCryptoAsset)} · target ${formatAssetPrice(atrLevels.target, isCryptoAsset)}</span>` : ''}
                 </div>
             `;
+            }
         }
 
         if (activePosition) {
@@ -2362,17 +2534,44 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             // currently being watched. A bearish setup is confirmed by bearish
             // signals (red) and opposed by bullish signals (green).
             const targetDirection = String(scanLog.target_direction || (scanLog.phase === 'EXIT' ? 'BEARISH' : 'BULLISH')).toUpperCase();
+            const bothDirectionWatch = directionWatchMode === 'BOTH' || targetDirection === 'BOTH';
             const confirmedMarker = targetDirection === 'BEARISH' ? '🔴' : '🟢';
             const opposingMarker = targetDirection === 'BEARISH' ? '🟢' : '🔴';
             const confirmedText = formatScanIndicatorGroup('Confirmed', indicators.filter(item => item.status === 'CONFIRMED'), confirmedMarker);
             const waitingText = formatScanIndicatorGroup('Waiting', indicators.filter(item => item.status === 'WAITING'), '🟡');
             const opposingText = formatScanIndicatorGroup('Opposing', indicators.filter(item => item.status === 'OPPOSING'), opposingMarker);
+            const bullishWatchText = formatScanIndicatorGroup('Bullish', indicators.filter(item => String(item.signal || '').toUpperCase() === 'BULLISH'), '🟢');
+            const bearishWatchText = formatScanIndicatorGroup('Bearish', indicators.filter(item => String(item.signal || '').toUpperCase() === 'BEARISH'), '🔴');
             const indicatorEvidenceDirection = normalizeIndicatorEvidenceDirection(
                 scanLog.technical_direction || scanLog.target_direction,
             );
-            const indicatorEvidenceConfirmedCount = indicators.filter(item => String(item.status || '').toUpperCase() === 'CONFIRMED').length;
             const indicatorEvidenceTotalCount = indicators.length;
-            const indicatorEvidenceHeaderHtml = `<div class="flex items-center gap-1.5 flex-wrap"><span class="text-[0.58rem] sm:text-[0.65rem] font-black uppercase tracking-wider text-indigo-800">Indicator evidence</span><span class="inline-flex rounded border px-1.5 py-0.5 text-[0.55rem] font-black uppercase ${indicatorEvidenceToneClass(indicatorEvidenceDirection)}">${sanitizePlainText(indicatorEvidenceDirectionLabel(indicatorEvidenceDirection))}</span><span class="text-[0.58rem] font-bold text-slate-500">${indicatorEvidenceConfirmedCount}/${indicatorEvidenceTotalCount} confirmed</span></div>`;
+            const bullishEvidenceCount = Number.isFinite(Number(scanLog.bullish_confirmed_weight))
+                ? Number(scanLog.bullish_confirmed_weight)
+                : indicators.filter(item => String(item.signal || '').toUpperCase() === 'BULLISH').length;
+            const bearishEvidenceCount = Number.isFinite(Number(scanLog.bearish_confirmed_weight))
+                ? Number(scanLog.bearish_confirmed_weight)
+                : indicators.filter(item => String(item.signal || '').toUpperCase() === 'BEARISH').length;
+            const bullishEvidenceRequired = Number.isFinite(Number(scanLog.bullish_required_count))
+                ? Number(scanLog.bullish_required_count)
+                : (Number(scanLog.required_count) || indicatorEvidenceTotalCount);
+            const bearishEvidenceRequired = Number.isFinite(Number(scanLog.bearish_required_count))
+                ? Number(scanLog.bearish_required_count)
+                : (Number(scanLog.required_count) || indicatorEvidenceTotalCount);
+            const indicatorEvidenceConfirmedCount = bothDirectionWatch
+                ? `${bullishEvidenceCount}/${bullishEvidenceRequired} bullish · ${bearishEvidenceCount}/${bearishEvidenceRequired} bearish`
+                : `${indicators.filter(item => String(item.status || '').toUpperCase() === 'CONFIRMED').length}/${indicators.length} confirmed`;
+            const indicatorRefreshSeconds = Math.max(10, Number(tickerSettings.scan_interval_seconds || scanLog.refresh_rate_sec || (tickerSettings.options_trading ? 10 : 1800)) || (tickerSettings.options_trading ? 10 : 1800));
+            const indicatorNextDueAt = Number(scanLog.next_due_at || 0);
+            const indicatorInitialRemaining = indicatorNextDueAt > 0
+                ? Math.max(0, Math.ceil((indicatorNextDueAt * 1000 - Date.now()) / 1000))
+                : indicatorRefreshSeconds;
+            const indicatorScanPaused = String(scanLog.status || '').toUpperCase() === 'MARKET_CLOSED'
+                || Boolean(scanLog.session_paused || scan?.event_only_market_closed);
+            const indicatorRefreshTimerHtml = indicatorScanPaused
+                ? '<span class="ml-auto inline-flex items-center gap-0.5 whitespace-nowrap rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 text-[0.48rem] font-black uppercase tracking-wide text-slate-600" title="Indicator scan paused while the market is closed">⏸ Indicator scan paused</span>'
+                : `<span class="evidence-refresh-countdown ml-auto inline-flex items-center gap-0.5 whitespace-nowrap rounded border border-indigo-200 bg-indigo-50 px-1.5 py-0.5 text-[0.48rem] font-black uppercase tracking-wide text-indigo-700" data-rendered-at="${Date.now()}" data-initial-remaining="${indicatorInitialRemaining}" data-timer-label="Indicator scan in" title="Independent indicator scan refresh">◷ Indicator scan in ${formatScanCountdownJs(indicatorInitialRemaining)}</span>`;
+            const indicatorEvidenceHeaderHtml = `<div class="flex flex-col gap-0.5"><div class="flex items-center gap-1.5 flex-wrap"><span class="text-[0.6rem] sm:text-[0.68rem] font-black uppercase tracking-wider text-indigo-800">Indicator evidence</span><span class="inline-flex rounded border px-1.5 py-0.5 text-[0.56rem] font-black uppercase ${indicatorEvidenceToneClass(indicatorEvidenceDirection)}">${sanitizePlainText(indicatorEvidenceDirectionLabel(indicatorEvidenceDirection))}</span>${indicatorRefreshTimerHtml}</div><span class="text-[0.62rem] font-black text-slate-600">${indicatorEvidenceConfirmedCount}</span></div>`;
             const blockers = Array.isArray(scanLog.blockers) ? scanLog.blockers : [];
             const protection = scanLog.exit_protection || activePosition?.exit_protection || {};
             const protectionText = protection.status || activePosition?.exit_protection_status || '';
@@ -2407,7 +2606,10 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 || newsWatchEvidence.latest_summary
                 || newsWatchEvidence.latest?.title
             );
-            const showEventEvidence = screeningMode !== 'technical' || hasNewsEvidence;
+            // Keep Indicator Only cards focused on indicator evidence. News
+            // data may still exist in the backend cache, but it is not part of
+            // this profile's qualification policy and must stay hidden.
+            const showEventEvidence = screeningMode !== 'technical';
             const eventEvidenceParts = [];
             if (Object.keys(eventQualification).length || hasNewsEvidence) {
                 eventEvidenceParts.push(eventQualification.eligible ? 'QUALIFIED' : 'WAITING');
@@ -2429,10 +2631,26 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 || newsWatchEvidence.sentiment_summary
                 || ''
             ).trim(), analysisDirection);
+            const eventRefreshSeconds = Math.max(60, Number(
+                tickerSettings.news_refresh_interval_seconds
+                || newsWatchEvidence.refresh_interval_seconds
+                || tickerSettings.scan_interval_seconds
+                || 1800
+            ) || 1800);
+            const checkedAtMs = Date.parse(String(newsWatchEvidence.checked_at || ''));
+            const eventNextDueAt = Number.isFinite(checkedAtMs)
+                ? (checkedAtMs / 1000) + eventRefreshSeconds
+                : Number(newsWatchEvidence.next_check_at || 0);
+            const eventInitialRemaining = eventNextDueAt > 0
+                ? Math.max(0, Math.ceil((eventNextDueAt * 1000 - Date.now()) / 1000))
+                : eventRefreshSeconds;
+            const eventRefreshTimerHtml = `<span class="evidence-refresh-countdown ml-auto inline-flex items-center gap-0.5 whitespace-nowrap rounded border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[0.48rem] font-black uppercase tracking-wide text-sky-700" data-rendered-at="${Date.now()}" data-initial-remaining="${eventInitialRemaining}" data-timer-label="Event scan in" title="Independent event/news scan refresh">◷ Event scan in ${formatScanCountdownJs(eventInitialRemaining)}</span>`;
             const eventEvidenceHtml = showEventEvidence && eventEvidenceParts.length
-                ? `<div class="flex flex-col gap-0.5 rounded-md border border-sky-100 bg-sky-50/70 px-1.5 py-0.5 text-sky-950"><span class="flex items-center gap-1.5 flex-wrap font-black text-sky-800"><span class="uppercase tracking-wider">Event evidence</span> <span class="inline-flex rounded border px-1.5 py-0.5 text-[0.55rem] font-black uppercase ${analysisToneClass}">${sanitizePlainText(analysisLabel)}</span> <span class="inline-flex rounded border px-1.5 py-0.5 text-[0.55rem] font-black uppercase ${eventStatusClass}">${sanitizePlainText(eventStatus)}</span></span>${aiAnalysis ? `<span class="text-sky-900">${sanitizePlainText(aiAnalysis)}</span>` : ''}</div>`
+                ? `<div class="flex flex-col gap-0.5 rounded-md border border-sky-100 bg-sky-50/70 px-1.5 py-0.5 text-sky-950"><span class="flex items-center gap-1.5 flex-wrap font-black text-sky-800"><span class="uppercase tracking-wider">Event evidence</span> <span class="inline-flex rounded border px-1.5 py-0.5 text-[0.55rem] font-black uppercase ${analysisToneClass}">${sanitizePlainText(analysisLabel)}</span> <span class="inline-flex rounded border px-1.5 py-0.5 text-[0.55rem] font-black uppercase ${eventStatusClass}">${sanitizePlainText(eventStatus)}</span>${eventRefreshTimerHtml}</span>${aiAnalysis ? `<span class="text-sky-900">${sanitizePlainText(aiAnalysis)}</span>` : ''}</div>`
                 : '';
-            const indicatorLines = [confirmedText, waitingText, opposingText].filter(Boolean);
+            const indicatorLines = bothDirectionWatch
+                ? [bullishWatchText, bearishWatchText, waitingText].filter(Boolean)
+                : [confirmedText, waitingText, opposingText].filter(Boolean);
             const strategyMode = String(scanLog.strategy_mode || '').toLowerCase();
             const structuralTitle = ({
                 atr: 'ATR',
@@ -2494,35 +2712,29 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 </div>`
                 : '';
             const finalSummaryText = String(scanLog.final_summary || '').trim();
-            const finalSummaryBody = finalSummaryText.replace(/^(?:Exit|Entry) watch summary\s*[—-]\s*/i, '').trim();
+            const finalSummaryBody = finalSummaryText.replace(/^(?:Exit|Entry) watch summary\s*[—-]\s*/i, '').replace(/^Watch summary\s*[—-]\s*/i, '').trim();
             const finalSummaryIsExit = String(scanLog.phase || '').toUpperCase() === 'EXIT'
                 || String(scanLog.status || '').toUpperCase().startsWith('EXIT_');
-            const finalSummaryIsEntry = !finalSummaryIsExit && String(scanLog.phase || '').toUpperCase() === 'ENTRY';
-            const finalSummaryTheme = finalSummaryIsExit
-                ? {
-                    panel: 'border-red-300 bg-red-100/80',
-                    body: 'text-red-950',
-                }
-                : finalSummaryIsEntry
-                    ? {
-                        panel: 'border-emerald-200 bg-emerald-50/80',
-                        body: 'text-emerald-950',
-                    }
-                    : {
-                    panel: 'border-indigo-200 bg-indigo-50/70',
-                    body: 'text-indigo-950',
-                };
+            const finalSummaryIsEntry = !finalSummaryIsExit && ['ENTRY', 'WATCH'].includes(String(scanLog.phase || '').toUpperCase());
+            const finalSummaryTheme = screenerWatchSummaryTone(
+                directionWatchMode,
+                scanLog?.target_direction || scan?.direction,
+            );
             const isNeutralScan = String(scan?.direction || scanLog.decision || '').toUpperCase() === 'NEUTRAL';
             const structuredWatchSummaryHtml = (finalSummaryIsEntry || finalSummaryIsExit || isNeutralScan)
-                ? buildScreenerPolicyWatchSummary(scanLog, screeningMode, true)
+                ? buildScreenerPolicyWatchSummary(scanLog, screeningMode, true, false, false)
                 : '';
+            const watchSummaryHeaderDetail = (finalSummaryIsEntry || finalSummaryIsExit || isNeutralScan)
+                ? buildScreenerPolicyWatchSummary(scanLog, screeningMode, true, true)
+                : sanitizePlainText(finalSummaryBody);
             const watchSummaryKey = String(ticker || '').toUpperCase();
             const watchSummaryPanelId = `screener-watch-summary-${String(ticker || '').replace(/[^a-zA-Z0-9_-]/g, '_')}-${index}`;
             const watchSummaryExpanded = Boolean(window.screenerWatchSummaryExpanded?.[watchSummaryKey]);
             watchSummaryHtml = finalSummaryText
                 ? `<section class="mt-1 rounded-lg border ${finalSummaryTheme.panel} overflow-hidden w-full min-w-0">
                             <button type="button" data-watch-summary-key="${sanitizePlainText(watchSummaryKey)}" aria-controls="${watchSummaryPanelId}" aria-expanded="${watchSummaryExpanded ? 'true' : 'false'}" class="w-full flex items-center gap-1.5 px-1.5 py-1 text-left hover:bg-indigo-50/60 transition-colors" onclick="event.stopPropagation(); window.toggleScreenerWatchSummary('${watchSummaryPanelId}', this)">
-                                <span class="text-[0.58rem] sm:text-[0.65rem] font-black uppercase tracking-wider ${finalSummaryTheme.body} opacity-80">Watch summary</span>
+                                <span class="text-[0.58rem] sm:text-[0.65rem] font-black uppercase tracking-wider ${finalSummaryTheme.body} opacity-80 shrink-0">Watch summary</span>
+                                <span class="text-[0.58rem] sm:text-[0.65rem] font-semibold normal-case tracking-normal ${finalSummaryTheme.body} opacity-90 min-w-0 flex-1 whitespace-normal break-words line-clamp-3 leading-snug" title="${watchSummaryHeaderDetail}">${watchSummaryHeaderDetail}</span>
                                 <svg data-watch-summary-arrow class="ml-auto h-3 w-3 shrink-0 text-indigo-500 transition-transform ${watchSummaryExpanded ? 'rotate-180' : ''}" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd" /></svg>
                             </button>
                             <div id="${watchSummaryPanelId}" class="${watchSummaryExpanded ? '' : 'hidden '}border-t border-current/10 px-1.5 pb-1.5 text-[0.58rem] sm:text-[0.65rem] leading-snug whitespace-normal break-words">
@@ -2534,12 +2746,6 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                 : '';
 
             const isOptBot = scanLog.is_option || tickerSettings.options_trading || tickerSettings.is_option;
-            const configuredRefreshSeconds = Number(tickerSettings.scan_interval_seconds || scanLog.refresh_rate_sec || (isOptBot ? 10 : 1800));
-            const refreshSeconds = Number.isFinite(configuredRefreshSeconds) && configuredRefreshSeconds >= 10 ? configuredRefreshSeconds : (isOptBot ? 10 : 1800);
-            const refreshLabel = refreshSeconds >= 60
-                ? `${Number.isInteger(refreshSeconds / 60) ? refreshSeconds / 60 : (refreshSeconds / 60).toFixed(1)}MIN`
-                : `${refreshSeconds}SEC`;
-            const scanRefreshBadge = `<span class="px-1.5 py-0.5 rounded-md ${isOptBot ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-indigo-50 text-indigo-700 border-indigo-200'} border font-black text-[0.48rem] uppercase tracking-wide inline-flex items-center gap-0.5" title="Screener refresh interval">◷ ${refreshLabel} Refresh</span>`;
             const screeningBadgeConfig = ({
                 technical: {
                     label: 'Indicator Only',
@@ -2573,8 +2779,8 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             const scanLogToggleHtml = `<button type="button" data-scan-log-key="${sanitizePlainText(scanLogKey)}" aria-controls="${scanLogPanelId}" aria-expanded="${scanLogExpanded ? 'true' : 'false'}" class="ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-slate-500 hover:bg-white/70" title="Expand or collapse scan details" onclick="event.stopPropagation(); window.toggleScreenerScanLog('${scanLogPanelId}', this)"><svg data-scan-log-arrow class="h-3 w-3 transition-transform ${scanLogExpanded ? 'rotate-180' : ''}" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd" /></svg></button>`;
             const scanContextBadgesHtml = `
                 <div class="flex items-center gap-1.5 flex-wrap pb-0.5">
-                    ${scanRefreshBadge}
                     ${screeningStrategyBadge}
+                    ${directionWatchBadge}
                     ${forceScanBadge}
                     ${scanLogToggleHtml}
                 </div>`;
@@ -2619,21 +2825,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                     </div>
                 `;
             } else {
-                const refreshRate = Number(tickerSettings.scan_interval_seconds || scanLog.refresh_rate_sec) || (isOptBot ? 10 : 1800);
-                let timeAgoText = '';
-                if (scanLog.updated_at) {
-                    try {
-                        const dt = new Date(scanLog.updated_at);
-                        if (!isNaN(dt.getTime())) {
-                            const nextDueMs = Number(scanLog.next_due_at || 0) * 1000;
-                            const initialRemaining = nextDueMs > 0
-                                ? Math.max(0, Math.ceil((nextDueMs - Date.now()) / 1000))
-                                : refreshRate;
-                            const timeStr = dt.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'America/Chicago', timeZoneName: 'short' });
-                            timeAgoText = `<span class="scan-countdown px-1.5 py-0.5 rounded-md border border-slate-200 bg-slate-50 text-slate-600 font-sans font-black text-[0.52rem] leading-snug ml-auto inline-flex items-center gap-0.5 whitespace-nowrap" data-rendered-at="${Date.now()}" data-initial-remaining="${initialRemaining}" title="Last closed-candle scan at ${timeStr}; next server scan uses the next completed candle.">◷ Next scan in ${initialRemaining}s</span>`;
-                        }
-                    } catch (e) { }
-                }
+                const timeAgoText = '';
 
                 scanLogHtml = `
                     <div class="mt-0.5 pt-0 flex flex-col gap-0 cursor-pointer w-full min-w-0" onclick="event.stopPropagation(); window.toggleScreenerScanLog('${scanLogPanelId}')">
@@ -2645,7 +2837,7 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                                 ${decisionBadgeHtml}
                             </div>
                             <div id="${scanLogPanelId}" class="${scanLogExpanded ? '' : 'hidden '}mt-0.5 border-t border-slate-200/70 pt-0.5 flex flex-col gap-0">
-                                <div class="flex items-center justify-between gap-2 min-w-0">${scanRuntimeHtml}${timeAgoText}</div>
+                                <div class="flex items-center justify-between gap-2 min-w-0">${scanRuntimeHtml}</div>
                                 ${priceWatchHtml}
                                 ${gridScanForecastHtml}
                                 ${protectionBoxHtml}
@@ -2658,9 +2850,9 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
             }
         }
 
-        // Keep the News Summary card consistent for every ticker. Screening
-        // mode controls qualification, not whether news is collected/displayed.
-        const newsWatchEnabled = true;
+        // Indicator Only mode intentionally omits news from the card because
+        // the selected Screener policy does not use event evidence.
+        const newsWatchEnabled = screeningMode !== 'technical';
         const newsWatch = scan?.news_watch || {};
         let newsWatchHtml = '';
         if (newsWatchEnabled) {
@@ -2851,6 +3043,8 @@ function renderTradelist(scans, tradelist, tickerAmounts = {}) {
                         </button>
                     </div>
                 </div>
+
+                ${renderedRefreshRow}
 
                 <!-- 2nd Line: Chart preview -->
                 <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-1 cursor-pointer" onclick="selectTicker('${ticker}')">
@@ -3636,6 +3830,7 @@ let strategyMiniVolumeSeries = null;
 let strategyMiniResizeObserver = null;
 let strategyMiniResizeHandler = null;
 let strategyMiniRequestId = 0;
+let strategyMiniAbortController = null;
 
 function setStrategyMiniChartStatus(message, tone = 'muted') {
     const status = document.getElementById('strategyMiniChartStatus');
@@ -3648,6 +3843,10 @@ function setStrategyMiniChartStatus(message, tone = 'muted') {
 
 function destroyStrategyMiniChart() {
     strategyMiniRequestId += 1;
+    if (strategyMiniAbortController) {
+        strategyMiniAbortController.abort();
+        strategyMiniAbortController = null;
+    }
     if (strategyMiniResizeObserver) {
         strategyMiniResizeObserver.disconnect();
         strategyMiniResizeObserver = null;
@@ -4791,6 +4990,7 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategySellThreshold_regular').value = 0;
         document.getElementById('strategySellThreshold_options').value = 0;
         document.getElementById('strategyTimeframe_regular').value = "30Min";
+        window.updateTradingTimeframeHelp?.('30Min');
         document.getElementById('strategyTimeframe_options').value = "5Min";
         if (document.getElementById('strategyTimeframe_ai_autopilot')) document.getElementById('strategyTimeframe_ai_autopilot').value = "1Hour";
         if (document.getElementById('strategyAiModel')) document.getElementById('strategyAiModel').value = "llama-3.3-70b-versatile";
@@ -4798,7 +4998,10 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         if (document.getElementById('strategyBuyMode_options')) document.getElementById('strategyBuyMode_options').value = "indicator";
         if (document.getElementById('strategyScreeningMode_regular')) document.getElementById('strategyScreeningMode_regular').value = "combined";
         if (document.getElementById('strategyEventMaxAgeDays_regular')) document.getElementById('strategyEventMaxAgeDays_regular').value = "10";
-        if (document.getElementById('strategyScanInterval_regular')) document.getElementById('strategyScanInterval_regular').value = "1800";
+        if (document.getElementById('strategyNewsRefreshInterval_regular')) document.getElementById('strategyNewsRefreshInterval_regular').value = "auto";
+        window.updateNewsRefreshHelp?.('auto');
+        if (document.getElementById('strategyScanInterval_regular')) document.getElementById('strategyScanInterval_regular').value = "auto";
+        window.updateScanIntervalHelp?.('auto');
         if (document.getElementById('strategyCustomBuyPrice_regular')) document.getElementById('strategyCustomBuyPrice_regular').value = "";
         if (document.getElementById('strategyCustomBuyPrice_options')) document.getElementById('strategyCustomBuyPrice_options').value = "";
         if (document.getElementById('strategyCustomStopLossPrice_regular')) document.getElementById('strategyCustomStopLossPrice_regular').value = "";
@@ -4979,10 +5182,13 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         document.getElementById('strategySellThreshold_regular').value = sellSignals;
         document.getElementById('strategySellThreshold_options').value = sellSignals;
         document.getElementById('strategyTimeframe_regular').value = settings.timeframe || '30Min';
+        window.updateTradingTimeframeHelp?.(settings.timeframe || '30Min');
         document.getElementById('strategyTimeframe_options').value = settings.timeframe || '1Hour';
         const configuredScanInterval = Number(settings.scan_interval_seconds);
         if (document.getElementById('strategyScanInterval_regular')) {
-            document.getElementById('strategyScanInterval_regular').value = !settings.options_trading && configuredScanInterval >= 10 ? configuredScanInterval : 1800;
+            document.getElementById('strategyScanInterval_regular').value = settings.scan_interval_auto !== false
+                ? 'auto' : (!settings.options_trading && configuredScanInterval >= 10 ? configuredScanInterval : 1800);
+            window.updateScanIntervalHelp?.(document.getElementById('strategyScanInterval_regular').value);
         }
         if (document.getElementById('strategyScanInterval_options')) {
             document.getElementById('strategyScanInterval_options').value = settings.options_trading && configuredScanInterval >= 10 ? configuredScanInterval : 10;
@@ -4997,6 +5203,11 @@ window.openStrategyModal = async function (symbol, mode = 'deploy', name = '') {
         if (fundamentalWatchEl) fundamentalWatchEl.checked = settings.fundamental_watch_enabled !== false;
         if (document.getElementById('strategyScreeningMode_regular')) document.getElementById('strategyScreeningMode_regular').value = settings.strategy_mode || 'combined';
         if (document.getElementById('strategyEventMaxAgeDays_regular')) document.getElementById('strategyEventMaxAgeDays_regular').value = String(settings.event_max_age_days || 10);
+        if (document.getElementById('strategyNewsRefreshInterval_regular')) {
+            document.getElementById('strategyNewsRefreshInterval_regular').value = settings.news_refresh_interval_auto !== false
+                ? 'auto' : String(settings.news_refresh_interval_seconds || settings.scan_interval_seconds || 1800);
+            window.updateNewsRefreshHelp?.(document.getElementById('strategyNewsRefreshInterval_regular').value);
+        }
         if (document.getElementById('strategyTimeframe_ai_autopilot')) document.getElementById('strategyTimeframe_ai_autopilot').value = settings.timeframe || '1Hour';
         if (document.getElementById('strategyBuyMode_regular')) document.getElementById('strategyBuyMode_regular').value = settings.buy_mode || 'indicator';
         if (document.getElementById('strategyBuyMode_options')) document.getElementById('strategyBuyMode_options').value = settings.buy_mode || 'indicator';
@@ -5984,6 +6195,55 @@ function setBotCardRefreshing(ticker, statusText = "Refreshing settings...") {
     });
 }
 
+window.updateTradingTimeframeHelp = function (timeframe = '30Min') {
+    const help = document.getElementById('strategyTimeframeHelp_regular');
+    if (!help) return;
+    const descriptions = {
+        '1Min': '1-minute candles are suitable for fast scalping decisions.',
+        '5Min': '5-minute candles are suitable for intraday screening.',
+        '15Min': '15-minute candles are suitable for active intraday screening.',
+        '30Min': '30-minute candles are suitable for daily swing screening.',
+        '1Hour': '1-hour candles are suitable for broader swing screening.',
+        '4Hour': '4-hour candles are suitable for macro trend screening.',
+        '1Day': 'Daily candles are suitable for position and longer-term screening.',
+    };
+    help.textContent = descriptions[String(timeframe || '30Min')] || descriptions['30Min'];
+};
+
+window.updateScanIntervalHelp = function (interval = 'auto') {
+    const help = document.getElementById('strategyScanIntervalHelp_regular');
+    if (!help) return;
+    const descriptions = {
+        auto: 'Auto refresh follows the Trading Timeframe.',
+        10: '10-second refresh is suitable for fast monitoring.',
+        30: '30-second refresh is suitable for active monitoring.',
+        60: '1-minute refresh is suitable for intraday monitoring.',
+        300: '5-minute refresh is suitable for active intraday screening.',
+        600: '10-minute refresh is suitable for short swing screening.',
+        900: '15-minute refresh is suitable for active swing screening.',
+        1800: '30-minute refresh is suitable for daily swing screening.',
+        3600: '1-hour refresh is suitable for broader swing screening.',
+        14400: '4-hour refresh is suitable for macro trend screening.',
+    };
+    help.textContent = descriptions[String(interval)] || descriptions.auto;
+};
+
+window.updateNewsRefreshHelp = function (interval = 'auto') {
+    const help = document.getElementById('strategyNewsRefreshHelp');
+    if (!help) return;
+    const descriptions = {
+        auto: 'Auto: follows Trading Timeframe.',
+        60: '1 minute: fast-moving catalysts.',
+        300: '5 minutes: active event monitoring.',
+        900: '15 minutes: active event monitoring.',
+        1800: '30 minutes: daily swing screening.',
+        3600: '1 hour: broader swing screening.',
+        14400: '4 hours: broader trend screening.',
+        86400: 'Daily: longer-term screening.',
+    };
+    help.textContent = descriptions[String(interval)] || descriptions.auto;
+};
+
 async function saveTickerSettings() {
     if (!currentStrategySymbol) return;
 
@@ -6010,10 +6270,13 @@ async function saveTickerSettings() {
             ...getStrategyModeSettings(mode),
             amount: mode === 'regular' ? (parseFloat(document.getElementById('strategyCapital')?.value || '') || null) : mode === 'ai_autopilot' ? (parseFloat(document.getElementById('strategyCapital_ai_autopilot')?.value || '') || null) : undefined,
             timeframe: document.getElementById(`strategyTimeframe_${mode}`)?.value || null,
-            scan_interval_seconds: Math.max(10, Math.min(14400, parseInt(document.getElementById(`strategyScanInterval_${mode}`)?.value || (mode === 'options' ? 10 : 1800), 10) || (mode === 'options' ? 10 : 1800))),
+            scan_interval_auto: document.getElementById(`strategyScanInterval_${mode}`)?.value === 'auto',
+            scan_interval_seconds: parseInt(document.getElementById(`strategyScanInterval_${mode}`)?.value || 0, 10) || 0,
             ...(mode === 'regular' ? {
                 strategy_mode: document.getElementById('strategyScreeningMode_regular')?.value || 'combined',
                 event_max_age_days: Math.max(1, Math.min(30, parseInt(document.getElementById('strategyEventMaxAgeDays_regular')?.value || 10, 10) || 10)),
+                news_refresh_interval_auto: document.getElementById('strategyNewsRefreshInterval_regular')?.value === 'auto',
+                news_refresh_interval_seconds: parseInt(document.getElementById('strategyNewsRefreshInterval_regular')?.value || 0, 10) || 0,
             } : {}),
             news_watch_enabled: true,
             earnings_watch_enabled: document.getElementById('strategyEarningsWatchEnabled')?.checked !== false,
@@ -6312,6 +6575,24 @@ function scheduleCrossPartitionRefresh(sourcePartition) {
 
 function ingestBotsSnapshot(rawData) {
     const data = normalizeBotsSnapshot(rawData);
+    if (dashboardWatchlistOverrides.size) {
+        const snapshotWatchlist = Array.isArray(data.watchlist) ? data.watchlist : [];
+        const serverSymbols = new Set(snapshotWatchlist.map(normalizeDashboardWatchlistSymbol));
+        const mergedWatchlist = snapshotWatchlist.filter(item => {
+            const symbol = normalizeDashboardWatchlistSymbol(item);
+            return !dashboardWatchlistOverrides.has(symbol) || dashboardWatchlistOverrides.get(symbol) === true;
+        });
+        dashboardWatchlistOverrides.forEach((enabled, symbol) => {
+            if (enabled && !mergedWatchlist.some(item => normalizeDashboardWatchlistSymbol(item) === symbol)) {
+                mergedWatchlist.push(symbol);
+            }
+        });
+        data.watchlist = mergedWatchlist;
+        dashboardWatchlistOverrides.forEach((enabled, symbol) => {
+            const serverPresent = serverSymbols.has(symbol);
+            if (serverPresent === enabled) dashboardWatchlistOverrides.delete(symbol);
+        });
+    }
     const partition = data.partition || 'all';
     if (!ScreenerSnapshotState.accepts(data, botsPartitionSnapshots)) return null;
     const previousTradeSeq = lastObservedTradeEventSeq;
@@ -8859,11 +9140,30 @@ document.addEventListener('click', (e) => {
 window.syncScreenerNewsWatchForMode = function (mode = 'combined') {
     const normalizedMode = String(mode || 'combined').toLowerCase();
     syncScreenerIndicatorControlsForMode(normalizedMode);
-    const statusEl = document.getElementById('strategyNewsWatchStatus');
-    if (statusEl) {
-        statusEl.textContent = 'Enabled';
-        statusEl.className = 'px-2 py-1 rounded-lg border text-[0.58rem] font-black uppercase tracking-widest shrink-0 border-emerald-200 bg-emerald-50 text-emerald-700';
-        statusEl.title = 'News Summary is collected for every Screener ticker; the selected policy controls whether it can qualify an entry.';
+    const newsBox = document.getElementById('strategyNewsWatchBox');
+    const intervalEl = document.getElementById('strategyNewsRefreshInterval_regular');
+    const helpEl = document.getElementById('strategyNewsRefreshHelp');
+    const indicatorOnly = normalizedMode === 'technical' || normalizedMode === 'indicator';
+    if (newsBox) {
+        newsBox.classList.toggle('bg-slate-100/70', indicatorOnly);
+        newsBox.classList.toggle('border-slate-300', indicatorOnly);
+        newsBox.classList.toggle('opacity-60', indicatorOnly);
+        newsBox.classList.toggle('bg-white/45', !indicatorOnly);
+        newsBox.classList.toggle('border-emerald-200/60', !indicatorOnly);
+        newsBox.title = indicatorOnly ? 'Ticker News Watch is unavailable for Indicator Only mode.' : '';
+    }
+    if (intervalEl) {
+        intervalEl.disabled = indicatorOnly;
+        intervalEl.classList.toggle('bg-slate-200', indicatorOnly);
+        intervalEl.classList.toggle('text-slate-500', indicatorOnly);
+        intervalEl.classList.toggle('cursor-not-allowed', indicatorOnly);
+        intervalEl.classList.toggle('bg-white/80', !indicatorOnly);
+        intervalEl.classList.toggle('text-indigo-950', !indicatorOnly);
+    }
+    if (helpEl) {
+        helpEl.textContent = indicatorOnly
+            ? 'Unavailable while Indicator Only is selected.'
+            : 'Auto: follows Trading Timeframe.';
     }
     if (typeof window.updateStrategySignalLabels === 'function') {
         window.updateStrategySignalLabels('regular');
@@ -8963,10 +9263,13 @@ window.confirmAndDeployBot = async function () {
             indicators: mode === 'ai_autopilot' ? [] : indicators,
             indicator_overrides: mode === 'ai_autopilot' ? {} : draftOverrides,
             timeframe: timeframe,
-            scan_interval_seconds: scanIntervalSeconds,
+            scan_interval_auto: document.getElementById(`strategyScanInterval_${mode}`)?.value === 'auto',
+            scan_interval_seconds: document.getElementById(`strategyScanInterval_${mode}`)?.value === 'auto' ? 0 : scanIntervalSeconds,
             ...(mode === 'regular' ? {
                 strategy_mode: document.getElementById('strategyScreeningMode_regular')?.value || 'combined',
                 event_max_age_days: Math.max(1, Math.min(30, parseInt(document.getElementById('strategyEventMaxAgeDays_regular')?.value || 10, 10) || 10)),
+                news_refresh_interval_auto: document.getElementById('strategyNewsRefreshInterval_regular')?.value === 'auto',
+                news_refresh_interval_seconds: parseInt(document.getElementById('strategyNewsRefreshInterval_regular')?.value || 0, 10) || 0,
             } : {}),
             news_watch_enabled: true,
             earnings_watch_enabled: document.getElementById('strategyEarningsWatchEnabled')?.checked !== false,
@@ -9126,8 +9429,10 @@ async function unlinkAlpaca() {
             }, OPTIONS_REFRESH_INTERVAL);
             botsPortfolioRefreshTimerId = setInterval(() => {
                 fetchPortfolioHistory();
-                fetchScreenerNotifications();
             }, PORTFOLIO_SHORT_REFRESH_INTERVAL);
+            botsNotificationsRefreshTimerId = setInterval(() => {
+                fetchScreenerNotifications();
+            }, NOTIFICATIONS_REFRESH_INTERVAL);
 
             // 1-second live countdown ticker for Bot Card Scan Logs (zero-drift architecture)
             botsCountdownTimerId = setInterval(() => {
@@ -9137,11 +9442,17 @@ async function unlinkAlpaca() {
                     if (!isNaN(renderedAt) && !isNaN(initialRemaining)) {
                         const elapsedSec = Math.floor((Date.now() - renderedAt) / 1000);
                         const currentRemaining = Math.max(0, initialRemaining - elapsedSec);
-                        if (currentRemaining > 0) {
-                            el.textContent = `◷ Next scan in ${currentRemaining}s`;
-                        } else {
-                            el.textContent = '◷ Refreshing Now';
-                        }
+                        el.textContent = `◷ Next scan in ${formatScanCountdownJs(currentRemaining)}`;
+                    }
+                });
+                document.querySelectorAll('.evidence-refresh-countdown').forEach(el => {
+                    const renderedAt = Number(el.getAttribute('data-rendered-at'));
+                    const initialRemaining = Number(el.getAttribute('data-initial-remaining'));
+                    const timerLabel = el.getAttribute('data-timer-label') || 'Scan';
+                    if (!isNaN(renderedAt) && !isNaN(initialRemaining)) {
+                        const elapsedSec = Math.floor((Date.now() - renderedAt) / 1000);
+                        const currentRemaining = Math.max(0, initialRemaining - elapsedSec);
+                        el.textContent = `◷ ${timerLabel} ${formatScanCountdownJs(currentRemaining)}`;
                     }
                 });
                 document.querySelectorAll('.options-market-countdown').forEach(el => {
@@ -11020,6 +11331,9 @@ window.fetchLiveAtrForPreview = async function (ticker, overrideTf) {
     const strategyModalOpen = !document.getElementById('botStrategyModal')?.classList.contains('hidden');
     if (!ticker || (!botChartPreviewState.open && !strategyModalOpen)) return;
     const requestId = ++strategyMiniRequestId;
+    if (strategyMiniAbortController) strategyMiniAbortController.abort();
+    const requestController = new AbortController();
+    strategyMiniAbortController = requestController;
     try {
         const headers = await getAuthHeaders();
         const activeMode = window.activeTradingMode || 'regular';
@@ -11047,7 +11361,7 @@ window.fetchLiveAtrForPreview = async function (ticker, overrideTf) {
         if (entryBoxOptions && !entryBoxOptions.classList.contains('hidden')) entryBoxOptions.innerHTML = loadingHtml;
         if (exitBoxOptions && !exitBoxOptions.classList.contains('hidden')) exitBoxOptions.innerHTML = loadingHtml;
 
-        const res = await fetchWithTimeout(`${API_BASE}/api/screener/chart/${encodeURIComponent(ticker)}?timeframe=${encodeURIComponent(tf)}&source=screener`, { headers }, 10000);
+        const res = await fetchWithTimeout(`${API_BASE}/api/screener/chart/${encodeURIComponent(ticker)}?timeframe=${encodeURIComponent(tf)}&source=screener`, { headers, controller: requestController }, 10000);
         if (res.ok) {
             const data = await res.json();
             if (data && data.primaryScan && requestId === strategyMiniRequestId) {
@@ -11077,7 +11391,7 @@ window.fetchLiveAtrForPreview = async function (ticker, overrideTf) {
             setStrategyMiniChartStatus('Chart unavailable', 'error');
         }
     } catch (e) {
-        if (e.name !== 'AbortError') {
+        if (e.name !== 'AbortError' && requestId === strategyMiniRequestId) {
             console.warn("[live-preview] Could not fetch fresh preview data; using cached preview if available.", e.message || e);
         }
         if (strategyModalOpen && requestId === strategyMiniRequestId) {
@@ -11087,6 +11401,8 @@ window.fetchLiveAtrForPreview = async function (ticker, overrideTf) {
             window.updateLivePreview_bots('regular', 'both');
             window.updateLivePreview_bots('options', 'both');
         }
+    } finally {
+        if (requestId === strategyMiniRequestId) strategyMiniAbortController = null;
     }
 };
 

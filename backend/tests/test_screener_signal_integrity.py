@@ -132,7 +132,48 @@ class ScreenerSignalIntegrityTests(unittest.TestCase):
             {"virtual_position": True},
         )
         self.assertEqual(exit_log["status"], "NO_INDICATORS")
-        self.assertIn("Exit unavailable", exit_log["final_summary"])
+        self.assertIn("Watch unavailable", exit_log["final_summary"])
+
+    def test_directional_watch_evaluates_both_sides_independently(self):
+        from main import _build_screener_scan_log
+
+        scan_log = _build_screener_scan_log(
+            "AAPL",
+            {
+                "direction": "BEARISH",
+                "technical_direction": "BEARISH",
+                "evaluation_status": "valid",
+                "reason": "Bearish setup",
+                "signals": {
+                    "RSI": {"signal": "BEARISH", "reason": "Below range"},
+                    "EMA Cross": {"signal": "BULLISH", "reason": "Cross up"},
+                },
+                "candle_meta": {"candle_key": "30MIN:3"},
+                "price_raw": 100.0,
+            },
+            {
+                "buy_mode": "indicator",
+                "sell_mode": "indicator",
+                "indicators": ["RSI", "EMA Cross"],
+                "min_buy_signals": 2,
+                "min_sell_signals": 2,
+                "strategy_mode": "technical",
+            },
+            {
+                "virtual_position": True,
+                "direction_watch_mode": "BOTH",
+                "direction_watch_label": "Both directions",
+                "direction_watch_directions": ["BULLISH", "BEARISH"],
+                "direction_watch_bullish_enabled": True,
+                "direction_watch_bearish_enabled": True,
+            },
+        )
+        self.assertEqual(scan_log["direction_watch_mode"], "BOTH")
+        self.assertEqual(scan_log["target_direction"], "BOTH")
+        self.assertEqual(scan_log["phase"], "WATCH")
+        self.assertEqual(scan_log["bullish_confirmed_weight"], 1)
+        self.assertEqual(scan_log["bearish_confirmed_weight"], 1)
+        self.assertIn("Both directions", scan_log["final_summary"])
 
     def test_empty_indicator_pool_cannot_trigger_indicator_decision(self):
         config = UserConfig("empty-indicator-decision")
