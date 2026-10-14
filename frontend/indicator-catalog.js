@@ -2,7 +2,7 @@
     'use strict';
 
     // Standard/classical indicators only. The formulas and guide copy are
-    // independently implemented; premium BotBulls indicators remain separate.
+    // independently implemented.
     const catalog = [
         { name: 'RSI', label: 'RSI', category: 'Momentum' },
         { name: 'MACD', label: 'MACD', category: 'Trend' },
@@ -18,6 +18,9 @@
         { name: 'Swing Points', label: 'Swing Points', category: 'Price structure' },
         { name: 'Mystic Pulse', label: 'Mystic Pulse', category: 'Custom momentum' },
         { name: 'Candle Patterns', label: 'Candle Patterns', category: 'Price action' },
+        { name: 'Chart Patterns', label: 'Chart Patterns', category: 'Price action' },
+        { name: 'Trend Rider', label: 'Trend Rider', category: 'Trend' },
+        { name: 'HA+UT', label: 'HA+UT', category: 'Trend' },
         { name: 'ATR Volatility', label: 'ATR Volatility', category: 'Volatility' },
         { name: 'Stochastic', label: 'Stochastic', category: 'Momentum' },
         { name: 'Stochastic RSI', label: 'Stochastic RSI', category: 'Momentum' },
@@ -60,25 +63,28 @@
     const configMap = {
         'RSI': ['RSI_PERIOD', 'RSI_OVERBOUGHT', 'RSI_OVERSOLD'],
         'MACD': ['MACD_FAST', 'MACD_SLOW', 'MACD_SIGNAL'],
-        'EMA Cross': ['EMA_USE_SECOND_LINE', 'EMA_FAST', 'EMA_SLOW'],
+        'EMA Cross': ['EMA_USE_SECOND_LINE', 'EMA_FAST', 'EMA_SLOW', 'EMA_CROSS_BUFFER_PCT'],
         'ADX Trend': ['ADX_PERIOD', 'ADX_TRENDING_THRESHOLD'],
         'Supertrend': ['SUPERTREND_PERIOD', 'SUPERTREND_MULTIPLIER'],
-        'Bollinger': ['BOLL_PERIOD', 'BOLL_STD_DEV'],
-        'VWAP': [],
+        'Bollinger': ['BOLL_PERIOD', 'BOLL_STD_DEV', 'BOLL_ZONE_PCT'],
+        'VWAP': ['VWAP_REGULAR_SESSION_ONLY'],
         'Auto-AVWAP': ['VOL_MA_PERIOD', 'VOL_SPIKE_MULTIPLIER'],
-        'Volume Profile': ['VOLUME_PROFILE_ROWS', 'VOLUME_PROFILE_VALUE_AREA_PCT', 'VOLUME_PROFILE_TOLERANCE_PCT', 'VOLUME_PROFILE_CONFIRMATION_CANDLES'],
+        'Volume Profile': ['VOLUME_PROFILE_ROWS', 'VOLUME_PROFILE_VALUE_AREA_PCT', 'VOLUME_PROFILE_TOLERANCE_PCT', 'VOLUME_PROFILE_CONFIRMATION_CANDLES', 'LEVELS_REGULAR_SESSION_ONLY'],
         'SMA': ['SMA_USE_SECOND_LINE', 'SMA_PERIOD', 'SMA_SECOND_PERIOD'],
-        'Prior Day High/Low': ['DAILY_HIGH_LOW_BUFFER_PCT'],
-        'Pivot Points (S/R)': ['PIVOT_LEVEL_COUNT', 'PIVOT_TOLERANCE_PCT'],
-        'Swing Points': ['SWING_POINTS_LOOKBACK_DAYS', 'SWING_POINTS_ENTRY_MODE', 'SWING_POINTS_LEVEL_COUNT'],
-        'Mystic Pulse': ['MYSTIC_PULSE_THRESHOLD'],
-        'Candle Patterns': [],
+        'Prior Day High/Low': ['DAILY_HIGH_LOW_BUFFER_PCT', 'DAILY_HIGH_LOW_BUFFER_ATR', 'LEVELS_REGULAR_SESSION_ONLY'],
+        'Pivot Points (S/R)': ['PIVOT_LEVEL_COUNT', 'PIVOT_TOLERANCE_PCT', 'LEVELS_REGULAR_SESSION_ONLY'],
+        'Swing Points': ['SWING_POINTS_LOOKBACK_DAYS', 'SWING_POINTS_ENTRY_MODE', 'SWING_POINTS_LEVEL_COUNT', 'SWING_POINTS_STRENGTH'],
+        'Mystic Pulse': ['MYSTIC_PULSE_THRESHOLD', 'MYSTIC_PULSE_ADX_LENGTH'],
+        'Candle Patterns': ['CANDLE_RELIABLE_ONLY'],
+        'Chart Patterns': ['BOTBULLS5_MIN_CONFIDENCE', 'BOTBULLS5_BREAKOUT_BUFFER_ATR', 'BOTBULLS5_STRUCTURE_LOOKBACK', 'BOTBULLS5_SIGNAL_HOLD_BARS', 'BOTBULLS5_REQUIRE_VOLUME'],
+        'Trend Rider': ['TREND_RIDER_ATR_PERIOD', 'TREND_RIDER_ATR_MULT', 'TREND_RIDER_TRACER_PERIOD', 'TREND_RIDER_ZONE_PERIOD', 'TREND_RIDER_ZONE_STD', 'TREND_RIDER_RSI_LOW', 'TREND_RIDER_RSI_HIGH'],
+        'HA+UT': ['HA_UT_ATR_PERIOD', 'HA_UT_ATR_MULT'],
         'ATR Volatility': ['ATR_PERIOD', 'ATR_BASELINE_PERIOD', 'ATR_RANGE_MULTIPLIER', 'ATR_EXPANSION_THRESHOLD_PCT'],
-        'Stochastic': ['STOCH_PERIOD', 'STOCH_SMOOTH_K', 'STOCH_SMOOTH_D', 'STOCH_OVERBOUGHT', 'STOCH_OVERSOLD'],
-        'Stochastic RSI': ['STOCH_RSI_PERIOD', 'STOCH_RSI_SMOOTH_K', 'STOCH_RSI_SMOOTH_D', 'STOCH_RSI_OVERBOUGHT', 'STOCH_RSI_OVERSOLD'],
+        'Stochastic': ['STOCH_PERIOD', 'STOCH_SMOOTH_K', 'STOCH_SMOOTH_D', 'STOCH_OVERBOUGHT', 'STOCH_OVERSOLD', 'STOCH_CROSS_ZONE_ONLY'],
+        'Stochastic RSI': ['STOCH_RSI_PERIOD', 'STOCH_RSI_SMOOTH_K', 'STOCH_RSI_SMOOTH_D', 'STOCH_RSI_OVERBOUGHT', 'STOCH_RSI_OVERSOLD', 'STOCH_RSI_CROSS_ZONE_ONLY'],
         'CCI': ['CCI_PERIOD', 'CCI_THRESHOLD'],
         'Williams %R': ['WILLIAMS_R_PERIOD', 'WILLIAMS_R_OVERBOUGHT', 'WILLIAMS_R_OVERSOLD'],
-        'Rate of Change': ['ROC_PERIOD'],
+        'Rate of Change': ['ROC_PERIOD', 'ROC_THRESHOLD_PCT'],
         'Momentum': ['MOMENTUM_PERIOD'],
         'Money Flow Index': ['MFI_PERIOD', 'MFI_OVERBOUGHT', 'MFI_OVERSOLD'],
         'Ultimate Oscillator': ['UO_SHORT', 'UO_MEDIUM', 'UO_LONG', 'UO_OVERBOUGHT', 'UO_OVERSOLD'],
@@ -156,7 +162,16 @@
         OBV_SIGNAL_PERIOD: 20, CMF_PERIOD: 20, ADL_SIGNAL_PERIOD: 20,
         CHAIKIN_FAST: 3, CHAIKIN_SLOW: 10,
         PVT_SIGNAL_PERIOD: 20, EOM_PERIOD: 14, FORCE_INDEX_PERIOD: 13,
+        TREND_RIDER_ATR_PERIOD: 14, TREND_RIDER_ATR_MULT: 2, TREND_RIDER_TRACER_PERIOD: 50, TREND_RIDER_ZONE_PERIOD: 50,
+        HA_UT_ATR_PERIOD: 10, HA_UT_ATR_MULT: 1,
         VOL_MA_PERIOD: 20, VOL_SPIKE_MULTIPLIER: 1.5,
+        EMA_CROSS_BUFFER_PCT: 0, BOLL_ZONE_PCT: 20, VWAP_REGULAR_SESSION_ONLY: 0,
+        DAILY_HIGH_LOW_BUFFER_ATR: 0, LEVELS_REGULAR_SESSION_ONLY: 0, SWING_POINTS_STRENGTH: 2,
+        MYSTIC_PULSE_ADX_LENGTH: 0, CANDLE_RELIABLE_ONLY: 0,
+        BOTBULLS5_MIN_CONFIDENCE: 70, BOTBULLS5_BREAKOUT_BUFFER_ATR: 0.1, BOTBULLS5_STRUCTURE_LOOKBACK: 48,
+        BOTBULLS5_SIGNAL_HOLD_BARS: 3, BOTBULLS5_REQUIRE_VOLUME: 0,
+        TREND_RIDER_ZONE_STD: 2, TREND_RIDER_RSI_LOW: 40, TREND_RIDER_RSI_HIGH: 70,
+        STOCH_CROSS_ZONE_ONLY: 1, STOCH_RSI_CROSS_ZONE_ONLY: 1, ROC_THRESHOLD_PCT: 0,
     };
 
     const labels = {
@@ -219,6 +234,20 @@
         OBV_SIGNAL_PERIOD: 'OBV Signal EMA', CMF_PERIOD: 'CMF Period', ADL_SIGNAL_PERIOD: 'A/D Signal EMA',
         CHAIKIN_FAST: 'Fast EMA', CHAIKIN_SLOW: 'Slow EMA',
         PVT_SIGNAL_PERIOD: 'PVT Signal EMA', EOM_PERIOD: 'EOM Smoothing', FORCE_INDEX_PERIOD: 'Force Index EMA',
+        TREND_RIDER_ATR_PERIOD: 'ATR Period', TREND_RIDER_ATR_MULT: 'ATR Multiplier',
+        TREND_RIDER_TRACER_PERIOD: 'Tracer Period', TREND_RIDER_ZONE_PERIOD: 'Zone Period',
+        HA_UT_ATR_PERIOD: 'ATR Period', HA_UT_ATR_MULT: 'ATR Multiplier',
+        EMA_CROSS_BUFFER_PCT: 'Min Line Gap % (0 = off)', BOLL_ZONE_PCT: 'Edge Zone % of Band',
+        VWAP_REGULAR_SESSION_ONLY: 'Regular Hours Only (1 = on)',
+        DAILY_HIGH_LOW_BUFFER_ATR: 'Breakout Buffer (ATR)', LEVELS_REGULAR_SESSION_ONLY: 'Levels From Regular Hours (1 = on)',
+        SWING_POINTS_STRENGTH: 'Pivot Strength (bars)',
+        MYSTIC_PULSE_ADX_LENGTH: 'DMI Length (0 = auto)', CANDLE_RELIABLE_ONLY: 'Reliable Patterns Only (1 = on)',
+        BOTBULLS5_MIN_CONFIDENCE: 'Min Pattern Quality', BOTBULLS5_BREAKOUT_BUFFER_ATR: 'Breakout Buffer (ATR)',
+        BOTBULLS5_STRUCTURE_LOOKBACK: 'Pattern Lookback Bars', BOTBULLS5_SIGNAL_HOLD_BARS: 'Signal Hold Bars',
+        BOTBULLS5_REQUIRE_VOLUME: 'Require Volume (1 = on)',
+        TREND_RIDER_ZONE_STD: 'Zone Width (σ)', TREND_RIDER_RSI_LOW: 'RSI Band Low', TREND_RIDER_RSI_HIGH: 'RSI Band High',
+        STOCH_CROSS_ZONE_ONLY: 'Cross In Zone Only (1 = on)', STOCH_RSI_CROSS_ZONE_ONLY: 'Cross In Zone Only (1 = on)',
+        ROC_THRESHOLD_PCT: 'Dead Band %',
     };
 
     const decimalKeys = new Set([
@@ -227,8 +256,10 @@
         'ATR_STOP_MULTIPLIER', 'ATR_TRAIL_MULTIPLIER', 'ATR_TAKE_PROFIT_MULTIPLIER',
         'ATR_RANGE_MULTIPLIER', 'ATR_EXPANSION_THRESHOLD_PCT',
         'VOL_SPIKE_MULTIPLIER',
-        'PSAR_STEP', 'PSAR_MAX_STEP', 'KELTNER_MULTIPLIER',
+        'PSAR_STEP', 'PSAR_MAX_STEP', 'KELTNER_MULTIPLIER', 'TREND_RIDER_ATR_MULT', 'HA_UT_ATR_MULT',
         'CHOP_TREND_THRESHOLD', 'CHOP_RANGE_THRESHOLD', 'ALMA_OFFSET', 'ALMA_SIGMA',
+        'EMA_CROSS_BUFFER_PCT', 'BOLL_ZONE_PCT', 'DAILY_HIGH_LOW_BUFFER_ATR', 'BOTBULLS5_BREAKOUT_BUFFER_ATR',
+        'TREND_RIDER_ZONE_STD', 'ROC_THRESHOLD_PCT',
     ]);
     const inputAttrs = Object.fromEntries(Object.keys(defaults).map(key => [
         key,
@@ -240,6 +271,12 @@
     inputAttrs.ALMA_OFFSET = 'step="0.01" min="0" max="1"';
     inputAttrs.PSAR_STEP = 'step="0.01" min="0.01" max="1"';
     inputAttrs.PSAR_MAX_STEP = 'step="0.01" min="0.01" max="1"';
+    inputAttrs.TREND_RIDER_ATR_PERIOD = 'step="1" min="2" max="200"';
+    inputAttrs.TREND_RIDER_ATR_MULT = 'step="0.1" min="0.1" max="10"';
+    inputAttrs.TREND_RIDER_TRACER_PERIOD = 'step="1" min="4" max="500"';
+    inputAttrs.TREND_RIDER_ZONE_PERIOD = 'step="1" min="5" max="500"';
+    inputAttrs.HA_UT_ATR_PERIOD = 'step="1" min="2" max="200"';
+    inputAttrs.HA_UT_ATR_MULT = 'step="0.1" min="0.1" max="10"';
     inputAttrs.ATR_PERIOD = 'step="1" min="2" max="200"';
     inputAttrs.ATR_BASELINE_PERIOD = 'step="1" min="2" max="500"';
     inputAttrs.ATR_RANGE_MULTIPLIER = 'step="0.1" min="0.1" max="10"';
@@ -259,6 +296,21 @@
     inputAttrs.VOL_MA_PERIOD = 'step="1" min="2" max="200"';
     inputAttrs.VOL_SPIKE_MULTIPLIER = 'step="0.1" min="0.1" max="10"';
     inputAttrs.SWING_POINTS_ENTRY_MODE = '';
+    inputAttrs.EMA_CROSS_BUFFER_PCT = 'step="0.05" min="0" max="5"';
+    inputAttrs.BOLL_ZONE_PCT = 'step="1" min="1" max="50"';
+    ['VWAP_REGULAR_SESSION_ONLY', 'LEVELS_REGULAR_SESSION_ONLY', 'CANDLE_RELIABLE_ONLY', 'BOTBULLS5_REQUIRE_VOLUME',
+     'STOCH_CROSS_ZONE_ONLY', 'STOCH_RSI_CROSS_ZONE_ONLY'].forEach(key => { inputAttrs[key] = 'step="1" min="0" max="1"'; });
+    inputAttrs.DAILY_HIGH_LOW_BUFFER_ATR = 'step="0.05" min="0" max="3"';
+    inputAttrs.SWING_POINTS_STRENGTH = 'step="1" min="1" max="10"';
+    inputAttrs.MYSTIC_PULSE_ADX_LENGTH = 'step="1" min="0" max="100"';
+    inputAttrs.BOTBULLS5_MIN_CONFIDENCE = 'step="1" min="40" max="95"';
+    inputAttrs.BOTBULLS5_BREAKOUT_BUFFER_ATR = 'step="0.05" min="0" max="1"';
+    inputAttrs.BOTBULLS5_STRUCTURE_LOOKBACK = 'step="1" min="20" max="120"';
+    inputAttrs.BOTBULLS5_SIGNAL_HOLD_BARS = 'step="1" min="1" max="20"';
+    inputAttrs.TREND_RIDER_ZONE_STD = 'step="0.1" min="0.5" max="5"';
+    inputAttrs.TREND_RIDER_RSI_LOW = 'step="1" min="0" max="100"';
+    inputAttrs.TREND_RIDER_RSI_HIGH = 'step="1" min="0" max="100"';
+    inputAttrs.ROC_THRESHOLD_PCT = 'step="0.05" min="0" max="10"';
 
     const toggleKeys = {
         'RSI': 'ENABLE_RSI',
@@ -276,6 +328,9 @@
         'Swing Points': 'ENABLE_SWING_POINTS',
         'Mystic Pulse': 'ENABLE_MYSTIC_PULSE',
         'Candle Patterns': 'ENABLE_CANDLE_PATTERNS',
+        'Chart Patterns': 'ENABLE_CHART_PATTERNS',
+        'Trend Rider': 'ENABLE_TREND_RIDER',
+        'HA+UT': 'ENABLE_HA_UT',
         'ATR Volatility': 'ENABLE_ATR_VOLATILITY',
         'Stochastic': 'ENABLE_STOCHASTIC',
         'Stochastic RSI': 'ENABLE_STOCH_RSI',
@@ -330,17 +385,20 @@
         'Swing Points': 'Clusters rolling local highs and lows into up to five structural support and resistance levels, scored by rejection, volume, range expansion, recency, and repeated touches. It is price-structure logic rather than a mathematical oscillator.',
         'Mystic Pulse': 'Combines the app’s internal momentum, volatility, and volume features into separate bullish and bearish strength scores.',
         'Candle Patterns': 'Classifies causal single- and multi-candle OHLC formations on every completed bar. The chart keeps recognized annotations from the latest trading day (rolling 24 hours for crypto), attached to the final candle that confirms each formation. Every candle used by the formation is emphasized with a dark outline: one bar for single-candle patterns, two for engulfing/harami/tweezer patterns, and three for star/soldier/crow/inside/outside patterns. Historical annotations are context, not proof of a reversal.',
+        'Chart Patterns': 'Finds classic chart patterns on completed candles: flags, pennants, wedges, triangles, rectangles and channels, double and triple tops and bottoms, head-and-shoulders, cup with handle and rounding bottoms. A pattern is only called when its setup quality is high enough, and the breakout only counts once a completed candle closes through the pattern edge. Patterns that are still forming are shown as neutral, and a pattern that fails is dropped.',
+        'Trend Rider': 'Draws an ATR trailing line that sits below price in an uptrend and above it in a downtrend, flipping only when price closes through it. A smoothed trend tracer, plus upper and lower reversal zones two standard deviations from a moving average, add context, and a 0 to 4 confluence score counts how many of them agree: trail up, price above the tracer, price below the upper zone, and RSI(14) between 40 and 70. All values use completed candles only.',
+        'HA+UT': 'Applies an ATR trailing stop to Heikin-Ashi candles, which smooth out noise before the trail is calculated. The trail sits below the Heikin-Ashi close while it is above the trail and flips above price when the close falls through it. A shorter ATR period and a lower multiplier make the trail hug price and flip more often.',
         'ATR Volatility': 'Measures movement per completed candle with Wilder’s true-range method, including gaps. ATR is not directional. Its expected-range bands are causal: each candle uses the prior close plus or minus the prior completed ATR multiplied by the selected width, so those bands were available before the candle opened.',
         'Stochastic': 'Compares the close with the recent high-low range. A %K/%D turn from below the oversold level supports a bullish reversal; a turn from above overbought supports a bearish reversal.',
         'Stochastic RSI': 'Applies the stochastic calculation to RSI for a faster momentum reading. Use its threshold turns as timing confirmation, especially with a separate trend filter.',
         'CCI': 'Measures price deviation from its statistical mean. The grid treats a rising oversold reading or a falling overbought reading as an exhaustion-reversal setup.',
         'Williams %R': 'Locates the close within the recent range on a -100 to 0 scale. A rising turn from oversold supports buyers; a falling turn from overbought supports sellers.',
         'Rate of Change': 'Expresses the percentage change from a prior close. Positive values indicate upward momentum and negative values indicate downward momentum.',
-        'Momentum': 'Measures the point change from a prior close. The grid compares the current reading with the previous reading to identify improving or weakening momentum.',
+        'Momentum': 'Measures the point change from a prior close. Above zero means price is higher than N bars ago; below zero means lower.',
         'Money Flow Index': 'Combines price and volume into a bounded momentum oscillator. Turns from oversold or overbought are strongest when price structure confirms them.',
-        'Ultimate Oscillator': 'Blends short, medium, and long buying-pressure windows to reduce single-period distortion. High readings favor bullish pressure and low readings favor bearish pressure.',
+        'Ultimate Oscillator': 'Blends short, medium, and long buying-pressure windows to reduce single-period distortion. Readings near 30 mark oversold and near 70 overbought.',
         'Awesome Oscillator': 'Compares fast and slow averages of median price. Above zero favors bullish momentum; below zero favors bearish momentum.',
-        'Chande Momentum Oscillator': 'Compares total gains with total losses on a -100 to +100 scale. Readings beyond the positive or negative threshold identify strong directional momentum.',
+        'Chande Momentum Oscillator': 'Compares total gains with total losses on a -100 to +100 scale. Readings beyond the positive or negative threshold mark overbought or oversold extremes.',
         'True Strength Index': 'Double-smooths price change to reduce noise. The TSI line crossing above its signal favors bulls; crossing below favors bears.',
         'TRIX': 'Tracks the rate of change of a triple-smoothed EMA. Its signal-line relationship identifies sustained momentum while filtering short-term noise.',
         'Know Sure Thing': 'Combines four smoothed rate-of-change horizons. KST above its signal supports broad bullish momentum; below supports bearish momentum.',
@@ -359,7 +417,7 @@
         'VWMA': 'Weights closing prices by volume. Price above the VWMA indicates trading above the volume-weighted trend; below indicates the opposite.',
         'Arnaud Legoux Moving Average': 'Uses a shifted Gaussian weighting curve to balance smoothness and responsiveness. Price relative to ALMA provides a trend filter.',
         'Least Squares Moving Average': 'Fits a rolling linear regression and projects its endpoint. Price above the regression estimate favors bulls; below favors bears.',
-        'On-Balance Volume': 'Adds volume on up closes and subtracts it on down closes. OBV above its signal EMA supports accumulation; below supports distribution.',
+        'On-Balance Volume': 'Adds volume on up closes, subtracts it on down closes and adds nothing when the close is unchanged (Granville). OBV above its signal EMA supports accumulation; below supports distribution.',
         'Chaikin Money Flow': 'Aggregates close location within each bar weighted by volume. Positive values indicate accumulation pressure; negative values indicate distribution.',
         'Accumulation/Distribution': 'Builds a cumulative volume-flow line from each close location in its range. Above its signal EMA supports accumulation; below supports distribution.',
         'Chaikin Oscillator': 'Measures the difference between fast and slow EMAs of the accumulation/distribution line. Positive values favor accumulation; negative values favor distribution.',
@@ -373,7 +431,7 @@
         'EMA Cross': 'One line uses price versus the primary EMA. Two lines use lower-period EMA versus higher-period EMA; a fresh crossing is labeled in the reason and continued alignment keeps its direction. Warm-up is neutral, and EMA always contributes at most one vote.',
         'ADX Trend': 'ADX at or above the strength threshold confirms a trend. Then +DI above −DI is bullish and −DI above +DI is bearish. Below the threshold or during warm-up, the vote is neutral; rising or falling ADX is reported as context rather than used as an extra gate.',
         'Supertrend': 'Bullish while the completed candle is in the upper trend state; bearish while in the lower trend state.',
-        'Bollinger': 'Bullish in the lowest 20% of the band width, bearish in the highest 20%, and neutral in the middle 60%.',
+        'Bollinger': 'Bullish in the lowest part of the band (default 20% of its width, set by Edge Zone % of Band), bearish in the highest part, and neutral in between.',
         'VWAP': 'Bullish on a fresh Session VWAP reclaim or a bullish candle bouncing within 1.5% of it; bearish below Session VWAP; otherwise neutral while merely holding above.',
         'Auto-AVWAP': 'Bullish on a fresh Auto-AVWAP reclaim or a bullish candle bouncing within 1.5% of it; bearish below Auto-AVWAP; otherwise neutral while merely holding above.',
         'Volume Profile': 'Bullish on confirmed acceptance above VAH, a POC reclaim, or a VAL bounce. Bearish on confirmed acceptance below VAL, a POC loss, or a VAH rejection. Otherwise neutral inside value or without a qualifying event.',
@@ -383,28 +441,31 @@
         'Swing Points': 'Bounce / Retest mode votes on confirmed support bounces and resistance rejections. Breakout / Retest mode votes on resistance reclaims and support losses. Without confirmed structure, it is neutral.',
         'Mystic Pulse': 'Bullish or bearish when its corresponding score reaches the threshold; otherwise neutral.',
         'Candle Patterns': 'Only the latest completed candle can contribute a bullish or bearish confluence vote. Earlier same-day annotations remain visible for review but do not keep contributing votes; no current recognized pattern is neutral.',
-        'ATR Volatility': 'ATR must exceed the selected volatility baseline by the selected Expansion Threshold. Then an up close is bullish and a down close is bearish; normal volatility or a flat close is neutral. The range bands are context, not entry or stop orders.',
-        'Stochastic': '%K above %D after a bullish cross or while oversold is bullish; %K below %D after a bearish cross or while overbought is bearish; otherwise neutral.',
-        'Stochastic RSI': '%K above %D after a bullish cross or while oversold is bullish; the inverse after a bearish cross or while overbought is bearish; otherwise neutral.',
+        'Chart Patterns': 'Bullish when a completed candle confirms an upward breakout or reversal from a qualified pattern (for example a bull flag, falling wedge, double bottom or inverse head-and-shoulders); bearish for the mirror-image downside pattern; neutral while a pattern is still forming, after it fails, or when none qualifies. The vote shows the pattern name and its setup quality.',
+        'Trend Rider': 'Bullish while the trailing line is below price (uptrend) and bearish while it is above price (downtrend); the reason shows the confluence score and a FLIP note on the candle where the side changes. Neutral until enough history exists for the trail.',
+        'HA+UT': 'Bullish while the Heikin-Ashi close is above its trailing stop and bearish while it is below; the reason shows the trail level and a FLIP note on the candle where the side changes. Neutral until enough history exists for the trail.',
+        'ATR Volatility': 'ATR never votes: it measures how far price moves, not which way. The card reports whether volatility is expanding (ATR above the baseline by the Expansion Threshold) or normal, and shows the expected next-bar range. Use it for stops, sizing and as a filter beside directional indicators.',
+        'Stochastic': 'Bullish when %K crosses above %D while in the oversold zone; bearish when %K crosses below %D while in the overbought zone. Crosses in the middle of the range are neutral (set Cross In Zone Only to 0 for the older, looser rule).',
+        'Stochastic RSI': 'Bullish when %K crosses above %D while in the oversold zone; bearish for the mirror-image cross in the overbought zone. Mid-range crosses are neutral. It is fast and overlaps with RSI, so treat it as timing, not as independent evidence.',
         'CCI': 'Below the negative threshold and rising is bullish; above the positive threshold and falling is bearish; otherwise neutral.',
         'Williams %R': 'Below Oversold and rising is bullish; above Overbought and falling is bearish; otherwise neutral.',
-        'Rate of Change': 'Above zero is bullish, below zero is bearish, and zero is neutral.',
-        'Momentum': 'A rising reading is bullish, a falling reading is bearish, and an unchanged reading is neutral.',
+        'Rate of Change': 'Above the dead band is bullish, below the negative dead band is bearish, otherwise neutral. The dead band is 0% by default (the zero line).',
+        'Momentum': 'Momentum above zero (price above its close N bars ago) is bullish, below zero is bearish, and exactly zero is neutral.',
         'Money Flow Index': 'Below Oversold and rising is bullish; above Overbought and falling is bearish; otherwise neutral.',
-        'Ultimate Oscillator': 'Above the upper threshold is bullish, below the lower threshold is bearish, and the middle zone is neutral.',
+        'Ultimate Oscillator': 'Votes on the exhaustion turn, like the other bounded oscillators: at or below the oversold level and rising is bullish; at or above the overbought level and falling is bearish; everywhere else is neutral.',
         'Awesome Oscillator': 'Above zero is bullish, below zero is bearish, and zero is neutral.',
-        'Chande Momentum Oscillator': 'Above the positive threshold is bullish, below the negative threshold is bearish, and the middle zone is neutral.',
+        'Chande Momentum Oscillator': 'Votes on the exhaustion turn: at or below the negative threshold and rising is bullish; at or above the positive threshold and falling is bearish; everywhere else is neutral. No reading is shown until a full window of changes exists.',
         'True Strength Index': 'TSI above its signal line is bullish; below is bearish; equal is neutral.',
         'TRIX': 'TRIX above its signal line is bullish; below is bearish; equal is neutral.',
         'Know Sure Thing': 'KST above its signal line is bullish; below is bearish; equal is neutral.',
         'Percentage Price Oscillator': 'A positive histogram is bullish, a negative histogram is bearish, and zero is neutral.',
         'Aroon': 'The dominant line must also reach the Trend Threshold: Aroon Up is bullish and Aroon Down is bearish; otherwise neutral.',
         'Vortex Indicator': 'VI+ above VI− is bullish; VI− above VI+ is bearish; equal is neutral.',
-        'Ichimoku Cloud': 'A strict bullish stack requires Span A > Span B, Base > Span A, Conversion > Base, and Price > Conversion. The exact inverse is bearish; all mixed stacks are neutral.',
-        'Parabolic SAR': 'Price above the SAR dots is bullish; price below is bearish.',
+        'Ichimoku Cloud': 'Bullish needs all four: price above the cloud drawn at this bar (the spans from one base period ago), Conversion above Base, the projected future cloud bullish (Span A above Span B), and today\'s close above the close one base period ago (Chikou clear). The exact inverse is bearish; anything else is neutral.',
+        'Parabolic SAR': 'Price above the SAR dots is bullish; price below is bearish. Follows Wilder rules: the SAR never enters the prior two bars range and flips when price touches it.',
         'Donchian Channels': 'A close above the prior rolling upper channel is bullish; below the prior lower channel is bearish; inside is neutral.',
-        'Keltner Channels': 'Price above the EMA centerline is bullish; below is bearish. Outer bands are volatility context, not extra votes.',
-        'Choppiness Index': 'Only a reading below Trending Below can vote. Then price above the Keltner center is bullish and below is bearish; higher choppiness is neutral.',
+        'Keltner Channels': 'Bullish when the completed candle closes above the upper band; bearish when it closes below the lower band; neutral inside the channel.',
+        'Choppiness Index': 'Only a reading below Trending Below can vote. Then a close above the close one period ago is bullish and below it is bearish; higher choppiness is neutral. It does not depend on any other indicator being selected.',
         'DEMA': 'Price above the average is bullish; below is bearish; equal is neutral.',
         'TEMA': 'Price above the average is bullish; below is bearish; equal is neutral.',
         'Hull Moving Average': 'Price above the average is bullish; below is bearish; equal is neutral.',
@@ -434,141 +495,16 @@
         name,
         `<div class="space-y-3">`
         + `<p><strong>Purpose:</strong> ${body}</p>`
-        + `<p><strong>Where it appears:</strong> ${subchartNames.has(name) ? 'A separate sub-chart below price.' : (name === 'Candle Patterns' ? 'Confirmation markers and emphasized formation candles on the main price chart.' : 'The main price chart.')}</p>`
+        + `<p><strong>Where it appears:</strong> ${subchartNames.has(name) ? 'A separate sub-chart below price.' : (name === 'Candle Patterns' ? 'Confirmation markers and emphasized formation candles on the main price chart.' : (name === 'Chart Patterns' ? 'Breakout markers with the pattern name on the main price chart.' : 'The main price chart.'))}</p>`
         + `<p><strong>How this app votes:</strong> ${signalGuide[name]}</p>`
         + `<p class="text-xs text-slate-500"><strong>Default settings:</strong> ${(configMap[name] || []).length ? configMap[name].map(key => `${labels[key] || key}: ${defaults[key]}`).join(' · ') : 'No adjustable calculation setting for this indicator.'}</p>`
         + `<p class="text-xs text-slate-500"><strong>Beginner note:</strong> Bullish and bearish are rule-based confluence votes, not guaranteed trades. Confirm with market structure, liquidity, and risk limits; test changes on the same ticker and timeframe before deployment.</p>`
         + `</div>`,
     ]));
-    guides.BotBulls5 = `
-        <div class="space-y-3">
-            <p><strong>Purpose:</strong> BotBulls5 is an original, rules-based chart-pattern engine. It normalizes geometry with ATR so one model can analyze stocks and crypto across timeframes without copying a proprietary indicator formula.</p>
-            <p><strong>Patterns covered:</strong><br>
-            • <b>Continuation:</b> bull/bear flags, pennants, symmetrical/ascending/descending triangles, rectangles, price channels, measured moves, and cup with handle.<br>
-            • <b>Reversal:</b> double/triple tops and bottoms, head-and-shoulders top/bottom, rising/falling wedges, rounding bottom, broadening top, and bump-and-run reversal.<br>
-            Direction-neutral structures such as symmetrical triangles, rectangles, channels, and broadening formations do not assume direction; the completed breakout decides the vote.</p>
-            <p><strong>What the chart shows:</strong> BotBulls5 now draws the recognizable pattern directly through the candles. Flags, pennants, and continuation wedges include the impulse pole plus their channel boundaries. Triangles, wedges, rectangles, channels, and broadening structures draw their fitted support/resistance boundaries. Double/triple tops and bottoms and head-and-shoulders draw a purple swing outline with an orange dashed neckline. Rounding, cup-and-handle, measured-move, and bump-and-run structures trace their price path. The thick green/red segment identifies the confirmed breakout leg. The green dashed level is a measured objective—not a forecast guarantee—and the red dashed level is structural invalidation.</p>
-            <p><strong>Live status in Settings:</strong> Open BotBulls5 Settings to see the current or newest confirmed pattern from the latest trading day, including state, direction, setup-quality confidence, breakout, invalidation, measured target, scored reasons, and detection time. FORMING gives advance context before a breakout; CONFIRMED means the breakout candle has closed. Stock calculations use the same Regular or Extended session selected for the chart.</p>
-            <p><strong>Recent-day chart mode:</strong> Dashboard, Bot preview, and Backtest charts show BotBulls5 breakout annotations and the complete formation drawing for the latest trading day (rolling 24 hours for crypto). The drawing includes the detected swing outline or pole, fitted upper/lower boundaries, breakout leg, measured target, and invalidation where applicable. If the latest candle has no active pattern, the newest confirmed setup from that day remains drawn so the breakout decision can be inspected. Prior-day drawings clear automatically. A current pattern may still start before the day when its formation began earlier. Live Dashboard and Bot previews calculate the latest day with 160 hidden warm-up candles for accurate pivots and ATR context. Backtests continue calculating every historical candle so entries, exits, and performance are unchanged.</p>
-            <p><strong>How this app votes:</strong> <span class="text-emerald-600 font-bold">BULLISH</span> requires a fresh completed-candle cross above a qualified bullish completion level. <span class="text-rose-600 font-bold">BEARISH</span> requires a fresh completed-candle cross below a qualified bearish completion level. The marker is attached to that same breakout candle after it closes, not moved to the following candle. Swing pivots must already be causally confirmed before the breakout test. A candle already outside the boundary is not relabeled as a new breakout. FORMING, failed, expired, low-quality, and unconfirmed patterns remain NEUTRAL. Invalidation also uses a completed close, preventing one wick from both confirming and cancelling a setup.</p>
-            <p><strong>Confidence model:</strong> Scores swing symmetry and spacing, prior-trend context, ATR-normalized height, boundary touches and residual error, retracement, convergence/parallelism, volume contraction, and breakout clearance. Confidence is a setup-quality score—not a win rate or probability of profit.</p>
-            <p><strong>Five main settings:</strong><br>
-            • <b>Minimum Setup Quality (70):</b> The primary sensitivity control. Raise to 78–85 for fewer, stricter setups; values below 65 are aggressive.<br>
-            • <b>Breakout Close Buffer (0.10 ATR):</b> Requires the close to clear support or resistance by an ATR fraction. Raise it to reduce marginal breaks, at the cost of later entries.<br>
-            • <b>Structural Lookback (48 bars):</b> Controls the window used for slower reversal, triangle, channel, and rounded structures. Use enough bars for the selected timeframe without making it excessively broad.<br>
-            • <b>Confluence Vote Duration (3 bars):</b> Number of completed bars a confirmed pattern may contribute one directional vote. It does not extend the price target or create additional breakouts.<br>
-            • <b>Require Breakout Volume (Off):</b> When enabled, every pattern needs reliable volume and at least 1.20× its recent baseline at breakout. Leave off for feeds with missing or unreliable volume; available volume still affects quality when this is off.</p>
-            <p><strong>Fixed internal model defaults:</strong> 12-bar impulse, 5–18-bar flag pause, minimum 3 ATR impulse, maximum 50% retracement, maximum width 45% of the impulse, 2-bar confirmed pivots, tight 0.08% equal-level matching with an ATR volatility allowance, 25% convergence, 0.85 consolidation-volume ratio, and 1.20 breakout-volume ratio. All supported pattern families stay enabled. These are intentionally not editable because changing many correlated geometry coefficients encourages curve fitting and makes results inconsistent between tickers.</p>
-            <p class="text-xs text-slate-500"><strong>Risk note:</strong> Pattern recognition is probabilistic. Use the invalidation line for structure-aware risk, avoid treating the measured target as guaranteed, and validate settings out of sample for each ticker and timeframe.</p>
-        </div>`;
-
     function escapeHtml(value) {
         return String(value).replace(/[&<>"']/g, char => ({
             '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
         })[char]);
-    }
-
-    function botBulls5PatternSummary(history, options = {}) {
-        const rows = Array.isArray(history) ? history : [];
-        const selector = window.StandardIndicatorSubcharts?.selectBotBulls5Pattern;
-        const selection = typeof selector === 'function'
-            ? selector(rows, options)
-            : null;
-        if (typeof selector === 'function' && !selection) return null;
-        let rowIndex = selection?.index ?? rows.length - 1;
-        let row = selection?.row ?? rows[rowIndex];
-        if (!row?.bb5_pattern || row.bb5_pattern === 'NONE') return null;
-        const latestPatternState = String(row.bb5_state || 'FORMING').toUpperCase();
-        if (
-            row.bb5_state === 'CONFIRMED_BULLISH'
-            || row.bb5_state === 'CONFIRMED_BEARISH'
-            || row.bb5_state === 'FAILED'
-        ) {
-            for (let index = rowIndex; index >= 0; index -= 1) {
-                if (
-                    rows[index]?.bb5_pattern === row.bb5_pattern
-                    && (rows[index]?.bb5_breakout_bull || rows[index]?.bb5_breakout_bear)
-                ) {
-                    row = rows[index];
-                    rowIndex = index;
-                    break;
-                }
-            }
-        }
-
-        const patternCode = String(row.bb5_pattern);
-        const pattern = patternCode
-            .replace(/_(BULLISH|BEARISH)$/, '')
-            .toLowerCase()
-            .replaceAll('_', ' ')
-            .replace(/\b\w/g, letter => letter.toUpperCase());
-        const stateCode = latestPatternState;
-        const state = stateCode.startsWith('CONFIRMED')
-            ? 'Confirmed'
-            : stateCode === 'FAILED'
-                ? 'Invalidated'
-                : 'Forming';
-        const directionValue = Number(row.bb5_direction)
-            || (row.bb5_breakout_bull ? 1 : row.bb5_breakout_bear ? -1 : 0);
-        const directionWord = directionValue > 0 ? 'Bullish' : directionValue < 0 ? 'Bearish' : 'Neutral';
-        const continuationPattern = /(FLAG|PENNANT|TRIANGLE|RECTANGLE|PRICE_CHANNEL|MEASURED_MOVE|CONTINUATION)/.test(patternCode);
-        const reversalPattern = /(TOP|BOTTOM|HEAD_AND_SHOULDERS|BUMP_AND_RUN|ROUNDING|CUP_WITH_HANDLE|WEDGE)/.test(patternCode);
-        const finite = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
-            ? Number(value)
-            : null;
-        return {
-            pattern,
-            state,
-            direction: `${directionWord} ${continuationPattern ? 'continuation' : reversalPattern ? 'reversal' : 'breakout'}`,
-            confidence: finite(row.bb5_confidence),
-            breakout: finite(row.bb5_breakout_level)
-                ?? (directionValue >= 0 ? finite(row.bb5_upper) : finite(row.bb5_lower)),
-            invalidation: finite(row.bb5_invalidation),
-            target: finite(row.bb5_target),
-            reasons: String(row.bb5_reasons || 'Qualified ATR-normalized structure; waiting for complete metadata refresh.'),
-            time: finite(row.time),
-            barsAgo: Math.max(0, rows.length - 1 - rowIndex),
-        };
-    }
-
-    function renderBotBulls5PatternSummary(container, history, options = {}) {
-        if (!container) return;
-        const summary = botBulls5PatternSummary(history, options);
-        const panel = document.createElement('div');
-        panel.className = 'mb-4 rounded-xl border border-indigo-100 bg-gradient-to-br from-indigo-50 to-white p-3 text-xs text-slate-700';
-        panel.dataset.botbulls5Summary = 'true';
-        if (!summary) {
-            panel.innerHTML = `
-                <div class="font-black text-indigo-950 uppercase tracking-wide">Live pattern status</div>
-                <p class="mt-1 text-slate-500">No qualified BotBulls5 pattern is present in the loaded chart range. Enable BotBulls5 and refresh the chart to populate forming or confirmed setup details.</p>`;
-            container.prepend(panel);
-            return;
-        }
-        const price = value => value === null
-            ? '—'
-            : `$${value.toLocaleString(undefined, { minimumFractionDigits: value < 10 ? 4 : 2, maximumFractionDigits: value < 10 ? 4 : 2 })}`;
-        const detectedAt = summary.time === null
-            ? '—'
-            : new Date(summary.time * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
-        const recency = summary.barsAgo === 0
-            ? 'latest loaded candle'
-            : `${summary.barsAgo} bar${summary.barsAgo === 1 ? '' : 's'} ago`;
-        panel.innerHTML = `
-            <div class="flex items-center justify-between gap-2">
-                <div class="font-black text-indigo-950">${escapeHtml(summary.pattern)} — ${escapeHtml(summary.state)}</div>
-                <span class="rounded-full bg-indigo-100 px-2 py-0.5 text-[0.6rem] font-black uppercase tracking-wide text-indigo-700">Latest-day chart result</span>
-            </div>
-            <div class="mt-2 grid grid-cols-2 gap-x-3 gap-y-1">
-                <div><span class="text-slate-400">Direction:</span> <span class="font-bold">${escapeHtml(summary.direction)}</span></div>
-                <div><span class="text-slate-400">Confidence:</span> <span class="font-bold">${summary.confidence === null ? '—' : `${summary.confidence.toFixed(0)}%`}</span></div>
-                <div><span class="text-slate-400">Breakout:</span> <span class="font-bold">${price(summary.breakout)}</span></div>
-                <div><span class="text-slate-400">Invalidation:</span> <span class="font-bold">${price(summary.invalidation)}</span></div>
-                <div class="col-span-2"><span class="text-slate-400">Measured target:</span> <span class="font-bold">${price(summary.target)}</span></div>
-            </div>
-            <div class="mt-2"><span class="text-slate-400">Reasons:</span> ${escapeHtml(summary.reasons).replaceAll(';', ',')}</div>
-            <div class="mt-2 border-t border-indigo-100 pt-2 text-[0.65rem] text-slate-500">Detected on ${escapeHtml(detectedAt)} · ${escapeHtml(recency)}. Confirmed markers are attached to the breakout candle after that candle closes; they are not shifted to the next candle.</div>
-            <div class="mt-1 text-[0.6rem] text-slate-400">Confidence is setup quality, not probability of profit. Targets and invalidation levels are planning references, not guarantees.</div>`;
-        container.prepend(panel);
     }
 
     function buildStrategyCard(item, mode, checkClass, changeHandler) {
@@ -618,7 +554,7 @@
             });
             const standardNames = new Set(catalog.map(item => item.name));
             const defaultShown = new Set(
-                (window.STANDARD_INDICATOR_DEFAULT_NAMES || catalog.slice(0, 12)).slice(0, 12)
+                (window.STANDARD_INDICATOR_DEFAULT_NAMES || catalog.slice(0, 15)).slice(0, 15)
             );
             container.querySelectorAll('.indicator-card').forEach(card => {
                 const name = card.querySelector('input.strategy-indicator-check')?.value;
@@ -669,6 +605,9 @@
         'Prior Day High/Low',
         'Swing Points',
         'Pivot Points (S/R)',
+        'MACD',
+        'Bollinger',
+        'Chart Patterns',
     ]);
     window.STANDARD_INDICATOR_CONFIG_MAP = Object.freeze(configMap);
     window.STANDARD_INDICATOR_DEFAULTS = Object.freeze(defaults);
@@ -677,8 +616,6 @@
     window.STANDARD_INDICATOR_TOGGLE_KEYS = Object.freeze(toggleKeys);
     window.INDICATOR_GUIDES = Object.freeze(guides);
     window.ensureStandardIndicatorCards = ensureStandardIndicatorCards;
-    window.getBotBulls5PatternSummary = botBulls5PatternSummary;
-    window.renderBotBulls5PatternSummary = renderBotBulls5PatternSummary;
     window.wireMovingAverageLineToggles = wireMovingAverageLineToggles;
 
     ensureStandardIndicatorCards();

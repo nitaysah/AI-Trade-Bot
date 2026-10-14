@@ -20,7 +20,7 @@
 
     #globalMaxDrawdown,
     #globalHardStop {
-        font-size: 0.48rem !important;
+        font-size: 0.7rem !important;
         height: auto !important;
         padding: 0 !important;
         line-height: 1 !important;
@@ -32,7 +32,7 @@
         align-items: center !important;
         justify-content: flex-end !important;
         gap: 0.08rem !important;
-        min-height: 1.05rem !important;
+        min-height: 1.25rem !important;
         padding: 0 0.22rem !important;
         border: 1px solid rgba(224, 231, 255, 0.5) !important;
         border-radius: 0.375rem !important;
@@ -51,7 +51,7 @@
     .global-risk-percent-symbol {
         display: flex !important;
         align-items: center !important;
-        font-size: 0.48rem !important;
+        font-size: 0.7rem !important;
         flex: 0 0 auto !important;
         line-height: 1 !important;
     }
@@ -436,41 +436,6 @@
     opacity: 0.6;
 }
 
-/* ── Premium Signal Cards (Gold) ── */
-.signal-card.premium-bullish {
-    border: 2px solid #00ff00;
-    background: rgba(0, 255, 0, 0.15);
-    box-shadow: 0 0 12px rgba(0, 255, 0, 0.5);
-}
-
-.signal-card.premium-bearish {
-    border: 2px solid #ff0000;
-    background: rgba(255, 0, 0, 0.15);
-    box-shadow: 0 0 12px rgba(255, 0, 0, 0.5);
-}
-
-.signal-card.premium-neutral {
-    border: 1px solid rgba(251, 191, 36, 0.3);
-    background: linear-gradient(135deg, rgba(168, 85, 247, 0.03), rgba(251, 191, 36, 0.05));
-}
-
-.signal-card.premium-bullish:hover {
-    border-color: #00ff00;
-    box-shadow: 0 0 20px rgba(0, 255, 0, 0.8);
-    background: rgba(0, 255, 0, 0.25);
-}
-
-.signal-card.premium-bearish:hover {
-    border-color: #ff0000;
-    box-shadow: 0 0 20px rgba(255, 0, 0, 0.8);
-    background: rgba(255, 0, 0, 0.25);
-}
-
-.signal-card.premium-neutral:hover {
-    border-color: rgba(245, 158, 11, 0.7);
-    box-shadow: 0 4px 16px rgba(251, 191, 36, 0.18);
-}
-
 #botChartPreviewModal .signal-card {
     padding: 0.45rem 0.55rem;
     border-radius: 0.6rem;
@@ -507,10 +472,7 @@
     background: rgba(255, 255, 255, 0.85);
     border-color: rgba(139, 92, 246, 0.4);
 }
-
-/* Keep the full confluence grid visible while fresh signals are loading. */
-#signalConfluencePanel.signal-confluence-loading #signalGrid,
-#signalConfluencePanel.signal-confluence-loading #premiumSignalGrid {
+#signalConfluencePanel.signal-confluence-loading #signalGrid {
     filter: blur(3px);
     opacity: 0.62;
     pointer-events: none;
@@ -1103,13 +1065,8 @@
         width: 10px;
         height: 10px;
     }
-    #botChartPreviewSignalGrid,
-    #botChartPreviewPremiumSignalGrid {
+#botChartPreviewSignalGrid {
         grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
-    }
-
-    #premiumSignalGrid {
-        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
     }
 }
 
@@ -1119,69 +1076,46 @@
         grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
         gap: 0.3rem !important;
     }
-
-    #signalGrid .signal-card,
-    #premiumSignalGrid .signal-card {
+#signalGrid .signal-card {
         padding: 0.25rem 0.18rem;
         min-height: 2.9rem;
         border-radius: 0.45rem;
     }
-
-    #premiumSignalGrid {
-        grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
-        gap: 0.22rem !important;
-    }
-
-    #signalGrid .signal-card > div:first-child,
-    #premiumSignalGrid .signal-card > div:first-child {
+#signalGrid .signal-card > div:first-child {
         gap: 0.1rem;
         margin-bottom: 0.1rem !important;
     }
-
-    #signalGrid .signal-card span.font-bold,
-    #premiumSignalGrid .signal-card span.font-bold {
+#signalGrid .signal-card span.font-bold {
         font-size: 0.48rem;
         line-height: 1.02;
     }
-
-    #signalGrid .signal-card p,
-    #premiumSignalGrid .signal-card p {
+#signalGrid .signal-card p {
         font-size: 0.41rem;
         line-height: 1.04;
         -webkit-line-clamp: 2;
         line-clamp: 2;
     }
-
-    #signalGrid .signal-card svg,
-    #premiumSignalGrid .signal-card svg {
+#signalGrid .signal-card svg {
         width: 0.5rem;
         height: 0.5rem;
     }
-
-    #signalGrid .signal-card button,
-    #premiumSignalGrid .signal-card button {
+#signalGrid .signal-card button {
         padding: 0.08rem;
     }
-
-    #signalGrid .signal-card .text-sm,
-    #premiumSignalGrid .signal-card .text-sm {
+#signalGrid .signal-card .text-sm {
         font-size: 0.52rem;
     }
 }
-
-/* Show labels when panes are active */
 #oscChart_rsi:not([style*="display: none"]) ~ .chart-osc-label,
 #oscChart_rsi:not([style*="display: none"]) + .chart-osc-label,
 .relative:has(#oscChart_rsi:not([style*="display: none"])) .chart-osc-label,
 .relative:has(#oscChart_macd:not([style*="display: none"])) .chart-osc-label,
 .relative:has(#oscChart_mystic:not([style*="display: none"])) .chart-osc-label,
 .relative:has(#oscChart_adx:not([style*="display: none"])) .chart-osc-label,
-.relative:has(#oscChart_botbulls1:not([style*="display: none"])) .chart-osc-label,
 .relative:has(#botChartPreviewOsc_rsi:not([style*="display: none"])) .chart-osc-label,
 .relative:has(#botChartPreviewOsc_macd:not([style*="display: none"])) .chart-osc-label,
 .relative:has(#botChartPreviewOsc_mystic:not([style*="display: none"])) .chart-osc-label,
-.relative:has(#botChartPreviewOsc_adx:not([style*="display: none"])) .chart-osc-label,
-.relative:has(#botChartPreviewOsc_botbulls1:not([style*="display: none"])) .chart-osc-label {
+.relative:has(#botChartPreviewOsc_adx:not([style*="display: none"])) .chart-osc-label {
     display: block;
 }
 
@@ -2637,12 +2571,6 @@
         height: 0.85rem !important;
     }
 
-    /* Premium Indicators Banner */
-    #botStrategyModal .col-span-full.mt-3.pt-3 {
-        margin-top: 0.25rem !important;
-        padding-top: 0.25rem !important;
-    }
-
     /* Buy/Sell Signal Counters */
     #strategyBuyFields_regular > div,
     #strategySellFields_regular > div,
@@ -2771,16 +2699,16 @@
         padding: 0.35rem 0.5rem !important;
     }
     .global-risk-percent-input {
-        font-size: 0.48rem !important;
+        font-size: 0.7rem !important;
     }
     .global-risk-percent-symbol {
-        font-size: 0.48rem !important;
+        font-size: 0.7rem !important;
     }
 
     #globalRiskCard .global-risk-percent-input,
     #globalRiskCard .global-risk-percent-symbol {
         font-family: inherit !important;
-        font-size: 0.55rem !important;
+        font-size: 0.7rem !important;
         font-weight: 400 !important;
         line-height: 1 !important;
     }
@@ -2979,6 +2907,16 @@
     #tradelistContainer .watchlist-item button.bg-blue-50 svg {
         width: 0.55rem !important;
         height: 0.55rem !important;
+    }
+    /* OPEN CHART, Fundamentals and Earnings share one size on a card: the two rules above shrink only the chart button (text
+       0.44rem, tighter padding) and give the research badges different padding, so the three looked unequal. This comes
+       after them with the same specificity and sets all three alike. */
+    #tradelistContainer .watchlist-item button.research-chip {
+        font-size: 0.5rem !important;
+        line-height: 0.75rem !important;
+        letter-spacing: -0.025em !important;
+        padding: 0.125rem 0.25rem !important;
+        border-radius: 0.375rem !important;
     }
 
     /* Entry & Exit indicator tags container */
@@ -3955,7 +3893,7 @@
     }
 }
 
-/* Backtest indicator grids: keep regular and premium cards aligned and use
+/* Backtest indicator grids: keep the cards aligned and use
    one typography scale for both the static and dynamically-added cards. */
 html body #indicatorChecksContainer_bt_regular,
 html body #indicatorChecksContainer_bt_options {
@@ -3998,11 +3936,6 @@ html body #indicatorChecksContainer_bt_options .indicator-card input[type="check
     height: 1rem !important;
 }
 
-html body #indicatorChecksContainer_bt_regular .indicator-card:has(input[value="Botbulls4 News AI"]),
-html body #indicatorChecksContainer_bt_options .indicator-card:has(input[value="Botbulls4 News AI"]) {
-    display: none !important;
-}
-
 @media (max-width: 768px) {
     html body #indicatorChecksContainer_bt_regular,
     html body #indicatorChecksContainer_bt_options {
@@ -4042,62 +3975,44 @@ html body #indicatorChecksContainer_bt_options .indicator-card:has(input[value="
         height: 0.8rem !important;
     }
 }
-
-/* The manual replay signal grids use different card markup, so keep their
-   typography and responsive columns aligned with the strategy grids. */
-html body #manualBtChartPreviewSignalGrid,
-html body #manualBtChartPreviewPremiumSignalGrid {
+html body #manualBtChartPreviewSignalGrid {
     grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
     gap: 0.5rem !important;
 }
-
-html body #manualBtChartPreviewSignalGrid .signal-card,
-html body #manualBtChartPreviewPremiumSignalGrid .signal-card {
+html body #manualBtChartPreviewSignalGrid .signal-card {
     min-width: 0;
     min-height: 3.25rem;
     padding: 0.55rem 0.6rem !important;
 }
-
-html body #manualBtChartPreviewSignalGrid .signal-card span.font-bold,
-html body #manualBtChartPreviewPremiumSignalGrid .signal-card span.font-bold {
+html body #manualBtChartPreviewSignalGrid .signal-card span.font-bold {
     font-size: 0.68rem !important;
     line-height: 1.15 !important;
 }
-
-html body #manualBtChartPreviewSignalGrid .signal-card p,
-html body #manualBtChartPreviewPremiumSignalGrid .signal-card p {
+html body #manualBtChartPreviewSignalGrid .signal-card p {
     font-size: 0.52rem !important;
     line-height: 1.1 !important;
 }
 
 @media (max-width: 768px) {
-    html body #manualBtChartPreviewSignalGrid,
-    html body #manualBtChartPreviewPremiumSignalGrid {
+html body #manualBtChartPreviewSignalGrid {
         grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
         gap: 0.35rem !important;
     }
-
-    html body #manualBtChartPreviewSignalGrid .signal-card,
-    html body #manualBtChartPreviewPremiumSignalGrid .signal-card {
+html body #manualBtChartPreviewSignalGrid .signal-card {
         min-height: 3rem;
         padding: 0.38rem 0.35rem !important;
     }
-
-    html body #manualBtChartPreviewSignalGrid .signal-card span.font-bold,
-    html body #manualBtChartPreviewPremiumSignalGrid .signal-card span.font-bold {
+html body #manualBtChartPreviewSignalGrid .signal-card span.font-bold {
         font-size: 0.58rem !important;
         line-height: 1.1 !important;
     }
-
-    html body #manualBtChartPreviewSignalGrid .signal-card p,
-html body #manualBtChartPreviewPremiumSignalGrid .signal-card p {
+html body #manualBtChartPreviewSignalGrid .signal-card p {
         font-size: 0.45rem !important;
         line-height: 1.05 !important;
     }
 }
 
-/* Bots settings premium indicators use three cards per row at every viewport.
-   Regular indicators remain four per row on desktop and three on mobile. */
+/* Bots settings: four indicator cards per row on desktop and three on mobile. */
 @media (min-width: 769px) {
     html body #indicatorChecksContainer_regular,
     html body #indicatorChecksContainer_options,
@@ -4109,12 +4024,6 @@ html body #manualBtChartPreviewPremiumSignalGrid .signal-card p {
     html body #indicatorChecksContainer_options > .indicator-card,
     html body #indicatorChecksContainer_ai_autopilot > .indicator-card {
         grid-column: span 3;
-    }
-
-    html body #indicatorChecksContainer_regular > .indicator-card[class*="border-amber-300/30"],
-    html body #indicatorChecksContainer_options > .indicator-card[class*="border-amber-300/30"],
-    html body #indicatorChecksContainer_ai_autopilot > .indicator-card[class*="border-amber-300/30"] {
-        grid-column: span 4;
     }
 }
 
@@ -4136,8 +4045,7 @@ html body #manualBtChartPreviewPremiumSignalGrid .signal-card p {
    medium-width mobile browsers where the utility breakpoint would otherwise
    switch the preview back to four columns. */
 @media (max-width: 768px) {
-    html body #botChartPreviewSignalGrid,
-    html body #botChartPreviewPremiumSignalGrid {
+html body #botChartPreviewSignalGrid {
         grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
     }
 
@@ -4245,3 +4153,505 @@ html body #manualBtChartPreviewPremiumSignalGrid .signal-card p {
         letter-spacing: -0.02em !important;
     }
 }
+
+/* ── Bots page: Alpaca status inside Total Equity card ── */
+#totalEquityAlpaca {
+    position: relative;
+    z-index: 1;
+}
+
+#totalEquityAlpaca #alpacaLinkRedirectBtn,
+#totalEquityAlpaca #alpacaLinkStatus {
+    height: 1.5rem !important;
+    padding: 0 0.5rem !important;
+    font-size: 0.5rem !important;
+    border-width: 1px !important;
+    letter-spacing: 0.04em !important;
+    max-width: 100%;
+}
+
+#totalEquityAlpaca #alpacaLinkStatus > #alpacaStatusDot {
+    margin-right: 0.3rem !important;
+    flex-shrink: 0;
+}
+
+#totalEquityAlpaca #alpacaLinkStatus > #alpacaStatusText {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#totalEquityAlpaca #alpacaLinkStatus > #btnUnlinkAlpaca {
+    display: inline-flex !important;
+    align-items: center;
+    margin-left: 0.35rem !important;
+    padding: 0.1rem 0.45rem !important;
+    font-size: 0.45rem !important;
+    line-height: 1 !important;
+    flex-shrink: 0;
+}
+
+#totalEquityAlpaca #alpacaLinkStatus > #btnUnlinkAlpaca.hidden {
+    display: none !important;
+}
+
+/* Backtest only: smaller strategy definition text in the Strategy panel.
+   Bots and Screener keep the shared default size. */
+[data-page="backtest"] .sp-definition {
+    font-size: 0.55rem;
+    line-height: 1.35;
+}
+
+@media (min-width: 640px) {
+    [data-page="backtest"] .sp-definition {
+        font-size: 0.6rem;
+    }
+}
+
+/* Desktop indicator grids: five cards per row on Dashboard, Bots, Screener and Backtest (pickers and signal grids).
+   Below 1024px the existing four-per-row and phone layouts are untouched. Text is reduced so names fit the box. */
+@media (min-width: 1024px) {
+    html body #signalGrid,
+    html body #botChartPreviewSignalGrid,
+    html body #manualBtChartPreviewSignalGrid,
+    html body #indicatorChecksContainer_regular,
+    html body #indicatorChecksContainer_options,
+    html body #indicatorChecksContainer_ai_autopilot,
+    html body #indicatorChecksContainer_bt_regular,
+    html body #indicatorChecksContainer_bt_options {
+        grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+        gap: 0.4rem !important;
+    }
+
+    html body #indicatorChecksContainer_regular > .indicator-card,
+    html body #indicatorChecksContainer_options > .indicator-card,
+    html body #indicatorChecksContainer_ai_autopilot > .indicator-card {
+        grid-column: auto;
+    }
+
+    html body #indicatorChecksContainer_regular .indicator-card,
+    html body #indicatorChecksContainer_options .indicator-card,
+    html body #indicatorChecksContainer_ai_autopilot .indicator-card,
+    html body #indicatorChecksContainer_bt_regular .indicator-card,
+    html body #indicatorChecksContainer_bt_options .indicator-card {
+        min-width: 0;
+        padding: 0.4rem 0.45rem !important;
+    }
+
+    html body #indicatorChecksContainer_regular .indicator-card span.font-black,
+    html body #indicatorChecksContainer_options .indicator-card span.font-black,
+    html body #indicatorChecksContainer_ai_autopilot .indicator-card span.font-black,
+    html body #indicatorChecksContainer_bt_regular .indicator-card span.font-black,
+    html body #indicatorChecksContainer_bt_options .indicator-card span.font-black {
+        font-size: 0.52rem !important;
+        line-height: 1.1 !important;
+        letter-spacing: -0.01em !important;
+        overflow-wrap: break-word;
+        word-break: normal;
+    }
+
+    html body #indicatorChecksContainer_regular .indicator-card input[type="checkbox"],
+    html body #indicatorChecksContainer_options .indicator-card input[type="checkbox"],
+    html body #indicatorChecksContainer_ai_autopilot .indicator-card input[type="checkbox"] {
+        width: 0.85rem !important;
+        height: 0.85rem !important;
+        flex-shrink: 0;
+    }
+
+    html body #indicatorChecksContainer_regular .indicator-card button svg,
+    html body #indicatorChecksContainer_options .indicator-card button svg,
+    html body #indicatorChecksContainer_ai_autopilot .indicator-card button svg {
+        width: 0.7rem !important;
+        height: 0.7rem !important;
+    }
+
+    html body #indicatorChecksContainer_regular .indicator-card span.font-bold,
+    html body #indicatorChecksContainer_options .indicator-card span.font-bold,
+    html body #indicatorChecksContainer_ai_autopilot .indicator-card span.font-bold,
+    html body #indicatorChecksContainer_bt_regular .indicator-card span.font-bold,
+    html body #indicatorChecksContainer_bt_options .indicator-card span.font-bold {
+        font-size: 0.44rem !important;
+        letter-spacing: 0 !important;
+    }
+
+    html body #signalGrid .signal-card,
+    html body #botChartPreviewSignalGrid .signal-card,
+    html body #manualBtChartPreviewSignalGrid .signal-card {
+        min-width: 0;
+        padding: 0.4rem 0.45rem;
+    }
+
+    html body #signalGrid .signal-card span.font-bold,
+    html body #botChartPreviewSignalGrid .signal-card span.font-bold,
+    html body #manualBtChartPreviewSignalGrid .signal-card span.font-bold {
+        font-size: 0.56rem !important;
+        line-height: 1.1;
+        overflow-wrap: break-word;
+    }
+
+    html body #signalGrid .signal-card p,
+    html body #botChartPreviewSignalGrid .signal-card p,
+    html body #manualBtChartPreviewSignalGrid .signal-card p {
+        font-size: 0.5rem !important;
+        line-height: 1.15;
+    }
+}
+
+/* The broker secret is masked with CSS instead of type="password" so password managers do not treat the page as a
+   login form and autofill the account username into the ticker search box. */
+.secret-mask { -webkit-text-security: disc; text-security: disc; }
+
+/* One look for every section title in the strategy settings (Bots, Screener, Backtest): same size, weight, colour
+   and spacing as "Risk Management", on phone and desktop. */
+html body :is(#botStrategyModal, #regularTradingBox, #btRegularTradingBox, #btSettingsContainer, #optionsTradingBox, #btOptionsTradingBox) .settings-section-title {
+    font-size: 0.875rem !important;
+    line-height: 1.25rem !important;
+    font-weight: 900 !important;
+    color: #312e81 !important;
+    letter-spacing: 0.1em !important;
+    text-transform: uppercase !important;
+}
+
+/* Backtest "Smart Re-entry Controls" box: same compact look as the Bots settings (sizes, spacing, radius). */
+#btRegularTradingBox #strategyReentryOption_regular { padding: 0.45rem 0.65rem !important; border-radius: 0.75rem !important; }
+#btRegularTradingBox #strategyReentryOption_regular .rounded-2xl { border-radius: 0.75rem !important; padding: 0.45rem 0.65rem !important; }
+#btRegularTradingBox #strategyReentryOption_regular .settings-section-title { font-size: 0.875rem !important; }
+#btRegularTradingBox #strategyReentryOption_regular label:not(.settings-section-title) { font-size: 0.6rem !important; letter-spacing: 0.02em !important; margin-bottom: 0.15rem !important; }
+#btRegularTradingBox #strategyReentryOption_regular p { font-size: 0.58rem !important; line-height: 1.2 !important; }
+#btRegularTradingBox #strategyReentryOption_regular input[type="number"],
+#btRegularTradingBox #strategyReentryOption_regular input[type="text"],
+#btRegularTradingBox #strategyReentryOption_regular select { padding: 0.3rem 0.5rem !important; font-size: 0.68rem !important; border-radius: 0.45rem !important; height: auto !important; }
+@media (max-width: 767px) {
+    #btRegularTradingBox #strategyReentryOption_regular { padding: 0.4rem 0.5rem !important; border-radius: 0.65rem !important; }
+    #btRegularTradingBox #strategyReentryOption_regular .rounded-2xl { border-radius: 0.65rem !important; padding: 0.4rem 0.5rem !important; }
+    #btRegularTradingBox #strategyReentryOption_regular label:not(.settings-section-title) { font-size: 0.55rem !important; }
+    #btRegularTradingBox #strategyReentryOption_regular p { font-size: 0.5rem !important; }
+    #btRegularTradingBox #strategyReentryOption_regular input[type="number"],
+    #btRegularTradingBox #strategyReentryOption_regular input[type="text"],
+    #btRegularTradingBox #strategyReentryOption_regular select { padding: 0.25rem 0.4rem !important; font-size: 0.62rem !important; }
+}
+
+/* Backtest: the page's own compact CSS shrinks .text-sm to 0.75rem, so restate the shared header sizes with a
+   more specific selector. Main headers match Trade Allocation; sub-headers inside Entry / Exit stay small like Bots. */
+html body.backtest-page #btSettingsContainer .settings-section-title.settings-section-title {
+    font-size: 0.875rem !important;
+    line-height: 1.25rem !important;
+    letter-spacing: 0.1em !important;
+}
+html body.backtest-page #btSettingsContainer .settings-sub-title.settings-sub-title {
+    font-size: 0.55rem !important;
+    line-height: 1.2 !important;
+    letter-spacing: 0.02em !important;
+    font-weight: 900 !important;
+    color: #312e81 !important;
+    text-transform: uppercase !important;
+}
+
+/* Bots and Screener, phone and desktop: a collapsed card keeps its first line and its summary box (Bots summary / Watch summary);
+   everything else is hidden. The chevron rotates when collapsed. */
+.active-bot.bot-card-collapsed > [data-bot-card-body] > :not([data-bots-scan-card]) { display: none; }
+.active-bot.bot-card-collapsed [data-bots-scan-card] > :not([data-bots-watch-summary]) { display: none; }
+.active-bot.bot-card-collapsed .bot-card-chevron svg { transform: rotate(-90deg); }
+#tradelistContainer .watchlist-item.screener-card-collapsed > :not(:first-child):not([data-card-summary]) { display: none; }
+#tradelistContainer .watchlist-item.screener-card-collapsed .screener-card-chevron svg { transform: rotate(-90deg); }
+
+/* Bots page, Total Equity card: the Alpaca button sits in the top-right corner, full size with the word Unlink. */
+#totalEquityAlpaca { flex: 0 1 auto; margin-left: auto; max-width: 100%; }
+#totalEquityAlpaca #alpacaLinkRedirectBtn,
+#totalEquityAlpaca #alpacaLinkStatus {
+    height: 1.9rem !important;
+    padding: 0 0.85rem !important;
+    font-size: 0.62rem !important;
+    border-width: 2px !important;
+    letter-spacing: 0.05em !important;
+}
+#totalEquityAlpaca #alpacaLinkStatus > #alpacaStatusDot { width: 0.5rem !important; height: 0.5rem !important; margin-right: 0.4rem !important; }
+#totalEquityAlpaca #alpacaLinkStatus > #btnUnlinkAlpaca {
+    margin-left: 0.6rem !important;
+    padding: 0.2rem 0.65rem !important;
+    font-size: 0.55rem !important;
+}
+
+/* Bots page, Global Risk card on phones: the shared "no zoom" rule forces every input to 16px with very high
+   specificity, which made the 50 / 100 percent values look oversized next to their labels. Restate the card's own
+   compact size with higher specificity. (Browsers that zoom on focus below 16px, such as iPhone Safari, may zoom when
+   these two fields are tapped.) */
+@media (max-width: 768px) {
+    html body #dashboardContent #globalRiskCard input#globalMaxDrawdown.global-risk-percent-input,
+    html body #dashboardContent #globalRiskCard input#globalHardStop.global-risk-percent-input {
+        font-size: 0.7rem !important;
+        line-height: 1 !important;
+    }
+}
+
+/* Wide desktop (6 narrow cards): keep the Alpaca button, with the word Unlink, inside the Total Equity card. */
+@media (min-width: 1280px) {
+    #totalEquityAlpaca #alpacaLinkRedirectBtn,
+    #totalEquityAlpaca #alpacaLinkStatus { padding: 0 0.5rem !important; font-size: 0.55rem !important; letter-spacing: 0.02em !important; }
+    #totalEquityAlpaca #alpacaLinkStatus > #alpacaStatusDot { margin-right: 0.3rem !important; }
+    #totalEquityAlpaca #alpacaLinkStatus > #btnUnlinkAlpaca { margin-left: 0.35rem !important; padding: 0.15rem 0.45rem !important; font-size: 0.5rem !important; }
+}
+
+/* Phones: two cards per row, so the Total Equity card is only about 175px wide. The Alpaca button sits in its
+   top-right corner, compact enough to share the title's line and still showing the word Unlink. */
+@media (max-width: 767px) {
+    #totalEquityCard { padding: 0.55rem 0.5rem !important; }
+    #totalEquityTitle { font-size: 0.5rem !important; letter-spacing: 0.01em !important; }
+    #totalEquityAlpaca #alpacaLinkRedirectBtn,
+    #totalEquityAlpaca #alpacaLinkStatus { height: 1.15rem !important; padding: 0 0.3rem !important; font-size: 0.42rem !important; border-width: 1px !important; letter-spacing: 0 !important; }
+    #totalEquityAlpaca #alpacaLinkStatus > #alpacaStatusDot { width: 0.3rem !important; height: 0.3rem !important; margin-right: 0.18rem !important; }
+    #totalEquityAlpaca #alpacaLinkStatus > #btnUnlinkAlpaca { margin-left: 0.2rem !important; padding: 0.12rem 0.28rem !important; font-size: 0.38rem !important; line-height: 1 !important; letter-spacing: 0 !important; }
+}
+
+/* ---- Smart Re-entry Controls: master toggle + checkbox rules (reentry-master.js) ---- */
+.reentry-box .reentry-head { align-items: center; }
+.reentry-box .reentry-master { margin-left: auto; flex: none; }
+.reentry-box.reentry-off > :not(.reentry-head) { display: none !important; }
+.reentry-box.reentry-off .reentry-head { margin-bottom: 0; }
+.reentry-collapsed { display: none !important; }
+/* The three rules are plain checkboxes (the switch markup is reused, so ids and handlers are untouched). */
+.reentry-check { padding: 0.55rem; margin: -0.55rem; flex: none; }
+.reentry-check > div {
+    width: 1.25rem !important; height: 1.25rem !important; border-radius: 0.35rem !important;
+    background: rgba(255, 255, 255, 0.6) !important; border: 2px solid #a5b4fc !important;
+    box-sizing: border-box !important; position: relative !important; transition: background 0.15s, border-color 0.15s;
+}
+.reentry-check > div::after {
+    content: '' !important; position: absolute !important; top: 1px !important; left: 5px !important;
+    width: 5px !important; height: 10px !important; background: transparent !important; border-radius: 0 !important;
+    border: solid #fff !important; border-width: 0 2px 2px 0 !important;
+    transform: rotate(45deg) scale(0) !important; transition: transform 0.15s !important;
+}
+.reentry-check > input:checked + div { background: linear-gradient(135deg, #6366f1, #8b5cf6) !important; border-color: #6366f1 !important; }
+.reentry-check > input:checked + div::after { transform: rotate(45deg) scale(1) !important; }
+.reentry-check > input:focus-visible + div { outline: 2px solid #8b5cf6; outline-offset: 2px; }
+.reentry-check > input:disabled + div { opacity: 0.45; }
+/* Keep the longer rule descriptions from touching their checkbox. */
+.reentry-check { margin-left: 0.3rem; }
+/* Master toggle: same size and colours as the Strategy Presets switch (48 x 28 track, 20 px knob, 44 px hit area). */
+.reentry-box .reentry-master { padding: 0.5rem; margin: -0.5rem -0.5rem -0.5rem auto; }
+.reentry-box .reentry-master > div {
+    width: 3rem !important; height: 1.75rem !important; border-radius: 9999px !important;
+    background: #c7d2fe !important; position: relative !important; transition: background-color 0.15s;
+}
+.reentry-box .reentry-master > div::after {
+    content: '' !important; position: absolute !important; top: 0.25rem !important; left: 0.25rem !important;
+    width: 1.25rem !important; height: 1.25rem !important; border-radius: 9999px !important;
+    background: #fff !important; border: 0 !important; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+    transform: translateX(0) !important; transition: transform 0.15s !important;
+}
+.reentry-box .reentry-master > input:checked + div { background: #9333ea !important; }
+.reentry-box .reentry-master > input:checked + div::after { transform: translateX(1.25rem) !important; }
+.reentry-box .reentry-master > input:focus-visible + div { outline: 2px solid #8b5cf6; outline-offset: 2px; }
+.reentry-box .reentry-master > input:disabled + div { opacity: 0.5; }
+
+/* Strategy Presets selects (Strategy / Variant / policy / times) use the same text size as the Trade Allocation
+   fields on the same page (desktop). On phones every dropdown is already held at 12px by the global mobile guard, so
+   they match there too. Scoped to the preset panel on Bots and Backtest; the Screener has no Trade Allocation box. */
+#strategyPresetPanel_regular[data-page="bots"] select { font-size: 0.68rem; line-height: 1.15; }
+#strategyPresetPanel_regular[data-page="backtest"] select { font-size: 0.75rem; line-height: 1.15; }
+
+/* Bots card, phones only: tighter line spacing inside the scan card, the Entry/Exit Setup and the Bots summary so more fits on
+   screen. Scoped to the Bots card containers; desktop keeps the normal spacing. */
+@media (max-width: 767px) {
+    [data-bots-scan-card] .leading-snug,
+    [data-bots-setup-watch] .leading-snug,
+    [data-bots-scan-card] .leading-normal,
+    [data-bots-setup-watch] .leading-normal { line-height: 1.2; }
+}
+
+/* The four context cards (Fear & Greed, Market Breadth, Sector Heatmap, Macro Events) share one frame: the title and the
+   corner icon sit at the same offset, and the Macro and Sector lists start at the same height under the title. */
+.dashboard-macro-preview,
+.dashboard-sector-preview { margin-top: 2rem !important; justify-content: flex-start !important; }
+@media (max-width: 767px) {
+    .dashboard-macro-preview,
+    .dashboard-sector-preview { margin-top: 1.8rem !important; }
+}
+@media (max-width: 420px) {
+    .dashboard-macro-preview,
+    .dashboard-sector-preview { margin-top: 1.65rem !important; }
+}
+
+/* ── Dashboard context cards: title and right-hand icon share one header row ──
+   Both are absolutely positioned at the same top offset with the same fixed height and centred content,
+   so the icon's centre always sits on the title's centre (desktop and phone). */
+.dashboard-context-card {
+    --ctx-head-top: 1rem;
+    --ctx-head-side: 1rem;
+    --ctx-head-h: 1rem;
+}
+
+.dashboard-context-card > .card-label.absolute {
+    top: var(--ctx-head-top) !important;
+    left: var(--ctx-head-side) !important;
+    height: var(--ctx-head-h);
+    display: flex;
+    align-items: center;
+    line-height: 1;
+    margin: 0;
+    padding: 0;
+    right: calc(var(--ctx-head-side) + var(--ctx-head-h) + 0.3rem) !important;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.dashboard-context-card > .absolute.top-4.right-4:not(.card-label) {
+    top: var(--ctx-head-top) !important;
+    right: var(--ctx-head-side) !important;
+    height: var(--ctx-head-h);
+    width: var(--ctx-head-h);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.dashboard-context-card > .absolute.top-4.right-4:not(.card-label) > svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+@media (max-width: 767px) {
+    .dashboard-context-card {
+        --ctx-head-top: 0.75rem;
+        --ctx-head-side: 0.75rem;
+        --ctx-head-h: 0.9rem;
+    }
+
+    .dashboard-context-card > .card-label.absolute {
+        right: calc(var(--ctx-head-side) + var(--ctx-head-h) + 0.3rem) !important;
+    }
+}
+
+@media (max-width: 420px) {
+    .dashboard-context-card {
+        --ctx-head-top: 0.65rem;
+        --ctx-head-side: 0.65rem;
+        --ctx-head-h: 0.85rem;
+    }
+}
+
+/* Macro Events card: each release title carries its previous (P) and forecast (F) on the same line. */
+.macro-mini-row { display: flex; align-items: baseline; justify-content: space-between; gap: 0.35rem; width: 100%; min-width: 0; }
+.macro-mini-title { font-size: 11px; line-height: 1.25; min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.macro-mini-readings { font-size: 9.5px; line-height: 1.25; font-weight: 800; color: #334155; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.macro-mini-key { font-size: 7.5px; font-weight: 900; color: #94a3b8; margin: 0 0.12rem 0 0.28rem; }
+.macro-mini-readings .macro-mini-key:first-child { margin-left: 0; }
+@media (max-width: 767px) {
+    .macro-mini-title { font-size: 9.5px; }
+    .macro-mini-readings { font-size: 8.5px; }
+    .macro-mini-key { font-size: 6.5px; margin: 0 0.08rem 0 0.2rem; }
+}
+
+/* Context cards trimmed to their content (the tallest one, Sector Heatmap with 5 rows, sets the height). */
+.dashboard-context-grid { grid-auto-rows: 184px; }
+.dashboard-context-card { height: 184px; min-height: 184px; }
+@media (max-width: 767px) {
+    .dashboard-context-grid { grid-auto-rows: 132px; }
+    .dashboard-context-card { height: 132px; min-height: 132px; }
+}
+@media (max-width: 420px) {
+    .dashboard-context-grid { grid-auto-rows: 128px; }
+    .dashboard-context-card { height: 128px; min-height: 128px; }
+}
+
+/* Sector Heatmap modal: every tab is laid over the same grid cell, so the modal is always as tall as the tallest tab
+   (Technology, down to SHOP) and does not resize when switching sectors. Inactive tabs stay laid out but invisible. */
+#sectorViews { display: grid; align-content: start; }
+#sectorViews > div { grid-area: 1 / 1; align-content: start; }
+#sectorViews > div.hidden { display: grid !important; visibility: hidden; pointer-events: none; }
+
+/* Chart header: company logo (or letter badge) before the ticker. */
+.chart-logo {
+    align-self: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.35rem;
+    height: 1.35rem;
+    border-radius: 0.4rem;
+    overflow: hidden;
+    background: linear-gradient(135deg, #6366f1, #a855f7);
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 900;
+    line-height: 1;
+}
+.chart-logo:empty { display: none; }
+.chart-logo.chart-logo-img { background: #fff; border: 1px solid rgba(99, 102, 241, 0.18); }
+.chart-logo > img { width: 100%; height: 100%; object-fit: contain; display: block; }
+@media (min-width: 640px) {
+    .chart-logo { width: 1.75rem; height: 1.75rem; border-radius: 0.5rem; font-size: 0.85rem; }
+}
+
+/* Arrange mode (Bots and Screener): the drag handle on a card, and how a card looks while it is held. See card-reorder.js.
+   The handle (not the whole card) starts a drag, so scrolling with a finger anywhere else is unaffected. */
+.card-reorder-handle {
+    touch-action: none;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-user-drag: none;
+    cursor: grab;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+    border-radius: 0.5rem;
+    border: 1px solid rgba(16, 185, 129, 0.45);
+    background: rgba(255, 255, 255, 0.9);
+    color: #059669;
+}
+.card-reorder-handle:hover { background: #ecfdf5; }
+.card-reorder-handle:focus-visible { outline: 2px solid #059669; outline-offset: 2px; }
+.card-reorder-handle:active,
+.card-reorder-dragging .card-reorder-handle { cursor: grabbing; background: #d1fae5; }
+.watchlist-item.card-reorder-dragging {
+    z-index: 40;
+    box-shadow: 0 16px 34px rgba(15, 23, 42, 0.28);
+    outline: 2px solid rgba(16, 185, 129, 0.75);
+    opacity: 0.97;
+}
+body.card-reorder-active {
+    -webkit-user-select: none;
+    user-select: none;
+    cursor: grabbing;
+}
+@media (max-width: 767px) {
+    /* The card rules above shrink every button in a phone card; the handle keeps a finger-sized area. */
+    #tradelistContainer .watchlist-item button.card-reorder-handle {
+        min-width: 2.25rem;
+        min-height: 2.25rem;
+        padding: 0 !important;
+        border-radius: 0.5rem !important;
+    }
+    #tradelistContainer .watchlist-item button.card-reorder-handle svg {
+        width: 0.9rem !important;
+        height: 0.9rem !important;
+    }
+}
+
+/* Arrange mode: each card shrinks to its header row (ticker, price, badges and its buttons) so many cards fit on screen, and a
+   card can be grabbed anywhere to drag it past several others. Everything after the header is hidden only while arranging. */
+#tradelistContainer.arrange-compact .watchlist-item > :not(:first-child) { display: none !important; }
+#tradelistContainer.arrange-compact .watchlist-item {
+    cursor: grab;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+}
+/* The hand shows over the whole card, not only the grip (the card's own text and icons set their own cursors, so cover them);
+   the card's real buttons keep the pointer so it is clear they still click. */
+#tradelistContainer.arrange-compact .watchlist-item,
+#tradelistContainer.arrange-compact .watchlist-item * { cursor: grab; }
+#tradelistContainer.arrange-compact .watchlist-item button,
+#tradelistContainer.arrange-compact .watchlist-item button *,
+#tradelistContainer.arrange-compact .watchlist-item a { cursor: pointer; }
+#tradelistContainer.arrange-compact .watchlist-item button.card-reorder-handle,
+#tradelistContainer.arrange-compact .watchlist-item button.card-reorder-handle * { cursor: grab; }
+#tradelistContainer.arrange-compact .watchlist-item.card-reorder-dragging,
+#tradelistContainer.arrange-compact .watchlist-item.card-reorder-dragging * { cursor: grabbing; }

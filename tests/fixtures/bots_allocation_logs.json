@@ -1,0 +1,242 @@
+{
+ "malik": {
+  "setup": {
+   "kind": "strategy",
+   "strategy": "Malik QQQ \u00b7 Long-only + cash",
+   "entry": "Once a day at the execution time: QQQ price vs its 250- and 50-day averages (completed closes plus the current price) and its 5/10-day momentum set the regime and the target %.",
+   "exit": "A leg is trimmed or sold when its target falls by more than 5% of the sleeve; below the 250-day average it goes to cash (or into the inverse ETF in Long + inverse mode). No stop orders."
+  },
+  "forced_scan": null,
+  "summary": "Scheduled | Bull rider as of the last close: target 100% TQQQ. Next decision: Fri Oct 9, 3:45 PM ET \u00b7 2:45 PM CT.",
+  "detail": "Bull rider as of the last close: target 100% TQQQ. Next decision: Fri Oct 9, 3:45 PM ET \u00b7 2:45 PM CT.",
+  "status": "SCHEDULED",
+  "phase": "ENTRY",
+  "decision": "HOLD",
+  "target_direction": "BULLISH",
+  "strategy_mode": "strategy_preset",
+  "strategy_label": "Strategy: Malik QQQ \u00b7 Long-only + cash",
+  "condition_logic": "",
+  "uses_indicators": false,
+  "uses_structural": false,
+  "show_indicator_leg": false,
+  "progress_label": "Entry watch | Current $160.00",
+  "live_levels": [],
+  "required_count": 1,
+  "confirmed_count": 0,
+  "confirmed_weight": 0,
+  "waiting_count": 0,
+  "opposing_count": 0,
+  "remaining_count": 0,
+  "blockers": [],
+  "exit_protection": {},
+  "continuous_grid_forecast": {
+   "enabled": false,
+   "adaptive_cycle": false,
+   "current_price": 160.0,
+   "has_position": false,
+   "entry": {
+    "enabled": false,
+    "enabled_levels": [],
+    "completed_level": 0,
+    "completed_levels": [],
+    "completed_count": 0,
+    "enabled_count": 0,
+    "next_level": null,
+    "display_level": null,
+    "trigger_level": null,
+    "level_pct": null,
+    "base_level_pct": null,
+    "smart_dynamic": false,
+    "trailing_enabled": false,
+    "trailing_peak_price": null,
+    "armed_level": null,
+    "activation_price": null,
+    "adaptive_factors": {
+     "smart": false,
+     "strength": 0.5,
+     "trend_score": 0.0,
+     "volatility_ratio": 1.0,
+     "distance_factor": 1.0
+    },
+    "grid_kind": "",
+    "distance_unit": "%",
+    "anchor_atr": null,
+    "trigger_atr": null,
+    "anchor_price": 160.0,
+    "trigger_price": null,
+    "allocation_pct": null,
+    "allocation_amount": null,
+    "allocation_levels": [],
+    "runner_active": false,
+    "runner_pct": null,
+    "runner_trail_pct": null,
+    "pct_regime_mode": null,
+    "pct_regime_profile_active": false,
+    "pct_runner_pct_configured": null,
+    "pct_bullish_trend_threshold": null,
+    "from_level": null,
+    "pending_level": null,
+    "pending_order_id": null,
+    "status": "disabled",
+    "flat_reentry_armed": false,
+    "anchor_qty": null
+   },
+   "exit": {
+    "enabled": false,
+    "enabled_levels": [],
+    "completed_level": 0,
+    "completed_levels": [],
+    "completed_count": 0,
+    "enabled_count": 0,
+    "next_level": null,
+    "display_level": null,
+    "trigger_level": null,
+    "level_pct": null,
+    "base_level_pct": null,
+    "smart_dynamic": false,
+    "trailing_enabled": false,
+    "trailing_peak_price": null,
+    "armed_level": null,
+    "activation_price": null,
+    "adaptive_factors": {
+     "smart": false,
+     "strength": 0.5,
+     "trend_score": 0.0,
+     "volatility_ratio": 1.0,
+     "distance_factor": 1.0
+    },
+    "grid_kind": "",
+    "distance_unit": "%",
+    "anchor_atr": null,
+    "trigger_atr": null,
+    "anchor_price": 160.0,
+    "trigger_price": null,
+    "allocation_pct": null,
+    "allocation_amount": null,
+    "allocation_levels": [],
+    "runner_active": false,
+    "runner_pct": null,
+    "runner_trail_pct": null,
+    "pct_regime_mode": null,
+    "pct_regime_profile_active": false,
+    "pct_runner_pct_configured": null,
+    "pct_bullish_trend_threshold": null,
+    "from_level": null,
+    "pending_level": null,
+    "pending_order_id": null,
+    "status": "disabled",
+    "flat_reentry_armed": false,
+    "anchor_qty": 0.0
+   }
+  },
+  "indicators": [],
+  "updated_at": "2026-10-13T15:56:31.738717-05:00",
+  "is_option": false,
+  "refresh_rate_sec": 60,
+  "scan_interval_mode": "default",
+  "scan_policy": null,
+  "strategy_log": {
+   "kind": "allocation",
+   "rules": {
+    "entry": "Once a day at the execution time: QQQ price vs its 250- and 50-day averages (completed closes plus the current price) and its 5/10-day momentum set the regime and the target %.",
+    "exit": "A leg is trimmed or sold when its target falls by more than 5% of the sleeve; below the 250-day average it goes to cash (or into the inverse ETF in Long + inverse mode). No stop orders.",
+    "stop": "No stop orders: the strategy only acts once a day at the execution time, so it depends on this app running then."
+   },
+   "untested": "Did not pass the research gate. Out of sample (2019\u20132026, long-only, 3x): 34.1% a year, worst drawdown -48.6%, return/drawdown 0.70 vs 0.78 for a simple 250-day rule. Inverse ETFs lowered results in every pair. Use for research and paper trading.",
+   "status": "SCHEDULED",
+   "status_label": "Scheduled",
+   "strategy": "Malik QQQ \u00b7 Long-only + cash",
+   "headline": "Bull rider as of the last close: target 100% TQQQ. Next decision: Fri Oct 9, 3:45 PM ET \u00b7 2:45 PM CT.",
+   "metrics": [
+    {
+     "label": "Regime",
+     "value": "Bull rider"
+    },
+    {
+     "label": "Price vs 250-day",
+     "value": "+23.08%",
+     "tone": "up"
+    },
+    {
+     "label": "Price vs 50-day",
+     "value": "+3.23%",
+     "tone": "up"
+    },
+    {
+     "label": "10-day change",
+     "value": "+1.20%",
+     "tone": "up"
+    }
+   ],
+   "position": null,
+   "allocation": {
+    "legs": [
+     {
+      "symbol": "TQQQ",
+      "target_pct": 100,
+      "held_pct": 100.0,
+      "qty": 20.0,
+      "value": 1000.0,
+      "pending": false
+     }
+    ],
+    "sleeve": 1000.0,
+    "execution_time": "T-15 \u00b7 3:45 PM ET \u00b7 2:45 PM CT \u00b7 Recommended",
+    "next_decision": "Fri Oct 9, 3:45 PM ET \u00b7 2:45 PM CT",
+    "last_decision": {
+     "day": "2026-10-08",
+     "at": "2026-10-08T15:46:00-04:00",
+     "scheduled": "2026-10-08T15:45:00-04:00",
+     "adjusted_for_early_close": false,
+     "regime": "BULL_RIDER",
+     "regime_label": "Bull rider",
+     "values": {
+      "price": 160.0,
+      "sma_slow": 135.1,
+      "sma_fast": 155.1,
+      "roc10": 1.2658,
+      "roc5": 0.6289,
+      "acc": -0.004
+     },
+     "price": 160.0,
+     "price_sources": {
+      "webull": 160.0
+     },
+     "closes_through": "2026-10-07",
+     "targets": [
+      {
+       "symbol": "TQQQ",
+       "pct": 100
+      }
+     ],
+     "sleeve": 1000.0,
+     "orders": [
+      {
+       "symbol": "TQQQ",
+       "side": "BUY",
+       "qty": 20.0,
+       "notional": 1000.0,
+       "close_all": false,
+       "target_value": 1000.0,
+       "held_value": 0.0
+      }
+     ]
+    },
+    "realized_pl": 0.0,
+    "provisional": null
+   },
+   "timing": {
+    "candle": null,
+    "idle": false,
+    "next_evaluation_at": "2026-10-09T15:45:00-04:00"
+   }
+  },
+  "lifecycle": "FLAT",
+  "entry_guard": null,
+  "setup_config": {
+   "entry": [],
+   "exit": []
+  },
+  "next_due_at": "2026-10-13T15:57:31.738717-05:00"
+ }
+}

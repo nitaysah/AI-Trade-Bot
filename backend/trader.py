@@ -12,12 +12,13 @@ This is the "brain" that orchestrates:
 from datetime import datetime
 import pytz
 from indicators import get_full_analysis
-from ai_indicator import get_ai_sentiment, sentiment_percentage, sentiment_direction
 from risk_manager import RiskManager
 from swing_strategy import detect_swing_entry, build_entry_signal
 from options_direction import normalize_options_type, VALID_OPTION_DIRECTIONS
 from prior_day_high_low import resolve_high_low_buffer_pct
 from indicator_catalog import EXTENSION_INDICATOR_TOGGLE_KEYS
+from removed_indicators import strip_removed
+import strategy_presets as strategy_presets_mod
 import config as global_config
 from user_config import active_evaluation_context, get_user_config
 
@@ -60,22 +61,33 @@ SIGNAL_TO_TOGGLE = {
     'Pivot Points (S/R)': 'ENABLE_PIVOT_POINTS',
     'Volume Profile': 'ENABLE_VOLUME_PROFILE',
     'Swing Points': 'ENABLE_SWING_POINTS',
-    'BotBulls1': 'ENABLE_BOTBULLS1',
-    'BotBulls2': 'ENABLE_BOTBULLS2',
-    'BotBulls3': 'ENABLE_BOTBULLS3',
-    'BotBulls5': 'ENABLE_BOTBULLS5',
 }
 SIGNAL_TO_TOGGLE.update(EXTENSION_INDICATOR_TOGGLE_KEYS)
 
 
 def _analysis_settings_for_trade(uc, ticker_settings: dict, use_bot_settings: bool) -> dict:
     """Pass enabled indicators into calculations so disabled UI signals do not all compute."""
+    if use_bot_settings and strategy_presets_mod.is_strategy_preset_active(ticker_settings or {}):
+        # A strategy preset owns its indicator values: the user's indicator boxes,
+        # per-indicator overrides and Entry/Exit modes must not influence (or
+        # slow down) its evaluation. Its own warmup sets the history length.
+        settings = {
+            # VWAP/Auto-AVWAP are computed (otherwise placeholders equal to Close) because the
+            # post-stop reclaim guard compares the last completed close with them.
+            "enabled_indicators": ["VWAP", "Auto-AVWAP"],
+            "buy_mode": "indicator",
+            "sell_mode": "indicator",
+            "market_session": (ticker_settings or {}).get("market_session", "Regular"),
+        }
+        for key in ("strategy_preset_enabled", "strategy_preset", "strategy_preset_variant"):
+            settings[key] = (ticker_settings or {}).get(key)
+        return settings
     if use_bot_settings:
         settings = dict((ticker_settings or {}).get("indicator_overrides", {}) or {})
         indicators = (ticker_settings or {}).get("indicators")
         if isinstance(indicators, list):
             settings["enabled_indicators"] = [
-                str(indicator) for indicator in indicators
+                str(indicator) for indicator in strip_removed(indicators)[0]
                 if str(indicator or "").strip()
             ]
         # Keep the scanner and chart preview on the same market/session and
@@ -103,7 +115,7 @@ def _analysis_settings_for_trade(uc, ticker_settings: dict, use_bot_settings: bo
     toggles = uc.active_toggles or {}
     settings["enabled_indicators"] = [
         name for name, toggle_key in SIGNAL_TO_TOGGLE.items()
-        if name != "Botbulls4 News AI" and bool(toggles.get(toggle_key, True))
+        if bool(toggles.get(toggle_key, True))
     ]
     return settings
 
@@ -167,6 +179,262 @@ def _get_threshold_setting(settings, keys, default_value):
         return 1
 
 
+def _allocation_preset_info(ticker, analysis_results, t_settings):
+    """Regime of a Malik allocation strategy (Screener and the Bots card; never an order).
+
+    ``confirmed`` is the regime a decision at the last completed daily close gave (completed closes
+    only). ``provisional`` adds today's live price to the completed closes, as the live executor
+    does at its decision time; it is shown during the session and never alerts."""
+    import allocation_strategy as A
+    sp = strategy_presets_mod
+    _, preset_id, variant_id = sp.normalize_strategy_preset(t_settings)
+    preset = sp.get_preset(preset_id)
+    direction = A.normalize_direction(variant_id)
+    legs = A.resolve_legs(preset_id, t_settings)
+    alloc = A.normalized_settings(preset_id, t_settings)
+    base = sp._blank_result(preset_id, variant_id, sp.STATUS_WAITING, "Waiting for completed daily closes.",
+                            label=preset.label if preset else "Strategy")
+    base.update({"kind": A.KIND, "legs": legs, "execution_time": alloc["allocation_exec_time"],
+                 "research_note": A.research_note(preset_id), "regime": None, "regime_label": None,
+                 "weights": None, "targets": [], "provisional": None,
+                 "warmup": {"required": A.MIN_COMPLETED_CLOSES, "available": 0}})
+    analysis_results = analysis_results or {}
+    if str(analysis_results.get('data_quality') or 'OK').upper() == 'DEGRADED':
+        base.update(status=sp.STATUS_DEGRADED, reason="Market data is degraded (unadjusted split or fallback feed); regime not updated.")
+        return base
+    df = analysis_results.get('df')
+    if df is None or not len(df):
+        return base
+    completed = sp.completed_bars(df, "1Day")
+    closes = [float(x) for x in sp._column(completed, "close").tolist()] if len(completed) else []
+    base["warmup"]["available"] = len(closes)
+    if len(closes) < A.MIN_COMPLETED_CLOSES + 1:
+        base["reason"] = f"Waiting for data: {len(closes)}/{A.MIN_COMPLETED_CLOSES + 1} completed daily closes."
+        return base
+
+    def targets(weights):
+        out = []
+        if weights:
+            if weights.get("bull"):
+                out.append({"symbol": legs["bull"], "pct": round(weights["bull"] * 100)})
+            if weights.get("bear") and legs.get("bear"):
+                out.append({"symbol": legs["bear"], "pct": round(weights["bear"] * 100)})
+        return out
+
+    confirmed = A.evaluate(closes[:-1], closes[-1], direction)
+    if confirmed["status"] != A.STATUS_READY:
+        base["reason"] = confirmed["reason"]
+        return base
+    target_list = targets(confirmed["weights"])
+    target_text = " + ".join(f"{t['pct']}% {t['symbol']}" for t in target_list) or "cash"
+    bar_iso = sp._iso(completed.index[-1])
+    base.update({
+        "status": sp.STATUS_READY,
+        "regime": confirmed["regime"], "regime_label": confirmed["regime_label"],
+        "weights": confirmed["weights"], "targets": target_list, "target_text": target_text,
+        "values": confirmed["values"],
+        "alert_direction": "BULLISH" if confirmed["weights"]["bull"] > 0 else "BEARISH",
+        "state": confirmed["regime"],
+        "signal_bar_ts": bar_iso,
+        "reason": f"{confirmed['regime_label']} (as of the {completed.index[-1].date()} close): target {target_text}. {confirmed['reason']}",
+    })
+    live_price = None
+    if len(df) > len(completed):
+        try:
+            live_price = float(analysis_results.get('price_raw') or sp._column(df.iloc[[-1]], "close").iloc[0])
+        except (TypeError, ValueError):
+            live_price = None
+    if live_price and live_price > 0:
+        prov = A.evaluate(closes, live_price, direction)
+        if prov["status"] == A.STATUS_READY:
+            prov_targets = targets(prov["weights"])
+            base["provisional"] = {"regime": prov["regime"], "regime_label": prov["regime_label"], "price": live_price,
+                                   "targets": prov_targets, "values": prov["values"],
+                                   "target_text": " + ".join(f"{t['pct']}% {t['symbol']}" for t in prov_targets) or "cash"}
+    return base
+
+
+def _allocation_preset_decision(ticker, analysis_results, t_settings):
+    """HOLD-only decision wrapper: allocation bots trade through allocation_executor, never through BUY/SELL."""
+    sp = strategy_presets_mod
+    try:
+        result = _allocation_preset_info(ticker, analysis_results, t_settings)
+    except Exception as exc:
+        print(f"[trader] Allocation evaluation failed for {ticker}: {type(exc).__name__}")
+        _, preset_id, variant_id = sp.normalize_strategy_preset(t_settings)
+        result = sp._blank_result(preset_id, variant_id, sp.STATUS_WAITING, "Strategy evaluation failed; waiting for the next scan.")
+        result["kind"] = "allocation"
+    direction = result['alert_direction']
+    label = sp.strategy_preset_label(t_settings) or result.get('label') or 'Strategy'
+    ready = result['status'] == sp.STATUS_READY
+    return {
+        'action': 'HOLD',
+        'option_intent': 'HOLD',
+        'reason': result['reason'],
+        'bullish_count': 1 if direction == 'BULLISH' else 0,
+        'bearish_count': 1 if direction == 'BEARISH' else 0,
+        'signals': {f'Strategy: {label}': {'signal': direction, 'weight': 1, 'reason': result['reason'], 'enabled': True}},
+        'news_sentiment_pct': 0.0,
+        'news_sentiment_direction': 'NEUTRAL',
+        'news_alignment': 'ALIGNED',
+        'news_alignment_applied': False,
+        'news_alignment_reason': 'News does not influence strategy presets.',
+        'model_action': 'HOLD',
+        'indicator_direction': direction if direction != 'NEUTRAL' else 'NONE',
+        'structure_direction': 'NONE',
+        'structure_ok': False,
+        'buy_mode': sp.PRESET_MODE,
+        'evaluation_status': 'valid' if ready else 'waiting',
+        'strategy_preset': result,
+    }
+
+
+def schedule_preset_info(ticker, t_settings, now=None):
+    """Session Rider view from the clock alone (Dashboard, Screener): where the schedule is and what comes next."""
+    from datetime import datetime as _dt
+    import nyse_calendar
+    import session_schedule as S
+    sp = strategy_presets_mod
+    _, preset_id, variant_id = sp.normalize_strategy_preset(t_settings)
+    cfg = S.normalized_settings(t_settings or {})
+    label = (sp.get_preset(preset_id).label if sp.get_preset(preset_id) else "Session Rider")
+    if cfg["mode"] is None:
+        result = sp._blank_result(preset_id, variant_id, sp.STATUS_INVALID, "Buy and sell times are not valid.", label=label)
+        result["kind"] = S.KIND
+        return result
+    now = now or _dt.now(nyse_calendar.EASTERN)
+    phase = S.schedule_phase(now, cfg)
+    mode_text = "overnight" if cfg["mode"] == S.MODE_OVERNIGHT else "intraday"
+    if phase["phase"].startswith("HOLDING"):
+        reason = f"Schedule: {mode_text} hold window · sell {S.fmt_et_ct(phase['next_at'])}"
+    elif phase["next_at"]:
+        reason = f"Schedule: flat · next buy {S.fmt_et_ct(phase['next_at'])}"
+    else:
+        reason = "Schedule: no buy in the next days"
+    result = sp._blank_result(preset_id, variant_id, sp.STATUS_READY, reason, label=label)
+    result.update({
+        "kind": S.KIND,
+        "schedule": {
+            "mode": cfg["mode"], "phase": phase["phase"], "next_event": phase["next_event"],
+            "next_at": phase["next_at"].isoformat() if phase["next_at"] else None,
+            "next_label": S.fmt_et_ct(phase["next_at"]),
+            "buy_time": cfg[S.BUY_KEY], "sell_time": cfg[S.SELL_KEY],
+            "buy_label": S.et_ct_label(cfg[S.BUY_KEY]), "sell_label": S.et_ct_label(cfg[S.SELL_KEY]),
+            "skip_weekend": cfg[S.SKIP_WEEKEND_KEY],
+        },
+    })
+    return result
+
+
+def _schedule_preset_decision(ticker, t_settings):
+    """HOLD-only decision wrapper: Session Rider bots trade through session_executor, never through BUY/SELL signals."""
+    sp = strategy_presets_mod
+    result = schedule_preset_info(ticker, t_settings)
+    label = sp.strategy_preset_label(t_settings) or result.get('label') or 'Strategy'
+    return {
+        'action': 'HOLD',
+        'option_intent': 'HOLD',
+        'reason': result['reason'],
+        'bullish_count': 0,
+        'bearish_count': 0,
+        'signals': {f'Strategy: {label}': {'signal': 'NEUTRAL', 'weight': 1, 'reason': result['reason'], 'enabled': True}},
+        'news_sentiment_pct': 0.0,
+        'news_sentiment_direction': 'NEUTRAL',
+        'news_alignment': 'ALIGNED',
+        'news_alignment_applied': False,
+        'news_alignment_reason': 'News does not influence strategy presets.',
+        'model_action': 'HOLD',
+        'indicator_direction': 'NONE',
+        'structure_direction': 'NONE',
+        'structure_ok': False,
+        'buy_mode': sp.PRESET_MODE,
+        'evaluation_status': 'valid' if result['status'] == sp.STATUS_READY else 'waiting',
+        'strategy_preset': result,
+    }
+
+
+def _strategy_preset_decision(ticker, analysis_results, t_settings, has_position, timeframe):
+    """Decision for a strategy preset (Bots and Screener share this path).
+
+    Uses only the preset's own indicator values on completed candles. Anything
+    that is not ready, degraded or not closed yields HOLD with
+    ``evaluation_status != "valid"``, never a neutral BUY or SELL.
+    """
+    sp = strategy_presets_mod
+    _, preset_id, variant_id = sp.normalize_strategy_preset(t_settings)
+    if sp.is_allocation(preset_id):
+        return _allocation_preset_decision(ticker, analysis_results, t_settings)
+    if sp.is_schedule(preset_id):
+        return _schedule_preset_decision(ticker, t_settings)
+    timeframe = str(timeframe or t_settings.get('timeframe') or '1Day')
+    clean = str(ticker or '').upper().replace('/', '')
+    is_crypto = clean.endswith(('USD', 'USDT', 'USDC')) and len(clean) > 4
+    analysis_results = analysis_results or {}
+    candle_meta = analysis_results.get('candle_meta') or {}
+    candle_ok = str(candle_meta.get('candle_status', 'closed')).lower() == 'closed'
+    quality = str(analysis_results.get('data_quality') or 'OK').upper()
+    try:
+        df = analysis_results.get('df')
+        frame = None
+        if df is not None and len(df):
+            completed = sp.completed_bars(df, timeframe, is_crypto=is_crypto)
+            if len(completed):
+                frame = sp.compute_strategy_frame(completed, preset_id, variant_id)
+        result = sp.evaluate_strategy_preset(
+            frame, preset_id, variant_id,
+            timeframe=timeframe, has_position=bool(has_position),
+            candle_ok=candle_ok, data_quality=quality,
+        )
+    except Exception as exc:
+        print(f"[trader] Strategy preset evaluation failed for {ticker}: {type(exc).__name__}")
+        result = sp.evaluate_strategy_preset(None, preset_id, variant_id, timeframe=timeframe,
+                                             has_position=bool(has_position), candle_ok=False)
+        result['reason'] = 'Strategy evaluation failed; waiting for the next completed candle.'
+
+    stored_version = t_settings.get('strategy_preset_catalog_version')
+    try:
+        version_changed = stored_version is not None and int(stored_version) != sp.CATALOG_VERSION
+    except (TypeError, ValueError):
+        version_changed = True
+    entries_paused = ''
+    if version_changed and active_evaluation_context.get() == 'bots' and result['action'] == 'BUY':
+        result['action'] = 'HOLD'
+        result['reason'] = 'Entries paused: the strategy rules changed since this bot was configured. Re-save the bot to confirm.'
+        entries_paused = 'catalog_version'
+    result['entries_paused'] = entries_paused
+
+    direction = result['alert_direction']
+    label = sp.strategy_preset_label(t_settings) or result.get('label') or 'Strategy'
+    ready = result['status'] == sp.STATUS_READY
+    return {
+        'action': result['action'],
+        'option_intent': 'HOLD',
+        'reason': result['reason'],
+        'bullish_count': 1 if direction == 'BULLISH' else 0,
+        'bearish_count': 1 if direction == 'BEARISH' else 0,
+        'signals': {
+            f'Strategy: {label}': {
+                'signal': direction,
+                'weight': 1,
+                'reason': result['reason'],
+                'enabled': True,
+            }
+        },
+        'news_sentiment_pct': 0.0,
+        'news_sentiment_direction': 'NEUTRAL',
+        'news_alignment': 'ALIGNED',
+        'news_alignment_applied': False,
+        'news_alignment_reason': 'News does not influence strategy presets.',
+        'model_action': result['action'],
+        'indicator_direction': direction if direction != 'NEUTRAL' else 'NONE',
+        'structure_direction': 'NONE',
+        'structure_ok': False,
+        'buy_mode': sp.PRESET_MODE,
+        'evaluation_status': 'valid' if ready else 'waiting',
+        'strategy_preset': result,
+    }
+
+
 def get_confluence_decision(
     ticker,
     analysis_results,
@@ -175,6 +443,7 @@ def get_confluence_decision(
     use_bot_settings=False,
     options_type="calls_only",
     has_position=False,
+    timeframe=None,
 ):
     """
     Pure decision logic based on technical and AI signals.
@@ -195,10 +464,6 @@ def get_confluence_decision(
         'Pivot Points (S/R)': 'ENABLE_PIVOT_POINTS',
         'Volume Profile': 'ENABLE_VOLUME_PROFILE',
         'Swing Points': 'ENABLE_SWING_POINTS',
-        'BotBulls1': 'ENABLE_BOTBULLS1',
-        'BotBulls2': 'ENABLE_BOTBULLS2',
-        'BotBulls3': 'ENABLE_BOTBULLS3',
-        'BotBulls5': 'ENABLE_BOTBULLS5',
     }
     SIGNAL_TO_TOGGLE.update(EXTENSION_INDICATOR_TOGGLE_KEYS)
 
@@ -211,7 +476,14 @@ def get_confluence_decision(
     # 1. Process Technical Indicators
     uc = get_user_config()
     t_settings = getattr(uc, 'TICKER_SETTINGS', {}).get(ticker, {}) if use_bot_settings else {}
+    if (
+        use_bot_settings
+        and strategy_presets_mod.is_strategy_preset_active(t_settings)
+        and not t_settings.get('options_trading')
+    ):
+        return _strategy_preset_decision(ticker, analysis_results, t_settings, has_position, timeframe)
     allowed_indicators = t_settings.get('indicators') if use_bot_settings else None
+    allowed_indicators, removed_indicator_names = strip_removed(allowed_indicators)
     indicator_entry_modes = {
         'indicator', 'hybrid', 'hybrid_atr', 'hybrid_pct', 'hybrid_pivot',
         'hybrid_high_low', 'hybrid_swing',
@@ -244,63 +516,6 @@ def get_confluence_decision(
             elif data.get('signal') == 'BEARISH':
                 bearish_count += weight
 
-    # 2. Factor in AI sentiment as a signal (only if enabled)
-    ai_sentiment_enabled_for_bot = True
-    if allowed_indicators is not None:
-        ai_sentiment_enabled_for_bot = 'Botbulls4 News AI' in allowed_indicators
-
-    if ai_sentiment_enabled_for_bot and getattr(uc, 'ENABLE_AI_SENTIMENT', True):
-        ai_enabled = True
-        
-        news_pct = sentiment_percentage(ai_sentiment_score)
-        news_dir = sentiment_direction(ai_sentiment_score, ai_sentiment_confidence, uc)
-
-        if news_dir == 'BULLISH':
-            bullish_count += 1
-            filtered_signals['Botbulls4 News AI'] = {
-                'value': ai_sentiment_score,
-                'percentage': round(news_pct, 1),
-                'sentiment_pct': round(news_pct, 1),
-                'sentiment_direction': news_dir,
-                'signal': 'BULLISH',
-                'reason': f"Positive catalysts detected ({news_pct:.0f}% news sentiment)",
-                'enabled': True,
-                'premium': True
-            }
-        elif news_dir == 'BEARISH':
-            bearish_count += 1
-            filtered_signals['Botbulls4 News AI'] = {
-                'value': ai_sentiment_score,
-                'percentage': round(news_pct, 1),
-                'sentiment_pct': round(news_pct, 1),
-                'sentiment_direction': news_dir,
-                'signal': 'BEARISH',
-                'reason': f"Negative catalysts detected ({news_pct:.0f}% news sentiment)",
-                'enabled': True,
-                'premium': True
-            }
-        else:
-            filtered_signals['Botbulls4 News AI'] = {
-                'value': ai_sentiment_score,
-                'percentage': round(news_pct, 1),
-                'sentiment_pct': round(news_pct, 1),
-                'sentiment_direction': news_dir,
-                'signal': 'NEUTRAL',
-                'reason': "Mixed or weak news flow",
-                'enabled': True,
-                'premium': True
-            }
-    else:
-        filtered_signals['Botbulls4 News AI'] = {
-            'value': ai_sentiment_score,
-            'percentage': round(sentiment_percentage(ai_sentiment_score), 1),
-            'sentiment_pct': round(sentiment_percentage(ai_sentiment_score), 1),
-            'sentiment_direction': 'NEUTRAL',
-            'signal': 'NEUTRAL',
-            'reason': "News Sentiment Disabled",
-            'enabled': False,
-            'premium': True
-        }
 
     min_buy = _get_threshold_setting(t_settings, ('min_buy_signals', 'threshold', 'buy_threshold'), uc.MIN_BULLISH_SIGNALS)
     min_sell = _get_threshold_setting(t_settings, ('min_sell_signals', 'sell_threshold'), uc.MIN_BEARISH_SIGNALS)
@@ -645,29 +860,12 @@ def get_confluence_decision(
             bearish_names = [k for k, v in filtered_signals.items() if v.get('signal') == 'BEARISH' and v.get('enabled')]
             reason = f"SELL Triggered: {bearish_count} bearish signals ({', '.join(bearish_names)})"
     
-    # Dashboard evaluations represent a flat/entry decision.  Do not present
-    # a directional trade when high-confidence news points directly the other
-    # way.  Bot evaluations retain SELL exits because they may protect an open
-    # position; the engine has separate stop/target protection for those exits.
-    news_pct = sentiment_percentage(ai_sentiment_score)
-    news_dir = sentiment_direction(ai_sentiment_score, ai_sentiment_confidence, uc)
-    news_alignment = "ALIGNED"
-    news_alignment_reason = "News is neutral or agrees with the composite decision."
+    # News sentiment no longer votes or vetoes; the payload keys stay neutral.
     raw_action = action
-    alignment_mode = str(getattr(uc, "AI_NEWS_ALIGNMENT_MODE", "veto_conflicting_entries") or "off").lower()
-    if (
-        not use_bot_settings
-        and alignment_mode in {"veto_conflicting_entries", "veto", "guard"}
-        and ((action == "SELL" and news_dir == "BULLISH")
-             or (action == "BUY" and news_dir == "BEARISH"))
-    ):
-        action = "HOLD"
-        reason = (
-            f"HOLD: composite {raw_action} conflicts with {news_pct:.0f}% "
-            f"{news_dir.lower()} news sentiment; waiting for confirmation."
-        )
-        news_alignment = "CONFLICT_VETO"
-        news_alignment_reason = reason
+    news_pct = 0.0
+    news_dir = "NEUTRAL"
+    news_alignment = "ALIGNED"
+    news_alignment_reason = "News does not influence the decision."
 
     pass
 
@@ -683,6 +881,7 @@ def get_confluence_decision(
         "news_alignment": news_alignment,
         "news_alignment_applied": news_alignment == "CONFLICT_VETO",
         "news_alignment_reason": news_alignment_reason,
+        "removed_indicators": removed_indicator_names,
         "model_action": raw_action,
         "indicator_direction": indicator_direction,
         "structure_direction": "NONE",
@@ -740,30 +939,17 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
                 settings=analysis_settings,
             )
 
-            # Determine if AI sentiment is enabled
-            allowed_indicators = ticker_settings.get('indicators') if use_bot_settings else None
-            ai_sentiment_enabled_for_bot = True
-            if allowed_indicators is not None:
-                ai_sentiment_enabled_for_bot = 'Botbulls4 News AI' in allowed_indicators
-
-            ai_enabled = ai_sentiment_enabled_for_bot and getattr(uc, 'ENABLE_AI_SENTIMENT', True)
-
-            if ai_enabled:
-                ai_ctx = contextvars.copy_context()
-                ai_future = _calculation_executor.submit(ai_ctx.run, get_ai_sentiment, ticker_key)
-                return tech_future.result(), ai_future.result()
-            else:
-                dummy_ai_data = {
-                    "score": 0.0,
-                    "confidence": 0.0,
-                    "summary": "AI News Sentiment disabled.",
-                    "key_factor": "N/A",
-                    "headline_count": 0,
-                    "headlines": [],
-                    "articles": [],
-                    "analysis_model": "disabled"
-                }
-                return tech_future.result(), dummy_ai_data
+            dummy_ai_data = {
+                "score": 0.0,
+                "confidence": 0.0,
+                "summary": "AI News Sentiment disabled.",
+                "key_factor": "N/A",
+                "headline_count": 0,
+                "headlines": [],
+                "articles": [],
+                "analysis_model": "disabled"
+            }
+            return tech_future.result(), dummy_ai_data
         finally:
             if token: active_ticker_context.reset(token)
 
@@ -822,21 +1008,24 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         ai_data['confidence'],
         use_bot_settings=use_bot_settings,
         options_type=ticker_settings.get('options_type', 'calls_only') if ticker_settings else 'calls_only',
-        has_position=has_position
+        has_position=has_position,
+        timeframe=timeframe,
     )
     action = decision['action']
     reason = decision['reason']
 
     # 5. Calculate risk parameters (ONLY for active bots or when requested by UI)
     position_sizing = {}
+    preset_info = decision.get('strategy_preset') if isinstance(decision.get('strategy_preset'), dict) else None
     if ticker in uc.TRADELIST:
-        trade_side = 'short' if action == 'SELL' else 'long'
+        trade_side = 'short' if (action == 'SELL' and not preset_info) else 'long'
+        sizing_atr = (preset_info or {}).get('atr') or analysis.get('atr', 0)
         position_sizing = risk_mgr.calculate_position_size(
             ticker=ticker,
             entry_price=analysis['price'],
             account_equity=account_equity,
             available_cash=available_cash,
-            atr=analysis.get('atr', 0),
+            atr=sizing_atr,
             side=trade_side
         )
 
@@ -865,8 +1054,8 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         "sentiment_confidence": ai_data['confidence'],
         "sentiment_summary": ai_data.get('summary', ai_data.get('sentiment_summary', '')),
         "sentiment_key_factor": ai_data.get('key_factor', ''),
-        "news_sentiment_pct": decision.get("news_sentiment_pct", round(sentiment_percentage(ai_data['score']), 1)),
-        "news_sentiment_direction": decision.get("news_sentiment_direction", sentiment_direction(ai_data['score'], ai_data['confidence'], uc)),
+        "news_sentiment_pct": decision.get("news_sentiment_pct", 0.0),
+        "news_sentiment_direction": decision.get("news_sentiment_direction", 'NEUTRAL'),
         "signals": decision['signals'],
         "bullish_count": decision['bullish_count'],
         "bearish_count": decision['bearish_count'],
@@ -885,8 +1074,9 @@ def evaluate_trade(ticker: str, account_equity: float = 100000.0, available_cash
         "risk_status": risk_mgr.get_risk_status(account_equity, ticker),
         "is_custom": (ticker.upper() in getattr(uc, 'TICKER_AMOUNTS', {})),
         "timeframe": timeframe,
-        "evaluation_status": "valid",
+        "evaluation_status": decision.get("evaluation_status", "valid"),
         "candle_meta": analysis.get("candle_meta", {}),
+        "strategy_preset": preset_info,
     }
 
     # Save to cache if not ignored

@@ -48,7 +48,54 @@ HOST="${BOTBULLS_HOST:-127.0.0.1}"
 PORT="${PORT:-8000}"
 PYTHON_BIN="$VENV_DIR/bin/python"
 
-cleanup_botbulls_port() {
+# Succeeds when the given pid/args describe a BotBulls uvicorn launch from this checkout.
+is_botbulls_launch() {
+    local target_pid="$1"
+    local candidate_args="$2"
+    local managed="false"
+    local process_cwd=""
+    local process_exe=""
+    local python_real="$PYTHON_BIN"
+    local port="${port:-$PORT}"
+        # argv[0] is retained as the virtualenv path by the launch command.
+        # The executable check covers launches where that path was normalized.
+        if [[ "$candidate_args" == "$PYTHON_BIN -m uvicorn main:app"* ]]; then
+            managed="true"
+        elif [[ "$candidate_args" == *"$VENV_DIR/bin/uvicorn main:app"* ]] \
+            && [[ "$candidate_args" == *"--port $port"* ]]; then
+            # macOS commonly reports the interpreter used by the uvicorn
+            # console script in argv[0], while the command itself still
+            # identifies this checkout's virtualenv and application.
+            managed="true"
+        elif [[ "$candidate_args" == *" -m uvicorn main:app"* ]] \
+            && [[ "$candidate_args" == *"--port $port"* ]]; then
+            # A stale local launch may use the system Python instead of the
+            # checkout virtualenv. Identify it only when the process cwd is
+            # this exact backend directory; command-line matching alone would
+            # risk terminating an unrelated uvicorn service.
+            if command -v lsof >/dev/null 2>&1; then
+                process_cwd="$(lsof -a -p "$target_pid" -d cwd -Fn 2>/dev/null \
+                    | sed -n 's/^n//p' | head -n 1 || true)"
+            elif [ -e "/proc/$target_pid/cwd" ]; then
+                process_cwd="$(readlink "/proc/$target_pid/cwd" 2>/dev/null || true)"
+            fi
+            if [ "$process_cwd" = "$DIR" ]; then
+                managed="true"
+            fi
+        elif command -v readlink >/dev/null 2>&1; then
+            python_real="$(readlink -f "$PYTHON_BIN" 2>/dev/null || printf '%s' "$PYTHON_BIN")"
+            process_exe="$(readlink -f "/proc/$target_pid/exe" 2>/dev/null || true)"
+            if [ "$process_exe" = "$python_real" ] \
+                && [[ "$candidate_args" == *" -m uvicorn main:app"* ]] \
+                && [[ "$candidate_args" == *"--port $port"* ]]; then
+                managed="true"
+            fi
+        fi
+
+    [ "$managed" = "true" ]
+}
+
+cleanup_botbulls_port_pass() {
     local port="$1"
     local pids=""
     local pid=""
@@ -75,39 +122,32 @@ cleanup_botbulls_port() {
         process_args="$(ps -p "$pid" -o args= 2>/dev/null || true)"
         [ -n "$process_args" ] || continue
 
-        # argv[0] is retained as the virtualenv path by the launch command.
-        # The executable check covers launches where that path was normalized.
         managed="false"
-        if [[ "$process_args" == "$PYTHON_BIN -m uvicorn main:app"* ]]; then
+        stop_parent=""
+        if is_botbulls_launch "$pid" "$process_args"; then
             managed="true"
-        elif [[ "$process_args" == *"$VENV_DIR/bin/uvicorn main:app"* ]] \
-            && [[ "$process_args" == *"--port $port"* ]]; then
-            # macOS commonly reports the interpreter used by the uvicorn
-            # console script in argv[0], while the command itself still
-            # identifies this checkout's virtualenv and application.
-            managed="true"
-        elif [[ "$process_args" == *" -m uvicorn main:app"* ]] \
-            && [[ "$process_args" == *"--port $port"* ]]; then
-            # A stale local launch may use the system Python instead of the
-            # checkout virtualenv. Identify it only when the process cwd is
-            # this exact backend directory; command-line matching alone would
-            # risk terminating an unrelated uvicorn service.
-            if command -v lsof >/dev/null 2>&1; then
-                process_cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null \
-                    | sed -n 's/^n//p' | head -n 1 || true)"
-            elif [ -e "/proc/$pid/cwd" ]; then
-                process_cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
-            fi
-            if [ "$process_cwd" = "$DIR" ]; then
+        elif [[ "$process_args" == *"multiprocessing.spawn"* ]]; then
+            # `uvicorn --reload` (BOTBULLS_RELOAD=true) runs the server in a spawned child that owns the socket,
+            # while the reloader parent carries the recognisable command line. Accept the child only when its
+            # parent is a BotBulls launch from this checkout, and stop the parent first so it cannot respawn it.
+            parent_pid="$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d ' ' || true)"
+            parent_args=""
+            [ -n "$parent_pid" ] && parent_args="$(ps -p "$parent_pid" -o args= 2>/dev/null || true)"
+            if [ -n "$parent_args" ] && is_botbulls_launch "$parent_pid" "$parent_args"; then
                 managed="true"
-            fi
-        elif command -v readlink >/dev/null 2>&1; then
-            python_real="$(readlink -f "$PYTHON_BIN" 2>/dev/null || printf '%s' "$PYTHON_BIN")"
-            process_exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
-            if [ "$process_exe" = "$python_real" ] \
-                && [[ "$process_args" == *" -m uvicorn main:app"* ]] \
-                && [[ "$process_args" == *"--port $port"* ]]; then
-                managed="true"
+                stop_parent="$parent_pid"
+            else
+                # The reloader parent may already be gone (or a respawned child may have been re-parented). Accept the
+                # child only when it is running from this exact backend directory.
+                process_cwd=""
+                if command -v lsof >/dev/null 2>&1; then
+                    process_cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1 || true)"
+                elif [ -e "/proc/$pid/cwd" ]; then
+                    process_cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+                fi
+                if [ "$process_cwd" = "$DIR" ]; then
+                    managed="true"
+                fi
             fi
         fi
 
@@ -118,16 +158,46 @@ cleanup_botbulls_port() {
         fi
 
         echo "🧹 Stopping stale BotBulls process $pid on port $port..."
+        if [ -n "$stop_parent" ]; then
+            echo "   (reload child; killing its reloader parent $stop_parent first so it cannot respawn)"
+            kill -KILL "$stop_parent" 2>/dev/null || true
+        fi
         kill -TERM "$pid" 2>/dev/null || true
-        for _ in 1 2 3 4 5; do
+        for _ in 1 2 3 4; do
             kill -0 "$pid" 2>/dev/null || break
-            sleep 1
+            sleep 0.5
         done
         if kill -0 "$pid" 2>/dev/null; then
             echo "⚠️  Process $pid did not stop after SIGTERM; sending SIGKILL."
             kill -KILL "$pid" 2>/dev/null || true
         fi
     done
+}
+
+# A reloader can respawn its child between passes, so repeat until nothing is listening (or give up with a clear error).
+port_listener_pids() {
+    local port="$1"
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltnpH "sport = :$port" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true
+    else
+        lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u || true
+    fi
+}
+
+cleanup_botbulls_port() {
+    local port="$1"
+    local attempt=0
+    while [ "$attempt" -lt 5 ]; do
+        attempt=$((attempt + 1))
+        [ -n "$(port_listener_pids "$port")" ] || return 0
+        cleanup_botbulls_port_pass "$port" || return 1
+        echo "⏳ Waiting 5s for port $port to be released..."
+        sleep 5
+    done
+    if [ -n "$(port_listener_pids "$port")" ]; then
+        echo "❌ Port $port is still in use after $attempt cleanup passes."
+        return 1
+    fi
 }
 
 FOREGROUND="${BOTBULLS_FOREGROUND:-false}"
@@ -168,7 +238,7 @@ if [ "$FOREGROUND" = "true" ]; then
     PYTHONUNBUFFERED=1 exec "$VENV_DIR/bin/python" -m uvicorn "${UVICORN_ARGS[@]}"
 fi
 
-PYTHONUNBUFFERED=1 "$VENV_DIR/bin/python" -m uvicorn "${UVICORN_ARGS[@]}" > stdout.log 2>&1 &
+PYTHONUNBUFFERED=1 "$VENV_DIR/bin/python" -m uvicorn "${UVICORN_ARGS[@]}" >> stdout.log 2>&1 &
 BACKEND_PID=$!
 
 # Do not report success until the child process is still alive and the local

@@ -126,6 +126,70 @@ function updateActiveTickerDisplay(ticker) {
     if (searchInput && searchInput.value !== normalized) {
         searchInput.value = normalized;
     }
+    showChartCompanyName(normalized);
+}
+
+// Company logo beside the ticker. Lookups are cached per symbol; one that finishes after the user has moved to another
+// ticker is ignored. With no logo (ETFs, crypto, failed lookup) a letter badge keeps the header aligned.
+const chartCompanyProfiles = new Map();
+const chartLogoRetryTimers = new Map();
+const chartLogoRetryCounts = new Map();
+const chartLogoInFlight = new Set();
+function setChartLogo(symbol, profile) {
+    const el = document.getElementById('chartLogo');
+    if (!el) return;
+    const name = (profile && profile.name) || '';
+    el.title = name || symbol;
+    el.textContent = '';
+    el.classList.remove('chart-logo-img');
+    const showLetter = () => { el.textContent = ''; el.classList.remove('chart-logo-img'); el.textContent = symbol.charAt(0); };
+    if (profile && /^https:\/\//.test(profile.logo || '')) {
+        const img = document.createElement('img');
+        img.alt = '';
+        img.decoding = 'async';
+        img.referrerPolicy = 'no-referrer';
+        img.onerror = showLetter;
+        img.src = profile.logo;
+        el.classList.add('chart-logo-img');
+        el.appendChild(img);
+    } else {
+        showLetter();
+    }
+}
+
+async function showChartCompanyName(symbol) {
+    if (chartCompanyProfiles.has(symbol)) {
+        setChartLogo(symbol, chartCompanyProfiles.get(symbol));
+        return;
+    }
+    setChartLogo(symbol, null);
+    // Same gate as the other dashboard fetches: before sign-in there is no token, so asking would only log a 401.
+    // The caller runs again on every chart sync, and one delayed retry covers a page that is still signing in.
+    const authReady = window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true');
+    if (!authReady) {
+        if (!chartLogoRetryTimers.has(symbol) && (chartLogoRetryCounts.get(symbol) || 0) < 5) {
+            chartLogoRetryCounts.set(symbol, (chartLogoRetryCounts.get(symbol) || 0) + 1);
+            chartLogoRetryTimers.set(symbol, setTimeout(() => {
+                chartLogoRetryTimers.delete(symbol);
+                const current = normalizeTicker(document.getElementById('chartTickerLabel')?.textContent);
+                if (current === symbol) showChartCompanyName(symbol);
+            }, 2000));
+        }
+        return;
+    }
+    if (chartLogoInFlight.has(symbol)) return;
+    chartLogoInFlight.add(symbol);
+    try {
+        const headers = await getAuthHeaders();
+        const res = await fetch(`${API_BASE}/api/company-name/${encodeURIComponent(symbol)}`, { headers });
+        if (!res.ok) return;
+        const data = await res.json();
+        const profile = { name: String((data && data.name) || '').trim(), logo: String((data && data.logo) || '').trim() };
+        if (profile.name || profile.logo) chartCompanyProfiles.set(symbol, profile);
+        const current = normalizeTicker(document.getElementById('chartTickerLabel')?.textContent);
+        if (current === symbol) setChartLogo(symbol, profile);
+    } catch (e) { /* the logo is cosmetic */ }
+    finally { chartLogoInFlight.delete(symbol); }
 }
 
 function isCryptoTicker(ticker) {
@@ -428,7 +492,6 @@ function syncOscillatorRanges(range) {
     try { if (oscChartMacd && _visibleIndicators.macd) oscChartMacd.timeScale().setVisibleLogicalRange(range); } catch (e) { }
     try { if (oscChartMystic && _visibleIndicators.mystic) oscChartMystic.timeScale().setVisibleLogicalRange(range); } catch (e) { }
     try { if (oscChartAdx && _visibleIndicators.adx) oscChartAdx.timeScale().setVisibleLogicalRange(range); } catch (e) { }
-    try { if (oscChartBotbulls1 && _visibleIndicators.botbulls1) oscChartBotbulls1.timeScale().setVisibleLogicalRange(range); } catch (e) { }
     window.StandardIndicatorSubcharts?.sync('dashboard', range);
 }
 
@@ -482,7 +545,7 @@ const LIVE_PRICE_HEARTBEAT_MS = 10000;
 const DASHBOARD_FETCH_TIMEOUT_MS = 20000;
 const CHART_FETCH_TIMEOUT_MS = 30000;
 const QUOTE_FETCH_TIMEOUT_MS = 4500;
-const GENERIC_CARDS_FETCH_TIMEOUT_MS = 5000;
+const GENERIC_CARDS_FETCH_TIMEOUT_MS = 8000;
 const OLLAMA_MODELS_FETCH_TIMEOUT_MS = 2000;
 const DASHBOARD_VISIBILITY_REFRESH_MIN_AGE_MS = 15000;
 const DASHBOARD_CHART_BG_REGULAR = '#ffffff';
@@ -677,7 +740,6 @@ let oscChartRsi = null;
 let oscChartMacd = null;
 let oscChartMystic = null;
 let oscChartAdx = null;
-let oscChartBotbulls1 = null;
 
 // All series objects keyed by indicator name
 const _overlaySeries = {};
@@ -706,10 +768,6 @@ const _defaultVisibleIndicators = {
     volume_profile: false,
     swing_points: false,
     adx: false,
-    botbulls1: false,
-    botbulls2: false,
-    botbulls3: false,
-    botbulls5: false,
     'Candle Patterns': false,
 };
 
@@ -750,14 +808,6 @@ const IND_COLORS = {
     adx: '#6366f1', // Indigo
     di_plus: '#10b981', // Green
     di_minus: '#ef4444', // Red
-    wt1: '#0ea5e9', // Sky blue
-    wt2: '#f43f5e', // Rose
-    mfi: '#10b981', // Emerald
-    lx_smart_trail: '#10b981', // Smart trail
-    lx_trend_tracer: '#8b5cf6', // Trend tracer
-    lx_rz_upper: '#f59e0b', // Reversal zone upper
-    lx_rz_lower: '#ec4899', // Reversal zone lower
-    ut_trail: '#3b82f6', // UT Bot trail
     daily_high_low_high: '#d97706',
     daily_high_low_low: '#0891b2',
     pivot_p: '#1f2937',
@@ -1026,31 +1076,6 @@ function _initOscPane() {
         resizeAdx.observe(adxContainer);
     }
 
-    // BotBulls1 (WaveTrend) Chart
-    const botbulls1Container = document.getElementById('oscChart_botbulls1');
-    if (botbulls1Container) {
-        botbulls1Container.innerHTML = '';
-        oscChartBotbulls1 = LightweightCharts.createChart(botbulls1Container, {
-            layout: { background: { color: '#fafbff' }, textColor: '#64748b', fontSize: getDashboardChartFontSize() },
-            grid: { vertLines: { color: 'rgba(168,85,247,0.04)' }, horzLines: { color: 'rgba(168,85,247,0.04)' } },
-            rightPriceScale: { borderColor: 'rgba(197,203,206,0.6)', minimumWidth: isDashboardMobileViewport() ? 48 : 75 },
-            localization: {
-                timeFormatter: time => {
-                    return `${formatChartTime(time, false)} CT`;
-                }
-            },
-            timeScale: { visible: false },
-        });
-        const resizeBotbulls1 = new ResizeObserver(entries => {
-            if (!entries[0] || !oscChartBotbulls1) return;
-            oscChartBotbulls1.applyOptions({ 
-                width: entries[0].contentRect.width,
-                height: entries[0].contentRect.height,
-                ...getDashboardSubchartResponsiveOptions(),
-            });
-        });
-        resizeBotbulls1.observe(botbulls1Container);
-    }
 
     // Sync all time scales to main chart (guarded by visibility and wrapped in try/catch to prevent uncaught "Value is null" library errors)
     lwChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
@@ -1605,137 +1630,6 @@ function _refreshOverlays(bars) {
         _removeSeries(_overlaySeries, 'volume_profile_val', lwChart);
     }
 
-    // BotBulls2 — Universal Trailing Stop (UT) + Trend Tracer + Reversal Zones
-    if (_visibleIndicators.botbulls2) {
-        const lxTrailData = bars.filter(b => b.lx_smart_trail != null).map(b => ({
-            time: b.time,
-            value: b.lx_smart_trail,
-            color: b.lx_smart_trend ? '#10b981' : '#ef4444'
-        }));
-        _getOrCreate(_overlaySeries, 'lx_smart_trail', lwChart, {
-            lineWidth: 2.5,
-            lineType: 0
-        }).setData(clean(lxTrailData));
-
-        _getOrCreate(_overlaySeries, 'lx_trend_tracer', lwChart, {
-            color: IND_COLORS.lx_trend_tracer,
-            lineWidth: 1.5,
-            lineStyle: 0
-        }).setData(clean(bars.filter(b => b.lx_trend_tracer != null).map(b => ({ time: b.time, value: b.lx_trend_tracer }))));
-
-        _getOrCreate(_overlaySeries, 'lx_rz_upper', lwChart, {
-            color: IND_COLORS.lx_rz_upper,
-            lineWidth: 1,
-            lineStyle: 1 // Dashed
-        }).setData(clean(bars.filter(b => b.lx_rz_upper != null).map(b => ({ time: b.time, value: b.lx_rz_upper }))));
-
-        _getOrCreate(_overlaySeries, 'lx_rz_lower', lwChart, {
-            color: IND_COLORS.lx_rz_lower,
-            lineWidth: 1,
-            lineStyle: 1 // Dashed
-        }).setData(clean(bars.filter(b => b.lx_rz_lower != null).map(b => ({ time: b.time, value: b.lx_rz_lower }))));
-
-        // Trend flip alerts for Smart Trail
-        for (let i = 1; i < bars.length; i++) {
-            const curr = bars[i];
-            const prev = bars[i - 1];
-            if (curr.lx_smart_trail == null || prev.lx_smart_trail == null) continue;
-
-            if (curr.lx_smart_trend && !prev.lx_smart_trend) {
-                activeMarkers.push({
-                    time: curr.time,
-                    position: 'belowBar',
-                    color: '#10b981',
-                    shape: 'arrowUp',
-                    text: 'BB2 BUY',
-                    size: 1
-                });
-            } else if (!curr.lx_smart_trend && prev.lx_smart_trend) {
-                activeMarkers.push({
-                    time: curr.time,
-                    position: 'aboveBar',
-                    color: '#ef4444',
-                    shape: 'arrowDown',
-                    text: 'BB2 SELL',
-                    size: 1
-                });
-            }
-        }
-    } else {
-        _removeSeries(_overlaySeries, 'lx_smart_trail', lwChart);
-        _removeSeries(_overlaySeries, 'lx_trend_tracer', lwChart);
-        _removeSeries(_overlaySeries, 'lx_rz_upper', lwChart);
-        _removeSeries(_overlaySeries, 'lx_rz_lower', lwChart);
-    }
-
-    // BotBulls3 — Heikin-Ashi Smoothed + UT Bot Trailing Stop
-    if (_visibleIndicators.botbulls3) {
-        const utTrailData = bars.filter(b => b.ut_trail != null).map(b => ({
-            time: b.time,
-            value: b.ut_trail,
-            color: b.ut_above ? '#0ea5e9' : '#f43f5e'
-        }));
-        _getOrCreate(_overlaySeries, 'ut_trail', lwChart, {
-            lineWidth: 2.5,
-            lineType: 0
-        }).setData(clean(utTrailData));
-
-        // UT Bot buy/sell flip alerts
-        for (let i = 1; i < bars.length; i++) {
-            const curr = bars[i];
-            const prev = bars[i - 1];
-            if (curr.ut_trail == null || prev.ut_trail == null) continue;
-
-            if (curr.ut_above && !prev.ut_above) {
-                activeMarkers.push({
-                    time: curr.time,
-                    position: 'belowBar',
-                    color: '#0ea5e9',
-                    shape: 'arrowUp',
-                    text: 'BB3 BUY',
-                    size: 1.2
-                });
-            } else if (!curr.ut_above && prev.ut_above) {
-                activeMarkers.push({
-                    time: curr.time,
-                    position: 'aboveBar',
-                    color: '#f43f5e',
-                    shape: 'arrowDown',
-                    text: 'BB3 SELL',
-                    size: 1.2
-                });
-            }
-        }
-    } else {
-        _removeSeries(_overlaySeries, 'ut_trail', lwChart);
-    }
-
-    // BotBulls1 WT Buy/Sell Markers (WaveTrend Extreme Crossover alerts)
-    if (_visibleIndicators.botbulls1) {
-        for (let i = 0; i < bars.length; i++) {
-            const b = bars[i];
-            if (b.ba1_buy) {
-                activeMarkers.push({
-                    time: b.time,
-                    position: 'belowBar',
-                    color: '#06b6d4',
-                    shape: 'arrowUp',
-                    text: 'BB1 BUY',
-                    size: 1
-                });
-            } else if (b.ba1_sell) {
-                activeMarkers.push({
-                    time: b.time,
-                    position: 'aboveBar',
-                    color: '#f43f5e',
-                    shape: 'arrowDown',
-                    text: 'BB1 SELL',
-                    size: 1
-                });
-            }
-        }
-    }
-
     // Candle Patterns Markers
     if (_visibleIndicators['Candle Patterns']) {
         const candlePatternMarkers = window.StandardIndicatorSubcharts?.buildCandlePatternMarkers?.(bars, {
@@ -1746,6 +1640,19 @@ function _refreshOverlays(bars) {
     }
 
     const dashboardIndicatorPrefs = getGlobalIndicatorPrefs();
+    if (dashboardIndicatorPrefs['Chart Patterns'] === true && isDashboardIndicatorAllowed('Chart Patterns')) {
+        activeMarkers.push(...(window.StandardIndicatorSubcharts?.buildChartPatternMarkers?.(bars, {
+            rolling24Hours: isCryptoTicker(selectedTicker),
+            maxCandles: 20,
+        }) || []));
+    }
+    const flipIndicatorNames = new Set((window.STANDARD_EXTENSION_OVERLAYS || [])
+        .filter(definition => definition.flipMarkers && dashboardIndicatorPrefs[definition.name] === true
+            && isDashboardIndicatorAllowed(definition.name))
+        .map(definition => definition.name));
+    if (flipIndicatorNames.size) {
+        activeMarkers.push(...(window.StandardIndicatorSubcharts?.buildFlipMarkers?.(bars, flipIndicatorNames) || []));
+    }
     (window.STANDARD_EXTENSION_OVERLAYS || []).forEach(definition => {
         const show = dashboardIndicatorPrefs[definition.name] === true
             && isDashboardIndicatorAllowed(definition.name);
@@ -1755,9 +1662,6 @@ function _refreshOverlays(bars) {
                 const overlayParameters = spec.shiftPeriodsKey ? {
                     [spec.shiftPeriodsKey]: indicatorParamValue(spec.shiftPeriodsKey, spec.shiftPeriodsFallback || 0),
                 } : {};
-                if (definition.name === 'BotBulls5') {
-                    overlayParameters.rolling24Hours = isCryptoTicker(selectedTicker);
-                }
                 const overlayData = window.StandardIndicatorSubcharts?.buildOverlayData
                     ? window.StandardIndicatorSubcharts.buildOverlayData(bars, spec, overlayParameters)
                     : clean(bars
@@ -1779,63 +1683,6 @@ function _refreshOverlays(bars) {
             }
         });
     });
-    const botBulls5DrawingEnabled = dashboardIndicatorPrefs.BotBulls5 === true
-        && isDashboardIndicatorAllowed('BotBulls5');
-    const botBulls5DrawingLayers = botBulls5DrawingEnabled
-        ? (window.StandardIndicatorSubcharts?.buildBotBulls5PatternDrawing?.(bars, {
-            rolling24Hours: isCryptoTicker(selectedTicker),
-        }) || [])
-        : [];
-    const botBulls5DrawingKeys = new Set(
-        botBulls5DrawingLayers.map(layer => `bb5_drawing_${layer.key}`)
-    );
-    Object.keys(_overlaySeries)
-        .filter(key => key.startsWith('bb5_drawing_') && !botBulls5DrawingKeys.has(key))
-        .forEach(key => _removeSeries(_overlaySeries, key, lwChart));
-    botBulls5DrawingLayers.forEach(layer => {
-        _getOrCreate(_overlaySeries, `bb5_drawing_${layer.key}`, lwChart, {
-            color: layer.color,
-            lineWidth: layer.lineWidth || 2,
-            lineStyle: layer.lineStyle || 0,
-            priceLineVisible: false,
-            lastValueVisible: false,
-            crosshairMarkerVisible: false,
-        }).setData(layer.data);
-    });
-
-    if (dashboardIndicatorPrefs.BotBulls5 === true && isDashboardIndicatorAllowed('BotBulls5')) {
-        const botBulls5VisibleTimes = window.StandardIndicatorSubcharts?.botBulls5RecentEventTimes
-            ? window.StandardIndicatorSubcharts.botBulls5RecentEventTimes(bars, {
-                rolling24Hours: isCryptoTicker(selectedTicker),
-            })
-            : new Set(bars.map(bar => Number(bar?.time)).filter(Number.isFinite));
-        bars.forEach(bar => {
-            if (!botBulls5VisibleTimes.has(Number(bar?.time))) return;
-            if (bar?.bb5_breakout_bull) {
-                activeMarkers.push({
-                    time: bar.time, position: 'belowBar', color: '#10b981',
-                    shape: 'arrowUp', text: `BB5 ${String(bar.bb5_pattern || 'Bull').replaceAll('_', ' ')}`, size: 1.2
-                });
-            } else if (bar?.bb5_breakout_bear) {
-                activeMarkers.push({
-                    time: bar.time, position: 'aboveBar', color: '#f43f5e',
-                    shape: 'arrowDown', text: `BB5 ${String(bar.bb5_pattern || 'Bear').replaceAll('_', ' ')}`, size: 1.2
-                });
-            }
-        });
-        const latestPattern = bars.at(-1);
-        if (latestPattern?.bb5_state === 'FORMING') {
-            activeMarkers.push({
-                time: latestPattern.time,
-                position: Number(latestPattern.bb5_direction) < 0 ? 'aboveBar' : 'belowBar',
-                color: '#f59e0b',
-                shape: 'circle',
-                text: `BB5 ${String(latestPattern.bb5_pattern).replaceAll('_', ' ')} FORMING`,
-                size: 1,
-            });
-        }
-    }
-
     // Apply merged markers
     activeMarkers.sort((a, b) => a.time - b.time);
     candleSeries.setMarkers(activeMarkers);
@@ -2011,94 +1858,6 @@ function _refreshOscillators(bars) {
         _removeSeries(_oscSeries, 'di_plus', oscChartAdx);
         _removeSeries(_oscSeries, 'di_minus', oscChartAdx);
         _removeSeries(_oscSeries, 'adx_threshold', oscChartAdx);
-    }
-
-    // Handle BotBulls1 (WaveTrend + MFI)
-    const botbulls1Container = document.getElementById('oscChart_botbulls1');
-    const botbulls1Label = document.getElementById('botbulls1Label');
-    if (botbulls1Container) {
-        const wasHidden = botbulls1Container.style.display === 'none' || getComputedStyle(botbulls1Container).display === 'none';
-        botbulls1Container.style.display = _visibleIndicators.botbulls1 ? 'block' : 'none';
-        if (botbulls1Label) botbulls1Label.style.display = _visibleIndicators.botbulls1 ? 'flex' : 'none';
-        if (wasHidden && _visibleIndicators.botbulls1 && oscChartBotbulls1) {
-            oscChartBotbulls1.applyOptions({ width: botbulls1Container.clientWidth, height: botbulls1Container.clientHeight });
-        }
-    }
-    if (_visibleIndicators.botbulls1 && oscChartBotbulls1) {
-        const wtChannel = indicatorParamValue('BOTBULLS1_WT_CHANNEL', 10);
-        const wtAvg = indicatorParamValue('BOTBULLS1_WT_AVERAGE', 21);
-        const mfiBuy = indicatorParamValue('BOTBULLS1_MFI_BUY_RECLAIM', 35);
-        const mfiSell = indicatorParamValue('BOTBULLS1_MFI_SELL_REJECT', 65);
-        if (botbulls1Label) {
-            botbulls1Label.textContent = `BotBulls1 (WT: ${wtChannel}, ${wtAvg} | MFI: ${mfiBuy}/${mfiSell})`;
-        }
-        // wt1 line
-        _getOrCreate(_oscSeries, 'wt1', oscChartBotbulls1, { color: IND_COLORS.wt1, lineWidth: 1.5 })
-            .setData(clean(bars.filter(b => b.wt1 != null).map(b => ({ time: b.time, value: b.wt1 }))));
-
-        // wt2 line
-        _getOrCreate(_oscSeries, 'wt2', oscChartBotbulls1, { color: IND_COLORS.wt2, lineWidth: 1, lineStyle: 2 })
-            .setData(clean(bars.filter(b => b.wt2 != null).map(b => ({ time: b.time, value: b.wt2 }))));
-
-        // MFI filled zone (centered at 50)
-        if (!_oscSeries['mfi_hist']) {
-            _oscSeries['mfi_hist'] = oscChartBotbulls1.addHistogramSeries({
-                base: 50,
-                priceScaleId: '', // Same pane scale
-            });
-        }
-        const mfiHistData = bars.filter(b => b.mfi != null).map(b => ({
-            time: b.time,
-            value: b.mfi,
-            color: b.mfi >= 50 ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)'
-        }));
-        _oscSeries['mfi_hist'].setData(clean(mfiHistData));
-
-        // Reference lines: Overbought (+53), Oversold (-53), Zero Line (0)
-        const obLine = _getOrCreate(_oscSeries, 'wt_ob', oscChartBotbulls1, { color: 'rgba(239,68,68,0.35)', lineWidth: 1, lineStyle: 2 });
-        const osLine = _getOrCreate(_oscSeries, 'wt_os', oscChartBotbulls1, { color: 'rgba(16,185,129,0.35)', lineWidth: 1, lineStyle: 2 });
-        const zeroLine = _getOrCreate(_oscSeries, 'wt_zero', oscChartBotbulls1, { color: 'rgba(148,163,184,0.15)', lineWidth: 1, lineStyle: 0 });
-        if (bars.length) {
-            obLine.setData(clean([{ time: bars[0].time, value: 53 }, { time: bars[bars.length - 1].time, value: 53 }]));
-            osLine.setData(clean([{ time: bars[0].time, value: -53 }, { time: bars[bars.length - 1].time, value: -53 }]));
-            zeroLine.setData(clean([{ time: bars[0].time, value: 0 }, { time: bars[bars.length - 1].time, value: 0 }]));
-        }
-
-        // Wave crossover dots directly on wt1 line
-        const wt1Series = _oscSeries['wt1'];
-        if (wt1Series) {
-            const wtMarkers = [];
-            for (let i = 0; i < bars.length; i++) {
-                const b = bars[i];
-                if (b.ba1_buy) {
-                    wtMarkers.push({
-                        time: b.time,
-                        position: 'inLine',
-                        color: '#10b981', // Green dot
-                        shape: 'circle',
-                        size: 2
-                    });
-                } else if (b.ba1_sell) {
-                    wtMarkers.push({
-                        time: b.time,
-                        position: 'inLine',
-                        color: '#ef4444', // Red dot
-                        shape: 'circle',
-                        size: 2
-                    });
-                }
-            }
-            wt1Series.setMarkers(wtMarkers);
-        }
-
-        try { oscChartBotbulls1.timeScale().fitContent(); } catch (e) { }
-    } else if (oscChartBotbulls1) {
-        _removeSeries(_oscSeries, 'wt1', oscChartBotbulls1);
-        _removeSeries(_oscSeries, 'wt2', oscChartBotbulls1);
-        _removeSeries(_oscSeries, 'mfi_hist', oscChartBotbulls1);
-        _removeSeries(_oscSeries, 'wt_ob', oscChartBotbulls1);
-        _removeSeries(_oscSeries, 'wt_os', oscChartBotbulls1);
-        _removeSeries(_oscSeries, 'wt_zero', oscChartBotbulls1);
     }
 
     const dashboardPrefs = getGlobalIndicatorPrefs();
@@ -2282,6 +2041,76 @@ async function saveChartCacheToIndexedDB(key, wrapped) {
     }
 }
 
+/* Time chip in the Indicator Signal Confluence header: when these signals were last refreshed (Central Time, like the
+ * rest of the Dashboard). The tooltip adds the completed candle they are based on when the payload carries it. Stamped
+ * only when a fresh payload is applied, not when the grid is merely redrawn (for example by an indicator toggle). */
+/* Countdown to the next automatic refresh of the chart and its indicator signals. It mirrors refreshCompletedCandlesIfDue():
+ * the refresh is due once the current candle has closed plus COMPLETED_CANDLE_DELAY_MS, a missing candle is retried every
+ * COMPLETED_CANDLE_RETRY_MS, and there is no automatic refresh for daily charts or outside the chart session. */
+function formatRefreshCountdown(totalSeconds) {
+    const seconds = Math.max(0, Math.ceil(totalSeconds));
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const rest = seconds % 60;
+    if (hours > 0) return `${hours}h${minutes}m`;
+    if (minutes > 0) return `${minutes}m${rest}s`;
+    return `${rest}s`;
+}
+
+function signalRefreshCountdownText(nowMs = Date.now()) {
+    const intervalSeconds = CHART_INTERVALS[currentBackendTf]?.seconds;
+    if (!intervalSeconds) return '—';
+    if (intervalSeconds >= 86400) return 'Auto-refresh off (1D)';
+    if (!dashboardChartRefreshSessionIsOpen(nowMs)) return 'Market closed';
+    const lastBar = Number(lastCompletedChartBarTime || 0);
+    if (!(lastBar > 0)) return '—';
+    const expectedCloseSeconds = lastBar + intervalSeconds;
+    const dueAt = expectedCloseSeconds * 1000 + COMPLETED_CANDLE_DELAY_MS;
+    if (dueAt > nowMs) return `Next refresh in ${formatRefreshCountdown((dueAt - nowMs) / 1000)}`;
+    if (activeChartRefreshInFlight) return 'Refreshing…';
+    // Due, but the new candle has not arrived: the next attempt is a retry.
+    if (lastCompletedChartAttemptedCloseTime === expectedCloseSeconds) {
+        const retryAt = lastCompletedChartAttemptAt + COMPLETED_CANDLE_RETRY_MS;
+        if (retryAt > nowMs) return `Refreshing in ${formatRefreshCountdown((retryAt - nowMs) / 1000)}`;
+    }
+    return 'Refreshing…';
+}
+
+function tickSignalRefreshCountdown() {
+    const el = document.getElementById('signalRefreshCountdown');
+    if (!el || document.hidden) return;
+    const text = signalRefreshCountdownText();
+    const label = `⏳ ${text}`;
+    if (el.textContent !== label) el.textContent = label;
+}
+
+function startSignalRefreshCountdown() {
+    if (window._signalRefreshCountdownTimer) return;
+    window._signalRefreshCountdownTimer = setInterval(tickSignalRefreshCountdown, 1000);
+    tickSignalRefreshCountdown();
+}
+
+function stampSignalUpdatedTime(scan) {
+    // The countdown badge must keep running even though the "last refreshed" clock is no longer on the page.
+    startSignalRefreshCountdown();
+    tickSignalRefreshCountdown();
+    const el = document.getElementById('signalUpdatedTime');
+    if (!el) return;
+    const clock = (date, seconds) => date.toLocaleTimeString('en-US', {
+        timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit', ...(seconds ? { second: '2-digit' } : {}), hour12: true,
+    });
+    const now = new Date();
+    el.textContent = `🕒 ${clock(now, true)} CT`;
+    let closeTs = Number(scan?.candle_meta?.candle_close_ts);
+    if (Number.isFinite(closeTs) && closeTs > 0) {
+        if (closeTs > 1e11) closeTs /= 1000;
+        const label = CHART_INTERVALS[currentBackendTf]?.label || currentBackendTf;
+        el.title = `Signals last refreshed ${clock(now, true)} CT. Calculated on the completed ${label} candle that closed ${clock(new Date(closeTs * 1000), false)} CT. They refresh about 15 seconds after each candle closes.`;
+    } else {
+        el.title = `Signals last refreshed ${clock(now, true)} CT. They refresh about 15 seconds after each candle closes.`;
+    }
+}
+
 function renderFastChartPayload(data, requestedTicker) {
     const ticker = normalizeTicker(requestedTicker || data?.ticker || data?.primaryTicker);
     if (!ticker || normalizeTicker(selectedTicker) !== ticker) return;
@@ -2307,6 +2136,7 @@ function renderFastChartPayload(data, requestedTicker) {
             scan.bearish_count ?? payload.bearish_count ?? 0
         );
         updateSizingPanel(scan);
+        stampSignalUpdatedTime(scan);
     }
 
     if (window.lastDashboardData) {
@@ -2501,26 +2331,95 @@ async function refreshCompletedCandlesIfDue() {
     }
 }
 
-function updateChartHeaderLivePrice(price) {
+/* Chart header: the price is always the latest live quote and the change is the day change from the previous
+ * regular-session close. Neither depends on the chart timeframe or on how many candles are loaded (the old header
+ * measured from the first loaded candle, so switching timeframe changed the percentage). */
+const HEADER_QUOTE_FRESH_MS = 120000;
+const HEADER_PREV_CLOSE_KEEP_MS = 6 * 60 * 60 * 1000;
+window._headerQuote = window._headerQuote || null;          // { ticker, price, at }
+window._headerPrevClose = window._headerPrevClose || {};    // ticker -> { value, at }  (changes once a day)
+
+function freshHeaderQuote() {
+    const q = window._headerQuote;
+    if (!q || q.ticker !== normalizeTicker(selectedTicker)) return null;
+    return Date.now() - q.at <= HEADER_QUOTE_FRESH_MS ? q : null;
+}
+
+window._headerPrevCloseFromBars = window._headerPrevCloseFromBars || {};   // fallback, same shape as _headerPrevClose
+
+function headerPreviousClose() {
+    const ticker = normalizeTicker(selectedTicker);
+    const usable = (entry) => entry && Date.now() - entry.at <= HEADER_PREV_CLOSE_KEEP_MS && entry.value > 0;
+    // The server's previous close wins; the candle-derived one only fills in when the quote did not carry it.
+    if (usable(window._headerPrevClose[ticker])) return window._headerPrevClose[ticker].value;
+    if (usable(window._headerPrevCloseFromBars[ticker])) return window._headerPrevCloseFromBars[ticker].value;
+    return 0;
+}
+
+const _chartCtDateFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago', year: 'numeric', month: '2-digit', day: '2-digit' });
+function chartBarDateKey(bar, ticker) {
+    const t = Number(Number.isFinite(Number(bar?.source_time)) ? bar.source_time : bar?.time);
+    if (!Number.isFinite(t)) return '';
+    const d = new Date(t * 1000);
+    return isCryptoTicker(ticker) ? d.toISOString().slice(0, 10) : _chartCtDateFormatter.format(d);
+}
+
+/* Previous regular-session close from candles already loaded, for when the quote has none. For intraday charts it is
+ * the close of the last regular-hours candle on an earlier trading date than the newest candle; for daily candles it is
+ * the candle before the latest session. Returns 0 when the loaded candles do not reach a previous session (for example a
+ * single-day range), and the caller keeps whatever it already knew. */
+function previousCloseFromBars(bars) {
+    if (!Array.isArray(bars) || bars.length < 2) return 0;
+    const ticker = normalizeTicker(selectedTicker);
+    const last = bars[bars.length - 1];
+    const lastKey = chartBarDateKey(last, ticker);
+    if (!lastKey) return 0;
+    if (currentBackendTf === '1Day') {
+        const prior = bars[bars.length - 2];
+        return chartBarDateKey(prior, ticker) < lastKey && Number(prior.close) > 0 ? Number(prior.close) : 0;
+    }
+    for (let i = bars.length - 1; i >= 0; i -= 1) {
+        const key = chartBarDateKey(bars[i], ticker);
+        if (!key || key >= lastKey) continue;
+        if (isCryptoTicker(ticker) || isRegularMarketBar(bars[i])) {
+            return Number(bars[i].close) > 0 ? Number(bars[i].close) : 0;
+        }
+    }
+    return 0;
+}
+
+function paintChartHeader(price) {
     const priceEl = document.getElementById('chartPrice');
     const changeEl = document.getElementById('chartPriceChange');
     if (!priceEl || !Number.isFinite(price) || price <= 0) return;
-
-    const bars = window._confirmedDisplayPriceHistory || window._displayPriceHistory || [];
-    const first = bars?.[0];
-    const baseline = Number(first?.open || first?.close || 0);
-    const change = baseline > 0 ? price - baseline : 0;
-    const changePct = baseline > 0 ? (change / baseline) * 100 : 0;
+    const prev = headerPreviousClose();
+    const known = prev > 0;
+    const change = known ? price - prev : 0;
+    const changePct = known ? (change / prev) * 100 : 0;
 
     priceEl.textContent = formatPrice(price, selectedTicker);
-    priceEl.className = `text-xl font-black ${change >= 0 ? 'text-emerald-600' : 'text-red-500'}`;
-    if (changeEl && baseline > 0) {
-        const sign = change > 0 ? '+' : (change < 0 ? '-' : '');
-        const diffStr = formatPrice(Math.abs(change), selectedTicker);
-        const pctSign = changePct > 0 ? '+' : (changePct < 0 ? '-' : '');
-        changeEl.textContent = `${sign}${diffStr} (${pctSign}${Math.abs(changePct).toFixed(2)}%)`;
-        changeEl.className = `text-xs font-bold ${change >= 0 ? 'text-emerald-500' : 'text-red-500'}`;
+    priceEl.className = `text-xl font-black ${!known ? 'text-gray-700' : (change >= 0 ? 'text-emerald-600' : 'text-red-500')}`;
+    if (changeEl) {
+        if (known) {
+            const sign = change > 0 ? '+' : (change < 0 ? '-' : '');
+            const diffStr = formatPrice(Math.abs(change), selectedTicker);
+            const pctSign = changePct > 0 ? '+' : (changePct < 0 ? '-' : '');
+            changeEl.textContent = `${sign}${diffStr} (${pctSign}${Math.abs(changePct).toFixed(2)}%)`;
+            changeEl.className = `text-xs font-bold ${change >= 0 ? 'text-emerald-500' : 'text-red-500'}`;
+        } else {
+            // No previous close yet: show no change rather than a window-dependent one.
+            changeEl.textContent = '';
+        }
     }
+}
+
+function updateChartHeaderLivePrice(price, quote) {
+    if (!Number.isFinite(price) || price <= 0) return;
+    const ticker = normalizeTicker(selectedTicker);
+    const prev = Number(quote && quote.previous_close);
+    if (Number.isFinite(prev) && prev > 0) window._headerPrevClose[ticker] = { value: prev, at: Date.now() };
+    window._headerQuote = { ticker, price, at: Date.now() };
+    paintChartHeader(price);
 }
 
 async function fetchLivePriceForActiveTicker() {
@@ -2548,7 +2447,7 @@ async function fetchLivePriceForActiveTicker() {
         if (quote.stale) return;
 
         const price = Number(quote.price);
-        updateChartHeaderLivePrice(price);
+        updateChartHeaderLivePrice(price, quote);
         livePriceFailureCount = 0;
         livePriceNextAttemptAt = 0;
     } catch (e) {
@@ -2579,24 +2478,17 @@ function startActiveChartHeartbeat() {
 // ──────────────────────────────────────────────
 function _updateChartHeader(bars) {
     if (!bars || bars.length === 0) return;
-    const last = bars[bars.length - 1];
-    const first = bars[0];
-    const price = last.close;
-    const change = price - first.open;
-    const changePct = (change / first.open) * 100;
-    const priceEl = document.getElementById('chartPrice');
-    const changeEl = document.getElementById('chartPriceChange');
-    if (priceEl) {
-        priceEl.textContent = formatPrice(price, selectedTicker);
-        priceEl.className = `text-xl font-black ${change >= 0 ? 'text-emerald-600' : 'text-red-500'}`;
+    // Switching timeframe loads different candles, but the header must not change with them: use the latest live quote
+    // for this ticker when there is one, and the last candle's close only until the first quote arrives.
+    const quote = freshHeaderQuote();
+    const price = quote ? quote.price : bars[bars.length - 1].close;
+    const ticker = normalizeTicker(selectedTicker);
+    if (!window._headerPrevClose[ticker]) {
+        const derived = previousCloseFromBars(bars);
+        if (derived > 0) window._headerPrevCloseFromBars[ticker] = { value: derived, at: Date.now() };
     }
-    if (changeEl) {
-        const sign = change > 0 ? '+' : (change < 0 ? '-' : '');
-        const diffStr = formatPrice(Math.abs(change), selectedTicker);
-        const pctSign = changePct > 0 ? '+' : (changePct < 0 ? '-' : '');
-        changeEl.textContent = `${sign}${diffStr} (${pctSign}${Math.abs(changePct).toFixed(2)}%)`;
-        changeEl.className = `text-xs font-bold ${change >= 0 ? 'text-emerald-500' : 'text-red-500'}`;
-    }
+    paintChartHeader(price);
+    if (!quote) fetchLivePriceForActiveTicker();
 }
 
 function setChartLoadingState(isLoading, ticker = '') {
@@ -2667,9 +2559,8 @@ function showTickerChangeLoadingState(ticker, options = {}) {
     }
 
     const grid = document.getElementById('signalGrid');
-    const premiumGrid = document.getElementById('premiumSignalGrid');
     const loading = document.getElementById('gridLoading');
-    if (grid || premiumGrid) {
+    if (grid) {
         lockSignalConfluencePanelHeight();
         renderSignals({}, 'HOLD', `Loading ${normalized} indicator signals...`, 0, 0, { allowEmpty: true });
     }
@@ -2678,7 +2569,7 @@ function showTickerChangeLoadingState(ticker, options = {}) {
     const summaryEl = document.getElementById('aiSummary');
     const cardSentSummary = document.getElementById('sentimentSummary');
     const aiHeaderEl = document.getElementById('aiIndicatorHeader');
-    if (aiHeaderEl) aiHeaderEl.textContent = `BotBulls AI Analysis - ${normalized}`;
+    if (aiHeaderEl) aiHeaderEl.textContent = `BotBulls News AI — ${normalized}`;
     if (summaryEl) {
         summaryEl.textContent = `Fetching latest scan analysis for ${normalized}...`;
         summaryEl.classList.add('italic');
@@ -2874,39 +2765,11 @@ var INDICATOR_CONFIG_MAP = {
     'Swing Points': ['SWING_POINTS_LOOKBACK_DAYS', 'SWING_POINTS_ENTRY_MODE', 'SWING_POINTS_LEVEL_COUNT'],
     'ATR Volatility': ['ATR_PERIOD', 'ATR_STOP_MULTIPLIER', 'ATR_TRAIL_MULTIPLIER', 'ATR_TAKE_PROFIT_MULTIPLIER'],
     'Strategy Confidence': ['MIN_BULLISH_SIGNALS', 'MIN_BEARISH_SIGNALS'],
-    'Botbulls4 News AI': ['SENTIMENT_BULLISH_PERCENTAGE', 'SENTIMENT_BEARISH_PERCENTAGE'],
-    'BotBulls1': ['BOTBULLS1_WT_CHANNEL', 'BOTBULLS1_WT_AVERAGE', 'BOTBULLS1_WT_OVERSOLD', 'BOTBULLS1_WT_OVERBOUGHT', 'BOTBULLS1_MFI_BUY_RECLAIM', 'BOTBULLS1_MFI_SELL_REJECT', 'BOTBULLS1_CONFIRM_LOOKBACK', 'BOTBULLS1_REQUIRE_MFI_CONFIRM', 'BOTBULLS1_REQUIRE_CANDLE_CONFIRM', 'BOTBULLS1_REQUIRE_PRICE_CONFIRM', 'BOTBULLS1_PRICE_CONFIRM_EMA', 'BOTBULLS1_PRICE_CONFIRM_LOOKBACK'],
-    'BotBulls2': ['BOTBULLS2_ATR_MULT', 'BOTBULLS2_TREND_TRACER_PERIOD', 'BOTBULLS2_REVERSAL_ZONE_PERIOD'],
-    'BotBulls3': ['BOTBULLS3_ATR_PERIOD', 'BOTBULLS3_ATR_MULT'],
-    'BotBulls5': ['BOTBULLS5_MIN_CONFIDENCE', 'BOTBULLS5_BREAKOUT_BUFFER_ATR', 'BOTBULLS5_STRUCTURE_LOOKBACK', 'BOTBULLS5_SIGNAL_HOLD_BARS', 'BOTBULLS5_REQUIRE_VOLUME']
 };
 Object.assign(INDICATOR_CONFIG_MAP, window.STANDARD_INDICATOR_CONFIG_MAP || {});
 
 // Industry Defaults for indicators based on config.py
 var INDICATOR_DEFAULTS = {
-    'BOTBULLS1_WT_CHANNEL': 10,
-    'BOTBULLS1_WT_AVERAGE': 21,
-    'BOTBULLS1_MFI_CONFIRM': 30,
-    'BOTBULLS1_WT_OVERSOLD': -55,
-    'BOTBULLS1_WT_OVERBOUGHT': 55,
-    'BOTBULLS1_MFI_BUY_RECLAIM': 35,
-    'BOTBULLS1_MFI_SELL_REJECT': 65,
-    'BOTBULLS1_CONFIRM_LOOKBACK': 3,
-    'BOTBULLS1_REQUIRE_MFI_CONFIRM': 1,
-    'BOTBULLS1_REQUIRE_CANDLE_CONFIRM': 1,
-    'BOTBULLS1_REQUIRE_PRICE_CONFIRM': 1,
-    'BOTBULLS1_PRICE_CONFIRM_EMA': 9,
-    'BOTBULLS1_PRICE_CONFIRM_LOOKBACK': 4,
-    'BOTBULLS2_ATR_MULT': 2.0,
-    'BOTBULLS2_TREND_TRACER_PERIOD': 50,
-    'BOTBULLS2_REVERSAL_ZONE_PERIOD': 50,
-    'BOTBULLS3_ATR_PERIOD': 10,
-    'BOTBULLS3_ATR_MULT': 1.0,
-    'BOTBULLS5_BREAKOUT_BUFFER_ATR': 0.10,
-    'BOTBULLS5_MIN_CONFIDENCE': 70.0,
-    'BOTBULLS5_SIGNAL_HOLD_BARS': 3,
-    'BOTBULLS5_REQUIRE_VOLUME': 0,
-    'BOTBULLS5_STRUCTURE_LOOKBACK': 48,
     'RSI_PERIOD': 14,
     'RSI_OVERBOUGHT': 70,
     'RSI_OVERSOLD': 30,
@@ -2955,16 +2818,12 @@ let currentEditingIndicator = null;
 const GLOBAL_INDICATOR_PREFS_KEY = 'globalIndicatorPrefs';
 const DASHBOARD_CONFLUENCE_PREFS_VERSION_KEY = 'dashboardConfluencePrefsVersion';
 const DASHBOARD_CONFLUENCE_PREFS_VERSION = 'v2';
-const DASHBOARD_DEFAULT_PREMIUM_NAMES = [
-    'BotBulls1', 'BotBulls2', 'BotBulls3', 'Botbulls4 News AI', 'BotBulls5'
-];
 const ALL_SIGNAL_NAMES = [
     ...(window.STANDARD_INDICATOR_NAMES || [
         'RSI', 'MACD', 'EMA Cross', 'ADX Trend', 'Supertrend',
         'Bollinger', 'VWAP', 'Volume Profile', 'SMA', 'Prior Day High/Low',
         'Pivot Points (S/R)', 'Swing Points', 'Mystic Pulse', 'Candle Patterns',
     ]),
-    'BotBulls1', 'BotBulls2', 'BotBulls3', 'Botbulls4 News AI', 'BotBulls5'
 ];
 const INDICATOR_TOGGLE_KEYS = {
     'RSI': 'ENABLE_RSI',
@@ -2982,20 +2841,15 @@ const INDICATOR_TOGGLE_KEYS = {
     'Volume Profile': 'ENABLE_VOLUME_PROFILE',
     'Swing Points': 'ENABLE_SWING_POINTS',
     'Candle Patterns': 'ENABLE_CANDLE_PATTERNS',
-    'Botbulls4 News AI': 'ENABLE_AI_SENTIMENT',
-    'BotBulls1': 'ENABLE_BOTBULLS1',
-    'BotBulls2': 'ENABLE_BOTBULLS2',
-    'BotBulls3': 'ENABLE_BOTBULLS3',
-    'BotBulls5': 'ENABLE_BOTBULLS5',
 };
 Object.assign(INDICATOR_TOGGLE_KEYS, window.STANDARD_INDICATOR_TOGGLE_KEYS || {});
 const DASHBOARD_STANDARD_INDICATOR_NAMES = window.STANDARD_INDICATOR_NAMES || [];
 const DASHBOARD_STANDARD_INDICATOR_SET = new Set(DASHBOARD_STANDARD_INDICATOR_NAMES);
-const DASHBOARD_INDICATOR_DISPLAY_LIMIT = 12;
+const DASHBOARD_INDICATOR_DISPLAY_LIMIT = 15;
 const DASHBOARD_DEFAULT_DISPLAYED_INDICATORS = window.STANDARD_INDICATOR_DEFAULT_NAMES || [
     'RSI', 'EMA Cross', 'SMA', 'VWAP', 'ADX Trend', 'Supertrend',
     'ATR Volatility', 'Volume Profile', 'Candle Patterns', 'Prior Day High/Low',
-    'Swing Points', 'Pivot Points (S/R)',
+    'Swing Points', 'Pivot Points (S/R)', 'MACD', 'Bollinger', 'Chart Patterns',
 ];
 const DASHBOARD_STANDARD_TOGGLE_KEYS = new Set(
     DASHBOARD_STANDARD_INDICATOR_NAMES
@@ -3015,7 +2869,7 @@ function getGlobalIndicatorPrefs() {
             const enabledNames = ALL_SIGNAL_NAMES.filter(name => prefs[name] === true);
 
             // The previous Reset implementation persisted every indicator OFF.
-            // If the user subsequently enabled BotBulls5 (or one other card), the
+            // If the user subsequently enabled one other card, the
             // Dashboard became a one-card grid. Repair only that exact legacy shape;
             // valid partial preference maps and deliberate multi-indicator setups stay intact.
             if (hasResetArtifactShape && enabledNames.length <= 1) {
@@ -3067,9 +2921,6 @@ function getDashboardDefaultIndicatorPrefs() {
     const shown = getDashboardWorkspaceShownSet();
     const prefs = allIndicatorPrefs(false);
     shown.forEach(name => {
-        if (Object.prototype.hasOwnProperty.call(prefs, name)) prefs[name] = true;
-    });
-    DASHBOARD_DEFAULT_PREMIUM_NAMES.forEach(name => {
         if (Object.prototype.hasOwnProperty.call(prefs, name)) prefs[name] = true;
     });
     return prefs;
@@ -3326,12 +3177,6 @@ async function flushDashboardIndicatorUpdates() {
         // persisted. Recalculate only when at least one indicator was enabled.
         if (Object.values(updates).some(value => value === true)) {
             refreshDashboardSignalsAfterIndicatorSave();
-        }
-
-        if (updates.ENABLE_AI_SENTIMENT === true && typeof fetchAIIndicator === 'function') {
-            fetchAIIndicator(selectedTicker, currentBackendTf, false).catch(error => {
-                console.warn('[confluence] News AI refresh failed:', error);
-            });
         }
     } catch (error) {
         if (dashboardIndicatorSaveRetryCount < 1) {
@@ -3595,29 +3440,6 @@ function recomputeConfluence() {
 // AI Indicator — Groq/Ollama Agentic Signal
 // ──────────────────────────────────────────────
 
-window.ollamaModels = [];
-async function loadOllamaModels() {
-    try {
-        const headers = await getAuthHeaders();
-        const res = await fetchWithTimeout(
-            `${API_BASE}/api/ollama/models`,
-            { headers },
-            OLLAMA_MODELS_FETCH_TIMEOUT_MS,
-        );
-        if (res.ok) {
-            const data = await res.json();
-            if (data.status === 'online') {
-                window.ollamaModels = data.models || [];
-            } else {
-                window.ollamaModels = [];
-            }
-        }
-    } catch (e) {
-        console.warn('[init] Failed to fetch Ollama models:', e);
-        window.ollamaModels = [];
-    }
-}
-
 window.onAIIndicatorUpdated = function (data, fromCache) {
     if (window._lastSignals) {
         renderSignals(
@@ -3635,16 +3457,6 @@ window.onAIIndicatorUpdated = function (data, fromCache) {
 
 // 3. Render Signal Confluence Grid
 // ──────────────────────────────────────────────
-
-// Premium indicator tooltip descriptions
-const PREMIUM_INFO = {
-    'BotBulls1': 'Confirmed WaveTrend reversal with MFI reclaim/rejection, then price confirmation within the BB1 window. Confluence stays bullish after the last BB1 BUY marker and bearish after the last BB1 SELL marker.',
-    'BotBulls2': 'Adaptive ATR trailing stop with trend-smoothed EMA and reversal zone detection. Fires on trend flips confirmed by multi-condition confluence scoring (1-4 strength rating).',
-    'BotBulls3': 'Heikin-Ashi noise filter + ATR-based trailing stop. Generates buy/sell alerts only on confirmed momentum flips — removing false signals from choppy markets.',
-    'BotBulls5': 'Premium causal chart-pattern engine for continuation, reversal, compression, channel, and rounded structures. It draws qualified geometry but votes only after a completed-candle breakout.',
-    'Botbulls4 News AI': 'Groq-powered real-time AI news sentiment analysis. Parses current headlines and financial catalysts to determine market direction.',
-};
-const PREMIUM_SIGNAL_NAMES = new Set(DASHBOARD_DEFAULT_PREMIUM_NAMES);
 
 function lockSignalConfluencePanelHeight() {
     const panel = document.getElementById('signalConfluencePanel');
@@ -3690,7 +3502,6 @@ function buildMissingSignalPlaceholder(name, prefs) {
         reason: locallyEnabled ? 'Waiting for refreshed values...' : disabledReason,
         enabled: locallyEnabled,
         toggle_key: INDICATOR_TOGGLE_KEYS[name],
-        premium: PREMIUM_SIGNAL_NAMES.has(name),
     };
 }
 
@@ -3700,7 +3511,6 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
     if (window._indicatorToggleDebounce && !window._indicatorRefreshRenderAllowed) return;
 
     const grid = document.getElementById('signalGrid');
-    const premiumGrid = document.getElementById('premiumSignalGrid');
     const loading = document.getElementById('gridLoading');
     signals = signals || {};
 
@@ -3719,7 +3529,6 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
     bearishCount = effectiveCounts.bearish;
 
     const activeIds = new Set();
-    const premiumActiveIds = new Set();
     const prefs = getGlobalIndicatorPrefs();
     const displaySignals = {};
     for (const name of ALL_SIGNAL_NAMES) {
@@ -3730,50 +3539,30 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
     }
 
     for (const [name, data] of Object.entries(displaySignals)) {
-        const isPremium = data.premium === true || PREMIUM_SIGNAL_NAMES.has(name);
-        const targetGrid = isPremium ? premiumGrid : grid;
+        const targetGrid = grid;
         if (!targetGrid) continue;
 
         // Local prefs override backend 'enabled' flag
         const hasLocalPref = Object.prototype.hasOwnProperty.call(prefs, name);
-        const isInDashboardGrid = isPremium || isDashboardIndicatorAllowed(name);
+        const isInDashboardGrid = isDashboardIndicatorAllowed(name);
         const isEnabled = isInDashboardGrid
             && (hasLocalPref ? prefs[name] === true : data.enabled !== false);
 
-        // The Dashboard-wide regular grid must always retain its selected 10
-        // cards. Premium cards also remain present in their own section. A
-        // disabled indicator is rendered as disabled instead of disappearing,
+        // The Dashboard-wide regular grid must always retain its selected
+        // cards. A disabled indicator is rendered as disabled instead of disappearing,
         // so the user can see the full confluence layout and re-enable it.
         if (!isInDashboardGrid) continue;
 
-        // Sync Botbulls4 News AI with actual cached AI Indicator score before style evaluation
-        if (name === 'Botbulls4 News AI') {
-            applyCachedNewsAISignal(data, {
-                ticker: typeof selectedTicker !== 'undefined' ? selectedTicker : '',
-                timeframe: typeof currentBackendTf !== 'undefined' ? currentBackendTf : '',
-                params: window.lastDashboardData?.indicator_parameters || {},
-            });
-        }
-
         // Determine CSS class
-        let signalClass;
-        if (!isEnabled) {
-            signalClass = isPremium ? 'premium-neutral' : 'neutral';
-        } else if (isPremium) {
-            signalClass = data.signal === 'BULLISH' ? 'premium-bullish' : data.signal === 'BEARISH' ? 'premium-bearish' : 'premium-neutral';
-        } else {
-            signalClass = data.signal === 'BULLISH' ? 'bullish' : data.signal === 'BEARISH' ? 'bearish' : 'neutral';
-        }
+        const signalClass = !isEnabled
+            ? 'neutral'
+            : data.signal === 'BULLISH' ? 'bullish' : data.signal === 'BEARISH' ? 'bearish' : 'neutral';
 
         const icon = !isEnabled ? '●' : data.signal === 'BULLISH' ? '▲' : data.signal === 'BEARISH' ? '▼' : '●';
         const iconColor = !isEnabled ? 'text-slate-400' : data.signal === 'BULLISH' ? 'text-emerald-600' : data.signal === 'BEARISH' ? 'text-red-500' : 'text-purple-400';
 
         const cardId = 'signal-card-' + name.replace(/\s+/g, '-');
-        if (isPremium) {
-            premiumActiveIds.add(cardId);
-        } else {
-            activeIds.add(cardId);
-        }
+        activeIds.add(cardId);
 
         let card = document.getElementById(cardId);
         let isNew = false;
@@ -3800,71 +3589,10 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
         const cacheKey = `${isEnabled}-${data.signal}-${data.reason}-${data.value ?? ''}-${data.baseline ?? ''}-${data.period ?? ''}-${data.percentage ?? data.sentiment_pct ?? ''}`;
         if (card.dataset.cacheKey !== cacheKey) {
             let reasonHtml = isEnabled ? escapeDashboardHtml(data.reason) : 'Disabled — click to enable';
-            const isNewsSentiment = name === 'Botbulls4 News AI';
             const safeIndicatorName = escapeDashboardHtml(name);
             const encodedIndicatorName = encodeURIComponent(String(name));
 
-            if (isNewsSentiment && data.value != null && isEnabled) {
-                const scoreVal = parseFloat(data.value);
-                const sentPct = Math.round(
-                    typeof normalizeAISentimentPct === 'function'
-                        ? normalizeAISentimentPct(data.percentage ?? data.sentiment_pct, scoreVal)
-                        : (((scoreVal + 1.0) / 2.0) * 100)
-                );
-                let scoreColor = 'text-slate-500';
-
-                const currentParams = window.lastDashboardData?.indicator_parameters || {};
-                const bullishThresh = currentParams['SENTIMENT_BULLISH_PERCENTAGE'] !== undefined
-                    ? currentParams['SENTIMENT_BULLISH_PERCENTAGE']
-                    : (typeof INDICATOR_DEFAULTS !== 'undefined' ? INDICATOR_DEFAULTS['SENTIMENT_BULLISH_PERCENTAGE'] : 70);
-
-                const bearishThresh = currentParams['SENTIMENT_BEARISH_PERCENTAGE'] !== undefined
-                    ? currentParams['SENTIMENT_BEARISH_PERCENTAGE']
-                    : (typeof INDICATOR_DEFAULTS !== 'undefined' ? INDICATOR_DEFAULTS['SENTIMENT_BEARISH_PERCENTAGE'] : 30);
-
-                if (sentPct >= bullishThresh) {
-                    scoreColor = 'text-emerald-600';
-                } else if (sentPct <= bearishThresh) {
-                    scoreColor = 'text-rose-600';
-                }
-
-                let reasonText = (data.reason || '').toLowerCase().replace('catalysts', 'catalyst');
-                if (reasonText.includes('disabled')) {
-                    reasonText = "evaluating market sentiment";
-                }
-                reasonText = reasonText.charAt(0).toUpperCase() + reasonText.slice(1);
-                reasonHtml = `${escapeDashboardHtml(reasonText)}: <span class="${scoreColor} font-black">${sentPct}%</span>`;
-            }
-
-            if (isPremium) {
-                // Premium card with ⓘ info tooltip
-                card.innerHTML = `
-                    <div class="flex items-start justify-between">
-                        <div class="flex items-start gap-1">
-                            <span class="font-bold text-amber-800 ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${safeIndicatorName}</span>
-                            <div class="group/tooltip relative inline-flex items-center">
-                                <svg onclick="event.stopPropagation(); event.preventDefault(); typeof openInfoModal === 'function' ? openInfoModal(decodeURIComponent('${encodedIndicatorName}')) : null" xmlns="http://www.w3.org/2000/svg" class="text-amber-400 hover:text-amber-600 cursor-pointer transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                </svg>
-                                <div class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
-                                    Click to read guide
-                                    <div class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900"></div>
-                                </div>
-                            </div>
-                            <button class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-100/50" 
-                                    onclick="event.stopPropagation(); openIndicatorSettings(decodeURIComponent('${encodedIndicatorName}'))"
-                                    title="Indicator Settings">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                </svg>
-                            </button>
-                        </div>
-                        <span class="${iconColor} text-sm font-bold ${!isEnabled ? 'opacity-50 grayscale' : ''} transition-all duration-300">${icon}</span>
-                    </div>
-                    <p class="text-amber-700 ${!isEnabled ? 'opacity-50' : ''} transition-opacity duration-300">${reasonHtml}</p>
-                `;
-            } else {
+            {
                 // Standard signal card
                 const displayName = name === 'VWAP' ? 'Session VWAP' : name;
                 const safeDisplayName = escapeDashboardHtml(displayName);
@@ -3902,14 +3630,12 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
         }
 
         if (isNew) {
-            if (!isPremium) {
-                const shownNames = window.IndicatorWorkspace?.getShown?.('dashboard')
-                    || (window.STANDARD_INDICATOR_NAMES || ALL_SIGNAL_NAMES).slice(0, DASHBOARD_INDICATOR_DISPLAY_LIMIT);
-                const isShownInWorkspace = shownNames.includes(name);
-                card.hidden = !isShownInWorkspace;
-                card.classList.toggle('indicator-workspace-hidden', !isShownInWorkspace);
-                card.setAttribute('aria-hidden', isShownInWorkspace ? 'false' : 'true');
-            }
+            const shownNames = window.IndicatorWorkspace?.getShown?.('dashboard')
+                || (window.STANDARD_INDICATOR_NAMES || ALL_SIGNAL_NAMES).slice(0, DASHBOARD_INDICATOR_DISPLAY_LIMIT);
+            const isShownInWorkspace = shownNames.includes(name);
+            card.hidden = !isShownInWorkspace;
+            card.classList.toggle('indicator-workspace-hidden', !isShownInWorkspace);
+            card.setAttribute('aria-hidden', isShownInWorkspace ? 'false' : 'true');
             targetGrid.appendChild(card);
         }
     }
@@ -3920,15 +3646,6 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
             grid.removeChild(child);
         }
     });
-
-    // Remove stale cards from premium grid
-    if (premiumGrid) {
-        Array.from(premiumGrid.children).forEach(child => {
-            if (!premiumActiveIds.has(child.id)) {
-                premiumGrid.removeChild(child);
-            }
-        });
-    }
 
     // Update counts
     document.getElementById('bullCount').textContent = `${bullishCount} Bullish`;
@@ -3962,10 +3679,6 @@ const SIGNAL_TO_CHART_KEY = {
     'Volume Profile': 'volume_profile',
     'Swing Points': 'swing_points',
     'ADX Trend': 'adx',
-    'BotBulls1': 'botbulls1',
-    'BotBulls2': 'botbulls2',
-    'BotBulls3': 'botbulls3',
-    'BotBulls5': 'botbulls5',
     'Candle Patterns': 'Candle Patterns',
 };
 
@@ -4480,7 +4193,7 @@ async function fetchDashboard(mode = 'heavy', options = {}) {
         const aiHeaderEl = document.getElementById('aiIndicatorHeader');
 
         if (aiHeaderEl) {
-            aiHeaderEl.textContent = `BotBulls AI Analysis - ${selectedTicker}`;
+            aiHeaderEl.textContent = `BotBulls News AI — ${selectedTicker}`;
         }
 
         if (summaryEl) {
@@ -4985,7 +4698,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 const runBackground = async () => {
                     if (!shouldRunDashboardRefresh()) return;
                     fetchGenericDashboardCards();
-                    await loadOllamaModels();
                 };
                 if (window.requestIdleCallback) {
                     window.requestIdleCallback(runBackground, { timeout: 1500 });
@@ -5389,13 +5101,6 @@ function openIndicatorSettings(indicatorName) {
     if (configKeys.length === 0) {
         container.innerHTML = '<p class="text-xs text-slate-500 italic">No adjustable parameters for this indicator.</p>';
     }
-    if (indicatorName === 'BotBulls5' && typeof window.renderBotBulls5PatternSummary === 'function') {
-        window.renderBotBulls5PatternSummary(
-            container,
-            window._displayPriceHistory || window.lastDashboardData?.price_history || [],
-            { rolling24Hours: isCryptoTicker(selectedTicker) },
-        );
-    }
 
     const currentParams = window.lastDashboardData?.indicator_parameters || {};
     const overrides = window.lastDashboardData?.indicator_overrides || {};
@@ -5417,30 +5122,6 @@ function openIndicatorSettings(indicatorName) {
         SWING_POINTS_LOOKBACK_DAYS: 'Swing Lookback Days',
         SWING_POINTS_ENTRY_MODE: 'Swing Entry Mode',
         SWING_POINTS_LEVEL_COUNT: 'S/R Levels To Draw (1-5)',
-        BOTBULLS1_WT_CHANNEL: 'WaveTrend Channel Period',
-        BOTBULLS1_WT_AVERAGE: 'WaveTrend Average Period',
-        BOTBULLS1_WT_OVERSOLD: 'WT Oversold Level',
-        BOTBULLS1_WT_OVERBOUGHT: 'WT Overbought Level',
-        BOTBULLS1_MFI_BUY_RECLAIM: 'MFI Buy Reclaim Level (0-100)',
-        BOTBULLS1_MFI_SELL_REJECT: 'MFI Sell Reject Level (0-100)',
-        BOTBULLS1_CONFIRM_LOOKBACK: 'WT Extreme Lookback Candles',
-        BOTBULLS1_REQUIRE_MFI_CONFIRM: 'Require MFI Confirmation (1=On, 0=Off)',
-        BOTBULLS1_REQUIRE_CANDLE_CONFIRM: 'Require Candle Confirmation (1=On, 0=Off)',
-        BOTBULLS1_REQUIRE_PRICE_CONFIRM: 'Require Price EMA Confirmation (1=On, 0=Off)',
-        BOTBULLS1_PRICE_CONFIRM_EMA: 'Price Confirmation EMA Period',
-        BOTBULLS1_PRICE_CONFIRM_LOOKBACK: 'Price Confirmation Window Candles',
-        BOTBULLS5_BREAKOUT_BUFFER_ATR: 'Breakout Close Buffer (ATR)',
-        BOTBULLS5_MIN_CONFIDENCE: 'Minimum Setup Quality (%)',
-        BOTBULLS5_SIGNAL_HOLD_BARS: 'Confluence Vote Duration (Bars)',
-        BOTBULLS5_REQUIRE_VOLUME: 'Require Breakout Volume (1=On, 0=Off)',
-        BOTBULLS5_STRUCTURE_LOOKBACK: 'Structural Pattern Lookback Bars',
-    };
-    const botbulls5InputAttrs = {
-        BOTBULLS5_BREAKOUT_BUFFER_ATR: 'min="0" max="1" step="0.05"',
-        BOTBULLS5_MIN_CONFIDENCE: 'min="40" max="95" step="1"',
-        BOTBULLS5_SIGNAL_HOLD_BARS: 'min="1" max="20" step="1"',
-        BOTBULLS5_REQUIRE_VOLUME: 'min="0" max="1" step="1"',
-        BOTBULLS5_STRUCTURE_LOOKBACK: 'min="20" max="120" step="1"',
     };
 
     configKeys.forEach(key => {
@@ -5450,22 +5131,12 @@ function openIndicatorSettings(indicatorName) {
         const toggleChecked = val === true || val === 1 || String(val).toLowerCase() === 'true' || String(val) === '1';
         const label = paramLabels[key] || key.replace(/_/g, ' ').toLowerCase();
         const isPercent = key.endsWith('_PCT') || key.endsWith('_PERCENTAGE');
-        const inputAttrs = botbulls5InputAttrs[key] || (key === 'PIVOT_LEVEL_COUNT'
+        const inputAttrs = (key === 'PIVOT_LEVEL_COUNT'
             ? 'min="1" max="5" step="1"'
             : key === 'SWING_POINTS_LEVEL_COUNT'
                 ? 'min="1" max="5" step="1"'
                 : key === 'SWING_POINTS_LOOKBACK_DAYS'
                     ? 'min="1" max="365" step="1"'
-                    : key === 'BOTBULLS1_CONFIRM_LOOKBACK'
-                        ? 'min="1" max="10" step="1"'
-                        : key === 'BOTBULLS1_REQUIRE_MFI_CONFIRM' || key === 'BOTBULLS1_REQUIRE_CANDLE_CONFIRM' || key === 'BOTBULLS1_REQUIRE_PRICE_CONFIRM'
-                            ? 'min="0" max="1" step="1"'
-                            : key === 'BOTBULLS1_PRICE_CONFIRM_EMA'
-                                ? 'min="5" max="50" step="1"'
-                            : key === 'BOTBULLS1_PRICE_CONFIRM_LOOKBACK'
-                                ? 'min="0" max="10" step="1"'
-                            : key === 'BOTBULLS1_MFI_BUY_RECLAIM' || key === 'BOTBULLS1_MFI_SELL_REJECT'
-                                ? 'min="0" max="100" step="1"'
             : key === 'VOLUME_PROFILE_ROWS'
                 ? 'min="12" max="120" step="1"'
                 : key === 'VOLUME_PROFILE_CONFIRMATION_CANDLES'
@@ -5787,6 +5458,10 @@ async function fetchGenericDashboardCards(options = {}) {
             const payload = await req.json();
             writeCachedGenericDashboardCards(payload);
             await applyGenericDashboardCardsPayload(payload);
+            // The server answers within a bound; a card still warming up arrives as null, so load just that one.
+            if (!payload.fear_greed) fetchFearAndGreed();
+            if (!payload.market_data) fetchMarketData();
+            if (!payload.macro_events) fetchMacroEvents();
             return payload;
         } catch (e) {
             console.warn("[dashboard] Combined generic-card cache failed; falling back to individual cached endpoints.", e);
@@ -5883,17 +5558,17 @@ function openFngModal() {
             else { label = "Extreme Greed"; color = "bg-red-500"; }
 
             grid.innerHTML += `
-                <div class="card-glass p-5 flex flex-col justify-between hover:ring-2 hover:ring-indigo-400 transition-all overflow-hidden relative group">
+                <div class="card-glass p-3 sm:p-5 flex flex-col justify-between hover:ring-2 hover:ring-indigo-400 transition-all overflow-hidden relative group">
                     <div class="card-glow"></div>
                     <div class="relative z-10">
-                        <div class="flex items-center justify-between mb-3">
-                        <h4 class="font-black text-slate-700 text-[13px] tracking-wide">${escapeDashboardHtml(comp.name)}</h4>
-                            <span class="${color} text-white text-[10px] px-2.5 py-1 rounded-md font-bold uppercase tracking-widest shadow-sm">${label}</span>
+                        <div class="flex items-center justify-between gap-2 mb-1.5 sm:mb-3">
+                        <h4 class="font-black text-slate-700 text-xs sm:text-[13px] tracking-wide">${escapeDashboardHtml(comp.name)}</h4>
+                            <span class="${color} text-white text-[9px] sm:text-[10px] px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-md font-bold uppercase tracking-wider sm:tracking-widest shadow-sm shrink-0">${label}</span>
                         </div>
-                        <p class="text-xs text-slate-500 mb-2 leading-relaxed">${escapeDashboardHtml(comp.desc)}</p>
+                        <p class="text-[11px] sm:text-xs text-slate-500 mb-1.5 sm:mb-2 leading-snug sm:leading-relaxed">${escapeDashboardHtml(comp.desc)}</p>
                         <p class="text-[10px] text-slate-400 font-mono bg-slate-50/50 backdrop-blur-sm px-2 py-1 rounded border border-slate-200 inline-block truncate max-w-full">${escapeDashboardHtml(comp.raw)}</p>
                     </div>
-                    <div class="mt-5 relative z-10">
+                    <div class="mt-2.5 sm:mt-5 relative z-10">
                         <div class="flex justify-between items-end text-[10px] text-slate-400 font-bold mb-1.5">
                             <span>Fear</span>
                             <span class="text-slate-800 text-lg font-black leading-none">${comp.val}</span>
@@ -6242,34 +5917,34 @@ async function fetchMarketData(cachedData = null) {
                     const changeSign = isUp ? '+' : '';
 
                     const ma50Pill = t.above_50 === null ?
-                        '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-400">N/A</span>' :
+                        '<span class="px-1.5 sm:px-2 py-0.5 rounded text-[9px] sm:text-[10px] font-bold bg-slate-100 text-slate-400">N/A</span>' :
                         (t.above_50 ?
-                            '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700">ABOVE</span>' :
-                            '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-700">BELOW</span>'
+                            '<span class="px-1.5 sm:px-2 py-0.5 rounded text-[9px] sm:text-[10px] font-bold bg-emerald-100 text-emerald-700"><span class="sm:hidden">▲</span><span class="hidden sm:inline">ABOVE</span></span>' :
+                            '<span class="px-1.5 sm:px-2 py-0.5 rounded text-[9px] sm:text-[10px] font-bold bg-red-100 text-red-700"><span class="sm:hidden">▼</span><span class="hidden sm:inline">BELOW</span></span>'
                         );
 
                     const ma200Pill = t.above_200 === null ?
-                        '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-400">N/A</span>' :
+                        '<span class="px-1.5 sm:px-2 py-0.5 rounded text-[9px] sm:text-[10px] font-bold bg-slate-100 text-slate-400">N/A</span>' :
                         (t.above_200 ?
-                            '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700 font-semibold">ABOVE</span>' :
-                            '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-700 font-semibold">BELOW</span>'
+                            '<span class="px-1.5 sm:px-2 py-0.5 rounded text-[9px] sm:text-[10px] font-bold bg-emerald-100 text-emerald-700 font-semibold"><span class="sm:hidden">▲</span><span class="hidden sm:inline">ABOVE</span></span>' :
+                            '<span class="px-1.5 sm:px-2 py-0.5 rounded text-[9px] sm:text-[10px] font-bold bg-red-100 text-red-700 font-semibold"><span class="sm:hidden">▼</span><span class="hidden sm:inline">BELOW</span></span>'
                         );
 
-                    let hlPill = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-400">NORMAL</span>';
+                    let hlPill = '<span class="px-1.5 sm:px-2 py-0.5 rounded text-[9px] sm:text-[10px] font-bold bg-slate-100 text-slate-400">NORMAL</span>';
                     if (t.is_high) {
-                        hlPill = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500 text-white shadow-sm shadow-emerald-100">52W HIGH</span>';
+                        hlPill = '<span class="px-1.5 sm:px-2 py-0.5 rounded text-[9px] sm:text-[10px] font-bold bg-emerald-500 text-white shadow-sm shadow-emerald-100"><span class="sm:hidden">HIGH</span><span class="hidden sm:inline">52W HIGH</span></span>';
                     } else if (t.is_low) {
-                        hlPill = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-500 text-white shadow-sm shadow-red-100">52W LOW</span>';
+                        hlPill = '<span class="px-1.5 sm:px-2 py-0.5 rounded text-[9px] sm:text-[10px] font-bold bg-red-500 text-white shadow-sm shadow-red-100"><span class="sm:hidden">LOW</span><span class="hidden sm:inline">52W LOW</span></span>';
                     }
 
                     rowsHtml += `
                     <tr class="border-b border-slate-100 hover:bg-slate-50/50 transition-colors">
-                        <td class="px-4 py-3 font-bold text-slate-800 text-xs">${t.ticker}</td>
-                        <td class="px-4 py-3 font-semibold text-slate-700 text-xs text-right">$${t.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                        <td class="px-4 py-3 font-bold text-xs text-right ${changeColor}">${changeSign}${t.change_pct}%</td>
-                        <td class="px-4 py-3 text-center">${ma50Pill}</td>
-                        <td class="px-4 py-3 text-center">${ma200Pill}</td>
-                        <td class="px-4 py-3 text-center">${hlPill}</td>
+                        <td class="px-1.5 py-1.5 sm:px-4 sm:py-3 font-bold text-slate-800 text-[11px] sm:text-xs">${t.ticker}</td>
+                        <td class="px-1.5 py-1.5 sm:px-4 sm:py-3 font-semibold text-slate-700 text-[11px] sm:text-xs text-right">$${t.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        <td class="px-1.5 py-1.5 sm:px-4 sm:py-3 font-bold text-[11px] sm:text-xs text-right ${changeColor}">${changeSign}${t.change_pct}%</td>
+                        <td class="px-1 py-1.5 sm:px-4 sm:py-3 text-center">${ma50Pill}</td>
+                        <td class="px-1 py-1.5 sm:px-4 sm:py-3 text-center">${ma200Pill}</td>
+                        <td class="px-1 py-1.5 sm:px-4 sm:py-3 text-center">${hlPill}</td>
                     </tr>
                     `;
                 });
@@ -6327,6 +6002,20 @@ function macroEventSurpriseDisplay(event) {
     return { text: event.surprise, cls };
 }
 
+function macroTimeLabel(date) {
+    // US releases are quoted in Eastern time; show Central too, as the rest of the app does.
+    const fmt = (zone) => date.toLocaleTimeString('en-US', { timeZone: zone, hour: 'numeric', minute: '2-digit' });
+    return `${fmt('America/New_York')} ET · ${fmt('America/Chicago')} CT`;
+}
+
+function macroSparklineSvg(values, color) {
+    const points = Array.isArray(values) ? values.filter(Number.isFinite) : [];
+    if (points.length < 2) return '';
+    const min = Math.min(...points), max = Math.max(...points), span = max - min || 1;
+    const coords = points.map((value, index) => `${(index / (points.length - 1) * 100).toFixed(1)},${(22 - ((value - min) / span) * 20).toFixed(1)}`).join(' ');
+    return `<svg viewBox="0 0 100 24" preserveAspectRatio="none" class="w-full h-6" aria-hidden="true"><polyline fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" points="${coords}"/></svg>`;
+}
+
 async function fetchMacroEvents(cachedData = null) {
     try {
         let data = cachedData;
@@ -6342,50 +6031,75 @@ async function fetchMacroEvents(cachedData = null) {
         const loader = document.getElementById('macro-events-loading');
         if (loader) loader.style.display = 'none';
 
-        // Render Indicators
+        // Render Indicators (compact tiles: value, move, level, sparkline; the long text is behind "What it means")
         const indList = document.getElementById('macro-indicators-list');
         if (indList && data.indicators) {
-            let html = '<div class="grid grid-cols-1 md:grid-cols-2 gap-3">';
-            const indicators = Object.values(data.indicators);
+            const toneClass = { good: 'bg-emerald-50 text-emerald-700 border-emerald-200', neutral: 'bg-slate-50 text-slate-600 border-slate-200', warn: 'bg-amber-50 text-amber-700 border-amber-200', bad: 'bg-rose-50 text-rose-700 border-rose-200' };
+            const backdrop = data.backdrop && Array.isArray(data.backdrop.points) && data.backdrop.points.length ? data.backdrop : null;
+            let html = backdrop ? `
+                <div class="mb-2 sm:mb-3 rounded-xl border px-3 py-2 ${toneClass[backdrop.tone] || toneClass.neutral}">
+                    <div class="text-[9px] font-black uppercase tracking-widest opacity-70">Market backdrop</div>
+                    <ul class="mt-0.5 space-y-0.5 text-[11px] sm:text-xs font-semibold leading-snug">${backdrop.points.map(point => `<li>${escapeDashboardHtml(point)}</li>`).join('')}</ul>
+                </div>` : '';
+            html += '<div class="grid grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-3">';
+            const order = ['^VIX', '^GSPC', '^TNX', '^IRX', 'CURVE', 'DX-Y.NYB', 'CL=F', 'GC=F'];
+            const indicators = Object.entries(data.indicators)
+                .sort((a, b) => (order.indexOf(a[0]) + 100) % 100 - (order.indexOf(b[0]) + 100) % 100)
+                .map(entry => entry[1]);
 
             indicators.forEach(ind => {
                 if (ind.error) return;
-
-                const isUp = ind.direction === 'up';
-                const colorClass = isUp ? 'text-emerald-500' : 'text-red-500';
-                const bgClass = isUp ? 'bg-emerald-100' : 'bg-red-100';
-                const arrow = isUp ? '↑' : '↓';
+                const up = ind.direction === 'up';
+                // Up is "good" for prices, "bad" for volatility, and neither for yields, the dollar and the curve.
+                const inverse = ind.ticker === '^VIX';
+                const neutral = ['yield', 'spread'].includes(ind.kind) || ind.ticker === 'DX-Y.NYB';
+                const good = inverse ? !up : up;
+                const move = neutral ? 'bg-indigo-50 text-indigo-600' : (good ? 'bg-emerald-100 text-emerald-600' : 'bg-red-100 text-red-600');
+                const arrow = up ? '↑' : '↓';
+                const changeText = ind.change_display || `${Math.abs(ind.change_pct)}%`;
+                const week = ind.week_change_bp != null ? `5d ${ind.week_change_bp > 0 ? '+' : ''}${ind.week_change_bp} bp`
+                    : ind.week_change_pct != null ? `5d ${ind.week_change_pct > 0 ? '+' : ''}${ind.week_change_pct}%` : '';
+                const level = ind.level && ind.level.label
+                    ? `<span class="px-1.5 py-0.5 rounded border text-[9px] font-black uppercase ${toneClass[ind.level.tone] || toneClass.neutral}" title="${escapeDashboardHtml(ind.level.note || '')}">${escapeDashboardHtml(ind.level.label)}</span>` : '';
+                const unit = ind.unit === '$' ? '$' : '';
+                const unitSuffix = ind.unit === '%' ? '%' : '';
+                const valueText = `${unit}${Number(ind.current_value).toLocaleString('en-US', { maximumFractionDigits: 2 })}${unitSuffix}`;
 
                 let newsHtml = '';
                 if (ind.recent_news && ind.recent_news.length > 0) {
                     const topNews = ind.recent_news[0];
                     const newsUrl = safeDashboardUrl(topNews.link);
                     newsHtml = newsUrl ? `
-                    <div class="mt-3 pt-3 border-t border-slate-100">
-                        <a href="${escapeDashboardHtml(newsUrl)}" target="_blank" rel="noopener noreferrer" class="block group">
-                            <span class="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">${escapeDashboardHtml(topNews.publisher)}</span>
-                            <p class="text-xs text-slate-600 font-medium group-hover:text-indigo-600 transition-colors line-clamp-2">${escapeDashboardHtml(topNews.title)}</p>
-                        </a>
-                    </div>` : '';
+                        <a href="${escapeDashboardHtml(newsUrl)}" target="_blank" rel="noopener noreferrer" class="block mt-1.5 pt-1.5 border-t border-slate-100">
+                            <span class="text-[9px] font-black text-slate-400 uppercase tracking-widest block">${escapeDashboardHtml(topNews.publisher)}</span>
+                            <span class="text-[11px] text-slate-600 font-medium line-clamp-2">${escapeDashboardHtml(topNews.title)}</span>
+                        </a>` : '';
                 }
+                const sparkline = macroSparklineSvg(ind.sparkline, neutral ? '#6366f1' : (good ? '#10b981' : '#ef4444'));
+                const rangeNote = ind.range_note ? `<div class="text-[9px] font-semibold text-slate-400 leading-tight">${escapeDashboardHtml(ind.range_note)}</div>` : '';
 
                 html += `
-                <div class="bg-slate-50 border border-slate-100 rounded-xl p-5 hover:shadow-md transition-all hover:border-indigo-100">
-                    <div class="flex justify-between items-start mb-2">
-                        <div>
-                            <span class="text-[10px] font-black text-slate-400 uppercase tracking-widest">${escapeDashboardHtml(ind.ticker)}</span>
-                            <h4 class="text-sm font-bold text-slate-800 leading-tight">${escapeDashboardHtml(ind.name)}</h4>
+                <div class="bg-slate-50 border border-slate-100 rounded-xl p-2.5 sm:p-4 min-w-0">
+                    <div class="flex items-start justify-between gap-1">
+                        <div class="min-w-0">
+                            <span class="text-[9px] font-black text-slate-400 uppercase tracking-widest">${escapeDashboardHtml(ind.ticker)}</span>
+                            <h4 class="text-[11px] sm:text-sm font-bold text-slate-800 leading-tight">${escapeDashboardHtml(ind.name)}</h4>
                         </div>
-                        <span class="px-2 py-1 rounded text-xs font-bold ${bgClass} ${colorClass}">
-                            ${arrow} ${escapeDashboardHtml(Math.abs(ind.change_pct))}%
-                        </span>
+                        <span class="shrink-0 px-1.5 py-0.5 rounded text-[10px] sm:text-xs font-bold ${move}">${arrow} ${escapeDashboardHtml(changeText.replace(/^[+-]/, ''))}</span>
                     </div>
-                    <div class="flex items-end gap-2 mb-2">
-                        <span class="text-2xl font-black text-slate-800">${escapeDashboardHtml(ind.current_value)}</span>
-                        <span class="text-xs font-bold text-slate-400 mb-1">${escapeDashboardHtml(ind.unit)}</span>
+                    <div class="flex items-end justify-between gap-1 mt-1">
+                        <span class="text-lg sm:text-2xl font-black text-slate-800 leading-none">${escapeDashboardHtml(valueText)}</span>
+                        ${level}
                     </div>
-                    <p class="text-[10px] text-slate-500 mb-2 leading-relaxed">${escapeDashboardHtml(ind.description)}</p>
-                    ${newsHtml}
+                    <div class="mt-1">${sparkline}</div>
+                    <div class="flex items-center justify-between gap-1 text-[9px] font-bold text-slate-400 mt-0.5"><span>${escapeDashboardHtml(week)}</span><span>${escapeDashboardHtml(ind.as_of || '')}</span></div>
+                    ${rangeNote}
+                    <details class="mt-1">
+                        <summary class="cursor-pointer text-[10px] font-black text-indigo-600">What it means</summary>
+                        <p class="mt-1 text-[11px] text-slate-600 leading-snug">${escapeDashboardHtml(ind.description || '')}</p>
+                        ${ind.level && ind.level.note ? `<p class="mt-1 text-[11px] text-slate-500 leading-snug">${escapeDashboardHtml(ind.level.note)}</p>` : ''}
+                        ${newsHtml}
+                    </details>
                 </div>`;
             });
 
@@ -6393,89 +6107,83 @@ async function fetchMacroEvents(cachedData = null) {
             indList.innerHTML = html;
         }
 
-        // Render Calendar (All week data grouped by day, past vs upcoming styled)
+        // Render Calendar. Releases at the same time share one card (CPI, core CPI and the y/y readings arrive together),
+        // so a phone shows more of the week in less scrolling.
         const calList = document.getElementById('macro-calendar-list');
         const line = document.getElementById('macro-timeline-line');
+        if (line) line.classList.add('hidden');
         if (calList && data.calendar) {
             let html = '';
             const sortedCalendar = [...data.calendar].sort((a, b) => new Date(a.date) - new Date(b.date));
             if (sortedCalendar.length > 0) {
-                if (line) line.classList.remove('hidden');
                 const now = new Date();
-                let currentGroupDay = '';
+                const upcoming = sortedCalendar.find(e => new Date(e.date) >= now);
+                if (upcoming) {
+                    const minutes = Math.round((new Date(upcoming.date) - now) / 60000);
+                    const eta = minutes < 60 ? `in ${minutes} min` : minutes < 1440 ? `in ${Math.floor(minutes / 60)}h ${minutes % 60}m` : `in ${Math.floor(minutes / 1440)}d ${Math.floor((minutes % 1440) / 60)}h`;
+                    html += `<div class="mb-2 sm:mb-3 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-[11px] sm:text-xs font-bold text-indigo-800"><span class="text-[9px] font-black uppercase tracking-widest text-indigo-500 mr-1">Next up</span>${escapeDashboardHtml(upcoming.title)} · ${escapeDashboardHtml(upcoming.country || 'USD')} · ${escapeDashboardHtml(macroTimeLabel(new Date(upcoming.date)))} (${eta})</div>`;
+                }
 
+                // Group by exact release time.
+                const groups = [];
                 sortedCalendar.forEach(e => {
-                    const dateObj = new Date(e.date);
+                    const last = groups[groups.length - 1];
+                    if (last && last.date === e.date && last.country === (e.country || 'USD')) last.events.push(e);
+                    else groups.push({ date: e.date, country: e.country || 'USD', events: [e] });
+                });
+
+                let currentGroupDay = '';
+                groups.forEach(group => {
+                    const dateObj = new Date(group.date);
                     const dayGroupStr = dateObj.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
-                    const timeStr = dateObj.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
                     const isPast = dateObj < now;
 
                     if (dayGroupStr !== currentGroupDay) {
                         currentGroupDay = dayGroupStr;
                         const isTodayGroup = dateObj.toDateString() === now.toDateString();
                         const headerBg = isTodayGroup ? 'bg-indigo-600 text-white ring-2 ring-indigo-200' : 'bg-slate-200/80 text-slate-700';
-                        html += `
-                        <div class="sticky top-0 z-10 py-1.5 px-3 rounded-md text-xs font-black uppercase tracking-wider mb-5 ${headerBg} shadow-sm inline-block">
-                            ${dayGroupStr} ${isTodayGroup ? '• Today' : ''}
-                        </div>`;
+                        html += `<div class="sticky top-0 z-10 py-1 px-2.5 rounded-md text-[11px] sm:text-xs font-black uppercase tracking-wider mb-2 ${headerBg} shadow-sm inline-block">${dayGroupStr} ${isTodayGroup ? '• Today' : ''}</div>`;
                     }
 
-                    let impactColor = 'bg-red-100 text-red-600';
-                    let dotStyle = 'bg-red-500 ring-red-100 animate-pulse';
-                    if (e.impact === 'Medium' || e.impact === 'Medium/Low') {
-                        impactColor = 'bg-orange-100 text-orange-600';
-                        dotStyle = 'bg-orange-500 ring-orange-100';
-                    } else if (e.impact === 'Low') {
-                        impactColor = 'bg-yellow-100 text-yellow-600';
-                        dotStyle = 'bg-yellow-500 ring-yellow-100';
-                    }
+                    const rank = { High: 3, Medium: 2, 'Medium/Low': 2, Low: 1 };
+                    const topImpact = group.events.reduce((best, e) => (rank[e.impact] || 0) > (rank[best] || 0) ? e.impact : best, group.events[0].impact || 'High');
+                    const impactColor = topImpact === 'High' ? 'bg-red-100 text-red-600' : topImpact === 'Low' ? 'bg-yellow-100 text-yellow-600' : 'bg-orange-100 text-orange-600';
+                    const dot = isPast ? 'bg-slate-300' : topImpact === 'High' ? 'bg-red-500 animate-pulse' : topImpact === 'Low' ? 'bg-yellow-500' : 'bg-orange-500';
+                    const cardBg = isPast ? 'bg-slate-50/70 border-slate-100 opacity-80' : 'bg-white border-indigo-100/80 shadow-sm';
+                    const status = isPast ? 'Done' : 'Upcoming';
+                    const statusCls = isPast ? 'bg-slate-200 text-slate-500' : 'bg-indigo-100 text-indigo-700';
+                    const why = (group.events.find(e => e.why) || {}).why || '';
 
-                    if (isPast) {
-                        dotStyle = 'bg-slate-300 ring-slate-100';
-                    }
-
-                    const cardBg = isPast ? 'bg-slate-50/70 border-slate-100 opacity-80' : 'bg-white border-indigo-100/80 shadow-sm ring-1 ring-indigo-50 hover:shadow-md';
-                    const statusBadge = isPast
-                        ? `<span class="px-1.5 py-0.5 rounded text-[9px] font-black bg-slate-200 text-slate-500 uppercase tracking-widest ml-2">Completed</span>`
-                        : `<span class="px-1.5 py-0.5 rounded text-[9px] font-black bg-indigo-100 text-indigo-700 uppercase tracking-widest ml-2">Upcoming</span>`;
-                    const actualDisplay = macroEventActualDisplay(e, isPast);
-                    const surpriseDisplay = macroEventSurpriseDisplay(e);
-                    const sourceHtml = e.actual_source
-                        ? `<p class="mt-2 text-[9px] font-bold text-slate-400 uppercase tracking-wide">Actual source: ${escapeDashboardHtml(e.actual_source)}${e.actual_period ? ` • ${escapeDashboardHtml(e.actual_period)}` : ''}</p>`
-                        : '';
-                    const actualNoteHtml = actualDisplay.note
-                        ? `<p class="mt-1 text-[9px] font-medium text-slate-400 leading-snug">${escapeDashboardHtml(actualDisplay.note)}</p>`
-                        : '';
-                    const macroReadHtml = e.macro_read
-                        ? `<div class="mt-3 rounded-lg border border-indigo-100 bg-indigo-50/70 px-3 py-2 text-[10px] font-bold text-indigo-800 leading-snug">Quant read: ${escapeDashboardHtml(e.macro_read)}</div>`
-                        : '';
+                    const rows = group.events.map(e => {
+                        const actualDisplay = macroEventActualDisplay(e, isPast);
+                        const surpriseDisplay = macroEventSurpriseDisplay(e);
+                        const cell = (label, value, cls = 'text-slate-700 font-semibold') => `<div class="min-w-0"><span class="block text-[8.5px] font-bold uppercase text-slate-400 leading-none">${label}</span><span class="${cls} text-[11px] sm:text-xs break-words">${escapeDashboardHtml(value)}</span></div>`;
+                        const read = e.macro_read ? `<div class="mt-1 rounded-md border border-indigo-100 bg-indigo-50/70 px-2 py-1 text-[10px] font-bold text-indigo-800 leading-snug">Quant read: ${escapeDashboardHtml(e.macro_read)}</div>` : '';
+                        const source = e.actual_source ? `<div class="mt-0.5 text-[9px] font-bold text-slate-400 uppercase tracking-wide">Actual: ${escapeDashboardHtml(e.actual_source)}${e.actual_period && !(actualDisplay.note || '').includes(e.actual_period) ? ` • ${escapeDashboardHtml(e.actual_period)}` : ''}</div>` : '';
+                        const note = actualDisplay.note ? `<div class="mt-0.5 text-[9px] font-medium text-slate-400 leading-snug">${escapeDashboardHtml(actualDisplay.note)}</div>` : '';
+                        return `<div class="py-1.5 border-t border-slate-100 first:border-t-0 first:pt-0">
+                            <div class="flex items-start justify-between gap-2"><h4 class="text-[13px] sm:text-sm font-bold text-slate-800 leading-snug">${escapeDashboardHtml(e.title)}</h4>${group.events.length > 1 ? `<span class="shrink-0 px-1.5 rounded text-[9px] font-black ${e.impact === 'High' ? 'bg-red-100 text-red-600' : 'bg-orange-100 text-orange-600'} uppercase">${escapeDashboardHtml(e.impact || 'High')}</span>` : ''}</div>
+                            <div class="mt-1 grid grid-cols-4 gap-x-2 gap-y-1 rounded-md bg-slate-50/80 px-2 py-1.5 border border-slate-100/80">
+                                ${cell('Prev', e.previous || 'N/A')}${cell('Fcst', e.forecast || 'N/A')}${cell('Actual', actualDisplay.text, actualDisplay.cls)}${cell('Surprise', surpriseDisplay.text, surpriseDisplay.cls)}
+                            </div>${note}${source}${read}</div>`;
+                    }).join('');
 
                     html += `
-                    <div class="relative pl-12 mb-6">
-                        <div class="absolute left-[-5px] top-4 w-3.5 h-3.5 ${dotStyle} rounded-full border-2 border-white shadow-sm ring-4"></div>
-                        <div class="border rounded-xl p-4 transition-all ${cardBg}">
-                            <div class="flex items-center justify-between mb-1.5">
-                                <div class="flex items-center">
-                                    <span class="text-xs font-black text-slate-500 uppercase tracking-wider">${escapeDashboardHtml(timeStr)} • ${escapeDashboardHtml(e.country || 'USD')}</span>
-                                    ${statusBadge}
-                                </div>
-                                <span class="px-2 py-0.5 rounded text-[10px] font-black ${impactColor} uppercase">${escapeDashboardHtml(e.impact || 'High')}</span>
-	                            </div>
-                            <h4 class="text-base font-bold text-slate-800 mb-2">${escapeDashboardHtml(e.title)}</h4>
-	                            <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs font-medium bg-slate-50/80 p-2.5 rounded-lg border border-slate-100/80">
-                                <div><span class="text-slate-400 font-bold block text-[10px] uppercase">Previous</span><span class="text-slate-700 font-semibold">${escapeDashboardHtml(e.previous || 'N/A')}</span></div>
-                                <div><span class="text-slate-400 font-bold block text-[10px] uppercase">Forecast</span><span class="text-slate-700 font-semibold">${escapeDashboardHtml(e.forecast || 'N/A')}</span></div>
-                                <div><span class="text-slate-400 font-bold block text-[10px] uppercase">Actual</span><span class="${actualDisplay.cls}">${escapeDashboardHtml(actualDisplay.text)}</span>${actualNoteHtml}</div>
-                                <div><span class="text-slate-400 font-bold block text-[10px] uppercase">Surprise</span><span class="${surpriseDisplay.cls}">${escapeDashboardHtml(surpriseDisplay.text)}</span></div>
-	                            </div>
-                                ${sourceHtml}
-                                ${macroReadHtml}
+                    <div class="border rounded-xl px-2.5 py-2 sm:px-4 sm:py-3 mb-2 sm:mb-3 ${cardBg}">
+                        <div class="flex items-center justify-between gap-2 mb-1.5">
+                            <div class="flex items-center gap-1.5 min-w-0 flex-wrap">
+                                <span class="w-2 h-2 rounded-full shrink-0 ${dot}"></span>
+                                <span class="text-[11px] sm:text-xs font-black text-slate-600 uppercase tracking-wide">${escapeDashboardHtml(macroTimeLabel(dateObj))} • ${escapeDashboardHtml(group.country)}</span>
+                                <span class="px-1.5 py-0.5 rounded text-[9px] font-black ${statusCls} uppercase tracking-widest">${status}</span>
+                            </div>
+                            ${group.events.length === 1 ? `<span class="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-black ${impactColor} uppercase">${escapeDashboardHtml(topImpact || 'High')}</span>` : `<span class="shrink-0 text-[9px] font-black text-slate-400 uppercase">${group.events.length} releases</span>`}
                         </div>
+                        ${rows}
+                        ${why ? `<details class="mt-1.5"><summary class="cursor-pointer text-[10px] font-black text-indigo-600">Why it matters</summary><p class="mt-1 text-[11px] text-slate-600 leading-snug">${escapeDashboardHtml(why)}</p></details>` : ''}
                     </div>`;
                 });
             } else {
-                html = `<p class="text-center text-slate-500 font-bold mt-10">No high impact USD events scheduled for this week.</p>`;
-                if (line) line.classList.add('hidden');
+                html = `<p class="text-center text-slate-500 font-bold mt-10">No high impact events scheduled for this week.</p>`;
             }
             calList.innerHTML = html;
         }
@@ -6489,16 +6197,25 @@ async function fetchMacroEvents(cachedData = null) {
             const upcomingEvents = sortedCalendar.filter(e => new Date(e.date) >= now);
 
             if (upcomingEvents.length > 0) {
-                const topEvents = upcomingEvents.slice(0, 3);
-                topEvents.forEach(e => {
+                // Releases that come out together (CPI, core CPI and their y/y readings) share ONE header line, so all of
+                // them fit in the small card instead of three header-and-title pairs using up its height.
+                const groups = [];
+                upcomingEvents.forEach(e => {
+                    const last = groups[groups.length - 1];
+                    if (last && last.date === e.date && last.country === (e.country || 'USD')) last.events.push(e);
+                    else groups.push({ date: e.date, country: e.country || 'USD', events: [e] });
+                });
+                const LINE_BUDGET = 6;  // header and title lines the card has room for
+                let used = 0;
+                for (const group of groups) {
+                    if (used >= LINE_BUDGET - 1) break;
+                    const rank = { High: 3, Medium: 2, 'Medium/Low': 2, Low: 1 };
+                    const impact = group.events.reduce((best, e) => (rank[e.impact] || 0) > (rank[best] || 0) ? e.impact : best, group.events[0].impact || 'High');
                     let badgeColor = 'bg-red-100 text-red-600';
-                    if (e.impact === 'Medium' || e.impact === 'Medium/Low') {
-                        badgeColor = 'bg-orange-100 text-orange-600';
-                    } else if (e.impact === 'Low') {
-                        badgeColor = 'bg-yellow-100 text-yellow-600';
-                    }
+                    if (impact === 'Medium' || impact === 'Medium/Low') badgeColor = 'bg-orange-100 text-orange-600';
+                    else if (impact === 'Low') badgeColor = 'bg-yellow-100 text-yellow-600';
 
-                    const dateObj = new Date(e.date);
+                    const dateObj = new Date(group.date);
                     let dayStr = dateObj.toLocaleDateString(undefined, { weekday: 'short' });
                     if (dateObj.toDateString() === now.toDateString()) {
                         dayStr = 'Today';
@@ -6506,21 +6223,32 @@ async function fetchMacroEvents(cachedData = null) {
                         dayStr = 'Tomorrow';
                     }
                     const timeStr = dateObj.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-                    const country = e.country || 'USD';
+                    const room = Math.max(1, LINE_BUDGET - used - 1);
+                    const shown = group.events.slice(0, room);
+                    const hidden = group.events.length - shown.length;
+                    used += 1 + shown.length + (hidden ? 1 : 0);
 
                     miniHtml += `
                         <div class="flex flex-col gap-0.5 w-full py-0.5 border-b border-slate-100/60 last:border-0">
                             <div class="flex items-center justify-between text-[8.5px] text-slate-500 font-bold uppercase tracking-wider">
                                 <span class="flex items-center gap-1.5 truncate">
                                     <span class="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse shrink-0"></span>
-                                    <span>${escapeDashboardHtml(dayStr)} • ${escapeDashboardHtml(timeStr)} • ${escapeDashboardHtml(country)}</span>
+                                    <span>${escapeDashboardHtml(dayStr)} • ${escapeDashboardHtml(timeStr)}${group.country && group.country !== 'USD' ? ` • ${escapeDashboardHtml(group.country)}` : ''}</span>
                                 </span>
-                                <span class="px-1.5 py-0.1 rounded-[2.5px] text-[7px] font-black ${badgeColor} uppercase shrink-0">${escapeDashboardHtml(e.impact || 'High')}</span>
+                                <span class="px-1.5 py-0.1 rounded-[2.5px] text-[7px] font-black ${badgeColor} uppercase shrink-0">${escapeDashboardHtml(impact || 'High')}</span>
                             </div>
-                            <span class="font-bold text-slate-800 text-[11px] truncate w-full group-hover:text-indigo-600 transition-colors" title="${escapeDashboardHtml(e.title)}">${escapeDashboardHtml(e.title)}</span>
+                            ${shown.map(e => {
+                                const prev = e.previous ? escapeDashboardHtml(e.previous) : '';
+                                const fcst = e.forecast ? escapeDashboardHtml(e.forecast) : '';
+                                const readings = (prev || fcst)
+                                    ? `<span class="macro-mini-readings shrink-0" title="Previous ${prev || 'n/a'} · Forecast ${fcst || 'n/a'}"><span class="macro-mini-key">P</span>${prev || '–'}<span class="macro-mini-key">F</span>${fcst || '–'}</span>`
+                                    : '';
+                                return `<div class="macro-mini-row" title="${escapeDashboardHtml(e.title)}"><span class="macro-mini-title font-bold text-slate-800 group-hover:text-indigo-600 transition-colors">${escapeDashboardHtml(e.title)}</span>${readings}</div>`;
+                            }).join('')}
+                            ${hidden ? `<span class="font-bold text-slate-400 text-[10px]">+${hidden} more</span>` : ''}
                         </div>
                     `;
-                });
+                }
             } else if (sortedCalendar.length > 0) {
                 // All weekly events have passed, display the 3 most recent completed events
                 const pastEvents = sortedCalendar.slice(-3);

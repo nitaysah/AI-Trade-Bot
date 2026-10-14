@@ -9,6 +9,7 @@ STANDARD_INDICATOR_NAMES = (
     "RSI", "MACD", "EMA Cross", "ADX Trend", "Supertrend", "Bollinger",
     "VWAP", "Volume Profile", "SMA", "Prior Day High/Low",
     "Pivot Points (S/R)", "Swing Points", "Mystic Pulse", "Candle Patterns",
+    "Chart Patterns", "Trend Rider", "HA+UT",
     "ATR Volatility", "Stochastic", "Stochastic RSI", "CCI", "Williams %R",
     "Rate of Change", "Momentum", "Money Flow Index", "Ultimate Oscillator",
     "Awesome Oscillator", "Chande Momentum Oscillator", "True Strength Index",
@@ -24,6 +25,9 @@ STANDARD_INDICATOR_NAMES = (
 
 EXTENSION_INDICATOR_TOGGLE_KEYS = {
     "Auto-AVWAP": "ENABLE_AUTO_AVWAP",
+    "Chart Patterns": "ENABLE_CHART_PATTERNS",
+    "Trend Rider": "ENABLE_TREND_RIDER",
+    "HA+UT": "ENABLE_HA_UT",
     "ATR Volatility": "ENABLE_ATR_VOLATILITY",
     "Stochastic": "ENABLE_STOCHASTIC",
     "Stochastic RSI": "ENABLE_STOCH_RSI",
@@ -98,6 +102,16 @@ EXTENSION_INDICATOR_DEFAULTS = {
     "OBV_SIGNAL_PERIOD": 20, "CMF_PERIOD": 20, "ADL_SIGNAL_PERIOD": 20,
     "CHAIKIN_FAST": 3, "CHAIKIN_SLOW": 10,
     "PVT_SIGNAL_PERIOD": 20, "EOM_PERIOD": 14, "FORCE_INDEX_PERIOD": 13,
+    "TREND_RIDER_ATR_PERIOD": 14, "TREND_RIDER_ATR_MULT": 2.0,
+    "TREND_RIDER_TRACER_PERIOD": 50, "TREND_RIDER_ZONE_PERIOD": 50,
+    "MYSTIC_PULSE_ADX_LENGTH": 0, "CANDLE_RELIABLE_ONLY": 0, "VWAP_REGULAR_SESSION_ONLY": 0, "AUTO_AVWAP_ANCHOR": "volume_spike", "AUTO_AVWAP_SWING_STRENGTH": 5, "PIVOT_TYPE": "classic", "DAILY_HIGH_LOW_BUFFER_ATR": 0.0,
+    "TREND_RIDER_ZONE_STD": 2.0, "TREND_RIDER_RSI_PERIOD": 14, "TREND_RIDER_RSI_LOW": 40, "TREND_RIDER_RSI_HIGH": 70,
+    "HA_UT_ATR_PERIOD": 10, "HA_UT_ATR_MULT": 1.0,
+    "LEVELS_REGULAR_SESSION_ONLY": 0,
+    "SWING_POINTS_STRENGTH": 2,
+    "STOCH_CROSS_ZONE_ONLY": 1, "STOCH_RSI_CROSS_ZONE_ONLY": 1,
+    "EMA_CROSS_BUFFER_PCT": 0.0, "BOLL_VOTE_MODE": "reversion", "BOLL_ZONE_PCT": 20.0,
+    "ROC_THRESHOLD_PCT": 0.0, "KELTNER_VOTE_MODE": "breakout",
 }
 
 EXTENSION_CALCULATION_COLUMNS = (
@@ -113,6 +127,7 @@ EXTENSION_CALCULATION_COLUMNS = (
     "DEMA", "TEMA", "HMA", "WMA_Ext", "VWMA_Ext", "ALMA", "LSMA",
     "OBV_Ext", "OBV_Signal", "CMF_Ext", "ADL_Ext", "ADL_Signal",
     "Chaikin_Osc", "PVT_Ext", "PVT_Signal", "EOM_Ext", "Force_Index",
+    "TR_Trail", "TR_Tracer", "TR_Zone_Upper", "TR_Zone_Lower", "HAUT_Close", "HAUT_Trail",
 )
 
 # Stable API field names used by Dashboard, Bots, and Backtest charts. Keeping
@@ -177,6 +192,15 @@ EXTENSION_CHART_FIELDS = {
     "pvt_signal": "PVT_Signal",
     "eom_ext": "EOM_Ext",
     "force_index": "Force_Index",
+    "tr_trail": "TR_Trail",
+    "tr_trend": "TR_Trend",
+    "tr_tracer": "TR_Tracer",
+    "tr_zone_upper": "TR_Zone_Upper",
+    "tr_zone_lower": "TR_Zone_Lower",
+    "tr_score": "TR_Score",
+    "haut_close": "HAUT_Close",
+    "haut_trail": "HAUT_Trail",
+    "haut_above": "HAUT_Above",
 }
 
 EXTENSION_CHART_GROUPS = {
@@ -217,6 +241,12 @@ EXTENSION_CHART_GROUPS = {
     "Price Volume Trend": ("pvt_ext", "pvt_signal"),
     "Ease of Movement": ("eom_ext",),
     "Force Index": ("force_index",),
+    "Trend Rider": ("tr_trail", "tr_trend", "tr_tracer", "tr_zone_upper", "tr_zone_lower", "tr_score"),
+    "HA+UT": ("haut_close", "haut_trail", "haut_above"),
+    # Bullish / bearish chart-pattern breakouts and reversals (flags, pennants, wedges, triangles, double/triple
+    # tops and bottoms, head-and-shoulders, ...) confirmed on a completed candle, shown like Candle Patterns:
+    # a name plus a bullish or bearish flag, no indicator lines.
+    "Chart Patterns": ("cp_name", "cp_bullish", "cp_bearish", "cp_quality"),
 }
 
 # Complete chart contract shared by automated audits and all three UI surfaces.

@@ -126,3 +126,24 @@ backend/audit_*.py
 
 # Keep maintained regression tests in source control, unlike scratch scripts.
 !backend/tests/test_*.py
+
+# Local audit write-ups: same policy as the generated audit reports above (STRATEGY_PRESETS.md is real feature documentation and is kept)
+/INDICATOR_AUDIT.md
+/RESEARCH_AUDIT.md
+
+# Tool state, caches and test output that is regenerated locally
+.firebase/
+.claude/
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
+
+# Local audit folders and manual harnesses
+backend/indicator_audit/
+tests/manual/
+
+# Market data file formats
+*.parquet
+*.feather
+*.h5

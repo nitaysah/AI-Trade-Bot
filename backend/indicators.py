@@ -184,16 +184,6 @@ def _selected_chart_field_keys(enabled_indicators, buy_mode="", sell_mode=""):
         },
         "Mystic Pulse": {"mystic_bull", "mystic_bear"},
         "Candle Patterns": {"cdl_name", "cdl_bullish", "cdl_bearish"},
-        "BotBulls1": {"wt1", "wt2", "mfi", "ba1_buy", "ba1_sell", "ba1_bullish", "ba1_bearish"},
-        "BotBulls2": {"lx_smart_trail", "lx_smart_trend", "lx_trend_tracer", "lx_rz_upper", "lx_rz_lower", "lx_score"},
-        "BotBulls3": {"ha_close", "ut_trail", "ut_above"},
-        "BotBulls5": {
-            "bb5_upper", "bb5_lower", "bb5_target", "bb5_invalidation", "bb5_breakout_level",
-            "bb5_upper_start", "bb5_lower_start", "bb5_formation_start_time", "bb5_formation_end_time",
-            "bb5_pole_start_time", "bb5_pole_end_time", "bb5_formation_bars", "bb5_confidence",
-            "bb5_direction", "bb5_reasons", "bb5_breakout_bull", "bb5_breakout_bear",
-            "bb5_pattern", "bb5_state",
-        },
     }
     groups.update({name: set(fields) for name, fields in EXTENSION_CHART_GROUPS.items()})
     keys = set()
@@ -242,21 +232,25 @@ def _wilder_atr(high, low, close, period):
         (low - previous_close).abs(),
     ], axis=1).max(axis=1, skipna=True)
 
-    atr = pd.Series(np.nan, index=close.index, dtype=float)
+    values = np.full(len(true_range), np.nan, dtype=float)
     if len(true_range) < length:
-        return atr
+        return pd.Series(values, index=close.index, dtype=float)
 
-    seed = true_range.iloc[:length].mean()
+    ranges = true_range.to_numpy(dtype=float)
+    seed = ranges[:length].mean()
     if not np.isfinite(seed):
-        return atr
-    atr.iloc[length - 1] = float(seed)
-    for index in range(length, len(true_range)):
-        current_range = true_range.iloc[index]
-        prior_atr = atr.iloc[index - 1]
-        if not np.isfinite(current_range) or not np.isfinite(prior_atr):
-            continue
-        atr.iloc[index] = ((prior_atr * (length - 1)) + current_range) / length
-    return atr
+        return pd.Series(values, index=close.index, dtype=float)
+    # Plain-array recursion: the previous Series.iloc loop cost ~240 ms per call on 1,200 bars (it ran twice per
+    # evaluation). A non-finite range leaves NaN and, because the recursion needs the prior value, so does everything after.
+    values[length - 1] = seed
+    previous = float(seed)
+    for position in range(length, len(ranges)):
+        current = ranges[position]
+        if not np.isfinite(current):
+            break
+        previous = ((previous * (length - 1)) + current) / length
+        values[position] = previous
+    return pd.Series(values, index=close.index, dtype=float)
 
 
 def _indicator_period(value, fallback, minimum=1, maximum=2_000):
@@ -299,7 +293,6 @@ def _required_indicator_history_bars(settings=None):
     rsi_selected = (
         enabled is None
         or "RSI" in enabled
-        or "BotBulls2" in enabled
         or bool((settings or {}).get("_require_rsi_dependency", False))
     )
     if rsi_selected:
@@ -347,11 +340,50 @@ def _required_indicator_history_bars(settings=None):
             periods.append(
                 _indicator_period(_resolve_param("SMA_SECOND_PERIOD", 50, settings=settings), 50, maximum=500)
             )
+    preset_bars = _strategy_preset_history_bars(settings)
+    if preset_bars:
+        periods.append(preset_bars)
     if not periods:
         return 0
     # The extra bars let the returned chart show a usable line segment rather
     # than only the first point at the end of the warm-up window.
     return max(periods) + 50
+
+
+def _strategy_preset_history_bars(settings):
+    """Completed bars a strategy preset needs before it may signal (0 if none)."""
+    if not isinstance(settings, dict) or not settings.get("strategy_preset_enabled"):
+        return 0
+    try:
+        import strategy_presets
+        enabled, preset_id, variant_id = strategy_presets.normalize_strategy_preset(settings)
+        return strategy_presets.warmup_bars(preset_id, variant_id) if enabled else 0
+    except Exception:
+        return 0
+
+
+def _reconcile_live_splits(df, ticker):
+    """Return ``(frame, quality)`` with live bars on a split-adjusted basis.
+
+    Known split events are classified against the data (raw vs already
+    adjusted) so nothing is adjusted twice. If corporate-action data is
+    unavailable, a split-like jump marks the frame ``DEGRADED`` rather than
+    guessing; consumers that cannot tolerate that (strategy presets) block new
+    entries. Never raises: a lookup failure must not break live analysis.
+    """
+    try:
+        from corporate_actions import reconcile_split_adjustment, suspect_split_jumps
+        from corporate_actions_service import get_split_events
+
+        first_day = pd.Timestamp(df.index[0]).date()
+        lookup = get_split_events(ticker, start=first_day)
+        if lookup.available:
+            adjusted, quality, _ = reconcile_split_adjustment(df, lookup.events)
+            return adjusted, quality
+        return df, ("DEGRADED" if suspect_split_jumps(df) else "OK")
+    except Exception as exc:
+        print(f"[indicators] Split check skipped for {ticker}: {type(exc).__name__}")
+        return df, "OK"
 
 
 def _wilder_rsi(close, period):
@@ -534,7 +566,7 @@ def _wilder_dmi_series(high, low, close, period):
     return adx, di_plus, di_minus
 
 
-def _session_vwap_series(df, high, low, close, volume, ticker=None):
+def _session_vwap_series(df, high, low, close, volume, ticker=None, regular_only=False):
     """Calculate session VWAP using the exchange-local calendar date.
 
     Webull's VWAP is a cumulative intraday typical-price/volume average. The
@@ -542,11 +574,31 @@ def _session_vwap_series(df, high, low, close, volume, ticker=None):
     incorrectly reset the line during an evening/extended-hours boundary.
     """
     typical_price = (high + low + close) / 3.0
+    outside_regular = None
+    if regular_only:
+        # Only 09:30-16:00 ET bars build the line; pre/post-market bars show no VWAP instead of a diluted one.
+        outside_regular = pd.Series(~_regular_hours_mask(df, ticker), index=df.index)
+        volume = volume.where(~outside_regular, 0.0)
     pv = typical_price * volume
     session_key = pd.Series(_exchange_session_dates_for_df(df, ticker), index=df.index)
     session_pv = pv.groupby(session_key).cumsum()
     session_volume = volume.groupby(session_key).cumsum()
-    return (session_pv / session_volume.replace(0, np.nan)).fillna(close)
+    vwap = session_pv / session_volume.replace(0, np.nan)
+    # Zero-volume bars carry the session's last valid VWAP instead of faking the close; only an
+    # unseeded session start stays NaN (reported as "unavailable", never as a signal).
+    vwap = vwap.groupby(session_key).ffill()
+    if outside_regular is not None:
+        vwap = vwap.where(~outside_regular)
+    # Session VWAP resets every session, so on daily-or-larger bars it is one typical price per bar and says
+    # nothing about position vs. the session. Mark it unavailable instead of voting.
+    if len(df.index) > 2:
+        try:
+            median_gap = pd.Series(df.index).diff().median()
+            if pd.notna(median_gap) and median_gap >= pd.Timedelta(hours=20):
+                vwap = vwap * np.nan
+        except (TypeError, ValueError):
+            pass
+    return vwap
 
 
 def _auto_avwap_series(df, high, low, close, volume, ticker=None, session_vwap=None, param=None):
@@ -558,10 +610,29 @@ def _auto_avwap_series(df, high, low, close, volume, ticker=None, session_vwap=N
     cumulative_volume = volume.cumsum().to_numpy()
     volume_ma_period = max(2, int(float(param("VOL_MA_PERIOD", 20))))
     volume_spike_multiplier = max(0.0, float(param("VOL_SPIKE_MULTIPLIER", 1.5)))
-    volume_ma = volume.rolling(window=volume_ma_period, min_periods=1).mean()
+    # A spike needs a full volume average behind it (no partial-window means in the first bars).
+    volume_ma = volume.rolling(window=volume_ma_period, min_periods=volume_ma_period).mean()
     spike_condition = volume > (volume_ma * volume_spike_multiplier)
     index_series = pd.Series(range(len(df)), index=df.index)
-    anchor_indices = index_series.where(spike_condition).ffill()
+    anchor_mode = str(param("AUTO_AVWAP_ANCHOR", "volume_spike") or "volume_spike").lower()
+    if anchor_mode == "session_open":
+        session_key = pd.Series(_exchange_session_dates_for_df(df, ticker), index=df.index)
+        anchor_condition = session_key != session_key.shift(1)
+        anchor_indices = index_series.where(anchor_condition).ffill()
+    elif anchor_mode == "swing":
+        # Anchor at the latest confirmed swing high/low. A pivot is only known `strength` bars later, so the anchor
+        # is switched on at the confirmation bar and never looks ahead.
+        strength = max(2, int(float(param("AUTO_AVWAP_SWING_STRENGTH", 5) or 5)))
+        highs, lows = high.to_numpy(dtype=float), low.to_numpy(dtype=float)
+        anchor_at = np.full(len(df), np.nan)
+        for pivot in range(strength, len(df) - strength):
+            window_high = highs[pivot - strength: pivot + strength + 1]
+            window_low = lows[pivot - strength: pivot + strength + 1]
+            if highs[pivot] >= window_high.max() or lows[pivot] <= window_low.min():
+                anchor_at[pivot + strength] = pivot
+        anchor_indices = pd.Series(anchor_at, index=df.index).ffill()
+    else:
+        anchor_indices = index_series.where(spike_condition).ffill()
     session_values = (session_vwap if session_vwap is not None else _session_vwap_series(
         df, high, low, close, volume, ticker=ticker
     )).to_numpy()
@@ -580,6 +651,55 @@ def _auto_avwap_series(df, high, low, close, volume, ticker=None, session_vwap=N
             if total_volume > 0 else close_values[current_index]
         )
     return pd.Series(values, index=df.index), anchor_indices
+
+
+def _wilder_psar(high, low, close, step=0.02, max_step=0.2):
+    """Wilder's Parabolic SAR (TradingView/TA-Lib convention).
+
+    The first trend is taken from the first two closes; the SAR never enters the prior two bars' range and flips
+    when price touches it. The reversal bar's SAR is the prior extreme point."""
+    h, l, c = (np.asarray(x, dtype=float) for x in (high, low, close))
+    n = len(c)
+    out = np.full(n, np.nan)
+    if n < 2:
+        return pd.Series(out, index=close.index)
+    step = max(1e-4, float(step))
+    max_step = max(step, float(max_step))
+    up = c[1] >= c[0]
+    sar = l[0] if up else h[0]
+    ep = h[0] if up else l[0]
+    af = step
+    out[0] = sar
+    for i in range(1, n):
+        sar = sar + af * (ep - sar)
+        if up:
+            sar = min(sar, l[i - 1], l[i - 2] if i >= 2 else l[i - 1])
+            if l[i] < sar:
+                up, sar, ep, af = False, ep, l[i], step
+            elif h[i] > ep:
+                ep, af = h[i], min(af + step, max_step)
+        else:
+            sar = max(sar, h[i - 1], h[i - 2] if i >= 2 else h[i - 1])
+            if h[i] > sar:
+                up, sar, ep, af = True, ep, h[i], step
+            elif l[i] < ep:
+                ep, af = l[i], min(af + step, max_step)
+        out[i] = sar
+    return pd.Series(out, index=close.index)
+
+
+def _finite_or_none(value):
+    """float(value), or None when it is NaN/inf, so API payloads stay JSON-safe."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) else None
+
+
+def _flag(value):
+    """Interpret a stored on/off setting (bool, number or string)."""
+    return str(value).strip().lower() in ("1", "true", "yes", "on", "1.0")
 
 
 def _atr_period(value, fallback=14):
@@ -624,6 +744,28 @@ def _get_wb_data_provider():
 # ---------------------------------------------------------------------------
 # Mystic Pulse V2.0 Utilities
 # ---------------------------------------------------------------------------
+def _wilders_smooth_seeded(series, length):
+    """Wilder smoothing (running sum form) seeded with the sum of the first ``length`` valid values.
+
+    Values before the first complete window stay NaN, so nothing is reported from a partly warmed-up calculation."""
+    values = np.asarray(series, dtype=float)
+    result = np.full(len(values), np.nan)
+    length = max(1, int(length))
+    finite = np.flatnonzero(np.isfinite(values))
+    if finite.size == 0:
+        return result
+    start = int(finite[0])
+    seed_end = start + length - 1
+    if seed_end >= len(values) or not np.isfinite(values[start:seed_end + 1]).all():
+        return result
+    result[seed_end] = values[start:seed_end + 1].sum()
+    for i in range(seed_end + 1, len(values)):
+        if not np.isfinite(values[i]):
+            continue
+        result[i] = result[i - 1] - (result[i - 1] / length) + values[i]
+    return result
+
+
 def _wilders_smooth(series, length):
     """Replicates Pine Script smoothed logic."""
     smooth = np.zeros(len(series))
@@ -643,6 +785,7 @@ def _get_mystic_v2_presets(timeframe):
         '1m':  {'adx': 21, 'smth': 3},
         '5m':  {'adx': 18, 'smth': 2},
         '15m': {'adx': 14, 'smth': 1},
+        '30m': {'adx': 12, 'smth': 1},
         '1h':  {'adx': 9,  'smth': 1},
         '4h':  {'adx': 7,  'smth': 1},
         '1d':  {'adx': 5,  'smth': 1}
@@ -693,8 +836,28 @@ def _session_dates_for_df(df, ticker=None):
             ambiguous="infer",
             nonexistent="shift_forward",
         )
-    central = timestamps.tz_convert("America/Chicago")
-    return central.date
+    # Crypto trades around the clock; its daily bar is the UTC day, not the Chicago equity date.
+    session_tz = "UTC" if _is_crypto_ticker(ticker) else "America/Chicago"
+    return timestamps.tz_convert(session_tz).date
+
+
+def _regular_hours_mask(df, ticker=None):
+    """True for bars inside the 09:30-16:00 New York regular session (all True for crypto or daily-or-larger bars)."""
+    if df is None or len(df) == 0:
+        return np.ones(0, dtype=bool)
+    if _is_crypto_ticker(ticker):
+        return np.ones(len(df), dtype=bool)
+    timestamps = pd.DatetimeIndex(df.index)
+    if len(timestamps) > 2:
+        median_gap = pd.Series(timestamps).diff().median()
+        if pd.notna(median_gap) and median_gap >= pd.Timedelta(hours=20):
+            return np.ones(len(df), dtype=bool)
+    if timestamps.tz is None:
+        timestamps = timestamps.tz_localize("America/New_York", ambiguous="infer", nonexistent="shift_forward")
+    else:
+        timestamps = timestamps.tz_convert("America/New_York")
+    minutes = timestamps.hour * 60 + timestamps.minute
+    return np.asarray((minutes >= 570) & (minutes < 960))
 
 
 def _exchange_session_dates_for_df(df, ticker=None):
@@ -1056,15 +1219,19 @@ def _volume_profile_distribution(session_df, rows=48, value_area_pct=70.0):
     included_volume = profile[poc_idx]
     low_idx = high_idx = poc_idx
 
+    # Market Profile / CME value-area rule: compare the next TWO rows above with the next TWO below and add the
+    # larger pair, until the target share of volume is inside the area.
     while included_volume < target_volume and (low_idx > 0 or high_idx < rows - 1):
-        left_volume = profile[low_idx - 1] if low_idx > 0 else -1
-        right_volume = profile[high_idx + 1] if high_idx < rows - 1 else -1
-        if right_volume >= left_volume and high_idx < rows - 1:
-            high_idx += 1
-            included_volume += profile[high_idx]
-        elif low_idx > 0:
-            low_idx -= 1
-            included_volume += profile[low_idx]
+        up_rows = profile[high_idx + 1: high_idx + 3]
+        down_rows = profile[max(0, low_idx - 2): low_idx][::-1]
+        up_volume = float(up_rows.sum()) if len(up_rows) else -1.0
+        down_volume = float(down_rows.sum()) if len(down_rows) else -1.0
+        if up_volume >= down_volume and len(up_rows):
+            included_volume += up_volume
+            high_idx += len(up_rows)
+        elif len(down_rows):
+            included_volume += down_volume
+            low_idx -= len(down_rows)
         else:
             break
 
@@ -1147,6 +1314,11 @@ def _add_swing_point_columns(df, ticker, settings, param_getter, timeframe=None)
     except Exception:
         level_count = 1
 
+    try:
+        pivot_strength = max(1, min(10, int(float(param_getter("SWING_POINTS_STRENGTH", 2)))))
+    except Exception:
+        pivot_strength = 2
+
     entry_mode = str(param_getter("SWING_POINTS_ENTRY_MODE", "bounce_retest") or "bounce_retest")
     if entry_mode not in {"bounce_retest", "breakout_retest"}:
         entry_mode = "bounce_retest"
@@ -1187,6 +1359,13 @@ def _add_swing_point_columns(df, ticker, settings, param_getter, timeframe=None)
         # bounding the live rolling calculation for low timeframes. The chart
         # response itself is capped separately; the extra warmup here keeps
         # the first displayed Swing level from starting with a cold context.
+        # Measure the real bars per session from the data itself: a fixed 390-minute guess made the live window
+        # shorter than the lookback whenever pre/post-market bars were present, so live and backtest disagreed.
+        try:
+            observed = pd.Series(1, index=df.index).groupby(_exchange_session_dates_for_df(df, ticker)).sum()
+            bars_per_day = max(bars_per_day, int(observed.quantile(0.9))) if len(observed) else bars_per_day
+        except Exception:
+            pass
         requested_bars = max(240, lookback_days * bars_per_day)
         display_limit = _live_chart_display_limit(timeframe, ticker)
         live_window_bars = max(display_limit, min(5000, requested_bars))
@@ -1233,6 +1412,7 @@ def _add_swing_point_columns(df, ticker, settings, param_getter, timeframe=None)
             lookback_days=lookback_days,
             market_session=market_session,
             is_crypto=is_crypto,
+            pivot_strength=pivot_strength,
         )
         ctx = decision.get("context") or {}
         current_price = candle["close"]
@@ -1367,71 +1547,229 @@ def _resolve_param(key, fallback=None, settings=None):
     return getattr(get_user_config(), key, fallback)
 
 
-def _add_fast_candlestick_columns(df):
-    """Add the same candle-pattern columns used by the full indicator path."""
-    body = (df["Close"] - df["Open"]).abs()
-    range_ = df["High"] - df["Low"]
-    lower_wick = df[["Open", "Close"]].min(axis=1) - df["Low"]
-    upper_wick = df["High"] - df[["Open", "Close"]].max(axis=1)
+def _add_trend_rider_columns(df, close, high, low, period, param):
+    """Regular "Trend Rider" indicator: an ATR trailing line that flips with the trend, a smoothed trend tracer,
+    ±2σ reversal zones and a 0-4 confluence score. Uses only completed history (recursive, no lookahead) and its own
+    ATR / RSI(14) so it does not depend on any other indicator's settings."""
+    atr_values = _wilder_atr(high, low, close, period("TREND_RIDER_ATR_PERIOD", 14)).to_numpy(dtype=float)
+    multiplier = float(param("TREND_RIDER_ATR_MULT", 2.0))
+    prices = close.to_numpy(dtype=float)
+    count = len(prices)
+    trail = np.full(count, np.nan)
+    trend_up = np.ones(count, dtype=bool)
+    valid = np.flatnonzero(~np.isnan(atr_values))
+    if valid.size:
+        start = int(valid[0])
+        trail[start] = prices[start] - atr_values[start] * multiplier
+        for i in range(start + 1, count):
+            loss = atr_values[i] * multiplier if not np.isnan(atr_values[i]) else 0.0
+            if prices[i] > trail[i - 1] and prices[i - 1] > trail[i - 1]:
+                trail[i], trend_up[i] = max(trail[i - 1], prices[i] - loss), True
+            elif prices[i] < trail[i - 1] and prices[i - 1] < trail[i - 1]:
+                trail[i], trend_up[i] = min(trail[i - 1], prices[i] + loss), False
+            elif prices[i] > trail[i - 1]:
+                trail[i], trend_up[i] = prices[i] - loss, True
+            else:
+                trail[i], trend_up[i] = prices[i] + loss, False
+    tracer_period = period("TREND_RIDER_TRACER_PERIOD", 50)
+    tracer = 2 * ta_lib.trend.ema_indicator(close, window=max(tracer_period // 2, 2)) - ta_lib.trend.ema_indicator(close, window=tracer_period)
+    zone_period = period("TREND_RIDER_ZONE_PERIOD", 50)
+    zone_mean = close.rolling(window=zone_period).mean()
+    zone_std = close.rolling(window=zone_period).std()
+    zone_k = max(0.5, float(param("TREND_RIDER_ZONE_STD", 2.0)))  # sample sigma (ddof=1), like pandas/Pine stdev-sample
+    zone_upper, zone_lower = zone_mean + zone_k * zone_std, zone_mean - zone_k * zone_std
+    rsi = _wilder_rsi(close, period("TREND_RIDER_RSI_PERIOD", 14))
+    rsi_low, rsi_high = float(param("TREND_RIDER_RSI_LOW", 40)), float(param("TREND_RIDER_RSI_HIGH", 70))
+    score = (
+        trend_up.astype(int)
+        + ((close > tracer) & tracer.notna()).astype(int).to_numpy()
+        + ((close < zone_upper) & zone_upper.notna()).astype(int).to_numpy()
+        + ((rsi > rsi_low) & (rsi < rsi_high)).astype(int).to_numpy()
+    )
+    df["TR_Trail"] = trail
+    df["TR_Trend"] = trend_up
+    df["TR_Tracer"] = tracer
+    df["TR_Zone_Upper"] = zone_upper
+    df["TR_Zone_Lower"] = zone_lower
+    df["TR_Score"] = score
 
-    bull_eng = (df["Close"].shift(1) < df["Open"].shift(1)) & (df["Close"] > df["Open"]) & (df["Close"] >= df["Open"].shift(1)) & (df["Open"] <= df["Close"].shift(1))
-    bear_eng = (df["Close"].shift(1) > df["Open"].shift(1)) & (df["Close"] < df["Open"]) & (df["Close"] <= df["Open"].shift(1)) & (df["Open"] >= df["Close"].shift(1))
-    hammer_raw = (lower_wick > body * 2) & (upper_wick < body) & (range_ > 0)
-    shooting_raw = (upper_wick > body * 2) & (lower_wick < body) & (range_ > 0)
-    doji = (body <= (range_ * 0.1)) & (range_ > 0)
-    bull_marubozu = (body > (range_ * 0.9)) & (df["Close"] > df["Open"])
-    bear_marubozu = (body > (range_ * 0.9)) & (df["Close"] < df["Open"])
-    morning_star = (df["Close"].shift(2) < df["Open"].shift(2)) & ((df["Open"].shift(1) - df["Close"].shift(1)).abs() < (df["Open"].shift(2) - df["Close"].shift(2)).abs() * 0.3) & (df["Close"] > df["Open"]) & (df["Close"] > (df["Open"].shift(2) + df["Close"].shift(2)) / 2)
-    evening_star = (df["Close"].shift(2) > df["Open"].shift(2)) & ((df["Open"].shift(1) - df["Close"].shift(1)).abs() < (df["Close"].shift(2) - df["Open"].shift(2)).abs() * 0.3) & (df["Close"] < df["Open"]) & (df["Close"] < (df["Open"].shift(2) + df["Close"].shift(2)) / 2)
-    uptrend = df["Close"] > df["Close"].shift(5)
-    downtrend = df["Close"] < df["Close"].shift(5)
-    hanging_man = hammer_raw & uptrend
-    inverted_hammer = shooting_raw & downtrend
-    hammer = hammer_raw & downtrend
-    shooting_star = shooting_raw & uptrend
-    piercing_line = (df["Close"].shift(1) < df["Open"].shift(1)) & (df["Open"] < df["Low"].shift(1)) & (df["Close"] > (df["Open"].shift(1) + df["Close"].shift(1)) / 2) & (df["Close"] < df["Open"].shift(1))
-    dark_cloud = (df["Close"].shift(1) > df["Open"].shift(1)) & (df["Open"] > df["High"].shift(1)) & (df["Close"] < (df["Open"].shift(1) + df["Close"].shift(1)) / 2) & (df["Close"] > df["Open"].shift(1))
-    three_white_soldiers = (df["Close"] > df["Open"]) & (df["Close"].shift(1) > df["Open"].shift(1)) & (df["Close"].shift(2) > df["Open"].shift(2)) & (df["Close"] > df["Close"].shift(1)) & (df["Close"].shift(1) > df["Close"].shift(2)) & (df["Open"] > df["Open"].shift(1)) & (df["Open"] < df["Close"].shift(1)) & (upper_wick < body * 0.2) & (df["High"].shift(1) - df[["Open", "Close"]].shift(1).max(axis=1) < (df["Close"].shift(1) - df["Open"].shift(1)) * 0.2)
-    three_black_crows = (df["Close"] < df["Open"]) & (df["Close"].shift(1) < df["Open"].shift(1)) & (df["Close"].shift(2) < df["Open"].shift(2)) & (df["Close"] < df["Close"].shift(1)) & (df["Close"].shift(1) < df["Close"].shift(2)) & (df["Open"] < df["Open"].shift(1)) & (df["Open"] > df["Close"].shift(1)) & (lower_wick < body * 0.2) & (df[["Open", "Close"]].shift(1).min(axis=1) - df["Low"].shift(1) < (df["Open"].shift(1) - df["Close"].shift(1)) * 0.2)
-    bull_harami = (df["Close"].shift(1) < df["Open"].shift(1)) & (df["Close"] > df["Open"]) & (df["Open"] > df["Close"].shift(1)) & (df["Close"] < df["Open"].shift(1))
-    bear_harami = (df["Close"].shift(1) > df["Open"].shift(1)) & (df["Close"] < df["Open"]) & (df["Open"] < df["Close"].shift(1)) & (df["Close"] > df["Open"].shift(1))
-    tweezer_bot = ((df["Low"] - df["Low"].shift(1)).abs() <= (range_ * 0.05)) & (df["Close"].shift(1) < df["Open"].shift(1)) & (df["Close"] > df["Open"])
-    tweezer_top = ((df["High"] - df["High"].shift(1)).abs() <= (range_ * 0.05)) & (df["Close"].shift(1) > df["Open"].shift(1)) & (df["Close"] < df["Open"])
-    three_inside_up = bull_harami.shift(1) & (df["Close"] > df["Close"].shift(1)) & (df["Close"] > df["Open"])
-    three_inside_down = bear_harami.shift(1) & (df["Close"] < df["Close"].shift(1)) & (df["Close"] < df["Open"])
-    three_outside_up = bull_eng.shift(1) & (df["Close"] > df["Close"].shift(1)) & (df["Close"] > df["Open"])
-    three_outside_down = bear_eng.shift(1) & (df["Close"] < df["Close"].shift(1)) & (df["Close"] < df["Open"])
-    dragonfly_doji = doji & (lower_wick > body * 3) & (upper_wick < body)
-    gravestone_doji = doji & (upper_wick > body * 3) & (lower_wick < body)
 
-    df["cdl_bullish"] = bull_eng | hammer | inverted_hammer | bull_marubozu | morning_star | piercing_line | three_white_soldiers | dragonfly_doji | bull_harami | tweezer_bot | three_inside_up | three_outside_up
-    df["cdl_bearish"] = bear_eng | shooting_star | hanging_man | bear_marubozu | evening_star | dark_cloud | three_black_crows | gravestone_doji | bear_harami | tweezer_top | three_inside_down | three_outside_down
+def _add_ha_ut_columns(df, close, high, low, period, param):
+    """Regular "HA+UT" indicator: a UT-style ATR trailing stop computed on Heikin-Ashi candles. The trail only uses
+    completed history; the vote is the side of the trail the Heikin-Ashi close is on."""
+    multiplier = float(param("HA_UT_ATR_MULT", 1.0))
+    atr_period = period("HA_UT_ATR_PERIOD", 10)
+    open_ = df["Open"].to_numpy(dtype=float)
+    highs, lows, closes = high.to_numpy(dtype=float), low.to_numpy(dtype=float), close.to_numpy(dtype=float)
+    count = len(df)
+    ha_close = (open_ + highs + lows + closes) / 4
+    ha_open = np.empty(count)
+    ha_open[0] = (open_[0] + closes[0]) / 2
+    for i in range(1, count):
+        ha_open[i] = (ha_open[i - 1] + ha_close[i - 1]) / 2
+    ha_high = np.maximum(highs, np.maximum(ha_open, ha_close))
+    ha_low = np.minimum(lows, np.minimum(ha_open, ha_close))
+    # UT Bot convention: ATR comes from the real candles, only the source price is Heikin-Ashi.
+    atr_period = max(2, int(atr_period))
+    atr = _wilder_atr(high, low, close, atr_period).to_numpy(dtype=float)
+    loss = atr * multiplier
+    trail = np.full(count, np.nan)
+    above = np.ones(count, dtype=bool)
+    valid = np.flatnonzero(~np.isnan(loss))
+    start = int(valid[0]) if len(valid) else 0
+    if len(valid):
+        trail[start] = ha_close[start] - loss[start]
+        for i in range(start + 1, count):
+            step = loss[i] if not np.isnan(loss[i]) else 0.0
+            if ha_close[i] > trail[i - 1] and ha_close[i - 1] > trail[i - 1]:
+                trail[i], above[i] = max(trail[i - 1], ha_close[i] - step), True
+            elif ha_close[i] < trail[i - 1] and ha_close[i - 1] < trail[i - 1]:
+                trail[i], above[i] = min(trail[i - 1], ha_close[i] + step), False
+            elif ha_close[i] > trail[i - 1]:
+                trail[i], above[i] = ha_close[i] - step, True
+            else:
+                trail[i], above[i] = ha_close[i] + step, False
+    df["HAUT_Close"] = ha_close
+    df["HAUT_Trail"] = trail
+    df["HAUT_Above"] = above
+
+
+def _add_chart_pattern_columns(df, active):
+    """The regular "Chart Patterns" indicator: a bullish/bearish flag and a pattern name per completed candle.
+
+    It reads the confirmed-breakout signal of the causal pattern engine (flags, pennants, wedges), so nothing from a
+    forming candle ever votes. Event columns, never forward-filled: a pattern shows on the candle that confirmed it."""
+    if not active or "BB5_Signal" not in df.columns:
+        df["CP_Bullish"] = False
+        df["CP_Bearish"] = False
+        df["CP_Name"] = "Neutral"
+        df["CP_Quality"] = 0.0
+        return df
+    signal = pd.to_numeric(df["BB5_Signal"], errors="coerce").fillna(0)
+    pattern = df["BB5_Signal_Pattern"] if "BB5_Signal_Pattern" in df.columns else df.get("BB5_Pattern", "NONE")
+    labels = pd.Series(pattern, index=df.index).astype(str).str.replace("_", " ", regex=False).str.title()
+    df["CP_Bullish"] = signal > 0
+    df["CP_Bearish"] = signal < 0
+    df["CP_Name"] = np.where(signal != 0, labels, "Neutral")
+    df["CP_Quality"] = pd.to_numeric(df.get("BB5_Signal_Confidence", 0.0), errors="coerce").fillna(0.0)
+    return df
+
+
+def _add_candlestick_columns(df, reliable_only=False):
+    """Candle-pattern columns shared by the fast and full indicator paths.
+
+    Patterns follow the usual TA-Lib / Bulkowski definitions: candle sizes are measured against the average body and
+    range of the previous 10 candles (never the current one), reversal patterns need a preceding trend, and Morning /
+    Evening Star need a long first and third candle. A bar where bullish and bearish patterns both fire is neutral.
+    ``reliable_only`` keeps only the patterns Bulkowski rates as reliable reversals (engulfing, hammer, shooting star,
+    piercing/dark cloud, stars, three soldiers/crows, three inside/outside) and drops harami, tweezer, hanging man,
+    inverted hammer, marubozu and the doji variants from the vote. Spinning tops are named but never vote."""
+    o, h, l, c = df["Open"], df["High"], df["Low"], df["Close"]
+    body = (c - o).abs()
+    rng = h - l
+    top = pd.concat([o, c], axis=1).max(axis=1)
+    bottom = pd.concat([o, c], axis=1).min(axis=1)
+    lower_wick = bottom - l
+    upper_wick = h - top
+    avg_body = body.rolling(10, min_periods=10).mean().shift(1)
+    avg_range = rng.rolling(10, min_periods=10).mean().shift(1)
+    sma10 = c.rolling(10, min_periods=10).mean()
+
+    def at(series, k):
+        return series.shift(k, fill_value=False) if series.dtype == bool else series.shift(k)
+
+    bull = c > o
+    bear = c < o
+    long_body = body > avg_body
+    short_body = body < avg_body
+
+    def long_at(k):
+        return at(long_body, k)
+
+    def short_at(k):
+        return at(short_body, k)
+
+    def down_before(k):
+        return ((c.shift(k) < sma10.shift(k)) & (c.shift(k) < c.shift(k + 5))).fillna(False)
+
+    def up_before(k):
+        return ((c.shift(k) > sma10.shift(k)) & (c.shift(k) > c.shift(k + 5))).fillna(False)
+
+    known = avg_body.notna() & avg_range.notna() & (rng > 0)
+    doji = known & (body <= avg_range * 0.1)
+    bull_marubozu = known & long_body & bull & (body >= rng * 0.9)
+    bear_marubozu = known & long_body & bear & (body >= rng * 0.9)
+
+    hammer_shape = known & short_body & (lower_wick >= body * 2) & (lower_wick >= rng * 0.5) & (upper_wick <= rng * 0.1)
+    shooting_shape = known & short_body & (upper_wick >= body * 2) & (upper_wick >= rng * 0.5) & (lower_wick <= rng * 0.1)
+    hammer = hammer_shape & down_before(1)
+    hanging_man = hammer_shape & up_before(1)
+    shooting_star = shooting_shape & up_before(1)
+    inverted_hammer = shooting_shape & down_before(1)
+
+    prior_bear, prior_bull = at(bear, 1), at(bull, 1)
+    prior_long = long_at(1)
+    bull_eng = known & prior_bear & bull & long_body & (c >= o.shift(1)) & (o <= c.shift(1)) & (body > body.shift(1)) & down_before(2)
+    bear_eng = known & prior_bull & bear & long_body & (c <= o.shift(1)) & (o >= c.shift(1)) & (body > body.shift(1)) & up_before(2)
+    bull_harami = known & prior_bear & prior_long & bull & (o > c.shift(1)) & (c < o.shift(1)) & (body < body.shift(1)) & down_before(2)
+    bear_harami = known & prior_bull & prior_long & bear & (o < c.shift(1)) & (c > o.shift(1)) & (body < body.shift(1)) & up_before(2)
+    piercing_line = known & prior_bear & prior_long & bull & (o < l.shift(1)) & (c > (o.shift(1) + c.shift(1)) / 2) & (c < o.shift(1)) & down_before(2)
+    dark_cloud = known & prior_bull & prior_long & bear & (o > h.shift(1)) & (c < (o.shift(1) + c.shift(1)) / 2) & (c > o.shift(1)) & up_before(2)
+
+    first_mid = (o.shift(2) + c.shift(2)) / 2
+    morning_star = known & at(bear, 2) & long_at(2) & short_at(1) & bull & long_body & (c > first_mid) & down_before(3)
+    evening_star = known & at(bull, 2) & long_at(2) & short_at(1) & bear & long_body & (c < first_mid) & up_before(3)
+
+    three_white_soldiers = (
+        known & bull & at(bull, 1) & at(bull, 2) & long_body & long_at(1) & long_at(2)
+        & (c > c.shift(1)) & (c.shift(1) > c.shift(2))
+        & (o > o.shift(1)) & (o < c.shift(1)) & (o.shift(1) > o.shift(2)) & (o.shift(1) < c.shift(2))
+        & (upper_wick < body * 0.2) & ((h.shift(1) - top.shift(1)) < body.shift(1) * 0.2)
+    )
+    three_black_crows = (
+        known & bear & at(bear, 1) & at(bear, 2) & long_body & long_at(1) & long_at(2)
+        & (c < c.shift(1)) & (c.shift(1) < c.shift(2))
+        & (o < o.shift(1)) & (o > c.shift(1)) & (o.shift(1) < o.shift(2)) & (o.shift(1) > c.shift(2))
+        & (lower_wick < body * 0.2) & ((bottom.shift(1) - l.shift(1)) < body.shift(1) * 0.2)
+    )
+
+    tweezer_bot = known & ((l - l.shift(1)).abs() <= rng * 0.05) & prior_bear & bull & down_before(2)
+    tweezer_top = known & ((h - h.shift(1)).abs() <= rng * 0.05) & prior_bull & bear & up_before(2)
+    three_inside_up = at(bull_harami, 1) & bull & (c > o.shift(2))
+    three_inside_down = at(bear_harami, 1) & bear & (c < o.shift(2))
+    three_outside_up = at(bull_eng, 1) & bull & (c > c.shift(1))
+    three_outside_down = at(bear_eng, 1) & bear & (c < c.shift(1))
+    dragonfly_doji = doji & (lower_wick >= rng * 0.6) & (upper_wick <= rng * 0.1) & down_before(1)
+    gravestone_doji = doji & (upper_wick >= rng * 0.6) & (lower_wick <= rng * 0.1) & up_before(1)
+
+    spinning_top = known & ~doji & short_body & (upper_wick >= body) & (lower_wick >= body) & (body < rng * 0.4)
+    reliable_bull = bull_eng | hammer | morning_star | piercing_line | three_white_soldiers | three_inside_up | three_outside_up
+    reliable_bear = bear_eng | shooting_star | evening_star | dark_cloud | three_black_crows | three_inside_down | three_outside_down
+    if reliable_only:
+        bullish, bearish = reliable_bull, reliable_bear
+    else:
+        bullish = reliable_bull | inverted_hammer | bull_marubozu | dragonfly_doji | bull_harami | tweezer_bot
+        bearish = reliable_bear | hanging_man | bear_marubozu | gravestone_doji | bear_harami | tweezer_top
+    conflict = bullish & bearish
+    df["cdl_bullish"] = bullish & ~conflict
+    df["cdl_bearish"] = bearish & ~conflict
     df["cdl_name"] = "Neutral"
-    df.loc[doji, "cdl_name"] = "Doji"
-    df.loc[bull_marubozu, "cdl_name"] = "Bull Marubozu"
-    df.loc[bear_marubozu, "cdl_name"] = "Bear Marubozu"
-    df.loc[hammer, "cdl_name"] = "Hammer"
-    df.loc[inverted_hammer, "cdl_name"] = "Inverted Hammer"
-    df.loc[shooting_star, "cdl_name"] = "Shooting Star"
-    df.loc[hanging_man, "cdl_name"] = "Hanging Man"
-    df.loc[dragonfly_doji, "cdl_name"] = "Dragonfly Doji"
-    df.loc[gravestone_doji, "cdl_name"] = "Gravestone Doji"
-    df.loc[bull_harami, "cdl_name"] = "Bull Harami"
-    df.loc[bear_harami, "cdl_name"] = "Bear Harami"
-    df.loc[tweezer_bot, "cdl_name"] = "Tweezer Bottom"
-    df.loc[tweezer_top, "cdl_name"] = "Tweezer Top"
-    df.loc[bull_eng, "cdl_name"] = "Bull Engulfing"
-    df.loc[bear_eng, "cdl_name"] = "Bear Engulfing"
-    df.loc[piercing_line, "cdl_name"] = "Piercing Line"
-    df.loc[dark_cloud, "cdl_name"] = "Dark Cloud Cover"
-    df.loc[morning_star, "cdl_name"] = "Morning Star"
-    df.loc[evening_star, "cdl_name"] = "Evening Star"
-    df.loc[three_white_soldiers, "cdl_name"] = "3 White Soldiers"
-    df.loc[three_black_crows, "cdl_name"] = "3 Black Crows"
-    df.loc[three_inside_up, "cdl_name"] = "3 Inside Up"
-    df.loc[three_inside_down, "cdl_name"] = "3 Inside Down"
-    df.loc[three_outside_up, "cdl_name"] = "3 Outside Up"
-    df.loc[three_outside_down, "cdl_name"] = "3 Outside Down"
+    for mask, label in (
+        (spinning_top, "Spinning Top"), (doji, "Doji"), (bull_marubozu, "Bull Marubozu"), (bear_marubozu, "Bear Marubozu"), (hammer, "Hammer"),
+        (inverted_hammer, "Inverted Hammer"), (shooting_star, "Shooting Star"), (hanging_man, "Hanging Man"),
+        (dragonfly_doji, "Dragonfly Doji"), (gravestone_doji, "Gravestone Doji"), (bull_harami, "Bull Harami"),
+        (bear_harami, "Bear Harami"), (tweezer_bot, "Tweezer Bottom"), (tweezer_top, "Tweezer Top"),
+        (bull_eng, "Bull Engulfing"), (bear_eng, "Bear Engulfing"), (piercing_line, "Piercing Line"),
+        (dark_cloud, "Dark Cloud Cover"), (morning_star, "Morning Star"), (evening_star, "Evening Star"),
+        (three_white_soldiers, "3 White Soldiers"), (three_black_crows, "3 Black Crows"),
+        (three_inside_up, "3 Inside Up"), (three_inside_down, "3 Inside Down"),
+        (three_outside_up, "3 Outside Up"), (three_outside_down, "3 Outside Down"),
+    ):
+        df.loc[mask, "cdl_name"] = label
+    df.loc[conflict, "cdl_name"] = "Mixed signals"
+
+
+_add_fast_candlestick_columns = _add_candlestick_columns
 
 
 def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca", settings=None):
@@ -1442,6 +1780,7 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca", settings=N
 
     import time
     start_t = time.perf_counter()
+    provider_ms = 0.0  # time spent inside the market-data provider call(s); the rest of fetch_time is local preparation
     try:
         df = None
         required_indicator_history_bars = _required_indicator_history_bars(settings)
@@ -1514,22 +1853,26 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca", settings=N
                             if cached_preview_bars and (time.monotonic() - cached_preview_bars[0]) < _preview_bars_cache_ttl(timeframe):
                                 bars = cached_preview_bars[1]
                         if bars is None:
+                            _provider_started = time.perf_counter()
                             bars = _get_wb_data_provider().get_bars(
                                 ticker,
                                 timespan=wb_tf,
                                 count=requested_count,
                                 trading_sessions=provider_sessions,
                             )
+                            provider_ms += (time.perf_counter() - _provider_started) * 1000
                             if bars:
                                 with _preview_bars_cache_guard:
                                     _preview_bars_cache[preview_cache_key] = (time.monotonic(), bars)
             else:
+                _provider_started = time.perf_counter()
                 bars = _get_wb_data_provider().get_bars(
                     ticker,
                     timespan=wb_tf,
                     count=requested_count,
                     trading_sessions=provider_sessions,
                 )
+                provider_ms += (time.perf_counter() - _provider_started) * 1000
             # Normalize the crypto envelope before checking individual bars.
             if isinstance(bars, list) and bars and isinstance(bars[0], dict) and "result" in bars[0]:
                 bars = bars[0].get("result") or []
@@ -1691,6 +2034,12 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca", settings=N
         if df is None or df.empty:
             return None
 
+        # Put live bars on a split-adjusted basis (splits and reverse splits)
+        # so a split never looks like a crash or a spike to any strategy.
+        data_quality = "OK"
+        if not _is_crypto_ticker(ticker):
+            df, data_quality = _reconcile_live_splits(df, ticker)
+
         # --- Indicator Calculations ---
         # Standardise column names (Webull/Alpaca fallback)
         df.columns = [c.capitalize() for c in df.columns]
@@ -1707,8 +2056,10 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca", settings=N
         calculation_settings.setdefault("_chart_display_bars", _live_chart_display_limit(timeframe, ticker))
         calc_start = time.perf_counter()
         res = calculate_indicators_for_df(df, timeframe, ticker, settings=calculation_settings)
+        if isinstance(res, dict):
+            res["data_quality"] = data_quality
         end_t = time.perf_counter()
-        print(f"[perf] {ticker} {timeframe} fetch_time: {(calc_start - start_t)*1000:.1f}ms | calc_time: {(end_t - calc_start)*1000:.1f}ms")
+        print(f"[perf] {ticker} {timeframe} fetch_time: {(calc_start - start_t)*1000:.1f}ms (provider {provider_ms:.1f}ms) | calc_time: {(end_t - calc_start)*1000:.1f}ms")
         return res
 
     except Exception as exc:
@@ -1750,6 +2101,12 @@ def _add_standard_extension_columns(df, close, high, low, volume, param, enabled
         df["ATR_Range_Upper"] = close.shift(1) + (atr.shift(1) * atr_range_multiplier)
         df["ATR_Range_Lower"] = close.shift(1) - (atr.shift(1) * atr_range_multiplier)
 
+    if wants("Trend Rider"):
+        _add_trend_rider_columns(df, close, high, low, period, param)
+
+    if wants("HA+UT"):
+        _add_ha_ut_columns(df, close, high, low, period, param)
+
     if wants("Stochastic"):
         stoch_window = period("STOCH_PERIOD", 14)
         stoch_range_low = low.rolling(stoch_window).min()
@@ -1789,8 +2146,9 @@ def _add_standard_extension_columns(df, close, high, low, volume, param, enabled
         ).awesome_oscillator()
     if wants("Chande Momentum Oscillator"):
         cmo_delta = close.diff()
-        cmo_gains = cmo_delta.clip(lower=0).rolling(period("CMO_PERIOD", 14), min_periods=1).sum()
-        cmo_losses = (-cmo_delta.clip(upper=0)).rolling(period("CMO_PERIOD", 14), min_periods=1).sum()
+        cmo_length = period("CMO_PERIOD", 14)
+        cmo_gains = cmo_delta.clip(lower=0).rolling(cmo_length, min_periods=cmo_length).sum()
+        cmo_losses = (-cmo_delta.clip(upper=0)).rolling(cmo_length, min_periods=cmo_length).sum()
         df["CMO"] = 100.0 * (cmo_gains - cmo_losses) / (cmo_gains + cmo_losses).replace(0, np.nan)
     if wants("True Strength Index"):
         tsi = ta_lib.momentum.TSIIndicator(
@@ -1814,9 +2172,14 @@ def _add_standard_extension_columns(df, close, high, low, volume, param, enabled
         df["KST_Ext"] = kst.kst()
         df["KST_Signal"] = kst.kst_sig()
     if wants("Percentage Price Oscillator"):
+        ppo_fast, ppo_slow = period("PPO_FAST", 12), period("PPO_SLOW", 26)
+        if ppo_fast > ppo_slow:  # fast >= slow inverts the oscillator; keep the standard orientation
+            ppo_fast, ppo_slow = ppo_slow, ppo_fast
+        if ppo_fast == ppo_slow:
+            ppo_slow = ppo_fast + 1
         ppo = ta_lib.momentum.PercentagePriceOscillator(
             close,
-            window_slow=period("PPO_SLOW", 26), window_fast=period("PPO_FAST", 12), window_sign=period("PPO_SIGNAL", 9),
+            window_slow=ppo_slow, window_fast=ppo_fast, window_sign=period("PPO_SIGNAL", 9),
         )
         df["PPO_Ext"] = ppo.ppo()
         df["PPO_Signal"] = ppo.ppo_signal()
@@ -1839,10 +2202,17 @@ def _add_standard_extension_columns(df, close, high, low, volume, param, enabled
         df["Ichimoku_Base"] = ichimoku.ichimoku_base_line()
         df["Ichimoku_Span_A"] = ichimoku.ichimoku_a()
         df["Ichimoku_Span_B"] = ichimoku.ichimoku_b()
+        # The cloud drawn at the current bar is the span calculated one displacement (the base period) earlier, and the
+        # Chikou span compares today's close with the close one displacement ago. Signals use these, not the projected
+        # (undisplaced) spans, so the vote matches what the chart shows.
+        ichimoku_shift = period("ICHIMOKU_BASE", 26)
+        df["Ichimoku_Cloud_A"] = df["Ichimoku_Span_A"].shift(ichimoku_shift)
+        df["Ichimoku_Cloud_B"] = df["Ichimoku_Span_B"].shift(ichimoku_shift)
+        df["Ichimoku_Chikou_Ref"] = close.shift(ichimoku_shift)
     if wants("Parabolic SAR"):
-        df["PSAR"] = ta_lib.trend.PSARIndicator(
-            high, low, close, step=float(param("PSAR_STEP", 0.02)), max_step=float(param("PSAR_MAX_STEP", 0.2))
-        ).psar()
+        df["PSAR"] = _wilder_psar(
+            high, low, close, float(param("PSAR_STEP", 0.02)), float(param("PSAR_MAX_STEP", 0.2))
+        )
     if wants("Donchian Channels"):
         donchian_window = period("DONCHIAN_PERIOD", 20)
         df["Donchian_Upper_Prior"] = high.rolling(donchian_window).max().shift(1)
@@ -1866,16 +2236,21 @@ def _add_standard_extension_columns(df, close, high, low, volume, param, enabled
         chop_range = high.rolling(chop_window).max() - low.rolling(chop_window).min()
         chop_ratio = true_range.rolling(chop_window).sum() / chop_range.replace(0, np.nan)
         df["Choppiness"] = 100.0 * np.log10(chop_ratio) / np.log10(chop_window)
+        # Direction for the regime vote comes from the net move over the same window, so the vote never depends on
+        # another indicator being selected.
+        df["Chop_Direction_Ref"] = close.shift(chop_window)
     if wants("DEMA"):
         dema_window = period("DEMA_PERIOD", 21)
         dema_ema1 = close.ewm(span=dema_window, adjust=False).mean()
         df["DEMA"] = (2.0 * dema_ema1) - dema_ema1.ewm(span=dema_window, adjust=False).mean()
+        df.iloc[:2 * (dema_window - 1), df.columns.get_loc("DEMA")] = np.nan  # TA-Lib lookback
     if wants("TEMA"):
         tema_window = period("TEMA_PERIOD", 21)
         tema_ema1 = close.ewm(span=tema_window, adjust=False).mean()
         tema_ema2 = tema_ema1.ewm(span=tema_window, adjust=False).mean()
         tema_ema3 = tema_ema2.ewm(span=tema_window, adjust=False).mean()
         df["TEMA"] = (3.0 * tema_ema1) - (3.0 * tema_ema2) + tema_ema3
+        df.iloc[:3 * (tema_window - 1), df.columns.get_loc("TEMA")] = np.nan  # TA-Lib lookback
 
     def weighted_ma(series, window):
         weights = np.arange(1, window + 1, dtype=float)
@@ -1885,7 +2260,7 @@ def _add_standard_extension_columns(df, close, high, low, volume, param, enabled
         hma_window = period("HMA_PERIOD", 9)
         hma_half = weighted_ma(close, max(1, hma_window // 2))
         hma_full = weighted_ma(close, hma_window)
-        df["HMA"] = weighted_ma((2.0 * hma_half) - hma_full, max(1, int(np.sqrt(hma_window))))
+        df["HMA"] = weighted_ma((2.0 * hma_half) - hma_full, max(1, int(round(np.sqrt(hma_window)))))
     if wants("Weighted Moving Average"):
         df["WMA_Ext"] = weighted_ma(close, period("WMA_PERIOD", 20))
     if wants("VWMA"):
@@ -1899,7 +2274,7 @@ def _add_standard_extension_columns(df, close, high, low, volume, param, enabled
         alma_offset = float(param("ALMA_OFFSET", 0.85))
         alma_sigma = max(0.01, float(param("ALMA_SIGMA", 6.0)))
         alma_positions = np.arange(alma_window, dtype=float)
-        alma_center = alma_offset * (alma_window - 1)
+        alma_center = np.floor(alma_offset * (alma_window - 1))
         alma_scale = alma_window / alma_sigma
         alma_weights = np.exp(-((alma_positions - alma_center) ** 2) / (2.0 * alma_scale ** 2))
         alma_weights /= alma_weights.sum()
@@ -1919,7 +2294,8 @@ def _add_standard_extension_columns(df, close, high, low, volume, param, enabled
         df["LSMA"] = close.rolling(lsma_window).apply(regression_endpoint, raw=True)
 
     if wants("On-Balance Volume"):
-        obv = ta_lib.volume.OnBalanceVolumeIndicator(close, volume).on_balance_volume()
+        # Granville's OBV: add the volume on an up close, subtract it on a down close, add nothing when unchanged.
+        obv = (np.sign(close.diff()).fillna(0.0) * volume).cumsum()
         df["OBV_Ext"] = obv
         df["OBV_Signal"] = obv.ewm(span=period("OBV_SIGNAL_PERIOD", 20), adjust=False).mean()
     if wants("Chaikin Money Flow"):
@@ -1984,7 +2360,6 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
         rsi_is_public = enabled_indicators is None or "RSI" in enabled_indicators
         rsi_is_required = (
             rsi_is_public
-            or _needs("BotBulls2")
             or bool((settings or {}).get("_require_rsi_dependency", False))
         )
 
@@ -2075,7 +2450,14 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
             else:
                 session_dates = _session_dates_for_df(df, ticker)
                 session_key = pd.Series(session_dates, index=df.index)
-                daily_levels = df.groupby(session_key).agg({"High": "max", "Low": "min", "Close": "last"})
+                level_mask = np.ones(len(df), dtype=bool)
+                if str(_param("LEVELS_REGULAR_SESSION_ONLY", 0)).lower() in ("1", "true", "yes", "on"):
+                    rth_mask = _regular_hours_mask(df, ticker)
+                    if rth_mask.any():
+                        level_mask = rth_mask
+                daily_levels = df[level_mask].groupby(session_key[level_mask]).agg(
+                    {"High": "max", "Low": "min", "Close": "last"}
+                )
                 prior_high_by_session = daily_levels["High"].shift(1)
                 prior_low_by_session = daily_levels["Low"].shift(1)
                 prior_close_by_session = daily_levels["Close"].shift(1)
@@ -2093,12 +2475,31 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
                 df["Pivot_S4"] = df["Pivot_S3"] - prior_range
                 df["Pivot_R5"] = df["Pivot_R4"] + prior_range
                 df["Pivot_S5"] = df["Pivot_S4"] - prior_range
+                pivot_type = str(_param("PIVOT_TYPE", "classic")).lower()
+                if pivot_type in ("fibonacci", "camarilla"):
+                    prior_close = session_key.map(prior_close_by_session).astype(float)
+                    if pivot_type == "fibonacci":
+                        df["Pivot_R1"] = df["Pivot_P"] + 0.382 * prior_range
+                        df["Pivot_R2"] = df["Pivot_P"] + 0.618 * prior_range
+                        df["Pivot_R3"] = df["Pivot_P"] + 1.000 * prior_range
+                        df["Pivot_S1"] = df["Pivot_P"] - 0.382 * prior_range
+                        df["Pivot_S2"] = df["Pivot_P"] - 0.618 * prior_range
+                        df["Pivot_S3"] = df["Pivot_P"] - 1.000 * prior_range
+                    else:
+                        df["Pivot_R1"] = prior_close + prior_range * 1.1 / 12
+                        df["Pivot_R2"] = prior_close + prior_range * 1.1 / 6
+                        df["Pivot_R3"] = prior_close + prior_range * 1.1 / 4
+                        df["Pivot_S1"] = prior_close - prior_range * 1.1 / 12
+                        df["Pivot_S2"] = prior_close - prior_range * 1.1 / 6
+                        df["Pivot_S3"] = prior_close - prior_range * 1.1 / 4
+                    for extra in ("Pivot_R4", "Pivot_S4", "Pivot_R5", "Pivot_S5"):
+                        df[extra] = np.nan  # the extension levels are only defined for the classic variant
 
                 if enabled_indicators is None or "Volume Profile" in enabled_indicators:
                     vp_rows = _param("VOLUME_PROFILE_ROWS", 48)
                     vp_value_area_pct = _param("VOLUME_PROFILE_VALUE_AREA_PCT", 70.0)
                     profile_by_session = {}
-                    for session_date, session_df in df.groupby(session_key):
+                    for session_date, session_df in df[level_mask].groupby(session_key[level_mask]):
                         profile = _volume_profile_distribution(
                             session_df,
                             rows=vp_rows,
@@ -2142,10 +2543,15 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
                     df["Volume_Profile_VAL"] = np.nan
 
                 hl_buffer = max(0.0, float(_param("DAILY_HIGH_LOW_BUFFER_PCT", 0.0))) / 100.0
-                high_trigger = df["Daily_HighLow_High"] * (1.0 + hl_buffer)
-                low_trigger = df["Daily_HighLow_Low"] * (1.0 - hl_buffer)
-                df["Daily_HighLow_High_Trigger"] = high_trigger if hl_buffer > 0 else np.nan
-                df["Daily_HighLow_Low_Trigger"] = low_trigger if hl_buffer > 0 else np.nan
+                hl_buffer_atr = max(0.0, float(_param("DAILY_HIGH_LOW_BUFFER_ATR", 0.0) or 0.0))
+                atr_buffer = (
+                    _wilder_atr(high, low, close, 14).shift(1) * hl_buffer_atr if hl_buffer_atr > 0 else 0.0
+                )  # previous bar's ATR: known before this candle
+                high_trigger = df["Daily_HighLow_High"] * (1.0 + hl_buffer) + atr_buffer
+                low_trigger = df["Daily_HighLow_Low"] * (1.0 - hl_buffer) - atr_buffer
+                has_buffer = hl_buffer > 0 or hl_buffer_atr > 0
+                df["Daily_HighLow_High_Trigger"] = high_trigger if has_buffer else np.nan
+                df["Daily_HighLow_Low_Trigger"] = low_trigger if has_buffer else np.nan
                 prev_close_series = close.shift(1)
                 df["Daily_HighLow_Bullish"] = ((close > high_trigger) & (prev_close_series <= high_trigger)).fillna(False)
                 df["Daily_HighLow_Bearish"] = ((close < low_trigger) & (prev_close_series >= low_trigger)).fillna(False)
@@ -2250,7 +2656,8 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
         # --- Bollinger Bands -----------------------------------------------
         if _needs("Bollinger"):
             boll_ind = ta_lib.volatility.BollingerBands(
-                close, window=int(_param("BOLL_PERIOD", 20)), window_dev=float(_param("BOLL_STD_DEV", 2.0))
+                close, window=_indicator_period(_param("BOLL_PERIOD", 20), 20, minimum=2, maximum=500),
+                window_dev=max(0.1, float(_param("BOLL_STD_DEV", 2.0)))
             )
             df["BOLL_Upper"] = boll_ind.bollinger_hband()
             df["BOLL_Lower"] = boll_ind.bollinger_lband()
@@ -2271,7 +2678,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
                 enabled_indicators=enabled_indicators,
             )
             # The extension suite adds many columns; consolidate the frame once
-            # so later premium/structural calculations do not operate on a
+            # so later structural calculations do not operate on a
             # highly fragmented DataFrame.
             close = df["Close"]
             high = df["High"]
@@ -2280,7 +2687,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
 
         deferred_indicator_names = {
             "EMA Cross", "ADX Trend", "Supertrend", "Mystic Pulse",
-            "BotBulls1", "BotBulls2", "BotBulls3", "BotBulls5",
+            "Chart Patterns",
         }
         simple_fast_path = (
             enabled_indicators is not None
@@ -2290,14 +2697,15 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
         )
         if simple_fast_path:
             # Standard indicators already calculated above can return without
-            # entering the premium, trend-loop, and pattern-engine blocks.
+            # entering the trend-loop and pattern-engine blocks.
             try:
                 needs_session_vwap = _needs("VWAP")
                 needs_auto_avwap = _needs("Auto-AVWAP")
                 if not (needs_session_vwap or needs_auto_avwap):
                     raise _SkipUnselectedIndicator
                 session_vwap = _session_vwap_series(
-                    df, df["High"], df["Low"], df["Close"], df["Volume"], ticker=ticker
+                    df, df["High"], df["Low"], df["Close"], df["Volume"], ticker=ticker,
+                    regular_only=_flag(_param("VWAP_REGULAR_SESSION_ONLY", 0)),
                 )
                 auto_avwap, current_anchor_idx = _auto_avwap_series(
                     df, df["High"], df["Low"], df["Close"], df["Volume"],
@@ -2320,7 +2728,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
 
             atr_period = _atr_period(_param("ATR_PERIOD", 14))
             df["ATR"] = _wilder_atr(high, low, close, atr_period)
-            _add_fast_candlestick_columns(df)
+            _add_fast_candlestick_columns(df, reliable_only=_flag(_param("CANDLE_RELIABLE_ONLY", 0)))
             # The normalized signal builder expects these legacy columns, but
             # their signals are filtered out because they were not selected.
             df["Supertrend"] = close
@@ -2422,7 +2830,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
                 "atr": round(float(latest["ATR"]), 8),
                 "rsi": round(internal_rsi, 2) if rsi_is_public and internal_rsi is not None else None,
                 "_internal_rsi": internal_rsi,
-                "vwap": float(latest["VWAP"]),
+                "vwap": _finite_or_none(latest["VWAP"]),  # NaN while VWAP is unavailable (daily bars, pre-open)
                 "bullish_count": sum(s.get("weight", 1) for s in signals.values() if s["signal"] == "BULLISH"),
                 "bearish_count": sum(s.get("weight", 1) for s in signals.values() if s["signal"] == "BEARISH"),
                 "signals": signals,
@@ -2438,16 +2846,10 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
                 "df": df,
             }
 
-        # --- Supertrend (Webull/TradingView Compatible Wilder's Smoothing) ---
-        tr1 = high - low
-        tr2 = (high - close.shift(1)).abs()
-        tr3 = (low - close.shift(1)).abs()
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        
-        # Wilder's Smoothing (Exponential Moving Average with alpha = 1/N)
-        st_period = int(float(_param("SUPERTREND_PERIOD", 10)))
-        st_atr = tr.ewm(alpha=1/st_period, min_periods=st_period, adjust=False).mean()
-        
+        # --- Supertrend (TradingView-compatible: Wilder ATR with SMA seed) ---
+        st_period = max(2, int(float(_param("SUPERTREND_PERIOD", 10))))
+        st_atr = _wilder_atr(high, low, close, st_period)
+
         hl2 = (high + low) / 2.0
         st_mult = float(_param("SUPERTREND_MULTIPLIER", 3.0))
         basic_ub = hl2 + st_mult * st_atr
@@ -2515,7 +2917,8 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
             if not (needs_session_vwap or needs_auto_avwap):
                 raise _SkipUnselectedIndicator
             session_vwap = _session_vwap_series(
-                df, df["High"], df["Low"], df["Close"], df["Volume"], ticker=ticker
+                df, df["High"], df["Low"], df["Close"], df["Volume"], ticker=ticker,
+                regular_only=_flag(_param("VWAP_REGULAR_SESSION_ONLY", 0)),
             )
             auto_avwap, current_anchor_idx = _auto_avwap_series(
                 df, df["High"], df["Low"], df["Close"], df["Volume"],
@@ -2555,6 +2958,12 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
         # --- Mystic Pulse V2.0 (Adaptive DMI + Persistence Engine) ----------
         presets = _get_mystic_v2_presets(timeframe)
         adx_len = presets['adx']
+        try:
+            adx_override = int(float(_param("MYSTIC_PULSE_ADX_LENGTH", 0) or 0))
+        except (TypeError, ValueError):
+            adx_override = 0
+        if adx_override >= 2:
+            adx_len = min(100, adx_override)  # e.g. 14 = Wilder's standard length
         smth = presets['smth']
 
         # 1. Pre-Smoothing (Adaptive SMA Filter)
@@ -2572,17 +2981,18 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
             work_high - work_low,
             (work_high - work_close.shift(1)).abs(),
             (work_low - work_close.shift(1)).abs()
-        ], axis=1).max(axis=1).fillna(0)
+        ], axis=1).max(axis=1, skipna=False)
 
         up_move = work_high - work_high.shift(1)
         dn_move = work_low.shift(1) - work_low
-        plus_dm = np.where((up_move > dn_move) & (up_move > 0), up_move, 0)
-        minus_dm = np.where((dn_move > up_move) & (dn_move > 0), dn_move, 0)
+        moves_known = up_move.notna() & dn_move.notna()
+        plus_dm = np.where(moves_known, np.where((up_move > dn_move) & (up_move > 0), up_move, 0.0), np.nan)
+        minus_dm = np.where(moves_known, np.where((dn_move > up_move) & (dn_move > 0), dn_move, 0.0), np.nan)
 
-        # 3. Wilder's Smoothing
-        smoothed_tr = _wilders_smooth(tr.values, adx_len)
-        smoothed_pdm = _wilders_smooth(plus_dm, adx_len)
-        smoothed_mdm = _wilders_smooth(minus_dm, adx_len)
+        # 3. Wilder's Smoothing: seeded with the sum of the first adx_len values, NaN until a full window exists
+        smoothed_tr = _wilders_smooth_seeded(tr.values, adx_len)
+        smoothed_pdm = _wilders_smooth_seeded(plus_dm, adx_len)
+        smoothed_mdm = _wilders_smooth_seeded(minus_dm, adx_len)
 
         # 4. DI Plus/Minus
         denom = np.where(smoothed_tr == 0, 1.0, smoothed_tr)
@@ -2619,462 +3029,17 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
         df["mp_buy_trigger"] = (df["Bull_Pulse"] >= mystic_thresh) & (df["Bull_Pulse"].shift(1) < mystic_thresh)
         df["mp_sell_trigger"] = (df["Bear_Pulse"] >= mystic_thresh) & (df["Bear_Pulse"].shift(1) < mystic_thresh)
 
-        # --- Candlestick Patterns ------------------------------------------
-        # Bullish Engulfing
-        bull_eng = (df["Close"].shift(1) < df["Open"].shift(1)) & \
-                   (df["Close"] > df["Open"]) & \
-                   (df["Close"] >= df["Open"].shift(1)) & \
-                   (df["Open"] <= df["Close"].shift(1))
-        
-        # Bearish Engulfing
-        bear_eng = (df["Close"].shift(1) > df["Open"].shift(1)) & \
-                   (df["Close"] < df["Open"]) & \
-                   (df["Close"] <= df["Open"].shift(1)) & \
-                   (df["Open"] >= df["Close"].shift(1))
-        
-        # Hammer (Simplified: long lower wick, small body at top)
-        body = (df["Close"] - df["Open"]).abs()
-        range_ = df["High"] - df["Low"]
-        lower_wick = df[["Open", "Close"]].min(axis=1) - df["Low"]
-        upper_wick = df["High"] - df[["Open", "Close"]].max(axis=1)
-        hammer = (lower_wick > body * 2) & (upper_wick < body) & (range_ > 0)
-        
-        # Shooting Star (Simplified: long upper wick, small body at bottom)
-        shooting_star = (upper_wick > body * 2) & (lower_wick < body) & (range_ > 0)
-
-        # Doji (Indecision: very small body relative to range)
-        doji = (body <= (range_ * 0.1)) & (range_ > 0)
-
-        # Marubozu (Strong Momentum: very small wicks relative to body)
-        bull_marubozu = (body > (range_ * 0.9)) & (df["Close"] > df["Open"])
-        bear_marubozu = (body > (range_ * 0.9)) & (df["Close"] < df["Open"])
-
-        # Morning Star (3-candle bullish reversal)
-        morning_star = (df["Close"].shift(2) < df["Open"].shift(2)) & \
-                       ((df["Open"].shift(1) - df["Close"].shift(1)).abs() < (df["Open"].shift(2) - df["Close"].shift(2)).abs() * 0.3) & \
-                       (df["Close"] > df["Open"]) & \
-                       (df["Close"] > (df["Open"].shift(2) + df["Close"].shift(2)) / 2)
-
-        # Evening Star (3-candle bearish reversal)
-        evening_star = (df["Close"].shift(2) > df["Open"].shift(2)) & \
-                       ((df["Open"].shift(1) - df["Close"].shift(1)).abs() < (df["Close"].shift(2) - df["Open"].shift(2)).abs() * 0.3) & \
-                       (df["Close"] < df["Open"]) & \
-                       (df["Close"] < (df["Open"].shift(2) + df["Close"].shift(2)) / 2)
-
-        # Hanging Man & Inverted Hammer
-        # Note: Hanging Man is a hammer at a swing high, Inverted Hammer is a shooting star at a swing low
-        uptrend = df["Close"] > df["Close"].shift(5)
-        downtrend = df["Close"] < df["Close"].shift(5)
-        
-        hanging_man = hammer & uptrend
-        inverted_hammer = shooting_star & downtrend
-        
-        # Override basic hammer/shooting star if trend context applies
-        hammer = hammer & downtrend
-        shooting_star = shooting_star & uptrend
-
-        # Piercing Line (Bullish Reversal)
-        piercing_line = (df["Close"].shift(1) < df["Open"].shift(1)) & \
-                        (df["Open"] < df["Low"].shift(1)) & \
-                        (df["Close"] > (df["Open"].shift(1) + df["Close"].shift(1)) / 2) & \
-                        (df["Close"] < df["Open"].shift(1))
-
-        # Dark Cloud Cover (Bearish Reversal)
-        dark_cloud = (df["Close"].shift(1) > df["Open"].shift(1)) & \
-                     (df["Open"] > df["High"].shift(1)) & \
-                     (df["Close"] < (df["Open"].shift(1) + df["Close"].shift(1)) / 2) & \
-                     (df["Close"] > df["Open"].shift(1))
-
-        # Three White Soldiers (Strong Bullish)
-        three_white_soldiers = (df["Close"] > df["Open"]) & (df["Close"].shift(1) > df["Open"].shift(1)) & (df["Close"].shift(2) > df["Open"].shift(2)) & \
-                               (df["Close"] > df["Close"].shift(1)) & (df["Close"].shift(1) > df["Close"].shift(2)) & \
-                               (df["Open"] > df["Open"].shift(1)) & (df["Open"] < df["Close"].shift(1)) & \
-                               (upper_wick < body * 0.2) & (df["High"].shift(1) - df[["Open", "Close"]].shift(1).max(axis=1) < (df["Close"].shift(1) - df["Open"].shift(1)) * 0.2)
-
-        # Three Black Crows (Strong Bearish)
-        three_black_crows = (df["Close"] < df["Open"]) & (df["Close"].shift(1) < df["Open"].shift(1)) & (df["Close"].shift(2) < df["Open"].shift(2)) & \
-                            (df["Close"] < df["Close"].shift(1)) & (df["Close"].shift(1) < df["Close"].shift(2)) & \
-                            (df["Open"] < df["Open"].shift(1)) & (df["Open"] > df["Close"].shift(1)) & \
-                            (lower_wick < body * 0.2) & (df[["Open", "Close"]].shift(1).min(axis=1) - df["Low"].shift(1) < (df["Open"].shift(1) - df["Close"].shift(1)) * 0.2)
-
-        # Harami (Inside Bar Reversal)
-        bull_harami = (df["Close"].shift(1) < df["Open"].shift(1)) & \
-                      (df["Close"] > df["Open"]) & \
-                      (df["Open"] > df["Close"].shift(1)) & \
-                      (df["Close"] < df["Open"].shift(1))
-        bear_harami = (df["Close"].shift(1) > df["Open"].shift(1)) & \
-                      (df["Close"] < df["Open"]) & \
-                      (df["Open"] < df["Close"].shift(1)) & \
-                      (df["Close"] > df["Open"].shift(1))
-
-        # Tweezer Bottom / Top
-        tweezer_bot = ((df["Low"] - df["Low"].shift(1)).abs() <= (range_ * 0.05)) & \
-                      (df["Close"].shift(1) < df["Open"].shift(1)) & (df["Close"] > df["Open"])
-        tweezer_top = ((df["High"] - df["High"].shift(1)).abs() <= (range_ * 0.05)) & \
-                      (df["Close"].shift(1) > df["Open"].shift(1)) & (df["Close"] < df["Open"])
-
-        # Three Inside Up / Down (Harami + Breakout confirmation)
-        three_inside_up = bull_harami.shift(1) & (df["Close"] > df["Close"].shift(1)) & (df["Close"] > df["Open"])
-        three_inside_down = bear_harami.shift(1) & (df["Close"] < df["Close"].shift(1)) & (df["Close"] < df["Open"])
-
-        # Three Outside Up / Down (Engulfing + Breakout confirmation)
-        three_outside_up = bull_eng.shift(1) & (df["Close"] > df["Close"].shift(1)) & (df["Close"] > df["Open"])
-        three_outside_down = bear_eng.shift(1) & (df["Close"] < df["Close"].shift(1)) & (df["Close"] < df["Open"])
-
-        # Specialized Dojis
-        dragonfly_doji = doji & (lower_wick > body * 3) & (upper_wick < body)
-        gravestone_doji = doji & (upper_wick > body * 3) & (lower_wick < body)
-
-        df["cdl_bullish"] = bull_eng | hammer | inverted_hammer | bull_marubozu | morning_star | piercing_line | three_white_soldiers | dragonfly_doji | bull_harami | tweezer_bot | three_inside_up | three_outside_up
-        df["cdl_bearish"] = bear_eng | shooting_star | hanging_man | bear_marubozu | evening_star | dark_cloud | three_black_crows | gravestone_doji | bear_harami | tweezer_top | three_inside_down | three_outside_down
-        df["cdl_name"] = "Neutral"
-        
-        # Apply labels (order matters for precedence if multiple match, lower = higher precedence)
-        df.loc[doji, "cdl_name"] = "Doji"
-        df.loc[bull_marubozu, "cdl_name"] = "Bull Marubozu"
-        df.loc[bear_marubozu, "cdl_name"] = "Bear Marubozu"
-        df.loc[hammer, "cdl_name"] = "Hammer"
-        df.loc[inverted_hammer, "cdl_name"] = "Inverted Hammer"
-        df.loc[shooting_star, "cdl_name"] = "Shooting Star"
-        df.loc[hanging_man, "cdl_name"] = "Hanging Man"
-        df.loc[dragonfly_doji, "cdl_name"] = "Dragonfly Doji"
-        df.loc[gravestone_doji, "cdl_name"] = "Gravestone Doji"
-        df.loc[bull_harami, "cdl_name"] = "Bull Harami"
-        df.loc[bear_harami, "cdl_name"] = "Bear Harami"
-        df.loc[tweezer_bot, "cdl_name"] = "Tweezer Bottom"
-        df.loc[tweezer_top, "cdl_name"] = "Tweezer Top"
-        df.loc[bull_eng, "cdl_name"] = "Bull Engulfing"
-        df.loc[bear_eng, "cdl_name"] = "Bear Engulfing"
-        df.loc[piercing_line, "cdl_name"] = "Piercing Line"
-        df.loc[dark_cloud, "cdl_name"] = "Dark Cloud Cover"
-        df.loc[morning_star, "cdl_name"] = "Morning Star"
-        df.loc[evening_star, "cdl_name"] = "Evening Star"
-        df.loc[three_white_soldiers, "cdl_name"] = "3 White Soldiers"
-        df.loc[three_black_crows, "cdl_name"] = "3 Black Crows"
-        df.loc[three_inside_up, "cdl_name"] = "3 Inside Up"
-        df.loc[three_inside_down, "cdl_name"] = "3 Inside Down"
-        df.loc[three_outside_up, "cdl_name"] = "3 Outside Up"
-        df.loc[three_outside_down, "cdl_name"] = "3 Outside Down"
+        # --- Candlestick Patterns (shared with the fast path) ---------------
+        _add_candlestick_columns(df, reliable_only=_flag(_param("CANDLE_RELIABLE_ONLY", 0)))
 
         # ═══════════════════════════════════════════════════════════════════
-        # PREMIUM INDICATORS — BotBulls1, BotBulls2, BotBulls3, BotBulls5
+        # Chart Patterns causal multi-pattern engine
         # ═══════════════════════════════════════════════════════════════════
 
-        # --- BotBulls1: Premium Oscillator WaveTrend + Institutional MFI --------
+        # --- Chart Patterns: causal multi-pattern engine ---
+        chart_patterns_active = enabled_indicators is None or "Chart Patterns" in enabled_indicators
         try:
-            if not _needs("BotBulls1"):
-                raise _SkipUnselectedIndicator
-            _n1 = max(5, min(50, int(float(_param("BOTBULLS1_WT_CHANNEL", 10)))))   # Channel Length
-            _n2 = max(5, min(100, int(float(_param("BOTBULLS1_WT_AVERAGE", 21)))))  # Average Length
-            ap = (high + low + close) / 3  # hlc3
-            esa = ta_lib.trend.ema_indicator(ap, window=_n1)
-            d_wt = ta_lib.trend.ema_indicator((ap - esa).abs(), window=_n1)
-            # Avoid division by zero
-            d_wt_safe = d_wt.replace(0, np.nan)
-            ci = (ap - esa) / (0.015 * d_wt_safe)
-            ci = ci.fillna(0)
-            df["WT1"] = ta_lib.trend.ema_indicator(ci, window=_n2)
-            df["WT2"] = df["WT1"].rolling(window=4).mean()
-
-            # MFI (14-period)
-            mfi_ind = ta_lib.volume.MFIIndicator(
-                high=high, low=low, close=close, volume=volume, window=14
-            )
-            df["MFI_14"] = mfi_ind.money_flow_index()
-
-            # Signal: confirmed WaveTrend reversal from an extreme pocket.
-            # BUY waits for money flow to recover; SELL waits for flow to weaken.
-            wt1_arr = df["WT1"].values
-            wt2_arr = df["WT2"].values
-            mfi_arr = df["MFI_14"].values
-            close_arr = close.to_numpy()
-            open_arr = df["Open"].to_numpy()
-            price_confirm_ema_period = max(5, min(50, int(float(_param("BOTBULLS1_PRICE_CONFIRM_EMA", 9)))))
-            price_confirm_ema = ta_lib.trend.ema_indicator(close, window=price_confirm_ema_period).to_numpy()
-            ba1_buy = np.zeros(len(df), dtype=bool)
-            ba1_sell = np.zeros(len(df), dtype=bool)
-            ba1_bullish = np.zeros(len(df), dtype=bool)
-            ba1_bearish = np.zeros(len(df), dtype=bool)
-            wt_oversold = min(-10.0, max(-100.0, float(_param("BOTBULLS1_WT_OVERSOLD", -55))))
-            wt_overbought = max(10.0, min(100.0, float(_param("BOTBULLS1_WT_OVERBOUGHT", 55))))
-            mfi_buy_reclaim = min(60.0, max(5.0, float(_param("BOTBULLS1_MFI_BUY_RECLAIM", 35))))
-            mfi_sell_reject = max(40.0, min(95.0, float(_param("BOTBULLS1_MFI_SELL_REJECT", 65))))
-            confirm_lookback = max(1, min(10, int(float(_param("BOTBULLS1_CONFIRM_LOOKBACK", 3)))))
-            require_mfi_confirm = bool(int(float(_param("BOTBULLS1_REQUIRE_MFI_CONFIRM", 1))))
-            require_candle_confirm = bool(int(float(_param("BOTBULLS1_REQUIRE_CANDLE_CONFIRM", 1))))
-            require_price_confirm = bool(int(float(_param("BOTBULLS1_REQUIRE_PRICE_CONFIRM", 1))))
-            price_confirm_window = max(0, min(10, int(float(_param("BOTBULLS1_PRICE_CONFIRM_LOOKBACK", 4)))))
-            pending_buy_idx = None
-            pending_sell_idx = None
-            for i in range(1, len(df)):
-                if not (np.isnan(wt1_arr[i]) or np.isnan(wt2_arr[i]) or np.isnan(wt1_arr[i-1]) or np.isnan(wt2_arr[i-1])):
-                    cross_up = wt1_arr[i] > wt2_arr[i] and wt1_arr[i-1] <= wt2_arr[i-1]
-                    cross_dn = wt1_arr[i] < wt2_arr[i] and wt1_arr[i-1] >= wt2_arr[i-1]
-                    mfi_v = mfi_arr[i] if not np.isnan(mfi_arr[i]) else 50
-                    mfi_prev = mfi_arr[i - 1] if not np.isnan(mfi_arr[i - 1]) else mfi_v
-                    start = max(0, i - confirm_lookback + 1)
-                    recent_wt = wt1_arr[start:i + 1]
-                    recent_low = np.nanmin(recent_wt) if len(recent_wt) else wt1_arr[i]
-                    recent_high = np.nanmax(recent_wt) if len(recent_wt) else wt1_arr[i]
-                    mfi_buy_ok = mfi_v >= mfi_buy_reclaim and mfi_v > mfi_prev
-                    mfi_sell_ok = mfi_v <= mfi_sell_reject and mfi_v < mfi_prev
-                    bull_candle = close_arr[i] > close_arr[i - 1] and close_arr[i] >= open_arr[i]
-                    bear_candle = close_arr[i] < close_arr[i - 1] and close_arr[i] <= open_arr[i]
-                    ema_v = price_confirm_ema[i] if not np.isnan(price_confirm_ema[i]) else close_arr[i]
-                    ema_prev = price_confirm_ema[i - 1] if not np.isnan(price_confirm_ema[i - 1]) else ema_v
-                    price_buy_ok = close_arr[i] >= ema_v and ema_v >= ema_prev
-                    price_sell_ok = close_arr[i] <= ema_v and ema_v <= ema_prev
-                    buy_setup = (
-                        cross_up
-                        and recent_low <= wt_oversold
-                        and (mfi_buy_ok or not require_mfi_confirm)
-                        and (bull_candle or not require_candle_confirm)
-                    )
-                    sell_setup = (
-                        cross_dn
-                        and recent_high >= wt_overbought
-                        and (mfi_sell_ok or not require_mfi_confirm)
-                        and (bear_candle or not require_candle_confirm)
-                    )
-
-                    if buy_setup:
-                        pending_buy_idx = i
-                        pending_sell_idx = None
-                    elif sell_setup:
-                        pending_sell_idx = i
-                        pending_buy_idx = None
-
-                    if require_price_confirm:
-                        buy_pending_valid = pending_buy_idx is not None and (i - pending_buy_idx) <= price_confirm_window
-                        sell_pending_valid = pending_sell_idx is not None and (i - pending_sell_idx) <= price_confirm_window
-                        buy_confirmed = buy_pending_valid and price_buy_ok and (bull_candle or not require_candle_confirm)
-                        sell_confirmed = sell_pending_valid and price_sell_ok and (bear_candle or not require_candle_confirm)
-                    else:
-                        buy_confirmed = buy_setup
-                        sell_confirmed = sell_setup
-
-                    if buy_confirmed:
-                        ba1_buy[i] = True
-                        pending_buy_idx = None
-                        pending_sell_idx = None
-                    elif sell_confirmed:
-                        ba1_sell[i] = True
-                        pending_buy_idx = None
-                        pending_sell_idx = None
-
-                    if pending_buy_idx is not None and (i - pending_buy_idx) > price_confirm_window:
-                        pending_buy_idx = None
-                    if pending_sell_idx is not None and (i - pending_sell_idx) > price_confirm_window:
-                        pending_sell_idx = None
-
-            # Continuous state used by confluence/bots/backtests.
-            # This state is driven only by confirmed chart markers:
-            # after BB1 BUY -> bullish until the next BB1 SELL, and vice versa.
-            bb1_state = 0
-            for i in range(len(df)):
-                if ba1_buy[i]:
-                    bb1_state = 1
-                elif ba1_sell[i]:
-                    bb1_state = -1
-                ba1_bullish[i] = bb1_state == 1
-                ba1_bearish[i] = bb1_state == -1
-            df["BA1_Buy"] = ba1_buy
-            df["BA1_Sell"] = ba1_sell
-            df["BA1_Bullish"] = ba1_bullish
-            df["BA1_Bearish"] = ba1_bearish
-        except _SkipUnselectedIndicator:
-            df["WT1"] = 0.0
-            df["WT2"] = 0.0
-            df["MFI_14"] = 50.0
-            df["BA1_Buy"] = False
-            df["BA1_Sell"] = False
-            df["BA1_Bullish"] = False
-            df["BA1_Bearish"] = False
-        except Exception as e:
-            print(f"[indicators] BotBulls1 error: {e}")
-            df["WT1"] = 0.0
-            df["WT2"] = 0.0
-            df["MFI_14"] = 50.0
-            df["BA1_Buy"] = False
-            df["BA1_Sell"] = False
-            df["BA1_Bullish"] = False
-            df["BA1_Bearish"] = False
-
-        # --- BotBulls2: UT (Universal Trailing Stop) + Trend Tracer + Reversal Zones ---
-        try:
-            if not _needs("BotBulls2"):
-                raise _SkipUnselectedIndicator
-            _lx_atr_len = 14
-            _lx_atr_mult = float(_param("BOTBULLS2_ATR_MULT", 2.0))
-            # Reuse existing ATR or compute dedicated one
-            lx_atr = df["ATR"].values
-            close_arr_lx = close.to_numpy()
-            n_lx = len(df)
-
-            # Component 1: Smart Trail (ATR Trailing Stop)
-            lx_trail = np.full(n_lx, np.nan)
-            lx_trend = np.ones(n_lx, dtype=bool)  # True = UP
-            # Init first valid bar
-            first_valid = 0
-            for idx_lx in range(n_lx):
-                if not np.isnan(lx_atr[idx_lx]):
-                    first_valid = idx_lx
-                    break
-            lx_trail[first_valid] = close_arr_lx[first_valid] - lx_atr[first_valid] * _lx_atr_mult
-            lx_trend[first_valid] = True
-
-            for i in range(first_valid + 1, n_lx):
-                nLoss = lx_atr[i] * _lx_atr_mult if not np.isnan(lx_atr[i]) else 0
-                if close_arr_lx[i] > lx_trail[i-1] and close_arr_lx[i-1] > lx_trail[i-1]:
-                    lx_trail[i] = max(lx_trail[i-1], close_arr_lx[i] - nLoss)
-                    lx_trend[i] = True
-                elif close_arr_lx[i] < lx_trail[i-1] and close_arr_lx[i-1] < lx_trail[i-1]:
-                    lx_trail[i] = min(lx_trail[i-1], close_arr_lx[i] + nLoss)
-                    lx_trend[i] = False
-                elif close_arr_lx[i] > lx_trail[i-1]:
-                    lx_trail[i] = close_arr_lx[i] - nLoss
-                    lx_trend[i] = True
-                else:
-                    lx_trail[i] = close_arr_lx[i] + nLoss
-                    lx_trend[i] = False
-
-            df["LX_SmartTrail"] = lx_trail
-            df["LX_SmartTrend"] = lx_trend
-
-            # Component 2: Trend Tracer (Hull-inspired double-smooth EMA)
-            _tt_period = int(_param("BOTBULLS2_TREND_TRACER_PERIOD", 50))
-            ema_full = ta_lib.trend.ema_indicator(close, window=_tt_period)
-            ema_half = ta_lib.trend.ema_indicator(close, window=max(_tt_period // 2, 2))
-            df["LX_TrendTracer"] = 2 * ema_half - ema_full
-
-            # Component 3: Reversal Zones (±2σ from 50-SMA)
-            _rz_period = int(_param("BOTBULLS2_REVERSAL_ZONE_PERIOD", 50))
-            rz_mean = close.rolling(window=_rz_period).mean()
-            rz_std = close.rolling(window=_rz_period).std()
-            df["LX_RZ_Upper"] = rz_mean + 2 * rz_std
-            df["LX_RZ_Lower"] = rz_mean - 2 * rz_std
-
-            # Component 4: Signal Classification (Score 0-4)
-            rsi_arr = df["RSI"].values
-            tt_arr = df["LX_TrendTracer"].values
-            rz_upper_arr = df["LX_RZ_Upper"].values
-            rz_lower_arr = df["LX_RZ_Lower"].values
-            lx_score = np.zeros(n_lx, dtype=int)
-
-            for i in range(n_lx):
-                s = 0
-                # +1: Smart Trail direction is UP
-                if lx_trend[i]:
-                    s += 1
-                # +1: Price above Trend Tracer
-                if not np.isnan(tt_arr[i]) and close_arr_lx[i] > tt_arr[i]:
-                    s += 1
-                # +1: Not in bearish reversal zone (overbought)
-                if not np.isnan(rz_upper_arr[i]) and close_arr_lx[i] < rz_upper_arr[i]:
-                    s += 1
-                # +1: RSI in healthy bullish range (40-70)
-                if not np.isnan(rsi_arr[i]) and 40 < rsi_arr[i] < 70:
-                    s += 1
-                lx_score[i] = s
-            df["LX_Score"] = lx_score
-
-        except _SkipUnselectedIndicator:
-            df["LX_SmartTrail"] = close.copy()
-            df["LX_SmartTrend"] = True
-            df["LX_TrendTracer"] = close.copy()
-            df["LX_RZ_Upper"] = close.copy()
-            df["LX_RZ_Lower"] = close.copy()
-            df["LX_Score"] = 0
-        except Exception as e:
-            print(f"[indicators] BotBulls2 error: {e}")
-            df["LX_SmartTrail"] = close.copy()
-            df["LX_SmartTrend"] = True
-            df["LX_TrendTracer"] = close.copy()
-            df["LX_RZ_Upper"] = close.copy()
-            df["LX_RZ_Lower"] = close.copy()
-            df["LX_Score"] = 0
-
-        # --- BotBulls3: Heikin-Ashi + UT Bot ATR Trailing Stop ---------------
-        try:
-            if not _needs("BotBulls3"):
-                raise _SkipUnselectedIndicator
-            _ut_key = float(_param("BOTBULLS3_ATR_MULT", 1.0))       # Sensitivity multiplier (QuantNomad default)
-            _ut_atr_period = int(_param("BOTBULLS3_ATR_PERIOD", 10)) # ATR lookback (QuantNomad default)
-            open_arr = df["Open"].to_numpy()
-            high_arr = high.to_numpy()
-            low_arr = low.to_numpy()
-            close_arr_ut = close.to_numpy()
-            n_ut = len(df)
-
-            # 1. Heikin-Ashi candles
-            ha_close = (open_arr + high_arr + low_arr + close_arr_ut) / 4
-            ha_open = np.empty(n_ut)
-            ha_open[0] = (open_arr[0] + close_arr_ut[0]) / 2
-            for i in range(1, n_ut):
-                ha_open[i] = (ha_open[i-1] + ha_close[i-1]) / 2
-            ha_high = np.maximum(high_arr, np.maximum(ha_open, ha_close))
-            ha_low = np.minimum(low_arr, np.minimum(ha_open, ha_close))
-
-            # 2. ATR on Heikin-Ashi candles (Wilder's)
-            ha_tr = np.zeros(n_ut)
-            ha_tr[0] = ha_high[0] - ha_low[0]
-            for i in range(1, n_ut):
-                ha_tr[i] = max(
-                    ha_high[i] - ha_low[i],
-                    abs(ha_high[i] - ha_close[i-1]),
-                    abs(ha_low[i] - ha_close[i-1])
-                )
-            # Wilder's smoothing for ATR
-            ha_atr = np.zeros(n_ut)
-            ha_atr[:_ut_atr_period] = np.nan
-            if n_ut >= _ut_atr_period:
-                ha_atr[_ut_atr_period - 1] = np.mean(ha_tr[:_ut_atr_period])
-                for i in range(_ut_atr_period, n_ut):
-                    ha_atr[i] = (ha_atr[i-1] * (_ut_atr_period - 1) + ha_tr[i]) / _ut_atr_period
-
-            nLoss_ut = ha_atr * _ut_key
-
-            # 3. Recursive trailing stop on HA Close
-            ut_trail = np.full(n_ut, np.nan)
-            ut_above = np.ones(n_ut, dtype=bool)
-            # Find first valid bar
-            ut_start = _ut_atr_period - 1 if n_ut >= _ut_atr_period else 0
-            if not np.isnan(nLoss_ut[ut_start]):
-                ut_trail[ut_start] = ha_close[ut_start] - nLoss_ut[ut_start]
-                ut_above[ut_start] = True
-
-            for i in range(ut_start + 1, n_ut):
-                nl = nLoss_ut[i] if not np.isnan(nLoss_ut[i]) else 0
-                if ha_close[i] > ut_trail[i-1] and ha_close[i-1] > ut_trail[i-1]:
-                    ut_trail[i] = max(ut_trail[i-1], ha_close[i] - nl)
-                    ut_above[i] = True
-                elif ha_close[i] < ut_trail[i-1] and ha_close[i-1] < ut_trail[i-1]:
-                    ut_trail[i] = min(ut_trail[i-1], ha_close[i] + nl)
-                    ut_above[i] = False
-                elif ha_close[i] > ut_trail[i-1]:
-                    ut_trail[i] = ha_close[i] - nl
-                    ut_above[i] = True
-                else:
-                    ut_trail[i] = ha_close[i] + nl
-                    ut_above[i] = False
-
-            df["HA_Close"] = ha_close
-            df["UT_Trail"] = ut_trail
-            df["UT_Above"] = ut_above
-
-        except _SkipUnselectedIndicator:
-            df["HA_Close"] = close.copy()
-            df["UT_Trail"] = close.copy()
-            df["UT_Above"] = True
-        except Exception as e:
-            print(f"[indicators] BotBulls3 error: {e}")
-            df["HA_Close"] = close.copy()
-            df["UT_Trail"] = close.copy()
-            df["UT_Above"] = True
-
-        # --- BotBulls5: causal multi-pattern engine ---
-        try:
-            if enabled_indicators is None or "BotBulls5" in enabled_indicators:
+            if chart_patterns_active:
                 df = calculate_botbulls5(
                     df,
                     _param,
@@ -3131,6 +3096,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
             df["BB5_Pattern"] = "NONE"
             df["BB5_State"] = "NONE"
             df["BB5_Signal_Pattern"] = "NONE"
+        df = _add_chart_pattern_columns(df, chart_patterns_active)
 
         # --- Build result --------------------------------------------------
         # Forward-fill indicator warm-up gaps, but never back-fill prior-session
@@ -3147,10 +3113,6 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
             "Volume_Profile_POC", "Volume_Profile_VAH", "Volume_Profile_VAL",
             "Swing_Support_1", "Swing_Support_2", "Swing_Support_3", "Swing_Support_4", "Swing_Support_5",
             "Swing_Resistance_1", "Swing_Resistance_2", "Swing_Resistance_3", "Swing_Resistance_4", "Swing_Resistance_5",
-            # Premium indicator columns
-            "WT1", "WT2", "MFI_14",
-            "LX_SmartTrail", "LX_TrendTracer", "LX_RZ_Upper", "LX_RZ_Lower",
-            "HA_Close", "UT_Trail",
         ]
         indicator_cols.extend(EXTENSION_CALCULATION_COLUMNS)
         # Warm-up indicators must never be back-filled. Doing so leaks a future
@@ -3196,7 +3158,7 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
             "atr": round(float(latest["ATR"]), 8),
             "rsi": round(internal_rsi, 2) if rsi_is_public and internal_rsi is not None else None,
             "_internal_rsi": internal_rsi,
-            "vwap": float(latest["VWAP"]) if "VWAP" in latest else float(latest["Close"]),
+            "vwap": _finite_or_none(latest["VWAP"]) if "VWAP" in latest else float(latest["Close"]),
             "bullish_count": sum(
                 s.get("weight", 1) for s in signals.values() if s["signal"] == "BULLISH"
             ),
@@ -3282,42 +3244,10 @@ def calculate_indicators_for_df(df, timeframe="5Min", ticker="UNKNOWN", settings
                     "cdl_name":      str(row.get("cdl_name", "Neutral")),
                     "cdl_bullish":   bool(row.get("cdl_bullish", False)),
                     "cdl_bearish":   bool(row.get("cdl_bearish", False)),
-                    # Premium indicators
-                    "wt1":            _safe(row.get("WT1")),
-                    "wt2":            _safe(row.get("WT2")),
-                    "mfi":            _safe(row.get("MFI_14")),
-                    "ba1_buy":        bool(row.get("BA1_Buy", False)),
-                    "ba1_sell":       bool(row.get("BA1_Sell", False)),
-                    "ba1_bullish":    bool(row.get("BA1_Bullish", False)),
-                    "ba1_bearish":    bool(row.get("BA1_Bearish", False)),
-                    "lx_smart_trail": _safe(row.get("LX_SmartTrail")),
-                    "lx_smart_trend": bool(row.get("LX_SmartTrend", True)),
-                    "lx_trend_tracer":_safe(row.get("LX_TrendTracer")),
-                    "lx_rz_upper":    _safe(row.get("LX_RZ_Upper")),
-                    "lx_rz_lower":    _safe(row.get("LX_RZ_Lower")),
-                    "lx_score":       _safe(row.get("LX_Score")),
-                    "ha_close":       _safe(row.get("HA_Close")),
-                    "ut_trail":       _safe(row.get("UT_Trail")),
-                    "ut_above":       bool(row.get("UT_Above", True)),
-                    "bb5_upper":       _safe(row.get("BB5_Upper")),
-                    "bb5_lower":       _safe(row.get("BB5_Lower")),
-                    "bb5_target":      _safe(row.get("BB5_Target")),
-                    "bb5_invalidation": _safe(row.get("BB5_Invalidation")),
-                    "bb5_breakout_level": _safe(row.get("BB5_Breakout_Level")),
-                    "bb5_upper_start": _safe(row.get("BB5_Upper_Start")),
-                    "bb5_lower_start": _safe(row.get("BB5_Lower_Start")),
-                    "bb5_formation_start_time": _safe(row.get("BB5_Formation_Start_Time")),
-                    "bb5_formation_end_time": _safe(row.get("BB5_Formation_End_Time")),
-                    "bb5_pole_start_time": _safe(row.get("BB5_Pole_Start_Time")),
-                    "bb5_pole_end_time": _safe(row.get("BB5_Pole_End_Time")),
-                    "bb5_formation_bars": int(_safe(row.get("BB5_Formation_Bars")) or 0),
-                    "bb5_confidence":  _safe(row.get("BB5_Confidence")),
-                    "bb5_direction":   int(_safe(row.get("BB5_Direction")) or 0),
-                    "bb5_reasons":     str(row.get("BB5_Reasons", "")),
-                    "bb5_breakout_bull": bool(row.get("BB5_Breakout_Bull", False)),
-                    "bb5_breakout_bear": bool(row.get("BB5_Breakout_Bear", False)),
-                    "bb5_pattern":     str(row.get("BB5_Pattern", "NONE")),
-                    "bb5_state":       str(row.get("BB5_State", "NONE")),
+                    "cp_name":         str(row.get("CP_Name", "Neutral")),
+                    "cp_bullish":      bool(row.get("CP_Bullish", False)),
+                    "cp_bearish":      bool(row.get("CP_Bearish", False)),
+                    "cp_quality":      _safe(row.get("CP_Quality")),
                 }, selected_chart_keys) for i, row in enumerate(chart_records)
             ],
             "df": df,
@@ -3372,10 +3302,13 @@ def _generate_standard_extension_signals(latest, prev, param):
     atr_range_multiplier = _atr_range_multiplier(param("ATR_RANGE_MULTIPLIER", 1.0))
     range_low = price - (atr * atr_range_multiplier) if np.isfinite(atr) else np.nan
     range_high = price + (atr * atr_range_multiplier) if np.isfinite(atr) else np.nan
+    # ATR measures how far price moves, not which way, so it is shown as a volatility regime and never votes bullish or
+    # bearish. Use it to size positions and set stops, or as a filter next to directional indicators.
     entries.append(signal(
         "ATR Volatility",
-        vote(atr_elevated and price > prev_price, atr_elevated and price < prev_price),
+        "NEUTRAL",
         (
+            f"{'Volatility expanding' if atr_elevated else 'Volatility normal'} • "
             f"ATR {atr:.3f} vs baseline {atr_avg:.3f} "
             f"({((atr / atr_avg) - 1.0) * 100:+.1f}%) • next-bar {atr_range_multiplier:g}× range "
             f"{range_low:.3f}-{range_high:.3f}"
@@ -3392,16 +3325,25 @@ def _generate_standard_extension_signals(latest, prev, param):
     stoch_k, stoch_d = value(latest, "Stoch_K"), value(latest, "Stoch_D")
     prev_stoch_k, prev_stoch_d = value(prev, "Stoch_K"), value(prev, "Stoch_D")
     stoch_os, stoch_ob = float(param("STOCH_OVERSOLD", 20)), float(param("STOCH_OVERBOUGHT", 80))
-    stoch_bull = stoch_k > stoch_d and (prev_stoch_k <= prev_stoch_d or stoch_k <= stoch_os)
-    stoch_bear = stoch_k < stoch_d and (prev_stoch_k >= prev_stoch_d or stoch_k >= stoch_ob)
+    if _flag(param("STOCH_CROSS_ZONE_ONLY", 1)):
+        # Textbook rule: a %K/%D cross only counts when it happens in the oversold/overbought zone.
+        stoch_bull = stoch_k > stoch_d and prev_stoch_k <= prev_stoch_d and min(prev_stoch_k, stoch_k) <= stoch_os
+        stoch_bear = stoch_k < stoch_d and prev_stoch_k >= prev_stoch_d and max(prev_stoch_k, stoch_k) >= stoch_ob
+    else:
+        stoch_bull = stoch_k > stoch_d and (prev_stoch_k <= prev_stoch_d or stoch_k <= stoch_os)
+        stoch_bear = stoch_k < stoch_d and (prev_stoch_k >= prev_stoch_d or stoch_k >= stoch_ob)
     entries.append(signal("Stochastic", vote(stoch_bull, stoch_bear), f"%K {stoch_k:.1f} / %D {stoch_d:.1f}"))
 
     srsi_k, srsi_d = value(latest, "Stoch_RSI_K"), value(latest, "Stoch_RSI_D")
     prev_srsi_k, prev_srsi_d = value(prev, "Stoch_RSI_K"), value(prev, "Stoch_RSI_D")
     srsi_os = float(param("STOCH_RSI_OVERSOLD", 20))
     srsi_ob = float(param("STOCH_RSI_OVERBOUGHT", 80))
-    srsi_bull = srsi_k > srsi_d and (prev_srsi_k <= prev_srsi_d or srsi_k <= srsi_os)
-    srsi_bear = srsi_k < srsi_d and (prev_srsi_k >= prev_srsi_d or srsi_k >= srsi_ob)
+    if _flag(param("STOCH_RSI_CROSS_ZONE_ONLY", 1)):
+        srsi_bull = srsi_k > srsi_d and prev_srsi_k <= prev_srsi_d and min(prev_srsi_k, srsi_k) <= srsi_os
+        srsi_bear = srsi_k < srsi_d and prev_srsi_k >= prev_srsi_d and max(prev_srsi_k, srsi_k) >= srsi_ob
+    else:
+        srsi_bull = srsi_k > srsi_d and (prev_srsi_k <= prev_srsi_d or srsi_k <= srsi_os)
+        srsi_bear = srsi_k < srsi_d and (prev_srsi_k >= prev_srsi_d or srsi_k >= srsi_ob)
     entries.append(signal("Stochastic RSI", vote(srsi_bull, srsi_bear), f"%K {srsi_k:.1f} / %D {srsi_d:.1f}"))
 
     cci = value(latest, "CCI_Ext")
@@ -3427,13 +3369,13 @@ def _generate_standard_extension_signals(latest, prev, param):
     ))
 
     roc = value(latest, "ROC_Ext")
-    entries.append(signal("Rate of Change", vote(roc > 0, roc < 0), f"ROC {roc:.2f}%"))
+    roc_band = abs(float(param("ROC_THRESHOLD_PCT", 0.0)))
+    entries.append(signal("Rate of Change", vote(roc > roc_band, roc < -roc_band), f"ROC {roc:.2f}%"))
     momentum = value(latest, "Momentum_Ext")
-    prev_momentum = value(prev, "Momentum_Ext", momentum)
     entries.append(signal(
         "Momentum",
-        vote(momentum > prev_momentum, momentum < prev_momentum),
-        f"Momentum {momentum:.3f} ({momentum - prev_momentum:+.3f})",
+        vote(momentum > 0, momentum < 0),
+        f"Momentum {momentum:.3f} ({'above' if momentum > 0 else 'below' if momentum < 0 else 'at'} zero line)",
     ))
 
     mfi = value(latest, "MFI_Ext")
@@ -3446,16 +3388,23 @@ def _generate_standard_extension_signals(latest, prev, param):
     ))
 
     ultimate = value(latest, "Ultimate_Osc")
+    prev_ultimate = value(prev, "Ultimate_Osc", ultimate)
+    uo_os, uo_ob = float(param("UO_OVERSOLD", 30)), float(param("UO_OVERBOUGHT", 70))
     entries.append(signal(
         "Ultimate Oscillator",
-        vote(ultimate > float(param("UO_OVERBOUGHT", 70)), ultimate < float(param("UO_OVERSOLD", 30))),
-        f"Ultimate {ultimate:.1f}",
+        vote(ultimate <= uo_os and ultimate > prev_ultimate, ultimate >= uo_ob and ultimate < prev_ultimate),
+        f"Ultimate {ultimate:.1f} (oversold ≤ {uo_os:g} / overbought ≥ {uo_ob:g}, vote on the turn)",
     ))
     awesome = value(latest, "Awesome_Osc")
     entries.append(signal("Awesome Oscillator", vote(awesome > 0, awesome < 0), f"AO {awesome:.3f}"))
     cmo = value(latest, "CMO")
+    prev_cmo = value(prev, "CMO", cmo)
     cmo_threshold = abs(float(param("CMO_THRESHOLD", 50)))
-    entries.append(signal("Chande Momentum Oscillator", vote(cmo > cmo_threshold, cmo < -cmo_threshold), f"CMO {cmo:.1f}"))
+    entries.append(signal(
+        "Chande Momentum Oscillator",
+        vote(cmo <= -cmo_threshold and cmo > prev_cmo, cmo >= cmo_threshold and cmo < prev_cmo),
+        f"CMO {cmo:.1f} (oversold ≤ -{cmo_threshold:g} / overbought ≥ {cmo_threshold:g}, vote on the turn)",
+    ))
 
     tsi, tsi_signal = value(latest, "TSI_Ext"), value(latest, "TSI_Signal")
     entries.append(signal("True Strength Index", vote(tsi > tsi_signal, tsi < tsi_signal), f"TSI {tsi:.2f} / signal {tsi_signal:.2f}"))
@@ -3479,18 +3428,26 @@ def _generate_standard_extension_signals(latest, prev, param):
     conversion = value(latest, "Ichimoku_Conversion")
     base = value(latest, "Ichimoku_Base")
     span_a, span_b = value(latest, "Ichimoku_Span_A"), value(latest, "Ichimoku_Span_B")
-    cloud_top, cloud_bottom = max(span_a, span_b), min(span_a, span_b)
+    cloud_a, cloud_b = value(latest, "Ichimoku_Cloud_A"), value(latest, "Ichimoku_Cloud_B")
+    chikou_ref = value(latest, "Ichimoku_Chikou_Ref")
+    cloud_known = np.isfinite(cloud_a) and np.isfinite(cloud_b)
+    cloud_top = max(cloud_a, cloud_b) if cloud_known else np.nan
+    cloud_bottom = min(cloud_a, cloud_b) if cloud_known else np.nan
+    # Standard strong signal: price clear of the displaced cloud, Tenkan on the right side of Kijun, the projected
+    # (future) cloud pointing the same way, and the Chikou span (today's close vs the close one displacement ago) clear.
     ichimoku_bull = (
-        span_a > span_b
-        and base > span_a
+        cloud_known
+        and price > cloud_top
         and conversion > base
-        and price > conversion
+        and span_a > span_b
+        and price > chikou_ref
     )
     ichimoku_bear = (
-        span_a < span_b
-        and base < span_a
+        cloud_known
+        and price < cloud_bottom
         and conversion < base
-        and price < conversion
+        and span_a < span_b
+        and price < chikou_ref
     )
     entries.append(signal(
         "Ichimoku Cloud",
@@ -3510,16 +3467,26 @@ def _generate_standard_extension_signals(latest, prev, param):
         f"Prior channel {donchian_lower:.2f}-{donchian_upper:.2f}",
     ))
     keltner_mid = value(latest, "Keltner_Mid")
-    entries.append(signal("Keltner Channels", vote(price > keltner_mid, price < keltner_mid), f"Price {price:.2f} / center {keltner_mid:.2f}"))
+    keltner_upper, keltner_lower = value(latest, "Keltner_Upper"), value(latest, "Keltner_Lower")
+    if str(param("KELTNER_VOTE_MODE", "breakout")).lower() == "midline":
+        entries.append(signal("Keltner Channels", vote(price > keltner_mid, price < keltner_mid), f"Price {price:.2f} / center {keltner_mid:.2f}"))
+    else:
+        entries.append(signal(
+            "Keltner Channels",
+            vote(price > keltner_upper, price < keltner_lower),
+            f"Price {price:.2f} / bands {keltner_lower:.2f}-{keltner_upper:.2f}",
+        ))
 
     choppiness = value(latest, "Choppiness")
     chop_trend = float(param("CHOP_TREND_THRESHOLD", 38.2))
     chop_range = float(param("CHOP_RANGE_THRESHOLD", 61.8))
     chop_is_directional = choppiness < chop_trend
+    chop_reference = value(latest, "Chop_Direction_Ref")
     entries.append(signal(
         "Choppiness Index",
-        vote(chop_is_directional and price > keltner_mid, chop_is_directional and price < keltner_mid),
-        f"Choppiness {choppiness:.1f}" + (" (ranging)" if choppiness > chop_range else ""),
+        vote(chop_is_directional and price > chop_reference, chop_is_directional and price < chop_reference),
+        f"Choppiness {choppiness:.1f}" + (" (ranging)" if choppiness > chop_range else "")
+        + (" (trending)" if chop_is_directional else ""),
     ))
 
     for name, column in (
@@ -3548,6 +3515,32 @@ def _generate_standard_extension_signals(latest, prev, param):
     entries.append(signal("Ease of Movement", vote(eom > 0, eom < 0), f"EOM {eom:.3f}"))
     force = value(latest, "Force_Index")
     entries.append(signal("Force Index", vote(force > 0, force < 0), f"Force {force:.0f}"))
+
+    tr_trail = value(latest, "TR_Trail")
+    if np.isfinite(tr_trail):
+        tr_up = bool(latest.get("TR_Trend", True))
+        tr_prev_up = bool(prev.get("TR_Trend", tr_up))
+        tracer = value(latest, "TR_Tracer")
+        tracer_text = "" if not np.isfinite(tracer) else (", price above tracer" if price > tracer else ", price below tracer")
+        flip = " | FLIP ↑" if tr_up and not tr_prev_up else (" | FLIP ↓" if not tr_up and tr_prev_up else "")
+        entries.append(signal(
+            "Trend Rider", vote(tr_up, not tr_up),
+            f"Trend Rider {'BUY' if tr_up else 'SELL'} (trail {'up' if tr_up else 'down'} {tr_trail:.2f}, "
+            f"confluence {int(value(latest, 'TR_Score', 0))}/4{tracer_text}){flip}",
+        ))
+    else:
+        entries.append(signal("Trend Rider", "NEUTRAL", "Awaiting sufficient history"))
+    haut_trail = value(latest, "HAUT_Trail")
+    if np.isfinite(haut_trail):
+        haut_up = bool(latest.get("HAUT_Above", True))
+        haut_prev_up = bool(prev.get("HAUT_Above", haut_up))
+        flip = " | FLIP ↑" if haut_up and not haut_prev_up else (" | FLIP ↓" if not haut_up and haut_prev_up else "")
+        entries.append(signal(
+            "HA+UT", vote(haut_up, not haut_up),
+            f"HA+UT {'BUY' if haut_up else 'SELL'} (Heikin-Ashi {'above' if haut_up else 'below'} trail {haut_trail:.2f}){flip}",
+        ))
+    else:
+        entries.append(signal("HA+UT", "NEUTRAL", "Awaiting sufficient history"))
     return dict(entries)
 
 
@@ -3637,20 +3630,50 @@ def _generate_macd_signal(
 
 
 def _generate_vwap_signal(price, prev_close, vwap, prev_vwap, bull_candle, label):
-    """Create the shared price-vs-volume-weighted-line confluence vote."""
-    is_near = abs(price - vwap) / vwap < 0.015 if vwap else False
-    crossed_up = price >= vwap and prev_close < prev_vwap
-    bounced = price >= vwap and is_near and bull_candle
-    return {
-        "signal": "BULLISH" if crossed_up or bounced else "BEARISH" if price < vwap else "NEUTRAL",
-        "reason": (
-            f"{label} Breakout ({vwap:.1f})" if crossed_up
+    """Price versus the volume-weighted line, treated the same way on both sides.
+
+    Above the line is bullish and below it is bearish; the reason text says whether price just crossed, is bouncing
+    off the line (within 1.5%) or is simply holding its side. A missing line is neutral."""
+    if not (np.isfinite(price) and np.isfinite(vwap)) or vwap <= 0:
+        return {"signal": "NEUTRAL", "reason": f"{label} unavailable", "weight": 1}
+    is_near = abs(price - vwap) / vwap < 0.015
+    if price >= vwap:
+        crossed = prev_close < prev_vwap
+        bounced = is_near and bull_candle
+        reason = (
+            f"{label} breakout ({vwap:.1f})" if crossed
             else f"{label} bounce ({vwap:.1f})" if bounced
-            else f"Below {label} ({vwap:.1f})" if price < vwap
             else f"Holding above {label} ({vwap:.1f})"
-        ),
-        "weight": 1,
-    }
+        )
+        return {"signal": "BULLISH", "reason": reason, "weight": 1}
+    crossed = prev_close >= prev_vwap
+    rejected = is_near and not bull_candle
+    reason = (
+        f"{label} breakdown ({vwap:.1f})" if crossed
+        else f"{label} rejection ({vwap:.1f})" if rejected
+        else f"Below {label} ({vwap:.1f})"
+    )
+    return {"signal": "BEARISH", "reason": reason, "weight": 1}
+
+
+def _bollinger_vote(price, lower, upper, param):
+    """Band-position vote. 'reversion' (default): outer ``BOLL_ZONE_PCT`` % of the band width is bullish at the
+    bottom and bearish at the top. 'breakout': a close beyond the band follows the move."""
+    if not (np.isfinite(price) and np.isfinite(lower) and np.isfinite(upper)) or upper <= lower:
+        return {"signal": "NEUTRAL", "reason": "Bollinger unavailable", "weight": 1}
+    width = upper - lower
+    if str(param("BOLL_VOTE_MODE", "reversion")).lower() == "breakout":
+        if price > upper:
+            return {"signal": "BULLISH", "reason": f"Breakout above {upper:.1f}", "weight": 1}
+        if price < lower:
+            return {"signal": "BEARISH", "reason": f"Breakdown below {lower:.1f}", "weight": 1}
+        return {"signal": "NEUTRAL", "reason": "In Channel", "weight": 1}
+    zone = min(0.5, max(0.01, float(param("BOLL_ZONE_PCT", 20.0) or 20.0) / 100.0))
+    if price <= lower + width * zone:
+        return {"signal": "BULLISH", "reason": f"Near Low {lower:.1f}", "weight": 1}
+    if price >= upper - width * zone:
+        return {"signal": "BEARISH", "reason": f"Near High {upper:.1f}", "weight": 1}
+    return {"signal": "NEUTRAL", "reason": "In Channel", "weight": 1}
 
 
 def _generate_moving_average_signal(
@@ -3664,8 +3687,12 @@ def _generate_moving_average_signal(
     secondary_value=np.nan,
     previous_secondary=np.nan,
     secondary_period=None,
+    separation_pct=0.0,
 ):
-    """Return one vote for either price-vs-line or fast-vs-slow MA mode."""
+    """Return one vote for either price-vs-line or fast-vs-slow MA mode.
+
+    ``separation_pct`` (two-line mode only) keeps the vote neutral while the lines are closer than that percent of
+    the slow line, which stops the state vote from whipsawing in ranges. 0 keeps the plain alignment vote."""
     average_type = str(average_type or "MA").upper()
     primary_period = _indicator_period(primary_period, 1, maximum=500)
     primary_ready = np.isfinite(primary_value)
@@ -3716,6 +3743,13 @@ def _generate_moving_average_signal(
     previous_ready = np.isfinite(fast_previous) and np.isfinite(slow_previous)
     crossed_up = previous_ready and fast_value > slow_value and fast_previous <= slow_previous
     crossed_down = previous_ready and fast_value < slow_value and fast_previous >= slow_previous
+    if separation_pct and slow_value and abs(fast_value - slow_value) / abs(slow_value) * 100.0 < separation_pct:
+        return {
+            "signal": "NEUTRAL",
+            "reason": f"{average_type} {fast_period}/{slow_period} within {separation_pct:g}% buffer",
+            "weight": 1,
+            "line_mode": 2,
+        }
     if fast_value > slow_value:
         return {
             "signal": "BULLISH",
@@ -3786,20 +3820,7 @@ def _generate_signals(latest, prev, settings=None, recent_bars=None, chart_lates
                     period=rsi_period,
                 )
             if "Bollinger" in enabled:
-                boll_width = boll_hi - boll_lo
-                signals["Bollinger"] = {
-                    "signal": (
-                        "BULLISH" if price <= (boll_lo + boll_width * 0.2)
-                        else "BEARISH" if price >= (boll_hi - boll_width * 0.2)
-                        else "NEUTRAL"
-                    ),
-                    "reason": (
-                        f"Near Low {boll_lo:.1f}" if price <= (boll_lo + boll_width * 0.2)
-                        else f"Near High {boll_hi:.1f}" if price >= (boll_hi - boll_width * 0.2)
-                        else "In Channel"
-                    ),
-                    "weight": 1,
-                }
+                signals["Bollinger"] = _bollinger_vote(price, boll_lo, boll_hi, _param)
             if "VWAP" in enabled:
                 signals["VWAP"] = _generate_vwap_signal(
                     price, prev_close, vwap, prev_vwap, bull_candle, "Session VWAP"
@@ -3861,6 +3882,15 @@ def _generate_signals(latest, prev, settings=None, recent_bars=None, chart_lates
         if dhl_ready:
             dhl_high_trigger = dhl_high * (1.0 + dhl_buffer_pct / 100.0)
             dhl_low_trigger = dhl_low * (1.0 - dhl_buffer_pct / 100.0)
+            # The calculation columns already hold the final triggers (percent and ATR buffers); prefer them so the
+            # vote and the chart lines can never disagree.
+            stored_high = float(latest.get("Daily_HighLow_High_Trigger", np.nan))
+            stored_low = float(latest.get("Daily_HighLow_Low_Trigger", np.nan))
+            if np.isfinite(stored_high) and np.isfinite(stored_low):
+                dhl_high_trigger, dhl_low_trigger = stored_high, stored_low
+                dhl_buffer_pct = dhl_buffer_pct or max(
+                    (stored_high / dhl_high - 1.0) * 100.0, (1.0 - stored_low / dhl_low) * 100.0
+                )
             dhl_bull = price > dhl_high_trigger and prev_close <= dhl_high_trigger
             dhl_bear = price < dhl_low_trigger and prev_close >= dhl_low_trigger
             dhl_buffer_note = f" + {dhl_buffer_pct:.2f}% buffer" if dhl_buffer_pct else ""
@@ -4035,6 +4065,7 @@ def _generate_signals(latest, prev, settings=None, recent_bars=None, chart_lates
             secondary_value=ema_s,
             previous_secondary=prev_ema_s,
             secondary_period=ema_secondary_period,
+            separation_pct=max(0.0, float(_param("EMA_CROSS_BUFFER_PCT", 0.0) or 0.0)),
         )
         sma_vote = _generate_moving_average_signal(
             average_type="SMA",
@@ -4059,6 +4090,12 @@ def _generate_signals(latest, prev, settings=None, recent_bars=None, chart_lates
         else:
             cdl_signal = "NEUTRAL"
             cdl_reason = f"Pattern: {p_name if p_name not in ('Neutral', '', 'None') else 'None'}"
+
+        cp_is_bull = bool(latest.get("CP_Bullish", False))
+        cp_is_bear = bool(latest.get("CP_Bearish", False))
+        cp_name = str(latest.get("CP_Name", "Neutral") or "Neutral")
+        cp_quality = float(latest.get("CP_Quality", 0) or 0)
+        cp_signal = "BULLISH" if cp_is_bull and not cp_is_bear else "BEARISH" if cp_is_bear and not cp_is_bull else "NEUTRAL"
 
         rsi_os = float(_param("RSI_OVERSOLD", 30))
         rsi_ob = float(_param("RSI_OVERBOUGHT", 70))
@@ -4093,6 +4130,12 @@ def _generate_signals(latest, prev, settings=None, recent_bars=None, chart_lates
             bb5_reason = f"{bb5_pattern_label} invalidated; no active vote"
         else:
             bb5_reason = "No qualified pattern on the latest completed candle"
+        if cp_signal != "NEUTRAL":
+            cp_reason = f"Pattern: {cp_name} breakout confirmed ({cp_quality:.0f}% setup quality)"
+        elif bb5_state == "FORMING" and bb5_pattern != "NONE":
+            cp_reason = f"Pattern: {bb5_pattern_label} forming; awaiting completed-candle breakout ({bb5_confidence:.0f}% setup quality)"
+        else:
+            cp_reason = "Pattern: None"
         signals = {
             "RSI": _generate_rsi_signal(
                 rsi_val,
@@ -4119,19 +4162,7 @@ def _generate_signals(latest, prev, settings=None, recent_bars=None, chart_lates
                 "reason": f"{'Above' if st_bull else 'Below'} {float(latest['Supertrend']):.1f}",
                 "weight": 1,
             },
-            "Bollinger": {
-                "signal": (
-                    "BULLISH" if price <= (boll_lo + (boll_hi - boll_lo) * 0.2)
-                    else "BEARISH" if price >= (boll_hi - (boll_hi - boll_lo) * 0.2)
-                    else "NEUTRAL"
-                ),
-                "reason": (
-                    f"Near Low {boll_lo:.1f}" if price <= (boll_lo + (boll_hi - boll_lo) * 0.2)
-                    else f"Near High {boll_hi:.1f}" if price >= (boll_hi - (boll_hi - boll_lo) * 0.2)
-                    else "In Channel"
-                ),
-                "weight": 1,
-            },
+            "Bollinger": _bollinger_vote(price, boll_lo, boll_hi, _param),
             "VWAP": _generate_vwap_signal(
                 price, prev_close, vwap, prev_vwap, bull_candle, "Session VWAP"
             ),
@@ -4219,79 +4250,13 @@ def _generate_signals(latest, prev, settings=None, recent_bars=None, chart_lates
                 "reason": cdl_reason,
                 "weight": 1,
             },
-            # ═══════════════ Premium Indicators ═══════════════
-            "BotBulls1": {
-                "signal": (
-                    "BULLISH" if bool(latest.get("BA1_Buy", False)) or bool(latest.get("BA1_Bullish", False))
-                    else "BEARISH" if bool(latest.get("BA1_Sell", False)) or bool(latest.get("BA1_Bearish", False))
-                    else "NEUTRAL"
-                ),
-                "reason": (
-                    f"BB1 BUY (WT reclaim {float(latest.get('WT1', 0)):.0f}) confirmed above EMA" if bool(latest.get("BA1_Buy", False))
-                    else f"BB1 SELL (WT rejection {float(latest.get('WT1', 0)):.0f}) confirmed below EMA" if bool(latest.get("BA1_Sell", False))
-                    else f"BB1 bullish after last confirmed BUY (MFI {float(latest.get('MFI_14', 50)):.0f})" if bool(latest.get("BA1_Bullish", False))
-                    else f"BB1 bearish after last confirmed SELL (MFI {float(latest.get('MFI_14', 50)):.0f})" if bool(latest.get("BA1_Bearish", False))
-                    else f"WT1: {float(latest.get('WT1', 0)):.1f} | MFI: {float(latest.get('MFI_14', 50)):.0f}"
-                ),
+            # Chart Patterns: flags, pennants and wedges, one vote on the completed candle that confirms the breakout.
+            "Chart Patterns": {
+                "signal": cp_signal,
+                "reason": cp_reason,
                 "weight": 1,
-                "premium": True,
-            },
-            "BotBulls2": {
-                "signal": (
-                    # Continuous zone signal: BULLISH if in Smart Trend, else BEARISH
-                    "BULLISH" if bool(latest.get("LX_SmartTrend", True)) else "BEARISH"
-                ),
-                "reason": (
-                    f"BB2 {'BUY' if bool(latest.get('LX_SmartTrend', True)) else 'SELL'} "
-                    f"(SmartTrail: {'↑' if bool(latest.get('LX_SmartTrend', True)) else '↓'}, "
-                    f"Confluence: {int(latest.get('LX_Score', 0))}/4, "
-                    f"Tracer: {'Bullish' if (not np.isnan(float(latest.get('LX_TrendTracer', 0))) and price > float(latest.get('LX_TrendTracer', 0))) else 'Bearish'})"
-                ),
-                "weight": 1,
-                "premium": True,
-            },
-            "BotBulls3": {
-                "signal": (
-                    # Continuous zone signal: BULLISH if above UT Trail, else BEARISH
-                    "BULLISH" if bool(latest.get("UT_Above", True)) else "BEARISH"
-                ),
-                "reason": (
-                    f"BB3 {'BUY' if bool(latest.get('UT_Above', True)) else 'SELL'} (HA {'Above' if bool(latest.get('UT_Above', True)) else 'Below'} Trail {float(latest.get('UT_Trail', 0)):.2f})"
-                    + (" | FLIP ↑" if (bool(latest.get("UT_Above", True)) and not bool(prev.get("UT_Above", True))) else "")
-                    + (" | FLIP ↓" if (not bool(latest.get("UT_Above", True)) and bool(prev.get("UT_Above", True))) else "")
-                ),
-                "weight": 1,
-                "premium": True,
-            },
-            "BotBulls5": {
-                "signal": (
-                    "BULLISH" if bb5_direction > 0
-                    else "BEARISH" if bb5_direction < 0
-                    else "NEUTRAL"
-                ),
-                "reason": bb5_reason,
-                "weight": 1,
-                "premium": True,
-                "pattern": bb5_pattern,
-                "state": bb5_state,
-                "confidence": bb5_confidence,
-                "direction": int(latest.get("BB5_Direction", 0) or 0),
-                "breakout": (
-                    float(latest.get("BB5_Breakout_Level"))
-                    if pd.notna(latest.get("BB5_Breakout_Level", np.nan))
-                    else None
-                ),
-                "target": (
-                    float(latest.get("BB5_Target"))
-                    if pd.notna(latest.get("BB5_Target", np.nan))
-                    else None
-                ),
-                "invalidation": (
-                    float(latest.get("BB5_Invalidation"))
-                    if pd.notna(latest.get("BB5_Invalidation", np.nan))
-                    else None
-                ),
-                "reasons": str(latest.get("BB5_Reasons", "") or ""),
+                "pattern": cp_name,
+                "quality": cp_quality,
             },
         }
         signals.update(_generate_standard_extension_signals(latest, prev, _param))

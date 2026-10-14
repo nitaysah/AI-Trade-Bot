@@ -10,7 +10,7 @@
     const STORAGE_KEY = `botbullsIndicatorWorkspace:${PAGE_CONTEXT}:v3`;
     const LEGACY_STORAGE_KEY = `botbullsIndicatorWorkspace:${PAGE_CONTEXT}:v2`;
     const DASHBOARD_SHARED_SCOPE_KEY = 'dashboard:GLOBAL';
-    const DISPLAY_LIMIT = 12;
+    const DISPLAY_LIMIT = 15;
     const FALLBACK_INDICATORS = [
         { name: 'RSI', label: 'RSI', category: 'Momentum' },
         { name: 'MACD', label: 'MACD', category: 'Trend' },
@@ -26,10 +26,13 @@
         { name: 'Swing Points', label: 'Swing Points', category: 'Price structure' },
         { name: 'Mystic Pulse', label: 'Mystic Pulse', category: 'Custom momentum' },
         { name: 'Candle Patterns', label: 'Candle Patterns', category: 'Price action' },
+        { name: 'Chart Patterns', label: 'Chart Patterns', category: 'Price action' },
+        { name: 'Trend Rider', label: 'Trend Rider', category: 'Trend' },
+        { name: 'HA+UT', label: 'HA+UT', category: 'Trend' },
         { name: 'Auto-AVWAP', label: 'Auto-AVWAP', category: 'Volume / price' },
     ];
     const INDICATORS = Array.isArray(window.STANDARD_INDICATOR_CATALOG)
-        && window.STANDARD_INDICATOR_CATALOG.length === 51
+        && window.STANDARD_INDICATOR_CATALOG.length === 54
         ? window.STANDARD_INDICATOR_CATALOG
         : FALLBACK_INDICATORS;
     // Stable popularity order keeps the selector readable and prevents an
@@ -45,6 +48,7 @@
         'ATR Volatility',
         'Volume Profile',
         'Candle Patterns',
+        'Chart Patterns',
         'Prior Day High/Low',
         'Swing Points',
         'Pivot Points (S/R)',
@@ -71,8 +75,9 @@
     const DEFAULT_SHOWN = (
         Array.isArray(window.STANDARD_INDICATOR_DEFAULT_NAMES)
             ? window.STANDARD_INDICATOR_DEFAULT_NAMES
-            : DISPLAY_ORDER.slice(0, 12).map(item => item.name)
+            : DISPLAY_ORDER.slice(0, 15).map(item => item.name)
     ).filter(name => KNOWN_NAMES.has(name)).slice(0, DISPLAY_LIMIT);
+    const PREVIOUS_TWELVE_DEFAULT = new Set(['RSI', 'EMA Cross', 'SMA', 'VWAP', 'ADX Trend', 'Supertrend', 'ATR Volatility', 'Volume Profile', 'Candle Patterns', 'Prior Day High/Low', 'Swing Points', 'Pivot Points (S/R)']);
     const LEGACY_DEFAULT_SETS = [
         new Set(['RSI', 'MACD', 'EMA Cross', 'ADX Trend', 'Supertrend', 'Bollinger', 'VWAP', 'Volume Profile', 'SMA', 'Prior Day High/Low']),
         new Set(['RSI', 'MACD', 'EMA Cross', 'SMA', 'Bollinger', 'VWAP', 'ADX Trend', 'Supertrend', 'Stochastic', 'ATR Volatility']),
@@ -100,7 +105,9 @@
         const shown = uniqueKnownNames(values);
         const isLegacyDefault = shown.length === 10
             && LEGACY_DEFAULT_SETS.some(legacy => shown.every(name => legacy.has(name)));
-        if (isLegacyDefault) return [...DEFAULT_SHOWN];
+        const isPreviousTwelve = shown.length === PREVIOUS_TWELVE_DEFAULT.size
+            && shown.every(name => PREVIOUS_TWELVE_DEFAULT.has(name));
+        if (isLegacyDefault || isPreviousTwelve) return [...DEFAULT_SHOWN];
         return (shown.length ? shown : [...DEFAULT_SHOWN]).slice(0, DISPLAY_LIMIT);
     }
 
@@ -266,7 +273,7 @@
         orderedNames.forEach((name, index) => {
             const card = cardsByName.get(name);
             if (!card) return;
-            // Negative values keep standard indicators before the premium
+            // Negative values keep the ordered indicators ahead of any other
             // section without detaching/reinserting cards, which would restart
             // Dashboard animations and cause visible flicker.
             card.style.order = String(index - INDICATORS.length);

@@ -7,10 +7,12 @@ tz-aware timestamps.
 """
 
 import os
+import re
 import json
+import threading
 import pandas as pd
 import yfinance as yf
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 try:
     import config
@@ -19,6 +21,156 @@ except ImportError:
 
 DATA_DIR = os.path.realpath(os.path.join(os.path.dirname(__file__), "data"))
 os.makedirs(DATA_DIR, exist_ok=True)
+
+# Cached files carry this tag. Everything the app caches is split-adjusted
+# (prices divided by later split ratios, dividends NOT added back). Files
+# written before this tag existed have an unknown adjustment basis and are
+# ignored rather than merged.
+ADJUSTMENT_BASIS = "split"
+CACHE_TAG = "_adjsplit"
+
+
+_cache_lock = threading.Lock()
+_CACHE_TICKER_RE = re.compile(r"^[A-Z0-9.\-]{1,15}$")
+_CACHE_TIMEFRAME_RE = re.compile(r"^[A-Za-z0-9]{1,10}$")
+
+
+def _cached_candle_files(ticker):
+    """Candle-cache files for ``ticker`` as ``[(path, timeframe, provider, is_meta)]``.
+
+    Only files this module writes match (``<TICKER>_<timeframe>[_yahoo]_adjsplit.csv`` and its
+    ``.meta.json``); settings, databases and legacy untagged files in the same folder never do."""
+    symbol = str(ticker or "").strip().upper()
+    if not _CACHE_TICKER_RE.fullmatch(symbol):
+        return []
+    found = []
+    prefix = f"{symbol}_"
+    for name in os.listdir(DATA_DIR):
+        if not name.startswith(prefix):
+            continue
+        is_meta = name.endswith(f"{CACHE_TAG}.csv.meta.json")
+        if not (is_meta or name.endswith(f"{CACHE_TAG}.csv")):
+            continue
+        middle = name[len(prefix):-len(f"{CACHE_TAG}.csv.meta.json" if is_meta else f"{CACHE_TAG}.csv")]
+        provider = "alpaca"
+        if middle.endswith("_yahoo"):
+            middle, provider = middle[:-len("_yahoo")], "yahoo"
+        if not _CACHE_TIMEFRAME_RE.fullmatch(middle):
+            continue
+        path = os.path.realpath(os.path.join(DATA_DIR, name))
+        if path.startswith(DATA_DIR + os.sep):
+            found.append((path, middle, provider, is_meta))
+    return found
+
+
+def list_cached_data(ticker):
+    """Cached candle sets for a ticker (what a backtest would reuse instead of downloading)."""
+    entries = []
+    for path, timeframe, provider, is_meta in _cached_candle_files(ticker):
+        if is_meta:
+            continue
+        meta = _read_meta(f"{path}.meta.json")
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        entries.append({
+            "timeframe": timeframe,
+            "requested_provider": provider,
+            "data_source": meta.get("data_source") or provider,
+            "feed": meta.get("feed"),
+            "fetched_at": meta.get("fetched_at"),
+            "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+            "size_kb": round(stat.st_size / 1024.0, 1),
+        })
+    entries.sort(key=lambda item: (item["timeframe"], item["requested_provider"]))
+    return entries
+
+
+def purge_cached_data(ticker):
+    """Delete the cached candle files (all timeframes, both providers) for one ticker.
+
+    The next backtest downloads fresh data: Alpaca first, Yahoo as the fallback. Returns the
+    timeframes removed and the number of files deleted."""
+    removed_files, timeframes = 0, set()
+    with _cache_lock:
+        for path, timeframe, _provider, is_meta in _cached_candle_files(ticker):
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                continue
+            removed_files += 1
+            if not is_meta:
+                timeframes.add(timeframe)
+    return {"files_removed": removed_files, "timeframes": sorted(timeframes)}
+
+
+def _stamp_attrs(frame, *, source, feed=None, quality="OK", notes=None, splits_checked=True):
+    """Attach provenance to a frame (survives slicing only when re-applied)."""
+    frame.attrs["data_source"] = source
+    frame.attrs["feed"] = feed
+    frame.attrs["adjustment"] = ADJUSTMENT_BASIS
+    frame.attrs["data_quality"] = quality
+    frame.attrs["split_notes"] = list(notes or [])
+    frame.attrs["splits_checked"] = bool(splits_checked)
+    return frame
+
+
+def _read_meta(meta_path):
+    try:
+        if os.path.exists(meta_path):
+            with open(meta_path, "r", encoding="utf-8") as meta_file:
+                return json.load(meta_file) or {}
+    except Exception as meta_exc:
+        print(f"[data] Cache metadata read error: {meta_exc}")
+    return {}
+
+
+def _cache_predates_split(meta, is_crypto, ticker):
+    """True when a split took effect after the cache was fetched.
+
+    Split adjustment is retroactive, so history cached before an ex-date is on
+    the wrong basis and must be refetched.
+    """
+    if is_crypto:
+        return False
+    fetched_at = meta.get("fetched_at")
+    if not fetched_at:
+        return True
+    try:
+        from corporate_actions_service import get_split_events
+        lookup = get_split_events(ticker)
+        if not lookup.available:
+            return False
+        fetched_day = datetime.fromisoformat(fetched_at).date()
+        today = datetime.utcnow().date()
+        return any(fetched_day < event.ex_date <= today for event in lookup.events)
+    except Exception as exc:
+        print(f"[data] Split freshness check skipped: {type(exc).__name__}")
+        return False
+
+
+def _reconcile_splits(frame, ticker, is_crypto):
+    """Return ``(frame, quality, notes, splits_checked)`` on a split-adjusted basis.
+
+    Known events are classified against the data (raw or already adjusted) so
+    nothing is adjusted twice. When corporate-action data is unavailable, a
+    split-like jump marks the frame DEGRADED instead of guessing.
+    """
+    if is_crypto or frame is None or frame.empty:
+        return frame, "OK", [], True
+    from corporate_actions import reconcile_split_adjustment, suspect_split_jumps
+    from corporate_actions_service import get_split_events
+
+    first_day = frame.index[0].date() if hasattr(frame.index[0], "date") else None
+    lookup = get_split_events(ticker, start=first_day)
+    if lookup.available:
+        adjusted, quality, notes = reconcile_split_adjustment(frame, lookup.events)
+        return adjusted, quality, notes, True
+    jumps = suspect_split_jumps(frame)
+    quality = "DEGRADED" if jumps else "OK"
+    notes = [{"status": "events_unavailable", "suspect_jumps": len(jumps)}]
+    return frame, quality, notes, False
 
 
 def _strip_tz(idx):
@@ -91,7 +243,7 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
     clean_ticker = re.sub(r'[^A-Za-z0-9.\-]', '', ticker).upper()
     clean_timeframe = re.sub(r'[^A-Za-z0-9]', '', timeframe)
     source_suffix = "_yahoo" if force_yahoo else ""
-    filename = os.path.basename(f"{clean_ticker}_{clean_timeframe}{source_suffix}.csv")
+    filename = os.path.basename(f"{clean_ticker}_{clean_timeframe}{source_suffix}{CACHE_TAG}.csv")
     
     # Resolve absolute path and restrict to DATA_DIR
     filepath = os.path.realpath(os.path.join(DATA_DIR, filename))
@@ -99,6 +251,7 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
         print(f"[security] Blocked path traversal attempt: {filepath}")
         return None
     meta_path = f"{filepath}.meta.json"
+    is_crypto_symbol = any(clean_ticker.endswith(base) for base in ("USD", "USDT", "USDC"))
 
     # Force naive datetimes internally
     if hasattr(start_date, "tzinfo") and start_date.tzinfo is not None:
@@ -110,6 +263,7 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
     # 1. Try the local cache
     # ------------------------------------------------------------------
     df = None
+    cache_meta = {}
     if os.path.exists(filepath):
         try:
             df = pd.read_csv(filepath, index_col=0, parse_dates=True)
@@ -126,18 +280,26 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
                 file_start = df.index[0]
                 file_end = df.index[-1]
 
+                cache_meta = _read_meta(meta_path)
+                cache_is_stale = _cache_predates_split(cache_meta, is_crypto_symbol, clean_ticker)
+                if cache_is_stale:
+                    print(f"[data] Cache for {ticker} predates a split; refetching on the split-adjusted basis.")
+                    force_refresh = True
                 if not force_refresh and file_start <= start_date and file_end >= (end_date - timedelta(days=1)):
                     print(f"[data] Cache hit for {ticker}")
-                    cached_source = "yahoo" if force_yahoo or source_suffix else "alpaca"
-                    try:
-                        if os.path.exists(meta_path):
-                            with open(meta_path, "r", encoding="utf-8") as meta_file:
-                                cached_source = json.load(meta_file).get("data_source") or cached_source
-                    except Exception as meta_exc:
-                        print(f"[data] Cache metadata read error: {meta_exc}")
+                    cached_source = cache_meta.get("data_source") or ("yahoo" if force_yahoo or source_suffix else "alpaca")
                     sliced = df.loc[start_date:end_date]
-                    sliced.attrs["data_source"] = cached_source
+                    _stamp_attrs(
+                        sliced,
+                        source=cached_source,
+                        feed=cache_meta.get("feed"),
+                        quality=cache_meta.get("data_quality", "OK"),
+                        notes=cache_meta.get("split_notes"),
+                        splits_checked=cache_meta.get("splits_checked", True),
+                    )
                     return sliced
+                if cache_is_stale:
+                    df = None
         except Exception as exc:
             print(f"[data] Cache read error: {exc}")
             df = None
@@ -146,6 +308,7 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
     # 2. Download from Alpaca (Primary Provider)
     # ------------------------------------------------------------------
     alpaca_success = False
+    alpaca_feed = None
     new_df = None
 
     if not force_yahoo:
@@ -153,7 +316,7 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
             from broker_factory import get_alpaca_clients
             from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
             from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
-            from alpaca.data.enums import DataFeed
+            from alpaca.data.enums import DataFeed, Adjustment
 
             s_client, c_client = get_alpaca_clients()
 
@@ -201,8 +364,10 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
                             start=start_date,
                             end=end_date,
                             feed=DataFeed.SIP,
+                            adjustment=Adjustment.SPLIT,
                         )
                         bars = client.get_stock_bars(req_sip)
+                        alpaca_feed = "sip"
                     except Exception as sip_err:
                         print(f"[data] Alpaca SIP feed error: {sip_err}. Retrying with IEX feed...")
                         bars = None
@@ -214,8 +379,10 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
                             start=start_date,
                             end=end_date,
                             feed=DataFeed.IEX,
+                            adjustment=Adjustment.SPLIT,
                         )
                         bars = client.get_stock_bars(req_iex)
+                        alpaca_feed = "iex"
 
                 if bars and hasattr(bars, "df") and bars.df is not None and not bars.df.empty:
                     alpaca_df = bars.df.copy()
@@ -239,6 +406,7 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
                         alpaca_df["adj_close"] = alpaca_df["close"]
 
                     alpaca_df.attrs["data_source"] = "alpaca"
+                    alpaca_df.attrs["feed"] = alpaca_feed
                     new_df = alpaca_df
                     alpaca_success = True
                     print(f"[data] Alpaca fetch successful. Retrieved {len(new_df)} bars.")
@@ -302,7 +470,17 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
                         break
 
             print(f"[data] Downloading {ticker} (via {yf_ticker}) ({interval}) for period: {period} with extended hours...")
-            new_df = yf.download(yf_ticker, period=period, interval=interval, prepost=True, progress=False)
+            # auto_adjust=False keeps ``Close`` split-adjusted but not
+            # dividend-adjusted, matching Alpaca's adjustment="split" basis.
+            # Daily bars have no pre/post-market sessions.
+            new_df = yf.download(
+                yf_ticker,
+                period=period,
+                interval=interval,
+                prepost=(interval != "1d"),
+                progress=False,
+                auto_adjust=False,
+            )
 
             if new_df is None or new_df.empty:
                 return None if force_refresh else df
@@ -325,7 +503,12 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
                 "Adj Close": "adj_close",
                 "Volume": "volume",
             })
+            # Yahoo's "Adj Close" is dividend-adjusted; the app uses a
+            # split-only basis everywhere, so mirror the split-adjusted close.
+            if "close" in new_df.columns:
+                new_df["adj_close"] = new_df["close"]
             new_df.attrs["data_source"] = "yahoo"
+            new_df.attrs["feed"] = "yahoo"
         except Exception as exc:
             print(f"[data] Yahoo Download error: {exc}")
             return None if force_refresh else df
@@ -335,29 +518,51 @@ def get_historical_data(ticker, timeframe, start_date, end_date, force_yahoo=Fal
     # ------------------------------------------------------------------
     if new_df is not None and not new_df.empty:
         fetched_source = new_df.attrs.get("data_source") or ("yahoo" if force_yahoo or not alpaca_success else "alpaca")
+        feed = new_df.attrs.get("feed")
+        # Put the fresh bars on the split-adjusted basis before they are merged
+        # into (or become) the cache.
+        new_df, quality, split_notes, splits_checked = _reconcile_splits(new_df.sort_index(), clean_ticker, is_crypto_symbol)
         # Merge with any existing cache
         if df is not None and not df.empty:
             combined = pd.concat([df, new_df])
             combined = combined[~combined.index.duplicated(keep="last")].sort_index()
             df = combined
+            if cache_meta.get("data_quality") == "DEGRADED":
+                quality = "DEGRADED"
+            if cache_meta.get("feed") and feed and cache_meta.get("feed") != feed:
+                feed = "mixed"
         else:
             df = new_df.sort_index()
-        df.attrs["data_source"] = fetched_source
 
         # Resample the final combined DataFrame before persisting!
         df = _resample_df(df, timeframe)
-        df.attrs["data_source"] = fetched_source
+        _stamp_attrs(df, source=fetched_source, feed=feed, quality=quality, notes=split_notes, splits_checked=splits_checked)
         # Persist to disk
         df.to_csv(filepath)
         try:
             with open(meta_path, "w", encoding="utf-8") as meta_file:
-                json.dump({"data_source": fetched_source}, meta_file)
+                json.dump({
+                    "data_source": fetched_source,
+                    "feed": feed,
+                    "adjustment": ADJUSTMENT_BASIS,
+                    "data_quality": quality,
+                    "split_notes": split_notes,
+                    "splits_checked": splits_checked,
+                    "fetched_at": datetime.utcnow().isoformat(),
+                }, meta_file, default=str)
         except Exception as meta_exc:
             print(f"[data] Cache metadata write error: {meta_exc}")
 
     # Return the requested slice
     if df is not None:
         sliced = df.loc[start_date:end_date]
-        sliced.attrs["data_source"] = df.attrs.get("data_source") or ("yahoo" if force_yahoo else "alpaca")
+        _stamp_attrs(
+            sliced,
+            source=df.attrs.get("data_source") or ("yahoo" if force_yahoo else "alpaca"),
+            feed=df.attrs.get("feed"),
+            quality=df.attrs.get("data_quality", "OK"),
+            notes=df.attrs.get("split_notes"),
+            splits_checked=df.attrs.get("splits_checked", True),
+        )
         return sliced
     return None

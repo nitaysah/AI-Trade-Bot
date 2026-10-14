@@ -16,11 +16,13 @@ from zoneinfo import ZoneInfo
 
 import yfinance as yf
 
+import research_metrics as rm
+
 from instrument_types import is_known_etf
 
 
 CENTRAL_TZ = ZoneInfo("America/Chicago")
-REPORT_VERSION = 1
+REPORT_VERSION = 2  # 2: scorecard, Piotroski F-score, quality/valuation metrics; dividend yield scale fixed
 REFRESH_SECONDS = 24 * 60 * 60
 RETRY_SECONDS = 30 * 60
 
@@ -70,15 +72,33 @@ def _statement_frame(ticker: Any, method: str) -> Any:
         return None
 
 
+def _norm_label(label: Any) -> str:
+    """'Total Revenue', 'TotalRevenue' and 'total_revenue' all become 'totalrevenue'."""
+    return "".join(ch for ch in str(label).lower() if ch.isalnum())
+
+
 def _row(frame: Any, aliases: tuple[str, ...]) -> list[dict[str, Any]]:
+    """Newest-first annual values for the first alias found in a statement frame.
+
+    yfinance changed its statement row names from spaced labels ("Total Revenue") to CamelCase ("TotalRevenue"); matching on
+    the normalised label keeps both working. Before this, every statement lookup silently came back empty and the report
+    fell back to "Insufficient evidence"."""
     if frame is None or not hasattr(frame, "loc"):
         return []
+    try:
+        labels = {_norm_label(name): name for name in frame.index} if hasattr(frame, "index") else {}
+    except TypeError:
+        return []
     for alias in aliases:
+        # Without an index to match against, fall back to asking the frame for the alias directly.
+        original = labels.get(_norm_label(alias)) if labels else alias
+        if original is None:
+            continue
         try:
-            series = frame.loc[alias]
+            series = frame.loc[original]
             values = series.to_dict() if hasattr(series, "to_dict") else {}
             output = []
-            for period, value in values.items():
+            for period, value in sorted(values.items(), key=lambda item: str(item[0]), reverse=True):
                 number = _number(value)
                 if number is not None:
                     output.append({"period": _period_label(period), "value": number})
@@ -166,6 +186,9 @@ def _build_report(ticker: str, options_profile: bool = False) -> dict[str, Any]:
     equity = _row(balance, ("Stockholders Equity", "Total Equity Gross Minority Interest"))
     current_assets = _row(balance, ("Current Assets",))
     current_liabilities = _row(balance, ("Current Liabilities",))
+    ebit = _row(income, ("EBIT", "Operating Income"))
+    interest_expense = _row(income, ("Interest Expense", "Interest Expense Non Operating"))
+    shares_series = _row(income, ("Diluted Average Shares", "Basic Average Shares"))
 
     latest_revenue = _latest(revenue)
     latest_gross = _latest(gross_profit)
@@ -187,6 +210,31 @@ def _build_report(ticker: str, options_profile: bool = False) -> dict[str, Any]:
     debt_equity = latest_debt / latest_equity if latest_debt is not None and latest_equity else None
     current_ratio = latest_current_assets / latest_current_liabilities if latest_current_assets is not None and latest_current_liabilities else None
 
+    # ── Derived quality measures (annual statements; every one is None when its inputs are missing) ──
+    revenue_cagr = rm.cagr(revenue, min(3, len(revenue) - 1)) if len(revenue) >= 3 else None
+    net_income_growth = rm.pct_change(net_income)
+    eps_growth = rm.pct_change(diluted_eps)
+    op_margin_change = rm.margin_change_points(operating_income, revenue)
+    gross_margin_change = rm.margin_change_points(gross_profit, revenue)
+    negative_equity = latest_equity is not None and latest_equity <= 0
+    if negative_equity:
+        debt_equity = None  # a ratio over negative equity is meaningless; it is reported as a concern instead
+    equity_now, equity_prior = _latest(equity), (_number(equity[1].get("value")) if len(equity) > 1 else None)
+    average_equity = (equity_now + equity_prior) / 2 if equity_now is not None and equity_prior is not None else equity_now
+    roe = latest_net / average_equity * 100 if latest_net is not None and average_equity and average_equity > 0 else None
+    if roe is None:
+        roe_info = _number(_info_value(info, "returnOnEquity"))
+        roe = roe_info * 100 if roe_info is not None else None
+    net_cash = latest_cash - latest_debt if latest_cash is not None and latest_debt is not None else None
+    latest_ebit = _latest(ebit)
+    latest_interest = _latest(interest_expense)
+    interest_coverage = latest_ebit / abs(latest_interest) if latest_ebit is not None and latest_interest not in (None, 0) else None
+    latest_ebitda = _latest(ebitda)
+    net_debt_to_ebitda = (-net_cash) / latest_ebitda if net_cash is not None and latest_ebitda and latest_ebitda > 0 else None
+    ocf_to_net_income = latest_ocf / latest_net if latest_ocf is not None and latest_net and latest_net > 0 else None
+    share_change_pct = ((_latest(shares_series) / _number(shares_series[1].get("value")) - 1) * 100
+                        if len(shares_series) > 1 and _number(shares_series[1].get("value")) and _latest(shares_series) is not None else None)
+
     valuation = {
         "market_cap": _number(_info_value(info, "marketCap")),
         "enterprise_value": _number(_info_value(info, "enterpriseValue")),
@@ -202,8 +250,18 @@ def _build_report(ticker: str, options_profile: bool = False) -> dict[str, Any]:
         "target_mean": _number(_info_value(info, "targetMeanPrice")),
         "target_high": _number(_info_value(info, "targetHighPrice")),
     }
-    valuation["dividend_yield"] = valuation["dividend_yield"] * 100 if valuation["dividend_yield"] is not None and abs(valuation["dividend_yield"]) <= 2 else valuation["dividend_yield"]
-    valuation["payout_ratio"] = valuation["payout_ratio"] * 100 if valuation["payout_ratio"] is not None and abs(valuation["payout_ratio"]) <= 2 else valuation["payout_ratio"]
+    # Yahoo reports dividendYield already in percent (0.32 means 0.32%), but payoutRatio as a fraction (0.12 means 12%).
+    # Scaling both with the same "<= 2" rule showed a 0.3% yield as 32%.
+    valuation["payout_ratio"] = valuation["payout_ratio"] * 100 if valuation["payout_ratio"] is not None else None
+    market_cap_now = valuation["market_cap"]
+    fcf_yield = latest_fcf / market_cap_now * 100 if latest_fcf is not None and market_cap_now else None
+    price_now = _number(_info_value(info, "currentPrice", "regularMarketPrice"))
+    high_52w = _number(_info_value(info, "fiftyTwoWeekHigh"))
+    low_52w = _number(_info_value(info, "fiftyTwoWeekLow"))
+    target_upside = (valuation["target_mean"] / price_now - 1) * 100 if valuation["target_mean"] and price_now else None
+    below_high = (price_now / high_52w - 1) * 100 if price_now and high_52w else None
+    range_position = ((price_now - low_52w) / (high_52w - low_52w) * 100
+                      if price_now and high_52w and low_52w is not None and high_52w > low_52w else None)
 
     metrics = {
         "growth": [_metric("Revenue growth", _fmt_pct(revenue_growth), "Year-over-year change in reported revenue.", "Positive growth means the business is producing more sales; verify whether margins and cash flow support it.", "Improving" if revenue_growth is not None and revenue_growth > 0 else "Weakening" if revenue_growth is not None else "")],
@@ -232,6 +290,34 @@ def _build_report(ticker: str, options_profile: bool = False) -> dict[str, Any]:
         ],
     }
 
+    metrics["growth"] += [
+        _metric("Revenue growth (3-yr annual)", _fmt_pct(revenue_cagr), "Compound annual revenue growth over up to three years.", "A steady multi-year rate is more reliable than one strong or weak year.", "Positive" if revenue_cagr and revenue_cagr > 0 else "", "Up to 3 years"),
+        _metric("Net income growth", _fmt_pct(net_income_growth), "Year-over-year change in reported net income.", "Profit growing faster than revenue suggests improving efficiency; slower suggests rising costs.", "Positive" if net_income_growth and net_income_growth > 0 else ""),
+        _metric("EPS growth", _fmt_pct(eps_growth), "Year-over-year change in diluted earnings per share.", "EPS growth also reflects buybacks and dilution, not only profit.", "Positive" if eps_growth and eps_growth > 0 else ""),
+    ]
+    metrics["profitability"] += [
+        _metric("Return on equity", f"{roe:.1f}%" if roe is not None else "Not available", "Net income relative to average shareholder equity.", "High ROE is good only when it is not produced mainly by heavy debt or buybacks shrinking equity."),
+        _metric("Operating margin change", f"{op_margin_change:+.1f} pts" if op_margin_change is not None else "Not available", "Operating margin now minus the prior year.", "Rising margins show pricing power or cost control; falling margins deserve a reason."),
+    ]
+    metrics["cash_generation"] += [
+        _metric("Cash conversion (OCF / net income)", f"{ocf_to_net_income:.2f}x" if ocf_to_net_income is not None else "Not available", "Operating cash flow per dollar of reported profit.", "Near or above 1.0 means earnings are backed by cash; well below 1.0 can signal aggressive accounting or working-capital drag."),
+        _metric("Free cash flow yield", _fmt_pct(fcf_yield), "Free cash flow as a percentage of market value.", "A higher yield means more cash generated per dollar paid for the company."),
+    ]
+    metrics["financial_strength"] += [
+        _metric("Net cash (debt)", net_cash if net_cash is not None else "Not available", "Cash minus total debt. Positive means net cash.", "Net cash gives room to invest, buy back stock or ride out a downturn."),
+        _metric("Interest coverage", f"{interest_coverage:.1f}x" if interest_coverage is not None else "Not available", "Operating profit divided by interest expense.", "Below about 3x leaves little cushion if profits fall."),
+        _metric("Net debt / EBITDA", f"{net_debt_to_ebitda:.1f}x" if net_debt_to_ebitda is not None else "Not available", "Years of operating earnings needed to repay net debt.", "Above roughly 3x is considered leveraged for most industries."),
+    ]
+    metrics["valuation"] += [
+        _metric("Price vs 52-week high", f"{below_high:.1f}%" if below_high is not None else "Not available", "How far the price is from its 52-week high.", "A large discount can mean opportunity or a deteriorating business; check the scorecard before assuming either."),
+        _metric("Analyst target upside", f"{target_upside:+.1f}%" if target_upside is not None else "Not available", "Mean analyst price target versus the current price.", "Targets lag price and are often optimistic; treat as sentiment, not a forecast."),
+    ]
+    metrics["shareholder_returns"] = [
+        _metric("Dividend yield", valuation["dividend_yield"] if valuation["dividend_yield"] is not None else "None paid", "Annual dividend as a percentage of the share price.", "Only meaningful if the payout is covered by free cash flow."),
+        _metric("Payout ratio", valuation["payout_ratio"] if valuation["payout_ratio"] is not None else "Not available", "Share of profit paid out as dividends.", "Above 80-100% leaves little room to grow or protect the dividend."),
+        _metric("Share count change", f"{share_change_pct:+.1f}%" if share_change_pct is not None else "Not available", "Change in diluted shares versus last year. Negative means buybacks.", "Steady dilution transfers value away from existing holders; buybacks do the opposite."),
+    ]
+
     strengths, concerns, monitor = [], [], []
     if revenue_growth is not None and revenue_growth > 0: strengths.append(f"Revenue grew {_fmt_pct(revenue_growth)} year over year.")
     elif revenue_growth is not None: concerns.append(f"Revenue declined {_fmt_pct(abs(revenue_growth))} year over year.")
@@ -246,6 +332,21 @@ def _build_report(ticker: str, options_profile: bool = False) -> dict[str, Any]:
     monitor.append("Compare the next earnings release with current estimates and cash-flow conversion.")
     monitor.append("Review the latest 10-K or 10-Q risk factors for changes in business conditions.")
 
+    if negative_equity: concerns.append("Shareholder equity is negative, so debt ratios are not meaningful; check why (buybacks versus losses).")
+    if interest_coverage is not None and interest_coverage < 0: concerns.append("The company has an operating loss, so its interest costs are not covered by operating profit.")
+    elif interest_coverage is not None and interest_coverage < 3: concerns.append(f"Operating profit covers interest only {interest_coverage:.1f}x; a profit dip would strain debt payments.")
+    if ocf_to_net_income is not None and ocf_to_net_income < 0.6: concerns.append("Operating cash flow is well below reported profit; look at receivables, inventory and one-off gains.")
+    if share_change_pct is not None and share_change_pct > 3: concerns.append(f"The share count grew {share_change_pct:.1f}%, diluting existing holders.")
+    if share_change_pct is not None and share_change_pct < -2: strengths.append(f"The share count fell {abs(share_change_pct):.1f}% (buybacks).")
+    if revenue_cagr is not None and revenue_cagr >= 10: strengths.append(f"Revenue compounded {revenue_cagr:.1f}% a year over the last {min(3, len(revenue) - 1)} years.")
+    if net_cash is not None and net_cash > 0: strengths.append("The company holds more cash than debt.")
+    if op_margin_change is not None and op_margin_change <= -2: concerns.append(f"Operating margin fell {abs(op_margin_change):.1f} points versus last year.")
+    if below_high is not None and below_high <= -25: monitor.append(f"The price is {abs(below_high):.0f}% below its 52-week high; find out whether the business or the market caused it.")
+    f_score = rm.piotroski(net_income=net_income, operating_cash=operating_cash, assets=assets, debt=debt, current_assets=current_assets,
+                           current_liabilities=current_liabilities, shares=shares_series, gross_profit=gross_profit, revenue=revenue)
+    if f_score["reliable"] and f_score["score"] >= 7: strengths.append(f"Piotroski F-score {f_score['score']}/{f_score['available']}: financial health is improving on most tests.")
+    if f_score["reliable"] and f_score["score"] <= 3: concerns.append(f"Piotroski F-score {f_score['score']}/{f_score['available']}: most financial-health tests are failing.")
+
     fundamental_conditions = [
         "Revisit when the next report confirms revenue, margin, and free-cash-flow direction." if revenue_growth is not None else "Revisit after a complete, current financial statement set is available.",
         "Use the technical Entry Watch separately for timing; this report describes business and valuation evidence.",
@@ -253,17 +354,16 @@ def _build_report(ticker: str, options_profile: bool = False) -> dict[str, Any]:
     if valuation["peg_ratio"] is not None and valuation["peg_ratio"] > 2:
         fundamental_conditions.insert(0, "A more attractive entry would require valuation to moderate or growth estimates to improve.")
 
-    evidence_count = len(strengths) + len(concerns)
-    if evidence_count < 2:
-        assessment = "Insufficient evidence"
-    elif concerns and (valuation["peg_ratio"] is not None and valuation["peg_ratio"] > 2):
-        assessment = "Wait for a better valuation"
-    elif len(strengths) >= len(concerns) + 2:
-        assessment = "Worth considering"
-    elif concerns:
-        assessment = "Wait for improvement"
-    else:
-        assessment = "Mixed evidence"
+    scorecard = [
+        rm.rate_growth(revenue_growth, revenue_cagr, net_income_growth),
+        rm.rate_profitability(net_margin, operating_margin, op_margin_change, roe),
+        rm.rate_cash_quality(fcf_margin, ocf_to_net_income, latest_fcf),
+        rm.rate_strength(debt_equity, negative_equity, net_cash, interest_coverage, current_ratio),
+        rm.rate_valuation(valuation["forward_pe"], valuation["trailing_pe"], valuation["peg_ratio"], fcf_yield, revenue_growth),
+    ]
+    verdict = rm.overall(scorecard, f_score)
+    assessment = verdict["assessment"]
+    takeaways = rm.takeaways(scorecard, assessment)
 
     filings = []
     try:
@@ -302,7 +402,15 @@ def _build_report(ticker: str, options_profile: bool = False) -> dict[str, Any]:
         "monitor": monitor,
         "fundamental_conditions": fundamental_conditions,
         "assessment": assessment,
-        "summary": f"Fundamental profile: {assessment}. Review the strengths, concerns, valuation context, and monitoring items before making an investment decision.",
+        "score": verdict["score"],
+        "scorecard": scorecard,
+        "takeaways": takeaways,
+        "piotroski": f_score,
+        "price_context": {"price": price_now, "high_52w": high_52w, "low_52w": low_52w, "below_high_pct": below_high,
+                          "range_position_pct": range_position, "target_upside_pct": target_upside},
+        "summary": (f"Fundamental profile: {assessment}"
+                    + (f" ({verdict['score']}/100 across {verdict['known_categories']} areas)" if verdict["score"] is not None else "")
+                    + ". This is an evidence summary from public financial data, not investment advice; review the scorecard, concerns and valuation before deciding."),
         "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "financial_period": revenue[0].get("period") if revenue else "Not available",
         "source": "Yahoo Finance structured data; SEC filing links when available",

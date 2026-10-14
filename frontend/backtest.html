@@ -3,7 +3,7 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Bot Bulls — Backtest Center</title>
     <link rel="icon" type="image/png" sizes="32x32" href="assets/bot_bulls_logo.png">
     <link rel="icon" type="image/png" sizes="16x16" href="assets/bot_bulls_logo.png">
@@ -23,7 +23,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
         rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=68">
+    <link rel="stylesheet" href="styles.css?v=116">
     <style>
         body.backtest-page {
             font-size: 14px;
@@ -143,6 +143,206 @@
             font-size: 0.45rem !important;
         }
 
+        /* Results header: keep title and chips readable; the global shrink rules above would otherwise override them */
+        body.backtest-page #btResultsHeader h2 {
+            font-size: 0.95rem !important;
+            line-height: 1.3 !important;
+        }
+
+        body.backtest-page #btResultsHeader #resRunChips span {
+            font-size: 0.62rem !important;
+            padding: 0.2rem 0.5rem !important;
+            line-height: 1.25 !important;
+        }
+
+        body.backtest-page #btResultsHeader #resRunMeta {
+            font-size: 0.58rem !important;
+        }
+
+
+        @media (max-width: 767px) {
+        /* ── Mobile-friendly results: reduce ALL sections ── */
+        /* Modal outer padding */
+        body.backtest-page #btResultsModal {
+            padding: 0.5rem !important;
+        }
+
+        /* Modal container */
+        body.backtest-page #btResultsModal #btResults {
+            max-height: 92vh !important;
+            border-radius: 1rem !important;
+        }
+
+        /* Scrollable body padding */
+        body.backtest-page #btResultsModal #btResults > .flex-grow {
+            padding: 0.75rem !important;
+            gap: 0.6rem !important;
+        }
+
+        body.backtest-page #btResultsModal #btResults > .flex-grow > * + * {
+            margin-top: 0.6rem !important;
+        }
+
+        /* Panel rounded corners */
+        body.backtest-page #btResultsModal .rounded-2xl {
+            border-radius: 0.75rem !important;
+        }
+
+        /* Panel header bars (Equity Curve, Drawdown, P/L, MC, Trade Chart) */
+        body.backtest-page #btResults #btEquityPanel > div:first-child,
+        body.backtest-page #btResults #btDrawdownPanel > div:first-child,
+        body.backtest-page #btResults #btPlDistPanel > div:first-child,
+        body.backtest-page #btResults #mcSection > div:first-child {
+            padding: 0.4rem 0.6rem !important;
+            gap: 0.35rem !important;
+        }
+
+        body.backtest-page #btResults #btEquityPanel h3,
+        body.backtest-page #btResults #btDrawdownPanel h3,
+        body.backtest-page #btResults #btPlDistPanel h3,
+        body.backtest-page #btResults #mcSection h3,
+        body.backtest-page #btResults #btChartSection h3 {
+            font-size: 0.6rem !important;
+        }
+
+        /* Chart chip badges */
+        body.backtest-page #btResults #btEquityChips,
+        body.backtest-page #btResults #btDrawdownChips,
+        body.backtest-page #btResults #btPlDistChips {
+            gap: 0.25rem !important;
+        }
+
+        body.backtest-page #btResults #btEquityChips span,
+        body.backtest-page #btResults #btDrawdownChips span,
+        body.backtest-page #btResults #btPlDistChips span {
+            font-size: 0.42rem !important;
+            padding: 0.1rem 0.3rem !important;
+        }
+
+        /* Chart heights */
+        body.backtest-page #btResults #btEquityChart {
+            height: 260px !important;
+        }
+
+        body.backtest-page #btResults #btDrawdownChart {
+            height: 240px !important;
+        }
+
+        /* P/L Distribution chart */
+        body.backtest-page #btResults #btPlDistChart {
+            padding: 0.5rem 0.6rem 0.4rem !important;
+        }
+
+        /* Benchmark Comparison */
+        body.backtest-page #btResults .panel-glass {
+            padding: 0.6rem 0.75rem !important;
+        }
+
+        body.backtest-page #btResults .panel-glass h3 {
+            font-size: 0.45rem !important;
+            margin-bottom: 0.15rem !important;
+        }
+
+        body.backtest-page #btResults .panel-glass .text-lg {
+            font-size: 0.85rem !important;
+        }
+
+        body.backtest-page #btResults .panel-glass .text-2xl {
+            font-size: 1.1rem !important;
+        }
+
+        /* Monte Carlo */
+        body.backtest-page #btResults #mcSection .min-w-\[160px\] {
+            min-width: 120px !important;
+        }
+
+        body.backtest-page #btResults #mcSection button {
+            font-size: 0.5rem !important;
+            padding: 0.3rem 0.6rem !important;
+        }
+
+        /* Trade chart */
+        body.backtest-page #btResults #btChartSection > div:first-child {
+            margin-bottom: 0.4rem !important;
+        }
+
+        body.backtest-page #btResults #btChartSection .w-full[style*="420px"] {
+            height: 280px !important;
+        }
+
+        /* Trade chart toggle labels */
+        body.backtest-page #btResults #btChartSection label {
+            gap: 0.25rem !important;
+            font-size: 0.45rem !important;
+        }
+
+        body.backtest-page #btResults #btChartSection input[type="checkbox"] {
+            width: 0.75rem !important;
+            height: 0.75rem !important;
+        }
+
+        /* Replay toolbar */
+        body.backtest-page #btResults #btReplayToolbar {
+            padding: 0.4rem 0.5rem !important;
+            margin-bottom: 0.4rem !important;
+        }
+
+        body.backtest-page #btResults #btReplayToolbar button {
+            font-size: 0.48rem !important;
+            padding: 0.25rem 0.5rem !important;
+        }
+
+        body.backtest-page #btResults #btReplayToolbar select {
+            font-size: 0.5rem !important;
+            padding: 0.2rem 0.3rem !important;
+        }
+
+        /* Trade Log */
+        body.backtest-page #btResults #btTradeTable th {
+            font-size: 0.4rem !important;
+            padding: 0.3rem 0.25rem !important;
+            letter-spacing: 0.1em !important;
+        }
+
+        body.backtest-page #btResults #btTradeTable td {
+            font-size: 0.5rem !important;
+            padding: 0.3rem 0.25rem !important;
+        }
+
+        body.backtest-page #btResults #btTradeTable .text-xs {
+            font-size: 0.5rem !important;
+        }
+
+        body.backtest-page #btResults .max-h-\[300px\] {
+            max-height: 200px !important;
+        }
+
+        /* Pagination */
+        body.backtest-page #btResults #btPagination {
+            padding: 0.5rem !important;
+        }
+
+        body.backtest-page #btResults #btPagination button {
+            width: 2rem !important;
+            height: 2rem !important;
+        }
+        } /* end mobile-only results block */
+
+        @media (min-width: 768px) {
+            body.backtest-page #btResultsHeader h2 {
+                font-size: 1rem !important;
+            }
+
+            body.backtest-page #btResultsHeader #resRunChips span {
+                font-size: 0.65rem !important;
+                padding: 0.2rem 0.6rem !important;
+            }
+
+            body.backtest-page #btResultsHeader #resRunMeta {
+                font-size: 0.6rem !important;
+            }
+        }
+
         body.backtest-page #btResultsModal #btResults {
             max-height: 88vh;
         }
@@ -252,6 +452,14 @@
             window.location.href = "index.html";
         };
     </script>
+<style id="page-loader-style">
+        #pageLoader { display: none; }
+        html:not(.page-ready) footer { display: none !important; }
+        html:not(.page-ready) #pageLoader { display: flex; flex-direction: column; align-items: center; gap: 0.6rem; padding: 2rem 1rem 1.5rem; margin-top: 1rem; border-top: 1px solid rgba(233, 213, 255, 0.8); color: #a855f7; font-size: 0.7rem; font-weight: 900; letter-spacing: 0.3em; text-transform: uppercase; text-align: center; }
+        #pageLoader img { width: 3.5rem; height: 3.5rem; border-radius: 0.9rem; animation: pageLoaderSpin 1.1s linear infinite; }
+        @keyframes pageLoaderSpin { to { transform: rotate(360deg); } }
+        @media (prefers-reduced-motion: reduce) { #pageLoader img { animation-duration: 3s; } }
+    </style>
 </head>
 
 <body class="backtest-page bg-gradient-to-br from-fuchsia-50 via-purple-100 to-indigo-100 text-indigo-950 min-h-screen font-sans relative overflow-x-hidden"
@@ -306,21 +514,6 @@
                 </a>
 
                 <div class="nav-group flex items-center gap-2 md:gap-3">
-                    <div id="alpacaConnectionContainer" class="nav-group flex items-center">
-                        <button onclick="window.location.href='bots.html'" id="alpacaLinkRedirectBtn"
-                            class="flex items-center justify-center h-9 text-xs font-black bg-emerald-50 text-emerald-600 border-2 border-emerald-100 rounded-full px-5 hover:bg-emerald-600 hover:text-white transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
-                            Connect Alpaca
-                        </button>
-                        <span id="alpacaLinkStatus"
-                            class="hidden flex items-center justify-center h-9 text-xs font-black px-5 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider">
-                            <span class="h-2 w-2 rounded-full mr-2" id="alpacaStatusDot"></span>
-                            <span id="alpacaStatusText">Checking...</span>
-                            <button id="btnUnlinkAlpaca" onclick="unlinkAlpaca()"
-                                class="hidden ml-3 px-2 py-0.5 bg-rose-500 text-white rounded-full text-[9px] hover:bg-rose-600 transition-all uppercase tracking-tighter">
-                                Unlink
-                            </button>
-                        </span>
-                    </div>
 
                     <button onclick="logoutCommander()"
                         class="flex items-center justify-center h-9 text-xs font-black bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white transition-all px-5 rounded-full border-2 border-rose-100 shadow-sm whitespace-nowrap uppercase tracking-wider">
@@ -352,8 +545,16 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
                         </svg>
                         <input type="text" id="btTicker" autocomplete="off" spellcheck="false" inputmode="text"
-                            class="w-full h-10 bg-white border border-indigo-100 rounded-xl pl-9 pr-3 text-sm sm:text-base font-black text-indigo-950 uppercase placeholder-indigo-300 focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all"
+                            class="w-full h-10 bg-white border border-indigo-100 rounded-xl pl-9 pr-11 text-sm sm:text-base font-black text-indigo-950 uppercase placeholder-indigo-300 focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all"
                             placeholder="Search ticker or company" value="SPY">
+                        <!-- Purge the locally cached candles for this ticker (next run downloads again) -->
+                        <button type="button" id="btCachePurgeBtn" title="Candle cache" aria-label="Candle cache"
+                            class="absolute inset-y-0 right-0 w-10 flex items-center justify-center rounded-r-xl text-indigo-400 hover:text-rose-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-400 transition-colors">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                            </svg>
+                            <span id="btCacheDot" class="hidden absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-emerald-500 ring-2 ring-white"></span>
+                        </button>
                         <!-- Ticker Search Results Dropdown -->
                         <div id="btTickerSearchResults" class="absolute top-full left-0 right-0 mt-1 bg-white rounded-xl shadow-2xl border border-indigo-100 overflow-hidden hidden max-h-64 overflow-y-auto z-[999] w-full text-left">
                         </div>
@@ -361,6 +562,7 @@
                     <div class="text-[0.6rem] font-bold text-indigo-500/70 px-1">
                         Type 2 or more letters to search and pick a ticker from the list.
                     </div>
+                    <div id="btCacheStatus" class="text-[0.6rem] font-bold text-indigo-500/70 px-1 break-words" aria-live="polite"></div>
                 </div>
 
                 <div class="space-y-2">
@@ -421,15 +623,18 @@
 
             <!-- Inline Strategy Configuration Section -->
             <div class="space-y-6 my-6">
-                <div class="flex items-center justify-between mb-4">
-                    <span class="text-xs font-black uppercase tracking-widest text-indigo-900">Strategy Mode & Configuration</span>
+                <div class="rounded-2xl border border-white/40 bg-white/20 backdrop-blur-md p-3 sm:p-4 space-y-3 shadow-sm">
+                <div class="flex items-center justify-between gap-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                        <div class="h-5 w-1.5 bg-gradient-to-b from-violet-400 to-fuchsia-500 rounded-full flex-shrink-0"></div>
+                        <span class="text-sm font-black text-indigo-900 uppercase tracking-widest settings-section-title">Strategy Mode &amp; Configuration</span>
+                    </div>
                     <button type="button" onclick="window.resetAllBacktestSettingsToDefaults()" class="text-xs font-black uppercase tracking-wider px-3 py-1.5 rounded-xl bg-white/60 hover:bg-white text-rose-600 border border-rose-200/60 shadow-sm transition-all flex items-center gap-1.5">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
                         Reset All to Defaults
                     </button>
                 </div>
-                <!-- 4-Card Mode Selection Grid -->
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-6">
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
                     <!-- Regular Trading Card -->
                     <div id="btModeCard_regular" class="bt-mode-card active p-4 border-2 border-indigo-500 rounded-3xl bg-indigo-50 shadow-md cursor-pointer transition-all hover:scale-[1.02]" onclick="toggleBtMode('regular')">
                         <div class="flex items-center justify-between mb-2">
@@ -476,6 +681,7 @@
                         <p class="text-[0.6rem] font-bold text-slate-400 uppercase tracking-widest mt-0.5">AI Autopilot</p>
                     </div>
                 </div>
+                </div>
 
                 <!-- Regular Trading Configuration -->
                 <div id="btRegularTradingBox" class="space-y-6 animate-in fade-in duration-300">
@@ -484,7 +690,7 @@
                         <div class="rounded-2xl border border-white/40 bg-white/20 backdrop-blur-md p-3 sm:p-4 space-y-3">
                             <div class="flex items-center gap-3">
                                 <div class="h-5 w-1.5 bg-gradient-to-b from-emerald-400 to-green-500 rounded-full"></div>
-                                <div class="text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Trade Allocation</div>
+                                <div class="settings-section-title">Trade Allocation</div>
                             </div>
                             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                 <div class="space-y-2">
@@ -501,49 +707,24 @@
                                             </svg>
                                         </div>
                                     </div>
+<div id="strategyAllocationHint_regular" class="hidden text-[0.55rem] sm:text-[0.6rem] font-bold leading-tight text-slate-500"></div>
                                 </div>
                                 <div class="space-y-2">
                                     <label id="strategyCapitalLabel_regular" class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Amount Per Trade ($)</label>
                                     <input type="number" id="strategyTradeAmount_regular" value="1000" min="1"
                                         class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl px-2 sm:px-4 py-2 sm:py-3 text-sm sm:text-base font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all">
-                                    <div id="strategyAllocationHint_regular" class="hidden text-[0.62rem] sm:text-[0.68rem] font-bold leading-snug text-slate-500"></div>
+
                                 </div>
                             </div>
                         </div>
                     </div>
-                    <!-- Risk Management Controls -->
-                    <div class="border border-white/40 rounded-3xl bg-white/60 backdrop-blur-md p-6 space-y-4 shadow-xl">
-                        <div class="w-full flex items-center justify-between outline-none mb-4">
-                            <div class="flex items-center gap-3">
-                                <div class="h-5 w-1.5 bg-gradient-to-b from-rose-400 to-red-500 rounded-full"></div>
-                                <span class="text-sm font-black text-indigo-900 uppercase tracking-widest">🛡️ Risk Management</span>
-                            </div>
-                            <label class="relative inline-flex items-center cursor-pointer">
-                                <input type="checkbox" id="btEnableRisk_regular" class="sr-only peer" onchange="document.getElementById('btRiskControlsContent_regular').classList.toggle('hidden', !this.checked);">
-                                <div class="w-11 h-6 bg-indigo-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-rose-500 shadow-md"></div>
-                            </label>
-                        </div>
-                        <div id="btRiskControlsContent_regular" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 transition-all duration-300 hidden">
-                            <div class="space-y-1">
-                                <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Risk Per Trade (%)</label>
-                                <input type="number" step="0.1" min="0" max="50" id="btRiskPerTrade" class="w-full bg-white/40 border border-white/40 rounded-xl px-4 py-3 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 outline-none transition-all" value="50.0">
-                            </div>
-                            <div class="space-y-1">
-                                <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Bot Loss Limit (%)</label>
-                                <input type="number" step="0.1" id="btMaxDailyDrawdown" class="w-full bg-slate-100/80 border border-slate-200 rounded-xl px-4 py-3 text-xs font-black text-slate-400 shadow-sm cursor-not-allowed opacity-60" value="50.0" disabled aria-disabled="true" title="Locked in backtesting">
-                            </div>
-                            <div class="space-y-1">
-                                <label class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Max Position Size (%)</label>
-                                <input type="number" step="0.1" id="btMaxPositionPct" class="w-full bg-white/40 border border-white/40 rounded-xl px-4 py-3 text-xs font-black text-indigo-950 shadow-sm focus:bg-white/70 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 outline-none transition-all" value="100.0">
-                            </div>
-                        </div>
-                    </div>
+                    <div id="strategyPresetPanel_regular" data-page="backtest"></div>
 
                     <!-- Strategy Indicator Matrix -->
                     <div class="bg-white/60 backdrop-blur-xl border border-white p-6 rounded-3xl shadow-xl space-y-6">
                         <div class="flex items-center gap-3 px-1">
                             <div class="h-6 w-1.5 bg-gradient-to-b from-indigo-400 to-purple-600 rounded-full"></div>
-                            <label class="text-sm font-black text-indigo-900 uppercase tracking-widest">Strategy Indicators</label>
+                            <label class="text-sm font-black text-indigo-900 uppercase tracking-widest settings-sub-title">Strategy Indicators</label>
                         </div>
                         <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2" id="indicatorChecksContainer_bt_regular">
                             
@@ -940,173 +1121,6 @@
                         </div>
                     </div>
 
-                    <!-- Premium Indicators -->
-                    <div class="col-span-full mt-3 pt-3 border-t border-amber-200/60">
-                        <div class="flex items-center gap-2">
-                            <h3 class="text-xs font-black text-amber-700 uppercase tracking-widest">✦ Premium Indicators</h3>
-                            <span class="px-1.5 py-0.5 text-[9px] font-black bg-gradient-to-r from-amber-400 to-orange-500 text-white rounded-md uppercase tracking-wider shadow-sm">PRO</span>
-                        </div>
-                        <p class="mt-1 text-[0.6rem] font-bold text-amber-600 uppercase tracking-wider">Advanced BotBulls confluence modules</p>
-                    </div>
-                    <div class="indicator-card group p-2.5 border border-amber-300/30 bg-amber-50/5 hover:bg-amber-50/15 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
-                        onclick="toggleIndicatorCard(this, event)">
-                        <div class="flex flex-col">
-                            <span class="font-black text-amber-800 uppercase">✦ BotBulls1<div
-                                    class="group/tooltip relative inline-flex items-center ml-1">
-                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('BotBulls1')"
-                                            xmlns="http://www.w3.org/2000/svg"
-                                            class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors"
-                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                        </svg>
-                                        <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
-                                            Click to read guide
-                                            <div
-                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
-                                            </div>
-                                        </div>
-                                    </div></span>
-                            <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium Oscillator WaveTrend</span>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <button
-                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('BotBulls1')"
-                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-100/50"
-                                title="BotBulls1 Settings">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-600" fill="none"
-                                    viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                </svg>
-                            </button>
-                            <input type="checkbox" class="strategy-indicator-check bt-indicator-check-regular w-5 h-5 accent-indigo-600 rounded"
-                                value="BotBulls1" onclick="event.stopPropagation()" onchange="updateBtRegularSignalLabels()">
-                        </div>
-                    </div>
-
-                    <div class="indicator-card group p-2.5 border border-amber-300/30 bg-amber-50/5 hover:bg-amber-50/15 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
-                        onclick="toggleIndicatorCard(this, event)">
-                        <div class="flex flex-col">
-                            <span class="font-black text-amber-800 uppercase">✦ BotBulls2<div
-                                    class="group/tooltip relative inline-flex items-center ml-1">
-                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('BotBulls2')"
-                                            xmlns="http://www.w3.org/2000/svg"
-                                            class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors"
-                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                        </svg>
-                                        <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
-                                            Click to read guide
-                                            <div
-                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
-                                            </div>
-                                        </div>
-                                    </div></span>
-                            <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium Smart Trail</span>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <button
-                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('BotBulls2')"
-                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-100/50"
-                                title="BotBulls2 Settings">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-600" fill="none"
-                                    viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                </svg>
-                            </button>
-                            <input type="checkbox" class="strategy-indicator-check bt-indicator-check-regular w-5 h-5 accent-indigo-600 rounded"
-                                value="BotBulls2" onclick="event.stopPropagation()" onchange="updateBtRegularSignalLabels()">
-                        </div>
-                    </div>
-
-                    <div class="indicator-card group p-2.5 border border-amber-300/30 bg-amber-50/5 hover:bg-amber-50/15 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
-                        onclick="toggleIndicatorCard(this, event)">
-                        <div class="flex flex-col">
-                            <span class="font-black text-amber-800 uppercase">✦ BotBulls3<div
-                                    class="group/tooltip relative inline-flex items-center ml-1">
-                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('BotBulls3')"
-                                            xmlns="http://www.w3.org/2000/svg"
-                                            class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors"
-                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                        </svg>
-                                        <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
-                                            Click to read guide
-                                            <div
-                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
-                                            </div>
-                                        </div>
-                                    </div></span>
-                            <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium Filtered Trail</span>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <button
-                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('BotBulls3')"
-                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-100/50"
-                                title="BotBulls3 Settings">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-600" fill="none"
-                                    viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                </svg>
-                            </button>
-                            <input type="checkbox" class="strategy-indicator-check bt-indicator-check-regular w-5 h-5 accent-indigo-600 rounded"
-                                value="BotBulls3" onclick="event.stopPropagation()" onchange="updateBtRegularSignalLabels()">
-                        </div>
-                    </div>
-
-                    <div class="indicator-card group p-2.5 border border-amber-300/30 bg-amber-50/5 hover:bg-amber-50/15 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
-                        onclick="toggleIndicatorCard(this, event)">
-                        <div class="flex flex-col">
-                            <span class="font-black text-amber-800 uppercase">✦ Botbulls4 News AI<div
-                                    class="group/tooltip relative inline-flex items-center ml-1">
-                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('Botbulls4 News AI')"
-                                            xmlns="http://www.w3.org/2000/svg"
-                                            class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors"
-                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                        </svg>
-                                        <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
-                                            Click to read guide
-                                            <div
-                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
-                                            </div>
-                                        </div>
-                                    </div></span>
-                            <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium AI News Sentiment</span>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <button
-                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('Botbulls4 News AI')"
-                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-100/50"
-                                title="Botbulls4 News AI Settings">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-600" fill="none"
-                                    viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                </svg>
-                            </button>
-                            <input type="checkbox" class="strategy-indicator-check bt-indicator-check-regular w-5 h-5 accent-indigo-600 rounded"
-                                value="Botbulls4 News AI" onclick="event.stopPropagation()" onchange="updateBtRegularSignalLabels()">
-                        </div>
-                    </div>
                 </div>
             </div>
 
@@ -1115,7 +1129,7 @@
             <div class="manual-strategy-section space-y-4">
                 <div class="flex items-center gap-3">
                     <div class="h-5 w-1.5 bg-gradient-to-b from-indigo-400 to-purple-500 rounded-full"></div>
-                    <label class="text-sm font-black text-indigo-900 uppercase tracking-widest">Entry Strategy (Buy Mode)</label>
+                    <label class="text-sm font-black text-indigo-900 uppercase tracking-widest settings-sub-title">Entry Strategy (Buy Mode)</label>
                 </div>
                 
                 <!-- Entry Strategy Dropdown -->
@@ -1317,7 +1331,7 @@
                 <div class="manual-strategy-section space-y-4">
                     <div class="flex items-center gap-3">
                         <div class="h-5 w-1.5 bg-gradient-to-b from-indigo-400 to-purple-500 rounded-full"></div>
-                        <label class="text-sm font-black text-indigo-900 uppercase tracking-widest">Exit Strategy (Sell Mode)</label>
+                        <label class="text-sm font-black text-indigo-900 uppercase tracking-widest settings-sub-title">Exit Strategy (Sell Mode)</label>
                     </div>
                     <div class="relative">
                         <select id="strategySellMode_regular" onchange="updateRegularExitFields()"
@@ -1512,8 +1526,9 @@
                 class="border border-white/40 rounded-2xl bg-white/20 backdrop-blur-md p-4 space-y-4 shadow-sm mt-4 transition-all duration-300">
                 <div class="flex items-center gap-3 mb-2">
                     <div class="h-5 w-1.5 bg-gradient-to-b from-indigo-400 to-purple-500 rounded-full"></div>
-                    <label class="text-sm font-black text-indigo-900 uppercase tracking-widest">Smart Re-entry Controls</label>
+                    <label class="text-sm font-black text-indigo-900 uppercase tracking-widest settings-section-title">Smart Re-entry Controls</label>
                 </div>
+
 
                 <div class="space-y-3">
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1522,35 +1537,25 @@
                             class="space-y-1 flex items-center justify-between sm:col-span-2 pt-2 border-t border-purple-200/20 text-left">
                             <div class="text-left">
                                 <label
-                                    class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Enable Signal Reset</label>
-                                <p class="text-[0.55rem] font-semibold text-purple-400 uppercase mt-0.5">Reset entry signal after exit to prevent immediate re-entry</p>
+                                    class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Enable Smart Signal Reset</label>
+                                <p class="text-[0.55rem] font-semibold text-purple-400 uppercase mt-0.5">After a trade closes, the same old signal can't buy again. Entry stays blocked until all bullish signals have dropped away once; then a fresh signal can enter.</p>
                             </div>
                             <label class="relative inline-flex items-center cursor-pointer">
-                                <input type="checkbox" id="strategyRegularSignalReset" class="sr-only peer" checked>
+                                <input type="checkbox" id="strategyRegularSignalReset" class="sr-only peer">
                                 <div
                                     class="w-9 h-5 bg-indigo-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-600 shadow-md">
                                 </div>
                             </label>
                         </div>
 
-                        <div class="sm:col-span-2 grid grid-cols-2 gap-3 pt-2 border-t border-purple-200/20">
-                            <div class="space-y-1">
-                                <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Post-Stop Candles</label>
-                                <input type="number" id="strategyPostStopBars_regular" value="3" min="0" max="20" class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-sm font-black text-indigo-950 outline-none">
-                            </div>
-                            <div class="space-y-1">
-                                <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Pause After Losses</label>
-                                <input type="number" id="strategyMaxConsecutiveLosses_regular" value="2" min="0" max="10" class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-sm font-black text-indigo-950 outline-none">
-                            </div>
-                        </div>
 
                         <!-- Smart Re-entry Toggle -->
                         <div
                             class="space-y-1 flex items-center justify-between sm:col-span-2 pt-2 border-t border-purple-200/20 text-left">
                             <div class="text-left">
                                 <label
-                                    class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Smart Re-entry Indicators</label>
-                                <p class="text-[0.55rem] font-semibold text-purple-400 uppercase mt-0.5">Require pullback (RSI or Session VWAP distance) before re-entering</p>
+                                    class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Enable Smart Re-entry Indicators</label>
+                                <p class="text-[0.55rem] font-semibold text-purple-400 uppercase mt-0.5">Checks each new entry for a pullback instead of chasing. RSI mode blocks a buy while RSI is above Call Max (default 70). Session VWAP mode blocks it when price is more than the set % away from Session VWAP.</p>
                             </div>
                             <label class="relative inline-flex items-center cursor-pointer">
                                 <input type="checkbox" id="strategyRegularSmartReentry" class="sr-only peer"
@@ -1603,23 +1608,21 @@
                         </div>
                     </div>
                 </div>
-            </div>
-
-            <!-- Re-Entry Cooldown Option -->
-            <div id="strategyCooldownOption_regular"
-                class="space-y-3 p-4 bg-white/20 backdrop-blur-md rounded-2xl border border-white/40 shadow-sm mt-4">
+            
+<div id="strategyCooldownOption_regular"
+                class="space-y-3 pt-3 border-t border-white/40">
                 <div class="flex items-center justify-between">
                     <div>
                         <label
-                            class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Enable Re-Entry Cooldown</label>
-                        <p class="text-[0.6rem] text-indigo-400/80 font-bold mt-0.5">Blocks new entries right after exiting</p>
+                            class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Enable Smart Re-Entry Cooldown</label>
+                        <p class="text-[0.55rem] font-semibold text-purple-400 uppercase mt-0.5">After a position closes, new buys on that ticker are blocked for a set time (Auto: 4 candles of your selected trading timeframe). Exits are never blocked.</p>
                     </div>
                     <label class="relative inline-flex items-center cursor-pointer">
                         <input type="checkbox" id="strategyEnableCooldown_regular" class="sr-only peer"
                             onchange="document.getElementById('strategyCooldownSettingsWrapper_regular').classList.toggle('hidden', !this.checked)"
                             checked>
                         <div
-                            class="w-9 h-5 bg-white/30 border border-white/40 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-500 shadow-sm">
+                            class="w-9 h-5 bg-indigo-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-600 shadow-md">
                         </div>
                     </label>
                 </div>
@@ -1629,7 +1632,7 @@
                         <select id="strategyCooldownMinutes_regular"
                             onchange="document.getElementById('strategyCooldownCustomContainer_regular').classList.toggle('hidden', this.value !== 'custom')"
                             class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl pl-4 pr-10 py-3 text-sm sm:text-base font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none cursor-pointer appearance-none transition-all">
-                            <option value="default" selected>Default (4 hours)</option>
+                            <option value="default" selected>Auto · 4 candles</option>
                             <option value="5">5 Minutes</option>
                             <option value="15">15 Minutes</option>
                             <option value="30">30 Minutes</option>
@@ -1653,6 +1656,10 @@
                     </div>
                 </div>
             </div>
+</div>
+
+            <!-- Re-Entry Cooldown Option -->
+
 
             
     </div>
@@ -1664,7 +1671,7 @@
                     <div class="rounded-2xl border border-white/40 bg-white/20 backdrop-blur-md p-3 sm:p-4 space-y-3">
                         <div class="flex items-center gap-3">
                             <div class="h-5 w-1.5 bg-gradient-to-b from-emerald-400 to-green-500 rounded-full"></div>
-                            <div class="text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Trade Allocation</div>
+                            <div class="settings-section-title">Trade Allocation</div>
                         </div>
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div class="space-y-2">
@@ -1681,12 +1688,13 @@
                                         </svg>
                                     </div>
                                 </div>
+<div id="strategyAllocationHint_options" class="hidden text-[0.55rem] sm:text-[0.6rem] font-bold leading-tight text-slate-500"></div>
                             </div>
                             <div class="space-y-2">
                                 <label id="strategyCapitalLabel_options" class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Amount Per Trade ($)</label>
                                 <input type="number" id="strategyCapital_options" value="1000" min="1"
                                     class="w-full bg-white/40 backdrop-blur-md border border-white/40 rounded-2xl px-2 sm:px-4 py-2 sm:py-3 text-sm sm:text-base font-black text-indigo-950 tracking-tight leading-tight shadow-sm focus:bg-white/70 focus:border-purple-400/80 focus:ring-2 focus:ring-purple-400/20 outline-none transition-all">
-                                <div id="strategyAllocationHint_options" class="hidden text-[0.62rem] sm:text-[0.68rem] font-bold leading-snug text-slate-500"></div>
+
                             </div>
                         </div>
                     </div>
@@ -1751,7 +1759,7 @@
                         <div class="w-full flex items-center justify-between outline-none mb-4">
                             <div class="flex items-center gap-3">
                                 <div class="h-5 w-1.5 bg-gradient-to-b from-rose-400 to-red-500 rounded-full"></div>
-                                <span class="text-sm font-black text-indigo-900 uppercase tracking-widest">🛡️ Risk Management</span>
+                                <span class="text-sm font-black text-indigo-900 uppercase tracking-widest settings-section-title">🛡️ Risk Management</span>
                             </div>
                             <label class="relative inline-flex items-center cursor-pointer">
                                 <input type="checkbox" id="btEnableRisk_options" class="sr-only peer" onchange="document.getElementById('btRiskControlsContent_options').classList.toggle('hidden', !this.checked);">
@@ -1778,7 +1786,7 @@
                     <div class="bg-white/60 backdrop-blur-xl border border-white p-6 rounded-3xl shadow-xl space-y-6">
                         <div class="flex items-center gap-3 px-1">
                             <div class="h-6 w-1.5 bg-gradient-to-b from-indigo-400 to-purple-600 rounded-full"></div>
-                            <label class="text-sm font-black text-indigo-900 uppercase tracking-widest">Strategy Indicators</label>
+                            <label class="text-sm font-black text-indigo-900 uppercase tracking-widest settings-sub-title">Strategy Indicators</label>
                         </div>
                         <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2" id="indicatorChecksContainer_bt_options">
                             
@@ -2175,173 +2183,6 @@
                         </div>
                     </div>
 
-                    <!-- Premium Indicators -->
-                    <div class="col-span-full mt-3 pt-3 border-t border-amber-200/60">
-                        <div class="flex items-center gap-2">
-                            <h3 class="text-xs font-black text-amber-700 uppercase tracking-widest">✦ Premium Indicators</h3>
-                            <span class="px-1.5 py-0.5 text-[9px] font-black bg-gradient-to-r from-amber-400 to-orange-500 text-white rounded-md uppercase tracking-wider shadow-sm">PRO</span>
-                        </div>
-                        <p class="mt-1 text-[0.6rem] font-bold text-amber-600 uppercase tracking-wider">Advanced BotBulls confluence modules</p>
-                    </div>
-                    <div class="indicator-card group p-2.5 border border-amber-300/30 bg-amber-50/5 hover:bg-amber-50/15 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
-                        onclick="toggleIndicatorCard(this, event)">
-                        <div class="flex flex-col">
-                            <span class="font-black text-amber-800 uppercase">✦ BotBulls1<div
-                                    class="group/tooltip relative inline-flex items-center ml-1">
-                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('BotBulls1')"
-                                            xmlns="http://www.w3.org/2000/svg"
-                                            class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors"
-                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                        </svg>
-                                        <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
-                                            Click to read guide
-                                            <div
-                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
-                                            </div>
-                                        </div>
-                                    </div></span>
-                            <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium Oscillator WaveTrend</span>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <button
-                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('BotBulls1')"
-                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-100/50"
-                                title="BotBulls1 Settings">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-600" fill="none"
-                                    viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                </svg>
-                            </button>
-                            <input type="checkbox" class="strategy-indicator-check bt-indicator-check-options w-5 h-5 accent-indigo-600 rounded"
-                                value="BotBulls1" onclick="event.stopPropagation()" onchange="updateBtRegularSignalLabels()">
-                        </div>
-                    </div>
-
-                    <div class="indicator-card group p-2.5 border border-amber-300/30 bg-amber-50/5 hover:bg-amber-50/15 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
-                        onclick="toggleIndicatorCard(this, event)">
-                        <div class="flex flex-col">
-                            <span class="font-black text-amber-800 uppercase">✦ BotBulls2<div
-                                    class="group/tooltip relative inline-flex items-center ml-1">
-                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('BotBulls2')"
-                                            xmlns="http://www.w3.org/2000/svg"
-                                            class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors"
-                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                        </svg>
-                                        <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
-                                            Click to read guide
-                                            <div
-                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
-                                            </div>
-                                        </div>
-                                    </div></span>
-                            <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium Smart Trail</span>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <button
-                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('BotBulls2')"
-                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-100/50"
-                                title="BotBulls2 Settings">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-600" fill="none"
-                                    viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                </svg>
-                            </button>
-                            <input type="checkbox" class="strategy-indicator-check bt-indicator-check-options w-5 h-5 accent-indigo-600 rounded"
-                                value="BotBulls2" onclick="event.stopPropagation()" onchange="updateBtRegularSignalLabels()">
-                        </div>
-                    </div>
-
-                    <div class="indicator-card group p-2.5 border border-amber-300/30 bg-amber-50/5 hover:bg-amber-50/15 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
-                        onclick="toggleIndicatorCard(this, event)">
-                        <div class="flex flex-col">
-                            <span class="font-black text-amber-800 uppercase">✦ BotBulls3<div
-                                    class="group/tooltip relative inline-flex items-center ml-1">
-                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('BotBulls3')"
-                                            xmlns="http://www.w3.org/2000/svg"
-                                            class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors"
-                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                        </svg>
-                                        <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
-                                            Click to read guide
-                                            <div
-                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
-                                            </div>
-                                        </div>
-                                    </div></span>
-                            <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium Filtered Trail</span>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <button
-                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('BotBulls3')"
-                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-100/50"
-                                title="BotBulls3 Settings">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-600" fill="none"
-                                    viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                </svg>
-                            </button>
-                            <input type="checkbox" class="strategy-indicator-check bt-indicator-check-options w-5 h-5 accent-indigo-600 rounded"
-                                value="BotBulls3" onclick="event.stopPropagation()" onchange="updateBtRegularSignalLabels()">
-                        </div>
-                    </div>
-
-                    <div class="indicator-card group p-2.5 border border-amber-300/30 bg-amber-50/5 hover:bg-amber-50/15 rounded-2xl cursor-pointer flex items-center justify-between shadow-sm transition-all"
-                        onclick="toggleIndicatorCard(this, event)">
-                        <div class="flex flex-col">
-                            <span class="font-black text-amber-800 uppercase">✦ Botbulls4 News AI<div
-                                    class="group/tooltip relative inline-flex items-center ml-1">
-                                        <svg onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('Botbulls4 News AI')"
-                                            xmlns="http://www.w3.org/2000/svg"
-                                            class="h-3.5 w-3.5 text-amber-400 hover:text-amber-600 cursor-pointer transition-colors"
-                                            fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                        </svg>
-                                        <div
-                                            class="invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-amber-900 text-white text-[0.65rem] leading-snug rounded-lg shadow-2xl z-[999] pointer-events-none whitespace-nowrap text-center font-bold normal-case tracking-normal">
-                                            Click to read guide
-                                            <div
-                                                class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-amber-900">
-                                            </div>
-                                        </div>
-                                    </div></span>
-                            <span class="text-[0.6rem] text-amber-600 font-bold uppercase tracking-widest">Premium AI News Sentiment</span>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <button
-                                onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('Botbulls4 News AI')"
-                                class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-amber-100/50"
-                                title="Botbulls4 News AI Settings">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-amber-600" fill="none"
-                                    viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                </svg>
-                            </button>
-                            <input type="checkbox" class="strategy-indicator-check bt-indicator-check-options w-5 h-5 accent-indigo-600 rounded"
-                                value="Botbulls4 News AI" onclick="event.stopPropagation()" onchange="updateBtRegularSignalLabels()">
-                        </div>
-                    </div>
                 </div>
             </div>
 
@@ -2350,7 +2191,7 @@
             <div class="manual-strategy-section space-y-4">
                 <div class="flex items-center gap-3">
                     <div class="h-5 w-1.5 bg-gradient-to-b from-indigo-400 to-purple-500 rounded-full"></div>
-                    <label class="text-sm font-black text-indigo-900 uppercase tracking-widest">Entry Strategy (Buy Mode)</label>
+                    <label class="text-sm font-black text-indigo-900 uppercase tracking-widest settings-sub-title">Entry Strategy (Buy Mode)</label>
                 </div>
                 
                 <!-- Entry Strategy Dropdown -->
@@ -2574,7 +2415,7 @@
                 <div class="manual-strategy-section space-y-4">
                     <div class="flex items-center gap-3">
                         <div class="h-5 w-1.5 bg-gradient-to-b from-indigo-400 to-purple-500 rounded-full"></div>
-                        <label class="text-sm font-black text-indigo-900 uppercase tracking-widest">Exit Strategy (Sell Mode)</label>
+                        <label class="text-sm font-black text-indigo-900 uppercase tracking-widest settings-sub-title">Exit Strategy (Sell Mode)</label>
                     </div>
                     <div class="relative">
                         <select id="strategySellMode_options" onchange="updateOptionsExitFields()"
@@ -2791,7 +2632,7 @@
                 class="border border-white/40 rounded-2xl bg-white/20 backdrop-blur-md p-4 space-y-4 shadow-sm mt-4 transition-all duration-300">
                 <div class="flex items-center gap-3 mb-2">
                     <div class="h-5 w-1.5 bg-gradient-to-b from-indigo-400 to-purple-500 rounded-full"></div>
-                    <label class="text-sm font-black text-indigo-900 uppercase tracking-widest">Smart Re-entry Controls</label>
+                    <label class="text-sm font-black text-indigo-900 uppercase tracking-widest settings-section-title">Smart Re-entry Controls</label>
                 </div>
 
                 <div class="space-y-3">
@@ -2801,11 +2642,11 @@
                             class="space-y-1 flex items-center justify-between sm:col-span-2 pt-2 border-t border-purple-200/20 text-left">
                             <div class="text-left">
                                 <label
-                                    class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Enable Signal Reset</label>
-                                <p class="text-[0.55rem] font-semibold text-purple-400 uppercase mt-0.5">Reset entry signal after exit to prevent immediate re-entry</p>
+                                    class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Enable Smart Signal Reset</label>
+                                <p class="text-[0.55rem] font-semibold text-purple-400 uppercase mt-0.5">After a trade closes, the same old signal can't buy again. Entry stays blocked until all bullish signals have dropped away once; then a fresh signal can enter.</p>
                             </div>
                             <label class="relative inline-flex items-center cursor-pointer">
-                                <input type="checkbox" id="strategyOptionsSignalReset" class="sr-only peer" checked>
+                                <input type="checkbox" id="strategyOptionsSignalReset" class="sr-only peer">
                                 <div
                                     class="w-9 h-5 bg-indigo-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-600 shadow-md">
                                 </div>
@@ -2813,14 +2654,6 @@
                         </div>
 
                         <div class="sm:col-span-2 grid grid-cols-2 gap-3 pt-2 border-t border-purple-200/20">
-                            <div class="space-y-1">
-                                <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Post-Stop Candles</label>
-                                <input type="number" id="strategyPostStopBars_options" value="3" min="0" max="20" class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-sm font-black text-indigo-950 outline-none">
-                            </div>
-                            <div class="space-y-1">
-                                <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Pause After Losses</label>
-                                <input type="number" id="strategyMaxConsecutiveLosses_options" value="2" min="0" max="10" class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-sm font-black text-indigo-950 outline-none">
-                            </div>
                             <div class="space-y-1">
                                 <label class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Max Option Spread %</label>
                                 <input type="number" id="strategyOptionsMaxSpreadPct" value="5" min="1" max="20" step="0.5" class="w-full bg-white/40 border border-white/40 rounded-xl px-3 py-2 text-sm font-black text-indigo-950 outline-none">
@@ -2836,8 +2669,8 @@
                             class="space-y-1 flex items-center justify-between sm:col-span-2 pt-2 border-t border-purple-200/20 text-left">
                             <div class="text-left">
                                 <label
-                                    class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Smart Re-entry Indicators</label>
-                                <p class="text-[0.55rem] font-semibold text-purple-400 uppercase mt-0.5">Require pullback (RSI or Session VWAP distance) before re-entering</p>
+                                    class="block text-[0.6rem] font-black text-indigo-400 uppercase tracking-widest">Enable Smart Re-entry Indicators</label>
+                                <p class="text-[0.55rem] font-semibold text-purple-400 uppercase mt-0.5">Checks each new entry for a pullback instead of chasing. RSI mode blocks a buy while RSI is above Call Max (default 70). Session VWAP mode blocks it when price is more than the set % away from Session VWAP.</p>
                             </div>
                             <label class="relative inline-flex items-center cursor-pointer">
                                 <input type="checkbox" id="strategyOptionsSmartReentry" class="sr-only peer"
@@ -2898,15 +2731,15 @@
                 <div class="flex items-center justify-between">
                     <div>
                         <label
-                            class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Enable Re-Entry Cooldown</label>
-                        <p class="text-[0.6rem] text-indigo-400/80 font-bold mt-0.5">Blocks new entries right after exiting</p>
+                            class="block text-[0.65rem] font-black text-indigo-400 uppercase tracking-widest">Enable Smart Re-Entry Cooldown</label>
+                        <p class="text-[0.55rem] font-semibold text-purple-400 uppercase mt-0.5">After a position closes, new buys on that ticker are blocked for a set time (Auto: 4 candles of your selected trading timeframe). Exits are never blocked.</p>
                     </div>
                     <label class="relative inline-flex items-center cursor-pointer">
                         <input type="checkbox" id="strategyEnableCooldown_options" class="sr-only peer"
                             onchange="document.getElementById('strategyCooldownSettingsWrapper_options').classList.toggle('hidden', !this.checked)"
                             checked>
                         <div
-                            class="w-9 h-5 bg-white/30 border border-white/40 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-500 shadow-sm">
+                            class="w-9 h-5 bg-indigo-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-600 shadow-md">
                         </div>
                     </label>
                 </div>
@@ -3242,8 +3075,6 @@
                                 <div class="chart-osc-label" id="manualBtChartPreviewAdxLabel" style="display: none;">ADX (14) / DI+ / DI-</div>
                             </div>
                             <div class="relative group">
-                                <div class="chart-osc-pane" id="manualBtChartPreviewOsc_botbulls1" style="display: none;"></div>
-                                <div class="chart-osc-label" id="manualBtChartPreviewBotbulls1Label" style="display: none;">BotBulls1 (WaveTrend + MFI)</div>
                             </div>
                             <div id="manualBtChartPreviewDynamicOscillators" class="dynamic-indicator-subcharts"></div>
 
@@ -3314,18 +3145,6 @@
                                     <!-- Signals injected by JS -->
                                 </div>
 
-                                <div class="mt-4 pt-3 border-t border-amber-200/60">
-                                    <div class="flex items-center gap-2 mb-3">
-                                        <h3 class="text-xs font-black text-amber-700 uppercase tracking-widest">
-                                            Premium Indicators
-                                        </h3>
-                                        <span
-                                            class="px-1.5 py-0.5 text-[9px] font-black bg-gradient-to-r from-amber-400 to-orange-500 text-white rounded-md uppercase tracking-wider shadow-sm">PRO</span>
-                                    </div>
-                                    <div id="manualBtChartPreviewPremiumSignalGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                                        <!-- Premium signals injected by JS -->
-                                    </div>
-                                </div>
                             </div>
                         </div>
                     </div>
@@ -3341,11 +3160,11 @@
         </div>
     </div>
 
-    <script src="ai-indicator-card.js?v=12"></script>
-    <script src="indicator-catalog.js?v=16"></script>
-    <script src="indicator-subcharts.js?v=15"></script>
+    <script src="ai-indicator-card.js?v=15"></script>
+    <script src="indicator-catalog.js?v=23"></script>
+    <script src="indicator-subcharts.js?v=18"></script>
     <script src="volume-profile-overlay.js?v=4"></script>
-    <script src="bots.js?v=56"></script>
+    <script src="bots.js?v=81"></script>
 
     <!-- Results Modal Overlay -->
     <div id="btResultsModal" class="fixed inset-0 z-[60] hidden flex items-center justify-center p-4 md:p-6">
@@ -3356,17 +3175,17 @@
                 class="relative w-full max-w-4xl bg-white/95 backdrop-blur-2xl rounded-2xl shadow-[0_30px_60px_-15px_rgba(139,92,246,0.25)] border border-white overflow-hidden flex flex-col max-h-[85vh] animate-in zoom-in-95 duration-400">
 
                 <!-- Modal Header -->
-                <div class="sentient-purple p-5 md:p-6 flex justify-between items-center relative overflow-hidden">
-                    <div class="relative z-10">
-                        <h2 class="text-xl md:text-2xl font-black text-white uppercase tracking-tight">Simulation
-                            Results</h2>
-                        <p id="resRunMeta"
-                            class="text-[0.65rem] text-fuchsia-200 font-black tracking-[0.15em] mt-1 opacity-90">
-                        </p>
+                <div id="btResultsHeader" class="sentient-purple px-5 py-4 md:px-6 md:py-5 flex items-center justify-between gap-3 relative overflow-hidden">
+                    <div class="relative z-10 min-w-0 flex-1">
+                        <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+                            <h2 class="text-sm md:text-lg font-black text-white uppercase tracking-tight whitespace-nowrap">Simulation Results</h2>
+                            <div id="resRunChips" class="flex flex-wrap items-center gap-1"></div>
+                        </div>
+                        <div id="resRunMeta" class="hidden text-[0.55rem] md:text-[0.6rem] text-fuchsia-100 font-bold mt-1.5 md:mt-2 leading-relaxed"></div>
                     </div>
                     <button onclick="resetBacktestUI()"
-                        class="relative z-10 w-10 h-10 flex items-center justify-center rounded-xl bg-white/10 text-white hover:bg-white/20 transition-all border border-white/20 shadow-md">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
+                        class="relative z-10 w-8 h-8 md:w-10 md:h-10 flex items-center justify-center rounded-xl bg-white/10 text-white hover:bg-white/20 transition-all border border-white/20 shadow-md flex-shrink-0">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 md:h-5 md:w-5" fill="none" viewBox="0 0 24 24"
                             stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
                                 d="M6 18L18 6M6 6l18 18" />
@@ -3379,72 +3198,135 @@
                 <!-- Scrollable Body -->
                 <div class="flex-grow overflow-y-auto p-5 md:p-8 space-y-6 custom-scrollbar">
 
-                    <!-- Stats Grid Row 1 -->
-                    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                        <div class="p-3.5 bg-purple-50/50 rounded-2xl border border-purple-100/50 shadow-sm transition-all hover:shadow-md">
-                            <span class="text-[0.55rem] font-black text-purple-400 uppercase tracking-widest block mb-1">Strategy ROI</span>
-                            <p class="text-xl font-black text-indigo-950 tracking-tight" id="resRoi">0%</p>
+                    <!-- Performance Metrics -->
+                    <div class="rounded-2xl border border-indigo-100/70 shadow-sm overflow-hidden bg-white" id="btPerformanceMetrics">
+                        <div class="flex items-center gap-2 px-3 py-2 bg-indigo-50/40 border-b border-indigo-100/60">
+                            <div class="w-1 h-4 bg-purple-600 rounded-full"></div>
+                            <h3 class="text-xs font-black text-indigo-950 uppercase tracking-tight">Performance Metrics</h3>
                         </div>
-                        <div class="p-3.5 bg-emerald-50/50 rounded-2xl border border-emerald-100/50 shadow-sm transition-all hover:shadow-md">
-                            <span class="text-[0.55rem] font-black text-emerald-600 uppercase tracking-widest block mb-1">Win Rate</span>
-                            <p class="text-xl font-black text-emerald-700 tracking-tight" id="resWinRate">0%</p>
+                        <div class="grid grid-cols-2">
+                            <!-- Left Column -->
+                            <div class="flex flex-col md:border-r border-indigo-50/70">
+                                <div class="flex items-center justify-between px-2.5 py-1.5 bg-indigo-50/60 border-b border-indigo-100/40 sticky top-0">
+                                    <span class="text-[0.45rem] font-black text-indigo-500 uppercase tracking-widest">Metric</span>
+                                    <span class="text-[0.45rem] font-black text-indigo-500 uppercase tracking-widest min-w-[4.5rem] text-right">Value</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 border-b border-indigo-50/50 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Initial Capital</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resInitialCapital">—</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 border-b border-indigo-50/50 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Total Return (ROI)</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resRoi">—</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 border-b border-indigo-50/50 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Total Profit</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resTotalProfit">—</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 border-b border-indigo-50/50 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Final Equity</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resEquity">—</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 border-b border-indigo-50/50 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1" id="resAnnualizedLabel">Annualized Return</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resAnnualized">—</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 border-b border-indigo-50/50 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Max Drawdown</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resMaxDrawdown">—</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 border-b border-indigo-50/50 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Time in Market</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resExposure">—</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 border-b border-indigo-50/50 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Calmar Ratio</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resCalmar">—</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 border-b border-indigo-50/50 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Sharpe Ratio</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resSharpe">—</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Sortino Ratio</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resSortino">—</span>
+                                </div>
+                            </div>
+                            <!-- Right Column -->
+                            <div class="flex flex-col border-t md:border-t-0 border-indigo-50/70">
+                                <div class="flex items-center justify-between px-2.5 py-1.5 bg-indigo-50/60 border-b border-indigo-100/40 sticky top-0">
+                                    <span class="text-[0.45rem] font-black text-indigo-500 uppercase tracking-widest">Metric</span>
+                                    <span class="text-[0.45rem] font-black text-indigo-500 uppercase tracking-widest min-w-[4.5rem] text-right">Value</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 border-b border-indigo-50/50 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Total Trades</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resTrades">—</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 border-b border-indigo-50/50 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Winning Trades</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resWinningTrades">—</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 border-b border-indigo-50/50 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Losing Trades</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resLosingTrades">—</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 border-b border-indigo-50/50 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Win Rate</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resWinRate">—</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 border-b border-indigo-50/50 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Profit Factor</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resProfitFactor">—</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 border-b border-indigo-50/50 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Expectancy ($ / trade)</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resExpectancy">—</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 border-b border-indigo-50/50 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Avg Winning Trade</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resAvgWin">—</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 border-b border-indigo-50/50 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Avg Losing Trade</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resAvgLoss">—</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 border-b border-indigo-50/50 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Avg Win / Avg Loss</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resWinLossRatio">—</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 border-b border-indigo-50/50 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Avg Hold Time</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resHoldTime">—</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 border-b border-indigo-50/50 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Max Win Streak</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resWinStreak">—</span>
+                                </div>
+                                <div class="flex items-center justify-between flex-1 px-2.5 py-1.5 hover:bg-indigo-50/30 transition-colors">
+                                    <span class="text-[0.6rem] font-normal text-indigo-600 flex-1">Max Loss Streak</span>
+                                    <span class="font-mono font-bold text-[0.62rem] tabular-nums text-right min-w-[4.5rem] text-indigo-950" id="resLossStreak">—</span>
+                                </div>
+                            </div>
                         </div>
-                        <div class="p-3.5 bg-indigo-50/50 rounded-2xl border border-indigo-100/50 shadow-sm transition-all hover:shadow-md">
-                            <span class="text-[0.55rem] font-black text-indigo-400 uppercase tracking-widest block mb-1">Executed Trades</span>
-                            <p class="text-xl font-black text-indigo-950 tracking-tight" id="resTrades">0</p>
+                        <div class="grid grid-cols-2 md:grid-cols-4 border-t border-indigo-100/60 bg-slate-50/40">
+                            <div class="px-2.5 py-2 border-r border-indigo-50 last:border-r-0">
+                                <span class="text-[0.4rem] font-black text-indigo-400 uppercase tracking-widest block mb-0.5">Backtest Period</span>
+                                <span class="text-[0.55rem] font-bold text-indigo-950 font-mono" id="resMetaPeriod">—</span>
+                            </div>
+                            <div class="px-2.5 py-2 border-r border-indigo-50 last:border-r-0">
+                                <span class="text-[0.4rem] font-black text-indigo-400 uppercase tracking-widest block mb-0.5">Timeframe</span>
+                                <span class="text-[0.55rem] font-bold text-indigo-950 font-mono" id="resMetaTimeframe">—</span>
+                            </div>
+                            <div class="px-2.5 py-2 border-r border-indigo-50 last:border-r-0">
+                                <span class="text-[0.4rem] font-black text-indigo-400 uppercase tracking-widest block mb-0.5">Trade Sizing</span>
+                                <span class="text-[0.55rem] font-bold text-indigo-950 font-mono" id="resMetaSizing">—</span>
+                            </div>
+                            <div class="px-2.5 py-2 border-r border-indigo-50 last:border-r-0">
+                                <span class="text-[0.4rem] font-black text-indigo-400 uppercase tracking-widest block mb-0.5">Data Source</span>
+                                <span class="text-[0.55rem] font-bold text-indigo-950 font-mono" id="resMetaSource">—</span>
+                            </div>
                         </div>
-                        <div class="p-3.5 bg-rose-50/50 rounded-2xl border border-rose-100/50 shadow-sm transition-all hover:shadow-md">
-                            <span class="text-[0.55rem] font-black text-rose-400 uppercase tracking-widest block mb-1">Max Drawdown</span>
-                            <p class="text-xl font-black text-rose-500 tracking-tight" id="resMaxDrawdown">0%</p>
-                        </div>
-                    </div>
-
-                    <!-- Stats Grid Row 2 — Professional Metrics -->
-                    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                        <!-- Sharpe Ratio -->
-                        <div class="p-3.5 bg-amber-50/60 rounded-2xl border border-amber-100/60 shadow-sm transition-all hover:shadow-md relative">
-                            <span class="text-[0.55rem] font-black text-amber-500 uppercase tracking-widest block mb-1">Sharpe Ratio</span>
-                            <p class="text-xl font-black tracking-tight" id="resSharpe">—</p>
-                            <span class="absolute top-2 right-2 text-[0.45rem] font-black px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-600 uppercase tracking-wider">NEW</span>
-                        </div>
-                        <!-- Profit Factor -->
-                        <div class="p-3.5 bg-green-50/60 rounded-2xl border border-green-100/60 shadow-sm transition-all hover:shadow-md relative">
-                            <span class="text-[0.55rem] font-black text-green-600 uppercase tracking-widest block mb-1">Profit Factor</span>
-                            <p class="text-xl font-black tracking-tight" id="resProfitFactor">—</p>
-                            <span class="absolute top-2 right-2 text-[0.45rem] font-black px-1.5 py-0.5 rounded-full bg-green-100 text-green-600 uppercase tracking-wider">NEW</span>
-                        </div>
-                        <!-- Avg Win / Loss -->
-                        <div class="p-3.5 bg-violet-50/60 rounded-2xl border border-violet-100/60 shadow-sm transition-all hover:shadow-md relative">
-                            <span class="text-[0.55rem] font-black text-violet-500 uppercase tracking-widest block mb-1">Avg Win / Loss</span>
-                            <p class="text-xl font-black text-violet-700 tracking-tight" id="resWinLossRatio">—</p>
-                            <span class="absolute top-2 right-2 text-[0.45rem] font-black px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-600 uppercase tracking-wider">NEW</span>
-                        </div>
-                        <!-- Final Equity -->
-                        <div class="p-3.5 bg-white rounded-2xl border border-indigo-100 shadow-lg ring-2 ring-indigo-50/50">
-                            <span class="text-[0.55rem] font-black text-indigo-300 uppercase tracking-widest block mb-1">Final Equity</span>
-                            <p class="text-xl font-black text-transparent bg-clip-text bg-gradient-to-br from-indigo-600 to-purple-600 tracking-tight" id="resEquity">$0</p>
-                        </div>
-                    </div>
-
-                    <!-- Advanced Metrics Collapsible Row -->
-                    <div class="rounded-2xl border border-indigo-100/60 shadow-sm overflow-hidden">
-                        <button onclick="document.getElementById('advMetricsBody').classList.toggle('hidden'); this.querySelector('svg').classList.toggle('rotate-180')" class="w-full flex items-center justify-between px-4 py-3 bg-indigo-50/40 hover:bg-indigo-50/80 transition-colors">
-                            <span class="text-[0.6rem] font-black text-indigo-500 uppercase tracking-[0.2em]">▸ Advanced Metrics</span>
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-indigo-400 transition-transform duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"/></svg>
-                        </button>
-                        <div id="advMetricsBody" class="hidden px-4 py-3 bg-white flex flex-wrap gap-x-5 gap-y-2">
-                            <span class="text-[0.6rem] text-indigo-700">Sortino: <strong id="resSortino">—</strong></span>
-                            <span class="text-[0.6rem] text-indigo-300">|</span>
-                            <span class="text-[0.6rem] text-indigo-700">Calmar: <strong id="resCalmar">—</strong></span>
-                            <span class="text-[0.6rem] text-indigo-300">|</span>
-                            <span class="text-[0.6rem] text-indigo-700">Avg Hold: <strong id="resHoldTime">—</strong></span>
-                            <span class="text-[0.6rem] text-indigo-300">|</span>
-                            <span class="text-[0.6rem] text-indigo-700">Expectancy: <strong id="resExpectancy">—</strong></span>
-                            <span class="text-[0.6rem] text-indigo-300">|</span>
-                            <span class="text-[0.6rem] text-emerald-700">Win Streak: <strong id="resWinStreak">—</strong></span>
-                            <span class="text-[0.6rem] text-indigo-300">|</span>
-                            <span class="text-[0.6rem] text-rose-600">Loss Streak: <strong id="resLossStreak">—</strong></span>
-                        </div>
+                        <ul id="resMetaNotes" class="hidden list-none px-2.5 py-1.5 border-t border-indigo-100/60 bg-slate-50/40 space-y-0.5 text-[0.55rem] leading-snug font-semibold text-indigo-500 break-words"></ul>
                     </div>
 
                     <!-- Market Comparison -->
@@ -3454,7 +3336,7 @@
                             <div>
                                 <h3 class="text-purple-400 text-[0.6rem] font-black uppercase tracking-[0.3em] mb-1">
                                     Benchmark Comparison</h3>
-                                <p class="text-lg font-black text-indigo-950 uppercase tracking-tight">Market Buy & Hold
+                                <p class="text-lg font-black text-indigo-950 uppercase tracking-tight">Edge vs Buy &amp; Hold
                                 </p>
                             </div>
                             <div class="text-center sm:text-right">
@@ -3464,10 +3346,74 @@
                                     id="resHoldRoi">0% Return</span>
                             </div>
                         </div>
+                        <div id="btEdgeBody" class="hidden relative z-10 mt-3 pt-3 border-t border-indigo-100/70"></div>
                         <!-- Glassy Accents -->
                         <div class="absolute top-0 right-0 w-1/2 h-full bg-gradient-to-l from-white/60 to-transparent">
                         </div>
                     </div>
+
+                    <!-- Strategy details (shown only when a strategy preset was run) -->
+                    <div id="btStrategyPanel" class="hidden rounded-2xl border border-purple-100/70 shadow-sm overflow-hidden bg-white">
+                        <div class="flex flex-wrap items-center gap-2 px-4 py-3 bg-purple-50/40 border-b border-purple-100/60">
+                            <div class="w-1 h-4 bg-purple-600 rounded-full"></div>
+                            <h3 class="text-xs font-black text-indigo-950 uppercase tracking-tight mr-auto">Strategy</h3>
+                            <span id="btStrategyTitle" class="text-[0.6rem] font-black text-purple-700 break-words"></span>
+                        </div>
+                        <div id="btStrategyNotes" class="px-4 py-3 space-y-1 text-[0.62rem] font-bold leading-snug text-indigo-700 break-words"></div>
+                        <div class="px-4 pb-3">
+                            <p id="btStrategyTableCaption" class="text-[0.5rem] font-black text-indigo-400 uppercase tracking-widest mb-1">Every variant, same fixed rules (no parameter search)</p>
+                            <div class="overflow-x-auto rounded-xl border border-indigo-50">
+                                <table class="w-full text-left text-[0.6rem] border-collapse" id="btStrategyVariantsTable">
+                                    <thead class="bg-slate-50/80 text-slate-500 font-black uppercase tracking-wider text-[0.5rem]">
+                                        <tr>
+                                            <th class="py-1.5 px-2">Variant</th>
+                                            <th class="py-1.5 px-2 text-right">ROI</th>
+                                            <th class="py-1.5 px-2 text-right">Max DD</th>
+                                            <th class="py-1.5 px-2 text-right">MAR</th>
+                                            <th class="py-1.5 px-2 text-right">Trades</th>
+                                            <th class="py-1.5 px-2 text-right">Win</th>
+                                            <th class="py-1.5 px-2 text-right">PF</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="btStrategyVariantsBody" class="divide-y divide-indigo-50/60 font-mono font-bold text-indigo-950"></tbody>
+                                </table>
+                            </div>
+                            <p id="btStrategyTableFootnote" class="text-[0.5rem] font-bold text-slate-400 mt-1">MAR = annualised return ÷ max drawdown. Compare with buy &amp; hold above. Fills are at the next open with no fees or slippage.</p>
+                        </div>
+                    </div>
+
+                    <!-- Equity Curve -->
+                    <div id="btEquityPanel" class="rounded-2xl border border-indigo-100/70 shadow-sm overflow-hidden bg-white">
+                        <div class="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-indigo-50/70">
+                            <div class="w-1 h-5 bg-gradient-to-b from-emerald-500 to-indigo-600 rounded-full"></div>
+                            <h3 class="text-xs font-black text-indigo-950 uppercase tracking-tight mr-auto">Equity Curve</h3>
+                            <div id="btEquityChips" class="flex flex-wrap gap-1.5 text-[0.55rem] font-mono font-bold"></div>
+                        </div>
+                        <div id="btEquityChart" class="w-full" style="height:340px;"></div>
+                    </div>
+
+                    <!-- Drawdown -->
+                    <div id="btDrawdownPanel" class="rounded-2xl border border-indigo-100/70 shadow-sm overflow-hidden bg-white">
+                        <div class="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-indigo-50/70">
+                            <div class="w-1 h-5 bg-gradient-to-b from-rose-500 to-orange-500 rounded-full"></div>
+                            <h3 class="text-xs font-black text-indigo-950 uppercase tracking-tight mr-auto">Drawdown</h3>
+                            <div id="btDrawdownChips" class="flex flex-wrap gap-1.5 text-[0.55rem] font-mono font-bold"></div>
+                        </div>
+                        <div id="btDrawdownChart" class="w-full" style="height:300px;"></div>
+                    </div>
+
+                    <!-- P/L Distribution -->
+                    <div id="btPlDistPanel" class="rounded-2xl border border-indigo-100/70 shadow-sm overflow-hidden bg-white">
+                        <div class="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-indigo-50/70">
+                            <div class="w-1 h-5 bg-gradient-to-b from-fuchsia-500 to-purple-600 rounded-full"></div>
+                            <h3 class="text-xs font-black text-indigo-950 uppercase tracking-tight mr-auto">P/L Distribution</h3>
+                            <div id="btPlDistChips" class="flex flex-wrap gap-1.5 text-[0.55rem] font-mono font-bold"></div>
+                        </div>
+                        <div id="btPlDistChart" class="px-4 pt-4 pb-3"></div>
+                    </div>
+
+                    <!-- Consistency, monthly returns, trade breakdown, recent runs, run record (backtest-report.js) -->
+                    <div id="btReportExtras" class="hidden space-y-6"></div>
 
                     <!-- ─── Monte Carlo Simulation Panel ─── -->
                     <div id="mcSection" class="rounded-2xl border border-purple-100/60 shadow-sm overflow-hidden">
@@ -3537,10 +3483,6 @@
                                 <label class="flex items-center gap-1.5 cursor-pointer hover:text-indigo-600 transition-colors">
                                     <input type="checkbox" id="btToggleVolume" checked class="rounded text-indigo-500 focus:ring-indigo-500 border-indigo-200" onchange="btToggleChartLayers()">
                                     Volume
-                                </label>
-                                <label class="flex items-center gap-1.5 cursor-pointer hover:text-indigo-600 transition-colors">
-                                    <input type="checkbox" id="btToggleEquity" checked class="rounded text-indigo-500 focus:ring-indigo-500 border-indigo-200" onchange="btToggleChartLayers()">
-                                    <span class="w-2 h-0.5 bg-violet-400 inline-block rounded opacity-70"></span>Equity
                                 </label>
                                 <label class="flex items-center gap-1.5 cursor-pointer hover:text-indigo-600 transition-colors">
                                     <input type="checkbox" id="btToggleIndicators" checked class="rounded text-indigo-500 focus:ring-indigo-500 border-indigo-200" onchange="btToggleChartLayers()">
@@ -3619,8 +3561,8 @@
                             <div class="flex items-center gap-3">
                                 <div class="w-1.5 h-6 bg-gradient-to-b from-fuchsia-500 to-purple-600 rounded-full">
                                 </div>
-                                <h3 class="text-sm font-black text-indigo-950 uppercase tracking-tight">Trade
-                                    Intelligence Log</h3>
+                                <h3 class="text-sm font-black text-indigo-950 uppercase tracking-tight">Trade Logs
+                                    <span class="text-[0.55rem] font-bold text-indigo-400 ml-1">(CST / UTC−6)</span></h3>
                             </div>
                             <span
                                 class="text-[0.6rem] font-black text-indigo-300 uppercase tracking-widest bg-indigo-50 px-3 py-1.5 rounded-xl border border-indigo-100"
@@ -3629,7 +3571,7 @@
 
                         <div class="bg-white rounded-2xl border border-indigo-50 shadow-sm overflow-hidden">
                             <div class="overflow-x-auto overflow-y-auto max-h-[300px]">
-                                <table class="w-full text-left text-xs border-collapse">
+                                <table id="btTradeTable" class="w-full text-left text-xs border-collapse">
                                     <thead
                                         class="bg-slate-50/80 text-slate-500 font-black uppercase tracking-[0.2em] text-[9px] sticky top-0 backdrop-blur-md border-b border-purple-100">
                                         <tr>
@@ -3689,15 +3631,16 @@
         </div>
     </main>
 
+    <div id="pageLoader" role="status" aria-live="polite"><img src="assets/bot_bulls_logo.png" alt="" width="56" height="56"><span>Refreshing…</span></div>
     <footer
-        class="mt-20 text-center text-[0.7rem] text-purple-400 font-black uppercase tracking-[0.3em] pb-12 border-t border-purple-100 pt-12">
-        <div class="flex flex-col items-center gap-4">
+        class="mt-4 text-center text-[0.7rem] text-purple-400 font-black uppercase tracking-[0.3em] pb-5 border-t border-purple-100 pt-4">
+        <div class="flex flex-col items-center gap-2">
             <div class="flex items-center gap-2">
                 <span class="h-1.5 w-1.5 rounded-full bg-purple-400 opacity-50"></span>
-                <p>Bot Bulls — Autonomous Backtest Core</p>
+                <p>Bot Bulls — Historical Strategy Lab</p>
                 <span class="h-1.5 w-1.5 rounded-full bg-purple-400 opacity-50"></span>
             </div>
-            <p class="text-[0.6rem] text-rose-400/80 max-w-md">⚠️ RISK DISCLAIMER: Algorithmic systems carry inherent market risks. Simulation runs do not guarantee live profitability or account for transaction slippage.</p>
+            <p class="text-[0.6rem] text-rose-400/80 max-w-md">⚠️ Backtests use past data, fill at the next open and leave out fees and slippage, so live results will differ. Past performance does not predict future returns.</p>
         </div>
     </footer>
 
@@ -3705,8 +3648,12 @@
     
 
     <script src="alpaca-status-cache.js?v=1"></script>
-    <script src="backtest.js?v=56"></script>
-    <script src="indicator-workspace.js?v=8"></script>
+    <script src="backtest.js?v=104"></script>
+    <script src="backtest-report.js?v=1"></script>
+    <script src="backtest-cache.js?v=1"></script>
+    <script src="strategy-preset.js?v=24"></script>
+    <script src="reentry-master.js?v=1"></script>
+    <script src="indicator-workspace.js?v=11"></script>
 
     <!-- Info Modal -->
     <div id="infoModal" class="fixed inset-0 z-[9999] hidden items-center justify-center bg-slate-900/60 backdrop-blur-md transition-opacity opacity-0">
@@ -3734,10 +3681,10 @@
             'Bollinger': `<b>Bollinger Bands</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Bollinger Bands consist of a middle moving average surrounded by upper and lower standard deviation bands that expand and contract with market volatility.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Price touching the lower band signals potential oversold bounce opportunities; touching the upper band signals potential overbought conditions.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Period (Default 20):</b> Moving average lookback window.<br>• <b>Standard Deviation (Default 2.0):</b> Bandwidth multiplier controlling sensitivity.`,
             'Supertrend': `<b>Supertrend</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Supertrend is a trend-following overlay based on Average True Range (ATR) that dynamically plots trailing support or resistance levels.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Fires a buy signal when price crosses above the upper Supertrend band; fires a sell signal when price crosses below.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Period (Default 10):</b> ATR lookback window.<br>• <b>Multiplier (Default 3.0):</b> Distance multiplier controlling stop width.`,
             'Mystic Pulse': `<b>Mystic Pulse</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Mystic Pulse is a custom proprietary oscillator combining multi-timeframe momentum, volatility expansion, and institutional volume flow.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Detects early trend reversals before standard oscillators by analyzing volume convergence at cycle extremes.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Pulse Threshold (Default 5):</b> Sensitivity setting for triggering pulse alerts.`,
-            'Candle Patterns': `<b>Candlestick Patterns (Institutional Price Action & Reversals)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Our institutional candlestick recognition engine automatically scans real-time price action to identify powerful single and multi-bar reversal and continuation formations (e.g., Bullish/Bearish Engulfing, Hammer, Shooting Star, Morning/Evening Star, Doji). It acts as an instant visual footprint of order flow, revealing exactly when institutional buyers or sellers are stepping in at key decision zones.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>To maintain lightning-fast calculation and clean, actionable charting without historical clutter, the engine evaluates the rolling 5-bar window but isolates and displays the detected pattern strictly on the latest forming candle (new candle).<br>• <b>Bullish Patterns (Green Arrow Up):</b> Formations such as Bullish Engulfing, Hammer, or Morning Star indicate strong demand absorption and potential upside bounces.<br>• <b>Bearish Patterns (Red Arrow Down):</b> Formations such as Bearish Engulfing, Shooting Star, or Evening Star indicate distribution and potential downward pressure.<br>• <b>Neutral / Indecision (Orange Circle):</b> Formations such as Doji or Spinning Top indicate equilibrium between buyers and sellers prior to a breakout.<br><br><b class="text-slate-800">Settings & Confluence Guide:</b><br>• <b>Single-Bar Isolation:</b> Chart markers and indicator sub-text strictly report the exact formation on the newest forming bar (<code>[-1]</code>) across Dashboard, Bots, and Backtest modes.<br>• <b>Confluence Integration:</b> When enabled in the confluence grid, confirmed bullish or bearish candlestick formations contribute directly to overall strategy confirmation score.`,
-            'Candle patterns': `<b>Candlestick Patterns (Institutional Price Action & Reversals)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Our institutional candlestick recognition engine automatically scans real-time price action to identify powerful single and multi-bar reversal and continuation formations (e.g., Bullish/Bearish Engulfing, Hammer, Shooting Star, Morning/Evening Star, Doji). It acts as an instant visual footprint of order flow, revealing exactly when institutional buyers or sellers are stepping in at key decision zones.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>To maintain lightning-fast calculation and clean, actionable charting without historical clutter, the engine evaluates the rolling 5-bar window but isolates and displays the detected pattern strictly on the latest forming candle (new candle).<br>• <b>Bullish Patterns (Green Arrow Up):</b> Formations such as Bullish Engulfing, Hammer, or Morning Star indicate strong demand absorption and potential upside bounces.<br>• <b>Bearish Patterns (Red Arrow Down):</b> Formations such as Bearish Engulfing, Shooting Star, or Evening Star indicate distribution and potential downward pressure.<br>• <b>Neutral / Indecision (Orange Circle):</b> Formations such as Doji or Spinning Top indicate equilibrium between buyers and sellers prior to a breakout.<br><br><b class="text-slate-800">Settings & Confluence Guide:</b><br>• <b>Single-Bar Isolation:</b> Chart markers and indicator sub-text strictly report the exact formation on the newest forming bar (<code>[-1]</code>) across Dashboard, Bots, and Backtest modes.<br>• <b>Confluence Integration:</b> When enabled in the confluence grid, confirmed bullish or bearish candlestick formations contribute directly to overall strategy confirmation score.`,
+            'Candle Patterns': `<b>Candlestick Patterns (Institutional Price Action & Reversals)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Our institutional candlestick recognition engine automatically scans real-time price action to identify powerful single and multi-bar reversal and continuation formations (e.g., Bullish/Bearish Engulfing, Hammer, Shooting Star, Morning/Evening Star, Doji). It acts as an instant visual footprint of order flow, revealing exactly when institutional buyers or sellers are stepping in at key decision zones.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>To maintain lightning-fast calculation and clean, actionable charting without historical clutter, the engine measures every candle against the average body and range of the previous 10 candles, requires a preceding trend for reversal patterns, and shows a pattern only on a completed candle. If a bullish and a bearish pattern fire on the same candle the result is neutral.<br>• <b>Bullish Patterns (Green Arrow Up):</b> Formations such as Bullish Engulfing, Hammer, or Morning Star indicate strong demand absorption and potential upside bounces.<br>• <b>Bearish Patterns (Red Arrow Down):</b> Formations such as Bearish Engulfing, Shooting Star, or Evening Star indicate distribution and potential downward pressure.<br>• <b>Neutral / Indecision (Orange Circle):</b> Formations such as Doji or Spinning Top indicate equilibrium between buyers and sellers prior to a breakout.<br><br><b class="text-slate-800">Settings & Confluence Guide:</b><br>• <b>Single-Bar Isolation:</b> Chart markers and indicator sub-text strictly report the exact formation on the newest forming bar (<code>[-1]</code>) across Dashboard, Bots, and Backtest modes.<br>• <b>Confluence Integration:</b> When enabled in the confluence grid, confirmed bullish or bearish candlestick formations contribute directly to overall strategy confirmation score.`,
+            'Candle patterns': `<b>Candlestick Patterns (Institutional Price Action & Reversals)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Our institutional candlestick recognition engine automatically scans real-time price action to identify powerful single and multi-bar reversal and continuation formations (e.g., Bullish/Bearish Engulfing, Hammer, Shooting Star, Morning/Evening Star, Doji). It acts as an instant visual footprint of order flow, revealing exactly when institutional buyers or sellers are stepping in at key decision zones.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>To maintain lightning-fast calculation and clean, actionable charting without historical clutter, the engine measures every candle against the average body and range of the previous 10 candles, requires a preceding trend for reversal patterns, and shows a pattern only on a completed candle. If a bullish and a bearish pattern fire on the same candle the result is neutral.<br>• <b>Bullish Patterns (Green Arrow Up):</b> Formations such as Bullish Engulfing, Hammer, or Morning Star indicate strong demand absorption and potential upside bounces.<br>• <b>Bearish Patterns (Red Arrow Down):</b> Formations such as Bearish Engulfing, Shooting Star, or Evening Star indicate distribution and potential downward pressure.<br>• <b>Neutral / Indecision (Orange Circle):</b> Formations such as Doji or Spinning Top indicate equilibrium between buyers and sellers prior to a breakout.<br><br><b class="text-slate-800">Settings & Confluence Guide:</b><br>• <b>Single-Bar Isolation:</b> Chart markers and indicator sub-text strictly report the exact formation on the newest forming bar (<code>[-1]</code>) across Dashboard, Bots, and Backtest modes.<br>• <b>Confluence Integration:</b> When enabled in the confluence grid, confirmed bullish or bearish candlestick formations contribute directly to overall strategy confirmation score.`,
             'ADX Trend': `<b>ADX Trend (Wilder ADX / +DI / -DI)</b><br><br><b class="text-slate-800">What it is:</b><br>ADX measures trend strength; +DI and -DI identify direction. The calculation uses Wilder smoothing and completed candles.<br><br><b class="text-slate-800">How this app votes:</b><br>At or above the configured strength threshold, +DI above -DI is one bullish vote and -DI above +DI is one bearish vote. Below the threshold or during warm-up, ADX is neutral. Rising or falling ADX is context only.<br><br><b class="text-slate-800">Settings:</b><br>• <b>Period (Default 14)</b><br>• <b>Trend Strength Threshold (Default 25)</b>`,
-            'VWAP': `<b>Session VWAP</b><br><br><b class="text-slate-800">What it is:</b><br>Cumulative typical price × volume divided by cumulative volume, reset on each exchange-local trading session. This is the Webull-comparable session line.<br><br><b class="text-slate-800">How this app votes:</b><br>A fresh reclaim or bullish candle bouncing within 1.5% is bullish; price below Session VWAP is bearish; merely holding above it is neutral. Session VWAP is separate from Auto-AVWAP.`,
+            'VWAP': `<b>Session VWAP</b><br><br><b class="text-slate-800">What it is:</b><br>Cumulative typical price × volume divided by cumulative volume, reset on each exchange-local trading session. This is the Webull-comparable session line.<br><br><b class="text-slate-800">How this app votes:</b><br>Price at or above Session VWAP is bullish and price below it is bearish, with the reason noting a fresh cross, a bounce or rejection within 1.5%, or simply holding its side. Session VWAP is separate from Auto-AVWAP.`,
             'Auto-AVWAP': `<b>Auto-AVWAP</b><br><br><b class="text-slate-800">What it is:</b><br>An anchored volume-weighted average that automatically starts at the latest qualified volume-spike candle and remains anchored until a newer spike qualifies.<br><br><b class="text-slate-800">How this app votes:</b><br>A fresh reclaim or bullish candle bouncing within 1.5% is bullish; price below Auto-AVWAP is bearish; merely holding above it is neutral.<br><br><b class="text-slate-800">Settings:</b><br>• <b>Volume Average Period (Default 20)</b><br>• <b>Spike Multiplier (Default 1.5)</b>`,
             'Prior Day High/Low': `<b>Prior Day High/Low (PDH/PDL)</b><br><br><b class="text-slate-800">What it is:</b><br>Uses the previous completed trading session's high and low, with optional buffered trigger lines.<br><br><b class="text-slate-800">How this app votes:</b><br>Only a fresh completed-candle close through the high trigger is bullish or through the low trigger is bearish. Holding beyond a level after an earlier break, staying inside the range, or missing prior-session history is neutral.<br><br><b class="text-slate-800">Setting:</b><br>• <b>Breakout Buffer % (Default 0.0):</b> Example: 0.5 requires a close 0.5% beyond PDH/PDL.`,
             'Pivot Points (S/R)': `<b>Pivot Points (Support / Resistance)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Uses the previous completed trading session's high, low, and close to calculate classic floor-trader pivot levels: Pivot (P), supports (S1-S5), and resistances (R1-R5). These levels often act as intraday decision zones for liquidity, rejection, continuation, and profit-taking.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>A bullish signal fires when price reclaims S1 support or crosses back above the main Pivot. A bearish signal fires when price rejects R1 resistance or loses the main Pivot. The chart draws P plus your selected number of S/R ladders so you can see whether price is reclaiming support, stuck around fair value, or rejecting resistance.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>S/R Levels To Draw (1-5) (Default 1):</b> Controls how many support and resistance ladders are drawn. Example: 3 draws P, S1-S3, and R1-R3. The value is clamped to max 5.<br>• <b>Reclaim/Rejection Tolerance (%) (Default 0):</b> Percent buffer used when detecting support reclaims and resistance rejections. At 0, price must touch/cross the pivot level directly. Higher values allow a wider test zone; lower values require cleaner touches.<br><br><b class="text-slate-800">Formula:</b><br>P = (High + Low + Close) / 3. R1/S1 use the classic 2P formulas. R2/S2 use the prior session range. R3-S5 extend the ladder by range-based projection.`,
@@ -3745,10 +3692,6 @@
             'Swing Points': `<b>Swing Points (Structural Support / Resistance)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Finds rolling swing support and resistance clusters from local highs/lows, then scores them by wick rejection, volume, range expansion, recency, and repeated touches. This mirrors the Swing Points entry/exit strategy so confluence, bots, and backtests read the same structure.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>In Bounce / Retest mode, bullish signals fire on confirmed support bounces and bearish signals fire on resistance rejections. In Breakout / Retest mode, bullish signals fire when resistance is reclaimed and bearish signals fire when support is lost. The chart draws selected swing S/R levels as dotted structural zones.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Swing Lookback Days (Default 20):</b> How far back to search for structural swing levels.<br>• <b>Swing Entry Mode (Default Bounce / Retest):</b> Bounce / Retest favors reversals at support/resistance. Breakout / Retest favors continuation after reclaim or breakdown.<br>• <b>S/R Levels To Draw (1-5) (Default 1):</b> Number of nearest swing supports and resistances drawn on the chart.`,
             'ATR Volatility': `<b>ATR Volatility</b><br><br><b class="text-slate-800">What it is:</b><br>Wilder Average True Range measures completed-candle movement, including price gaps. ATR itself is not bullish or bearish.<br><br><b class="text-slate-800">How this app votes:</b><br>ATR must exceed its rolling baseline by the configured expansion threshold. An up close is then bullish and a down close bearish; normal volatility, a flat close, or warm-up is neutral.<br><br><b class="text-slate-800">Expected range:</b><br>The chart uses the prior close ± prior completed ATR × range multiplier. These causal bands are context, not entry, target, or stop orders.<br><br><b class="text-slate-800">Settings:</b><br>• <b>ATR Period 14</b> • <b>Baseline 20</b> • <b>Range Width 1.0 ATR</b> • <b>Expansion Threshold 5%</b>`,
             'Strategy Confidence': `<b>Strategy Confidence Score</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>Strategy Confidence aggregates all active indicators into a unified conviction rating.<br><br><b class="text-slate-800">How it works & Strategy:</b><br>Fires a confirmed overall signal only when the minimum required number of independent bullish or bearish indicators agree.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Min Bullish Signals (Default 4):</b> Minimum number of bullish indicators required.<br>• <b>Min Bearish Signals (Default 4):</b> Minimum number of bearish indicators required.`,
-            'BotBulls1': `<b>BotBulls 1 (Premium Confirmed WaveTrend + MFI Reclaim)</b><br><br><b class="text-slate-800">What it is:</b><br>BotBulls 1 is a reversal indicator. It looks for price to become stretched too far down or too far up, then waits for momentum and money flow to start turning back before it gives a signal. The goal is to avoid buying just because price is oversold. It waits for confirmation first.<br><br><b class="text-slate-800">Simple meaning:</b><br><b class="text-emerald-500">BUY</b> means price was recently washed out, WaveTrend started turning up, MFI started recovering, and the candle showed bullish follow-through.<br><b class="text-rose-500">SELL</b> means price was recently overheated, WaveTrend started turning down, MFI started weakening, and the candle showed bearish follow-through.<br><br><b class="text-slate-800">How the signal is built:</b><br>1. <b>WaveTrend</b> finds the stretched zone. Think of this like RSI, but smoother and more cycle-based.<br>2. <b>WT1 crossing WT2</b> shows momentum is trying to turn.<br>3. <b>MFI</b> checks whether money flow is confirming the turn.<br>4. <b>Candle confirmation</b> checks whether the current candle agrees with the signal direction.<br><br><b class="text-slate-800">Default Balanced Preset:</b><br>WT Channel 10, WT Average 21, WT Oversold -55, WT Overbought 55, MFI Buy Reclaim 35, MFI Sell Reject 65, Extreme Lookback 3 candles, Require MFI Confirmation 1, Require Candle Confirmation 1.<br><br><b class="text-slate-800">Settings Guide:</b><br>• <b>WaveTrend Channel Period (Default 10):</b> Controls how fast BB1 reacts to price swings. Lower values create faster/more signals but more noise. Higher values create slower/cleaner signals. Suggested range: 8-14.<br>• <b>WaveTrend Average Period (Default 21):</b> Smooths the WaveTrend line. Lower values react faster. Higher values reduce false flips. Suggested range: 14-28.<br>• <b>WT Oversold Level (Default -55):</b> BUY signals only qualify if WaveTrend recently reached this low area. More negative, like -60, means fewer but cleaner BUYs. Less negative, like -50, means earlier but noisier BUYs.<br>• <b>WT Overbought Level (Default 55):</b> SELL signals only qualify if WaveTrend recently reached this high area. Higher, like 60, means fewer but cleaner SELLs. Lower, like 50, means earlier but noisier SELLs.<br>• <b>MFI Buy Reclaim Level (Default 35):</b> BUY requires MFI to rise back above this level and be higher than the prior candle. Lower values trigger earlier. Higher values wait for stronger money-flow recovery.<br>• <b>MFI Sell Reject Level (Default 65):</b> SELL requires MFI to fall back below this level and be lower than the prior candle. Higher values trigger earlier. Lower values wait for stronger bearish money-flow weakness.<br>• <b>WT Extreme Lookback Candles (Default 3):</b> How recently the oversold/overbought zone must have happened. 1 is strict and immediate. 3 is balanced. 5 allows later confirmation after the extreme.<br>• <b>Require MFI Confirmation (Default 1):</b> 1 means ON and BB1 waits for money flow confirmation. 0 means OFF and signals become more aggressive. For bots, keep this ON.<br>• <b>Require Candle Confirmation (Default 1):</b> 1 means ON and BB1 requires the candle to close in the signal direction. 0 means OFF and signals trigger faster. For bots, keep this ON.<br><br><b class="text-slate-800">Recommended presets:</b><br>• <b>Conservative:</b> Channel 12, Average 28, Oversold -60, Overbought 60, MFI 40/60, Lookback 3-5, confirmations ON. Best for fewer false signals.<br>• <b>Balanced:</b> Channel 10, Average 21, Oversold -55, Overbought 55, MFI 35/65, Lookback 3, confirmations ON. Best default for bots.<br>• <b>Aggressive:</b> Channel 8, Average 14, Oversold -50, Overbought 50, MFI 30/70, Lookback 2-3, MFI ON, candle confirmation optional. Best for scalping but more false signals.<br><br><b class="text-slate-800">Important:</b><br>BB1 is a reversal signal, not a full strategy by itself. For live bots, use it with trend or structure confirmation such as AVWAP, Supertrend, Pivot Points, Swing Points, or Volume Profile.`,
-            'BotBulls2': `<b>BotBulls 2 (UT Bot — Universal Trailing Stop + Trend Tracer)</b><br><br><b class="text-amber-700">UT</b> stands for <b>Universal Trailing Stop</b> — a dynamic ATR-based trailing stop band that adapts to market volatility in real time, generating high-probability buy/sell signals when price crosses it.<br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 2 is a comprehensive multi-confluence trend and dynamic risk management suite. It protects capital by adapting trailing stop levels to real-time market volatility while filtering out choppy false breakouts through institutional momentum confirmation.<br><br><b class="text-slate-800">How it works:</b><br>It combines an adaptive Universal Trailing (UT) stop band, an institutional double-smoothed Trend Tracer EMA, and extreme statistical Reversal Zones.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>ATR Multiplier (Sensitivity):</b> Controls how tightly the trailing stop hugs price action. Lower values (e.g., 1.5–2.0) react faster for scalping; higher values (e.g., 2.5–3.0) give trades breathing room to ride extended trend swings without early shakeouts.<br>• <b>Trend Tracer Period:</b> Lookback window (default 50) for double-smoothed exponential trend alignment.<br>• <b>Reversal Zone Period:</b> Lookback window (default 50) for statistical deviation bands identifying overstretched extremes.`,
-            'BotBulls3': `<b>BotBulls 3 (HA + UT — Heikin-Ashi Filtered Trail)</b><br><br><b class="text-amber-700">HA</b> stands for <b>Heikin-Ashi</b> (Japanese for “Average Bar”) — a technique that mathematically smooths candlestick data to eliminate market noise, making true trend direction far clearer.<br><br><b class="text-amber-700">UT</b> stands for <b>Universal Trailing Stop</b> — an adaptive ATR-based trailing stop band that tracks volatility and signals momentum flips.<br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 3 is a pure volatility breakout momentum engine designed for fast scalping and intraday momentum. By running an adaptive Universal Trailing stop directly on noise-filtered Heikin-Ashi candles, it eliminates false whipsaws seen on standard price action charts.<br><br><b class="text-slate-800">How it works:</b><br>It converts standard price action into Heikin-Ashi smoothed candles, then applies a hyper-sensitive Universal Trailing stop band. When volatility expands and price breaks above the trailing channel on the HA chart, a high-probability breakout signal is generated.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>ATR Period (Default 10):</b> Lookback window for measuring true range volatility on Heikin-Ashi candles.<br>• <b>ATR Multiplier / Sensitivity (Default 1.0):</b> Trailing stop sensitivity threshold. Lower values (e.g., 1.0) react immediately to breakout momentum for scalping; higher values (e.g., 1.5–2.0) provide a wider buffer against intraday noise.`,
-            'Botbulls4 News AI': `<b>BotBulls 4 News AI (Premium AI News Sentiment)</b><br><br><b class="text-slate-800">What it is & Key Benefits:</b><br>BotBulls 4 is an AI-powered fundamental sentiment intelligence engine. While technical indicators analyze price action, BotBulls 4 reads market news, macro catalysts, and earnings reports in real time, acting as a crucial fundamental guardrail against trading into negative news.<br><br><b class="text-slate-800">How it works:</b><br>It continuously fetches live financial headlines and macro-economic data, processing them through large language models (LLMs) to calculate an objective sentiment score (0–100%). When news is overwhelmingly positive, it fires a bullish sentiment confirmation.<br><br><b class="text-slate-800">Settings Guide & Meanings:</b><br>• <b>Sentiment Bullish Percentage (Default 70%):</b> Minimum AI confidence threshold required to confirm a bullish news catalyst. Higher values (e.g., 75–80%) require overwhelmingly positive news before signaling.<br>• <b>Sentiment Bearish Percentage (Default 30%):</b> Score threshold below which news is classified as bearish. Values below this trigger defensive alerts or short confirmation.`,
             'Pro Bot Deployment Guide': `
 <div class="space-y-6 text-slate-700 leading-relaxed text-xs sm:text-sm">
     <!-- Header Banner -->
@@ -3915,7 +3858,7 @@
                         <span class="text-2xl">📖</span>
                     </div>
                     <div>
-                        <h2 class="text-xl md:text-2xl font-black text-indigo-950 uppercase tracking-tight">Backtesting & Optimization Guide</h2>
+                        <h2 class="text-xl md:text-2xl font-black text-indigo-950 uppercase tracking-tight">Backtesting Guide</h2>
                         <p class="text-[0.65rem] font-bold text-fuchsia-600 uppercase tracking-widest mt-1">Master the Alpha Engine</p>
                     </div>
                 </div>
@@ -3932,7 +3875,8 @@
                     <h3 class="text-lg font-black text-fuchsia-700 uppercase tracking-widest border-b border-fuchsia-200 pb-2">1. Engine Logic & Architecture</h3>
                     <p>The backtesting engine is designed to accurately simulate historical market conditions using your custom algorithmic parameters.</p>
                     <ul class="list-disc pl-5 space-y-2 text-[0.8rem]">
-                        <li><strong class="text-indigo-950 font-black">Data Ingestion:</strong> Fetches historical OHLCV data using Yahoo Finance (yfinance) and optionally Alpaca's historical API. Data is cleaned and filtered for Regular Trading Hours (RTH) if extended hours are disabled.</li>
+                        <li><strong class="text-indigo-950 font-black">Data Ingestion:</strong> Fetches split-adjusted historical OHLCV data from Alpaca first, with Yahoo Finance as the fallback. Data is filtered to Regular Trading Hours (RTH) when the Regular session is selected.</li>
+                        <li><strong class="text-indigo-950 font-black">Execution:</strong> Signals are decided on a completed candle and entries fill at the next candle's open, the same way a live bot acts. No fees or slippage are added, so live results will be somewhat lower.</li>
                         <li><strong class="text-indigo-950 font-black">Indicator Engine:</strong> Calculates complex technical indicators (RSI, MACD, EMA Cross, Supertrend, Bollinger Bands, Session VWAP, etc.) across the entire historical timeframe to prevent iterative lag.</li>
                         <li><strong class="text-indigo-950 font-black">ATR-Based Stops:</strong> Volatility-adjusted Stop Loss & Take Profit using the Average True Range (ATR). Instead of a fixed percentage, the stop loss widens in volatile markets and tightens in quiet markets.</li>
                     </ul>
@@ -3940,12 +3884,12 @@
 
                 <!-- Section 2 -->
                 <div class="space-y-3 p-5 rounded-2xl bg-gradient-to-r from-fuchsia-500/10 to-purple-500/10 border border-fuchsia-200/50 shadow-inner">
-                    <h3 class="text-lg font-black text-fuchsia-800 uppercase tracking-widest border-b border-fuchsia-200/60 pb-2">2. Auto-Optimization & Preventing Overfitting</h3>
-                    <p class="text-sm">A common trap in algorithmic trading is "Curve Fitting"—tweaking parameters until the backtest looks perfect, only to watch the strategy fail in live markets. To solve this, Bot Bulls includes an <strong>Auto-Optimizer</strong> using Grid Search and Out-of-Sample (OOS) validation.</p>
+                    <h3 class="text-lg font-black text-fuchsia-800 uppercase tracking-widest border-b border-fuchsia-200/60 pb-2">2. Preventing Overfitting</h3>
+                    <p class="text-sm">A common trap in algorithmic trading is "Curve Fitting"—tweaking parameters until the backtest looks perfect, only to watch the strategy fail in live markets. Decide your settings first, then check them on data you did not tune on.</p>
                     <ul class="list-disc pl-5 space-y-2 mt-2 text-[0.8rem] text-fuchsia-950">
-                        <li><strong class="font-black">Grid Search:</strong> The engine tests hundreds of combinations of parameters (Signal Thresholds, ATR Multipliers, etc.) simultaneously.</li>
-                        <li><strong class="font-black">Data Splitting:</strong> The historical data is split. <strong>In-Sample</strong> data is used to train and find the best Sharpe Ratio. <strong>Out-of-Sample</strong> data is unseen "blind" data to test those best parameters.</li>
-                        <li><strong class="font-black">Overfit Badge:</strong> If a strategy performs exceptionally well In-Sample but fails Out-of-Sample, it is tagged as <span class="bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded font-black text-[0.6rem]">🔴 OVERFITTED</span>. If it maintains its edge, it is tagged as <span class="bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded font-black text-[0.6rem]">🟢 ROBUST</span>.</li>
+                        <li><strong class="font-black">Fix settings before testing:</strong> Choose the indicators, thresholds and exits from your idea, not from whichever run looked best.</li>
+                        <li><strong class="font-black">Check unseen data:</strong> Re-run the same settings on a different period and on other liquid tickers. A strategy that only works on one window is likely curve-fitted.</li>
+                        <li><strong class="font-black">Enough trades:</strong> Results from fewer than about 30 trades are mostly noise. Compare against Market Buy &amp; Hold, including drawdown, not just return.</li>
                     </ul>
                 </div>
 
@@ -3962,12 +3906,12 @@
                             <p class="text-[0.7rem] text-indigo-800">A strategy with 500% ROI but an 80% Max Drawdown is a gamble. Aim for the highest Sharpe Ratio (>1.5) to ensure consistent growth.</p>
                         </div>
                         <div class="p-4 bg-white/50 border border-white rounded-xl shadow-sm">
-                            <h4 class="font-black text-indigo-950 text-xs uppercase mb-1">Always Use Optimizer</h4>
-                            <p class="text-[0.7rem] text-indigo-800">Never deploy a bot based purely on a standard backtest. Always toggle Auto-Optimizer and rely on the Out-of-Sample validation badge.</p>
+                            <h4 class="font-black text-indigo-950 text-xs uppercase mb-1">Match Your Bot Settings</h4>
+                            <p class="text-[0.7rem] text-indigo-800">Deploy the bot with the same timeframe, session, indicators, thresholds and exits you tested. Any difference means the bot runs a strategy that was not backtested.</p>
                         </div>
                         <div class="p-4 bg-white/50 border border-white rounded-xl shadow-sm">
-                            <h4 class="font-black text-indigo-950 text-xs uppercase mb-1">Test in Live Trading</h4>
-                            <p class="text-[0.7rem] text-indigo-800">Once you find a 🟢 ROBUST strategy, deploy it directly to live trading with Alpaca. Monitor it closely in your active dashboard.</p>
+                            <h4 class="font-black text-indigo-950 text-xs uppercase mb-1">Paper Trade First</h4>
+                            <p class="text-[0.7rem] text-indigo-800">A good backtest is not proof. Run the bot on an Alpaca paper account for several weeks before using real money, and monitor it in your active dashboard.</p>
                         </div>
                     </div>
                 </div>
@@ -3977,5 +3921,6 @@
     </div>
 
     <script src="modal-scroll-lock.js?v=1"></script>
+    <script src="page-loader.js?v=1"></script>
 </body>
 </html>

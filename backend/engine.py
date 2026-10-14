@@ -22,6 +22,13 @@ from firebase_admin import firestore
 import config as global_config
 from user_config import UserConfig, set_user_config
 from trade_guards import is_stop_exit, opening_blackout_reason, quote_liquidity_reason, stabilization_reason
+import strategy_presets
+import preset_runtime
+from corporate_actions_service import events_after as split_events_after
+import allocation_executor
+import session_executor
+import bot_scan_interval
+import scan_phase
 
 BOT_CONSECUTIVE_LOSS_PAUSE_THRESHOLD = 3
 
@@ -1621,6 +1628,27 @@ def _current_day_range_from_history(price_history):
         return None
     return {"high": ohlc["high"], "low": ohlc["low"]}
 
+# --- Order lifecycle -------------------------------------------------------------
+# A market order is usually "accepted" at submission and fills a moment later. Bookkeeping (trade counts, realized
+# P/L, compounding, loss limits, cooldown, signal reset, post-stop state) must run on the broker's real fill, exactly
+# once. The engine waits briefly for the fill; if it has not arrived it records the order as pending (persisted with
+# the bot's settings, so a restart picks it up) and books it on a later pass.
+PENDING_FILL_KEY = "pending_fill"
+FILL_CONFIRM_SECONDS = 4.0
+FILL_POLL_SECONDS = 0.5
+DEAD_ORDER_STATUSES = frozenset({"canceled", "cancelled", "expired", "rejected", "done_for_day", "replaced", "stopped", "suspended"})
+TRAILING_STOPS_KEY = "trailing_stops"
+
+
+def _order_status(value) -> str:
+    """Normalize a broker status: the Alpaca SDK's ``str(OrderStatus.FILLED)`` is ``"OrderStatus.FILLED"``."""
+    raw = getattr(value, "value", value)
+    text = str(raw or "").strip().lower().replace(" ", "_")
+    if text.startswith("orderstatus."):
+        text = text.split(".", 1)[1]
+    return text
+
+
 FIXED_LEVEL_EXIT_MODES = {
     "custom_sltp",
     "sltp",
@@ -1896,6 +1924,16 @@ class UserEngine:
         self.bot_scans = {}
         self.bot_scans_by_tf = {}
         self.last_scan_timestamps = {}
+        # Strategy ``per_candle`` scan policy: ticker -> idle marker (see preset_runtime.scan_marker).
+        # In memory on purpose: after a restart every bot is evaluated once before it can idle.
+        self.preset_scan_markers = {}
+        # Bots that must be re-evaluated on the loop's next pass (settings saved / bot created): ticker -> reason.
+        # A request survives the loop's wake-up, unlike the shared event, which is cleared before the next pass reads it.
+        self.force_scan_tickers = {}
+        # Retry counters for client order ids after a confirmed broker rejection (see _order_intent_id).
+        self.order_attempts = {}
+        # Restored trailing stops awaiting a check against the live position they belong to.
+        self._restored_trailing_avg = {}
         self.last_bot_scan_time = {}
         self.last_history_save_ts = 0
         self._last_cloud_settings_digest = None
@@ -1944,8 +1982,215 @@ class UserEngine:
         candle_key = candle.get("candle_key") or (result or {}).get("time") or "unknown"
         level = (result or {}).get("level") or (result or {}).get("continuous_grid_side") or "base"
         raw = f"{self.uid}:{ticker}:{side}:{instrument}:{candle_key}:{level}"
+        # After a confirmed rejection (nothing was created at the broker) the next attempt needs a new id: Alpaca
+        # refuses a reused client order id. An uncertain outcome keeps the same id, so a retry stays idempotent.
+        attempt = self.order_attempts.get(raw, 0) if hasattr(self, "order_attempts") else 0
+        if attempt:
+            raw = f"{raw}:retry{attempt}"
         owner_tag = getattr(self.broker, "order_owner_tag", "")
         return f"bb-{owner_tag}-{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]}"
+
+    def _note_order_rejected(self, ticker: str, side: str, result: dict, order_result: dict, instrument: str = "") -> None:
+        """A definite broker rejection: the next attempt for this decision uses a new client order id."""
+        if not isinstance(order_result, dict) or not order_result.get("rejected"):
+            return
+        candle = (result or {}).get("candle_meta") or {}
+        candle_key = candle.get("candle_key") or (result or {}).get("time") or "unknown"
+        level = (result or {}).get("level") or (result or {}).get("continuous_grid_side") or "base"
+        raw = f"{self.uid}:{ticker}:{side}:{instrument}:{candle_key}:{level}"
+        if len(self.order_attempts) > 500:
+            self.order_attempts.clear()
+        self.order_attempts[raw] = self.order_attempts.get(raw, 0) + 1
+
+    async def _confirm_fill(self, order_result: dict) -> dict:
+        """Wait briefly (without blocking the event loop) for a just-submitted order to fill."""
+        if not isinstance(order_result, dict) or not order_result.get("success") or self._order_result_is_filled(order_result):
+            return order_result
+        get_order = getattr(self.broker, "get_order", None)
+        order_id = order_result.get("order_id")
+        if not callable(get_order) or not order_id or getattr(self.broker, "simulation_mode", True):
+            return order_result
+        deadline = time.monotonic() + FILL_CONFIRM_SECONDS
+        while time.monotonic() < deadline:
+            await asyncio.sleep(FILL_POLL_SECONDS)
+            try:
+                info = await asyncio.to_thread(get_order, order_id)
+            except Exception:
+                info = None
+            if not isinstance(info, dict):
+                break
+            status = _order_status(info.get("status"))
+            if status == "filled" or status in DEAD_ORDER_STATUSES:
+                merged = {**order_result, **{k: v for k, v in info.items() if v is not None}}
+                merged["status"] = status
+                merged["success"] = True
+                if _safe_float(info.get("filled_qty"), 0.0) > 0:
+                    merged["qty"] = _safe_float(info.get("filled_qty"), 0.0)
+                return merged
+        return order_result
+
+    def _remember_pending_fill(self, t_settings: dict, side: str, order_result: dict, result: dict, *,
+                               entry_price: float = 0.0, position_qty: float = 0.0, closes_position: bool = True) -> None:
+        """Persist an accepted-but-unfilled order so its bookkeeping happens once, when the broker reports the fill."""
+        t_settings[PENDING_FILL_KEY] = {
+            "side": side,
+            "order_id": str(order_result.get("order_id") or ""),
+            "client_order_id": str(order_result.get("client_order_id") or ""),
+            "submitted_at": self.get_now().isoformat(),
+            "signal_price": _safe_float(result.get("price_raw"), 0.0),
+            "reason": str(result.get("reason") or "")[:300],
+            "entry_price": _safe_float(entry_price, 0.0),
+            "position_qty": _safe_float(position_qty, 0.0),
+            "closes_position": bool(closes_position),
+            "signal_key": ((result.get("strategy_preset") or {}).get("signal_key") if isinstance(result.get("strategy_preset"), dict) else None),
+            "timeframe": result.get("timeframe"),
+            "atr": _safe_float(result.get("atr"), 0.0),
+        }
+
+    async def _book_buy_fill(self, ticker: str, t_settings: dict, record: dict, fill_qty: float, fill_price: float,
+                             had_position: bool) -> None:
+        """Everything that must happen once when a (non-grid) buy has filled."""
+        ticker_norm = ticker.upper().replace("/", "")
+        self.last_trailing_stops.pop(ticker, None)
+        t_settings.pop(TRAILING_STOPS_KEY, None)
+        record["qty"] = float(fill_qty)
+        if fill_price > 0:
+            record["price_raw"] = float(fill_price)
+            record["price"] = f"${fill_price:.4f}" if fill_price < 10 else f"${fill_price:.2f}"
+        record["total_cost"] = round(float(fill_qty) * float(fill_price or 0.0), 2)
+        record["reason"] = f"✅ BOUGHT {float(fill_qty):.6f} shares at {record.get('price')}: {record.get('reason', '')}"
+        self.last_trade_timestamps[ticker] = self.get_now()
+        if (t_settings.get("grid_continuous_mode") or t_settings.get("atr_grid_continuous_mode")
+                or t_settings.get("exit_grid_continuous_mode") or t_settings.get("exit_atr_grid_continuous_mode")):
+            _record_continuous_grid_fill(
+                t_settings, side="buy", fill_price=float(fill_price or 0.0), was_grid_order=False,
+                had_position=bool(had_position), filled_level=None,
+                current_atr=max(0.0, _safe_float(record.get("atr"), 0.0)),
+            )
+        await self._increment_trade_count(ticker, entry=True)
+        try:
+            fresh_pos = self._find_position(self.broker.get_positions(), ticker_norm)
+            if fresh_pos:
+                from main import _ensure_exit_forecast_snapshot
+                _ensure_exit_forecast_snapshot(t_settings, record, fresh_pos, ticker)
+                protection = self._sync_exit_protection(ticker, record, fresh_pos, t_settings, force=True)
+                if protection:
+                    record["exit_protection"] = protection
+        except Exception as protect_err:
+            print(f"[exit-protect] {ticker_norm} post-fill protection error: {type(protect_err).__name__}")
+        await self.save_settings()
+
+    async def _book_sell_fill(self, ticker: str, t_settings: dict, record: dict, fill_qty: float, fill_price: float,
+                              entry_price: float, closes_position: bool) -> None:
+        """Everything that must happen once when a (non-grid) sell has filled: realized P/L from the real fill price,
+        compounding, loss limits (consecutive losses, daily loss), post-stop state, cooldown, signal reset."""
+        qty = float(fill_qty)
+        price = float(fill_price or 0.0)
+        record["qty"] = qty
+        if price > 0:
+            record["price_raw"] = price
+            record["price"] = f"${price:.4f}" if price < 10 else f"${price:.2f}"
+        record["total_cost"] = round(qty * price, 2)
+        reason = str(record.get("reason") or "")
+        if entry_price and entry_price > 0 and price > 0:
+            pl = (price - entry_price) * qty
+            record["pl"] = round(pl, 2)
+            record["pl_pct"] = round((price / entry_price - 1) * 100, 2)
+            label = "CLOSED" if closes_position else "PARTIALLY SOLD"
+            record["reason"] = f"✅ {label} at {record.get('price')} (Entry: ${entry_price:.4f}): {reason}"
+            self._record_realized_exit(ticker, t_settings, pl, record["reason"], price, "BUY", complete=bool(closes_position))
+            self._apply_compound_pl(t_settings, pl, "regular")
+        else:
+            record["reason"] = f"✅ SOLD at {record.get('price')}: {reason}"
+        _record_continuous_grid_fill(
+            t_settings, side="sell", fill_price=price, was_grid_order=False, had_position=True,
+            position_closed=bool(closes_position), continue_cycle=False, filled_level=None,
+            current_atr=max(0.0, _safe_float(record.get("atr"), 0.0)),
+        )
+        if closes_position:
+            from main import _clear_forecast_exit_snapshots
+            _clear_forecast_exit_snapshots(t_settings)
+            self.last_trailing_stops.pop(ticker, None)
+            t_settings.pop(TRAILING_STOPS_KEY, None)
+        self.last_trade_timestamps[ticker] = self.get_now()
+        await self._increment_trade_count(ticker)
+        if closes_position and t_settings.get("enable_signal_reset", True):
+            self._set_signal_reset_lock(ticker, "BUY", t_settings)  # no-op for strategy bots
+        await self.save_settings()
+
+    def _hydrate_trailing_stops(self) -> None:
+        """Restore stock trailing stops saved with each bot, so a restart never loosens a ratcheted stop."""
+        for ticker, settings in (self.config.TICKER_SETTINGS or {}).items():
+            state = settings.get(TRAILING_STOPS_KEY) if isinstance(settings, dict) else None
+            stop = _safe_float((state or {}).get("stop"), 0.0) if isinstance(state, dict) else 0.0
+            if stop > 0:
+                self.last_trailing_stops.setdefault(ticker, stop)
+                self._restored_trailing_avg[ticker] = _safe_float(state.get("avg"), 0.0)
+
+    def _sync_trailing_stop_state(self, ticker: str, t_settings: dict, pos_info) -> bool:
+        """Mirror the in-memory trailing stop into the bot's saved settings. Returns True when it changed."""
+        stop = self.last_trailing_stops.get(ticker)
+        if not pos_info or stop is None or _safe_float(stop, 0.0) <= 0:
+            return t_settings.pop(TRAILING_STOPS_KEY, None) is not None
+        avg = _safe_float(pos_info.get("avg_price"), 0.0)
+        stored = t_settings.get(TRAILING_STOPS_KEY) or {}
+        value = round(float(stop), 6)
+        if stored.get("stop") == value and stored.get("avg") == avg:
+            return False
+        t_settings[TRAILING_STOPS_KEY] = {"stop": value, "avg": avg, "updated_at": self.get_now().isoformat()}
+        return True
+
+    async def _reconcile_pending_fill(self, ticker: str, t_settings: dict) -> None:
+        """Book an order that was accepted on an earlier pass once the broker reports its final state."""
+        pending = t_settings.get(PENDING_FILL_KEY)
+        if not isinstance(pending, dict):
+            return
+        get_order = getattr(self.broker, "get_order", None)
+        if not callable(get_order):
+            return
+        try:
+            if pending.get("order_id"):
+                info = await asyncio.to_thread(get_order, pending.get("order_id"))
+            else:
+                info = await asyncio.to_thread(get_order, None, pending.get("client_order_id"))
+        except Exception:
+            info = None
+        if not isinstance(info, dict):
+            return  # unknown right now: keep it and look again on the next pass
+        status = _order_status(info.get("status"))
+        if status != "filled" and status not in DEAD_ORDER_STATUSES:
+            return  # still working (new / accepted / partially filled)
+        t_settings.pop(PENDING_FILL_KEY, None)
+        side = str(pending.get("side") or "buy")
+        filled_qty = _safe_float(info.get("filled_qty"), 0.0)
+        fill_price = _safe_float(info.get("filled_avg_price"), 0.0) or _safe_float(pending.get("signal_price"), 0.0)
+        record = {
+            "time": self.get_now().isoformat(), "ticker": ticker, "action": side.upper(), "option_intent": "HOLD",
+            "price_raw": fill_price, "price": f"${fill_price:.2f}", "reason": pending.get("reason") or "",
+            "timeframe": pending.get("timeframe") or t_settings.get("timeframe"), "atr": pending.get("atr"),
+            "signals": {}, "bullish_count": 0, "bearish_count": 0, "total_signals": 0,
+            "buy_mode": t_settings.get("buy_mode"), "sell_mode": t_settings.get("sell_mode"),
+            "order_id": pending.get("order_id"), "log_type": "Active Bot", "fill_confirmed_later": True,
+        }
+        if filled_qty <= 0:
+            record["action"] = "HOLD"
+            record["reason"] = f"{side.upper()} order {status} without a fill; nothing changed."
+            # A strategy entry that never filled may act on the same signal again.
+            signal_key = pending.get("signal_key")
+            if side == "buy" and signal_key and t_settings.get(preset_runtime.LAST_ENTRY_KEY) == signal_key:
+                t_settings.pop(preset_runtime.LAST_ENTRY_KEY, None)
+            await self.save_settings()
+        elif side == "buy":
+            await self._book_buy_fill(ticker, t_settings, record, filled_qty, fill_price,
+                                      had_position=_safe_float(pending.get("position_qty"), 0.0) > 0)
+        else:
+            position_qty = _safe_float(pending.get("position_qty"), 0.0)
+            closes = (bool(pending.get("closes_position")) and status == "filled"
+                      and (position_qty <= 0 or filled_qty >= position_qty - 1e-6))
+            await self._book_sell_fill(ticker, t_settings, record, filled_qty, fill_price,
+                                       entry_price=_safe_float(pending.get("entry_price"), 0.0), closes_position=closes)
+        self.trade_log.insert(0, record)
+        await self.save_history_throttled(force=True)
 
     def _order_result_is_filled(self, order_result: dict) -> bool:
         """Do not mutate strategy state from a mere broker submission receipt."""
@@ -1953,7 +2198,7 @@ class UserEngine:
             return False
         if getattr(self.broker, "simulation_mode", True):
             return True
-        status = str(order_result.get("status") or "").lower().replace(" ", "_")
+        status = _order_status(order_result.get("status"))
         # A partial fill is still an outstanding intent.  Treating it as a
         # complete fill would overstate position quantity and could submit a
         # duplicate remainder on the next scan.
@@ -1982,6 +2227,9 @@ class UserEngine:
         locked_dir = self._normalize_signal_lock(direction)
         if not ticker_key or not locked_dir:
             return None
+        lock_settings = t_settings if isinstance(t_settings, dict) else self.config.TICKER_SETTINGS.get(ticker_key, {})
+        if isinstance(lock_settings, dict) and not lock_settings.get("options_trading") and strategy_presets.is_strategy_preset_active(lock_settings):
+            return None  # a strategy bot has no signal-reset lock
         self.signal_locked_direction[ticker_key] = locked_dir
         settings = t_settings if isinstance(t_settings, dict) else self.config.TICKER_SETTINGS.setdefault(ticker_key, {})
         if isinstance(settings, dict):
@@ -2000,6 +2248,9 @@ class UserEngine:
 
     def _get_signal_reset_lock(self, ticker, t_settings=None):
         ticker_key = str(ticker or "").upper().strip()
+        lock_settings = t_settings if isinstance(t_settings, dict) else self.config.TICKER_SETTINGS.get(ticker_key, {})
+        if isinstance(lock_settings, dict) and not lock_settings.get("options_trading") and strategy_presets.is_strategy_preset_active(lock_settings):
+            return None  # a strategy bot has no signal-reset lock (a stale one is ignored, not deleted)
         locked_dir = self._normalize_signal_lock(self.signal_locked_direction.get(ticker_key))
         if locked_dir:
             return locked_dir
@@ -2039,6 +2290,76 @@ class UserEngine:
         except (TypeError, ValueError):
             return 0.0
 
+    def _scan_phase_for(self, ticker, t_settings, result, has_position, timeframe):
+        """Describe where a manual bot is in its entry -> exit -> re-entry loop (log only; changes no decision)."""
+        if (
+            not isinstance(result, dict) or not isinstance(t_settings, dict)
+            or t_settings.get("options_trading") or t_settings.get("is_option")
+            or strategy_presets.is_strategy_preset_active(t_settings)
+        ):
+            return None
+        ticker_key = str(ticker or "").upper().strip()
+        gates = []
+        if not has_position:
+            now = self.get_now()
+            # Post-stop wait: the engine pops the state once it is satisfied, so its presence plus the guard text means "waiting".
+            reason_text = str(result.get("reason") or "")
+            post_stop_wait = isinstance(t_settings.get("post_stop_state"), dict) and "Post-stop stabilization" in reason_text
+            gates.append({"key": "post_stop", "state": "blocking" if post_stop_wait else "clear",
+                          "detail": reason_text.split("(", 1)[-1].rstrip(")") if post_stop_wait else ""})
+            # Cooldown: same rule as the entry gate (custom minutes, else 4 candles of the trading timeframe).
+            if t_settings.get("enable_cooldown", True):
+                custom = t_settings.get("cooldown_minutes")
+                seconds = _safe_float(custom, 0.0) * 60 if custom is not None else parse_timeframe_to_seconds(timeframe) * 4
+                last = self.last_trade_timestamps.get(ticker_key)
+                remaining = seconds - (now - last).total_seconds() if last else 0.0
+                gates.append({"key": "cooldown", "state": "blocking" if remaining > 0 else "clear",
+                              "detail": f"{scan_phase.duration_text(remaining)} left" if remaining > 0 else ""})
+            else:
+                gates.append({"key": "cooldown", "state": "off"})
+            # Signal reset: blocked until every same-direction signal has turned off once.
+            if t_settings.get("enable_signal_reset", True):
+                locked = self._get_signal_reset_lock(ticker_key, t_settings)
+                if locked:
+                    still_on = int(self._signal_reset_count(result, locked))
+                    waiting = still_on > 0
+                    gates.append({"key": "signal_reset", "state": "blocking" if waiting else "clear",
+                                  "detail": f"{still_on} {'bullish' if locked != 'SELL' else 'bearish'} signal(s) still on" if waiting else ""})
+                else:
+                    gates.append({"key": "signal_reset", "state": "clear"})
+            else:
+                gates.append({"key": "signal_reset", "state": "off"})
+            # Smart re-entry filter: RSI pullback or distance from Session VWAP.
+            if t_settings.get("enable_smart_reentry", getattr(self.config, "ENABLE_SMART_REENTRY", False)):
+                kind = str(t_settings.get("smart_reentry_type", getattr(self.config, "SMART_REENTRY_TYPE", "RSI")) or "RSI").upper()
+                blocked, detail = False, ""
+                if kind == "RSI":
+                    rsi = _safe_float(result.get("_internal_rsi", result.get("rsi")), None)
+                    limit = _safe_float(t_settings.get("smart_reentry_rsi_call_max"), _safe_float(getattr(self.config, "SMART_REENTRY_RSI_CALL_MAX", 70), 70.0))
+                    if rsi is not None:
+                        blocked = rsi > limit
+                        detail = f"RSI {rsi:.1f} {'above' if blocked else 'within'} {limit:g}" if blocked else ""
+                else:
+                    vwap = _safe_float(result.get("vwap"), 0.0)
+                    price = _safe_float(result.get("price_raw"), 0.0)
+                    limit = _safe_float(t_settings.get("smart_reentry_vwap_call_max_dist_pct"), _safe_float(getattr(self.config, "SMART_REENTRY_VWAP_CALL_MAX_DIST_PCT", 0.5), 0.5))
+                    if vwap and vwap > 0 and price > 0:
+                        distance = abs(price - vwap) / vwap * 100.0
+                        blocked = distance > limit
+                        detail = f"{distance:.2f}% from VWAP (max {limit:g}%)" if blocked else ""
+                gates.append({"key": "smart_reentry", "state": "blocking" if blocked else "clear", "detail": detail})
+            else:
+                gates.append({"key": "smart_reentry", "state": "off"})
+        reason_text = str(result.get("reason") or "")
+        held_back = ""
+        if result.get("action") not in ("BUY", "SELL") and any(
+            marker in reason_text for marker in ("Liquidity filter", "Loss circuit", "strategy-loss limit", "blackout")
+        ):
+            held_back = reason_text
+        after_exit = bool(self.last_trade_timestamps.get(ticker_key)) or bool(self._get_signal_reset_lock(ticker_key, t_settings))
+        return scan_phase.describe(result, t_settings, has_position=bool(has_position), gates=gates,
+                                   held_back=held_back, after_exit=after_exit)
+
     def _signal_reset_is_reset(self, result, locked_dir, t_settings):
         # A setup is fully reset only after every same-direction primary vote
         # has dropped out. Falling merely below the entry threshold is not a
@@ -2051,10 +2372,20 @@ class UserEngine:
             t_settings["risk_guard_date"] = today
             t_settings["daily_realized_pl"] = 0.0
 
+    @staticmethod
+    def _loss_pause_threshold(t_settings) -> int:
+        """Losing trades in a row before a bot pauses: 3, or a Session Rider bot's own setting (never below 3)."""
+        if isinstance(t_settings, dict) and strategy_presets.is_schedule_active(t_settings):
+            import session_schedule
+            chosen = session_schedule.normalized_settings(t_settings).get(session_schedule.LOSS_PAUSE_KEY)
+            return max(BOT_CONSECUTIVE_LOSS_PAUSE_THRESHOLD, int(chosen or BOT_CONSECUTIVE_LOSS_PAUSE_THRESHOLD))
+        return BOT_CONSECUTIVE_LOSS_PAUSE_THRESHOLD
+
     def _pause_for_consecutive_losses(self, ticker, t_settings):
-        t_settings["max_consecutive_losses"] = BOT_CONSECUTIVE_LOSS_PAUSE_THRESHOLD
+        threshold = self._loss_pause_threshold(t_settings)
+        t_settings["max_consecutive_losses"] = threshold
         consecutive = max(0, int(_safe_float(t_settings.get("consecutive_losses"), 0)))
-        if consecutive < BOT_CONSECUTIVE_LOSS_PAUSE_THRESHOLD or t_settings.get("paused", False):
+        if consecutive < threshold or t_settings.get("paused", False):
             return False
 
         paused_at = self.get_now().isoformat()
@@ -2064,14 +2395,14 @@ class UserEngine:
         t_settings["pause_requires_review"] = True
         t_settings["pause_event_id"] = f"{str(ticker or '').upper().strip()}:{paused_at}"
         t_settings["pause_reason"] = (
-            "Paused after 3 consecutive losing trades. Review the bot settings, "
+            f"Paused after {threshold} consecutive losing trades. Review the bot settings, "
             "then activate the bot again."
         )
         try:
             self.broker.cancel_orders_for_ticker(ticker)
         except Exception as err:
             print(f"[engine-{self.uid}] Error cancelling orders after loss-streak pause for {ticker}: {err}")
-        print(f"[engine-{self.uid}] Auto-paused {ticker} after 3 consecutive losing trades.")
+        print(f"[engine-{self.uid}] Auto-paused {ticker} after {threshold} consecutive losing trades.")
         return True
 
     def _record_realized_exit(self, ticker, t_settings, pl, reason="", exit_price=None, direction="BUY", complete=True):
@@ -2115,7 +2446,7 @@ class UserEngine:
 
     def _entry_loss_circuit_reason(self, t_settings, allocated_capital):
         self._refresh_daily_guard_state(t_settings)
-        max_losses = BOT_CONSECUTIVE_LOSS_PAUSE_THRESHOLD
+        max_losses = self._loss_pause_threshold(t_settings)
         t_settings["max_consecutive_losses"] = max_losses
         consecutive = max(0, int(_safe_float(t_settings.get("consecutive_losses"), 0)))
         if max_losses and consecutive >= max_losses:
@@ -2537,6 +2868,17 @@ class UserEngine:
         tf_bucket = self.latest_scans_by_tf.setdefault(timeframe, {})
         tf_bucket[ticker] = result
 
+    def request_forced_scan(self, ticker: str, reason: str = "settings_changed"):
+        """Ask the trading loop to evaluate one bot on its very next pass, ignoring the refresh interval,
+        the market-closed pause and the strategy's once-per-candle idling. Evaluation only: orders are still
+        decided by the normal trading rules (market window, strategy gates, risk limits)."""
+        key = str(ticker or "").upper().strip()
+        if not key:
+            return
+        self.force_scan_tickers[key] = str(reason or "settings_changed")
+        if self.force_scan_trigger:
+            self.force_scan_trigger.set()
+
     def _record_bot_scan(self, result: dict):
         if not result: return
         ticker = result.get("ticker", "").upper()
@@ -2623,7 +2965,7 @@ class UserEngine:
         seconds_to_pre_open = max(0, int((next_scan - et_now).total_seconds()))
         
         open_day_name = next_open.strftime("%A") if next_open.date() != et_now.date() else "Today"
-        next_open_str = f"{open_day_name} at 9:30 AM ET"
+        next_open_str = f"{open_day_name} at 8:30 AM CT"
         
         return {
             "is_active_window": is_active_window,
@@ -2678,7 +3020,7 @@ class UserEngine:
         seconds_to_pre_open = max(0, int((next_scan - et_now).total_seconds()))
         
         open_day_name = next_open.strftime("%A") if next_open.date() != et_now.date() else "Today"
-        time_label = "4:00 AM ET" if is_extended else "9:30 AM ET"
+        time_label = "3:00 AM CT" if is_extended else "8:30 AM CT"
         next_open_str = f"{open_day_name} at {time_label}"
         
         return {
@@ -3211,6 +3553,18 @@ class UserEngine:
         if t_settings.get('exit_protection_enabled', True) is False:
             return None
 
+        position_qty = _safe_float(pos_info.get('qty'), 0.0)
+        if abs(position_qty - round(position_qty)) > 1e-6:
+            # Alpaca does not accept OCO/bracket orders for fractional quantities: do not attempt (and fail) one every
+            # scan. The in-process watcher checks these levels against the live position price instead.
+            precision = 6 if _is_crypto_symbol(ticker_norm) or min(targets['take_profit'], targets['stop_loss']) < 1 else 2
+            return {
+                'status': f"Active | Watcher | TP ${targets['take_profit']:.{precision}f} | SL ${targets['stop_loss']:.{precision}f} | fractional position",
+                'active': True,
+                'protection_type': 'watcher',
+                **targets,
+            }
+
         # Do not cancel and recreate an unchanged broker OCO on every HOLD
         # heartbeat.  Keeping the existing order preserves protection and
         # avoids unnecessary broker writes/rate-limit pressure.
@@ -3284,6 +3638,47 @@ class UserEngine:
             print(f"[exit-protect] {ticker_norm} cancelled broker exit order{detail}")
         return res
 
+    async def _reconcile_corporate_actions(self, ticker: str, ticker_norm: str, t_settings: dict, pos_info, has_position: bool) -> None:
+        """Rescale saved price levels when a held/watched stock splits.
+
+        New entries pause while a split is unreconciled; exits and protective
+        stops keep working. Nothing is ever liquidated because of a split or a
+        failed lookup. If the broker position does not match the expected
+        post-split quantity, entries stay paused and the next scan retries.
+        """
+        lookup = await asyncio.to_thread(split_events_after, ticker_norm, t_settings.get(preset_runtime.LAST_CORPORATE_ACTION_KEY))
+        if not lookup.available:
+            return  # unknown, not "no split": leave state untouched
+        today = self.get_now().astimezone(pytz.timezone("America/New_York")).date()
+        if preset_runtime.baseline_corporate_actions(t_settings, lookup.events, today):
+            await self.save_settings()
+            return
+        broker_qty = _safe_float(pos_info.get('qty'), 0.0) if pos_info else 0.0
+        for event in [e for e in lookup.events if e.ex_date <= today]:
+            outcome = preset_runtime.apply_split_event(t_settings, event, broker_qty=broker_qty, has_position=has_position)
+            if outcome['status'] == 'review' and t_settings.get('_corporate_action_review_logged') == event.key:
+                break  # already reported; retry silently next scan
+            t_settings['_corporate_action_review_logged'] = event.key if outcome['status'] == 'review' else None
+            level = "WARNING" if outcome['status'] == 'review' else "INFO"
+            print(f"[corporate-action-{self.uid}] {level} {ticker_norm}: {outcome['message']}")
+            self.trade_log.insert(0, {
+                "time": self.get_now().isoformat(),
+                "action": "HOLD",
+                "ticker": ticker,
+                "price": "$0.00",
+                "price_raw": 0.0,
+                "reason": f"🔀 CORPORATE ACTION: {outcome['message']}",
+                "signals": {},
+                "bullish_count": 0,
+                "bearish_count": 0,
+                "total_signals": 0,
+                "log_type": "Corporate Action",
+            })
+            await self.save_settings()
+            await self.save_history()
+            if outcome['status'] == 'review':
+                break
+
     async def _warm_timeframe_scans(self, timeframe: str, primary_ticker: str = None, limit: int = 4):
         set_user_config(self.config)
         if not self.config.WATCHLIST: return
@@ -3317,12 +3712,22 @@ class UserEngine:
         print(f"[scheduler-{self.uid}] Trading loop started.")
         from user_config import active_evaluation_context
         active_evaluation_context.set("bots")
+        self._hydrate_trailing_stops()
         while self.bot_running:
             set_user_config(self.config)
             try:
                 account = self.broker.get_account_info()
                 if account.get('simulation', True):
                     self.last_scan_time = "Disconnected (Alpaca Link Required)"
+                    await asyncio.sleep(10)
+                    continue
+                if account.get('error') or float(account.get('equity') or 0.0) <= 0:
+                    # A broker/API failure degrades to equity=0 in the account
+                    # payload. That is a data-fetch failure, not a real 100%
+                    # loss — never feed it into the drawdown/halt check. Skip
+                    # this cycle and preserve the last valid risk state.
+                    print(f"[risk-{self.uid}] Skipping risk/trade cycle: account data unavailable ({account.get('error') or 'non-positive equity'}).")
+                    self.last_scan_time = "Degraded (Account Data Unavailable)"
                     await asyncio.sleep(10)
                     continue
                 equity = account['equity']
@@ -3417,17 +3822,41 @@ class UserEngine:
                 all_orders = self.broker.get_open_orders()
                 portfolio_count = len(all_positions)
 
+                # Malik allocation bots: their own once-a-day rebalance (sells for every bot before any buy).
+                # They never go through the per-ticker signal path below, so their benchmark ticker is never traded.
+                try:
+                    await allocation_executor.run_cycle(self, all_positions)
+                except Exception as alloc_err:
+                    print(f"[alloc-{self.uid}] Cycle error: {type(alloc_err).__name__}")
+
+                # Session Rider bots: scheduled buy/sell of their own ticker (exits are never skipped).
+                try:
+                    await session_executor.run_cycle(self, all_positions, all_orders)
+                except Exception as session_err:
+                    print(f"[session-{self.uid}] Cycle error: {type(session_err).__name__}")
+
                 # Watchlist rows and dashboard charts have their own data refresh.
                 # The 60s trading loop is dedicated strictly to active bots in TRADELIST
                 # and prioritized over dashboard data refresh.
                 scan_order = list(dict.fromkeys(self.config.TRADELIST))
-                force_triggered = self.force_scan_trigger.is_set()
-                
+                # A global force (shared event) applies to every bot; a per-bot request applies to that bot only.
+                loop_force = self.force_scan_trigger.is_set() and not self.force_scan_tickers
+                force_triggered = loop_force
+
                 for ticker in scan_order:
                     try:
+                        ticker_force_reason = self.force_scan_tickers.pop(ticker.upper(), None)
+                        force_triggered = loop_force or ticker_force_reason is not None
                         ticker_norm = ticker.upper().replace("/", "")
                         t_settings = self.config.TICKER_SETTINGS.get(ticker, {})
+                        if allocation_executor.is_allocation_bot(t_settings):
+                            continue  # handled by allocation_executor.run_cycle above
+                        if session_executor.is_session_bot(t_settings):
+                            continue  # handled by session_executor.run_cycle above
                         is_active = ticker in self.config.TRADELIST
+                        if is_active and isinstance(t_settings.get(PENDING_FILL_KEY), dict):
+                            # An order accepted on an earlier pass (or before a restart): book it once it is final.
+                            await self._reconcile_pending_fill(ticker, t_settings)
 
                         # Migrate any persisted three-loss streak immediately,
                         # even before another entry signal is evaluated.
@@ -3512,7 +3941,21 @@ class UserEngine:
                                 await self.save_settings()
                                 continue
 
-                        required_interval = getattr(self.config, 'OPTIONS_SCAN_INTERVAL_SECONDS', 10) if is_opt_bot else getattr(self.config, 'SCAN_INTERVAL_SECONDS', 60)
+                        default_interval = getattr(self.config, 'OPTIONS_SCAN_INTERVAL_SECONDS', 10) if is_opt_bot else getattr(self.config, 'SCAN_INTERVAL_SECONDS', 60)
+                        # A bot's own scan timer; while it holds a position or has an order working it never slows
+                        # below the engine default (software exit watchers and fill reconciliation need it).
+                        # An order or pending fill always needs the fast scan; an open position only when its exit is
+                        # price-based (a purely indicator-based exit can only change on a completed candle).
+                        bot_busy = bot_scan_interval.needs_fast_scan(
+                            t_settings,
+                            has_position=self._find_position(all_positions, ticker_norm) is not None,
+                            has_order=(
+                                any(str(o.get('symbol', '')).replace('/', '').upper() == ticker_norm for o in (all_orders or []))
+                                or isinstance(t_settings.get(PENDING_FILL_KEY), dict)
+                            ),
+                            is_option=bool(is_opt_bot),
+                        )
+                        required_interval = bot_scan_interval.effective_seconds(t_settings, default_interval, busy=bot_busy)
                         now_ts = time.time()
                         last_ts = self.last_bot_scan_time.get(ticker, 0)
                         if not force_triggered and (now_ts - last_ts) < (required_interval - 1.0):
@@ -3575,6 +4018,13 @@ class UserEngine:
                                     "total_signals": 0,
                                     "is_option": False,
                                 }
+                                # Keep the last real scan result so the card can still show it while the market is closed.
+                                previous_scan = self.bot_scans.get(ticker)
+                                if isinstance(previous_scan, dict):
+                                    last_real = previous_scan.get("last_real_scan") if previous_scan.get("is_stock_market_closed") else previous_scan
+                                    if isinstance(last_real, dict) and not last_real.get("is_stock_market_closed"):
+                                        # No candle history: this record is persisted with the scan state and the card does not need it.
+                                        closed_log["last_real_scan"] = {k: v for k, v in last_real.items() if k != "price_history"}
                                 self.scan_log_state[ticker] = closed_log
                                 self.bot_scans[ticker] = closed_log
                                 tf_bucket = self.bot_scans_by_tf.setdefault(t_settings.get('timeframe', self.config.DEFAULT_TIMEFRAME), {})
@@ -3662,11 +4112,12 @@ class UserEngine:
                         is_crypto = any(ticker_norm.endswith(base) for base in ["USD", "USDT", "USDC"]) or ticker.upper() in ["BTC", "ETH", "XRP", "DOGE", "LTC", "ADA", "SOL"]
                         sell_mode = t_settings.get('sell_mode', 'indicator')
 
-                        if is_active and sell_mode == 'indicator' and not self.broker.simulation_mode:
+                        pending_sell = (t_settings.get(PENDING_FILL_KEY) or {}).get("side") == "sell"
+                        if is_active and sell_mode == 'indicator' and not self.broker.simulation_mode and not pending_sell:
                             self.broker.cancel_orders_for_ticker(ticker, side_filter='sell')
 
                         now = self.get_now()
-                        if ticker in self.last_scan_timestamps:
+                        if ticker in self.last_scan_timestamps and not force_triggered:
                             if (now - self.last_scan_timestamps[ticker]).total_seconds() < max(1, required_interval - 1):
                                 continue
                         self.last_scan_timestamps[ticker] = now
@@ -3689,6 +4140,27 @@ class UserEngine:
                         else:
                             has_this_pos = any(p['symbol'].replace("/", "").upper() == ticker_norm and float(p.get('qty', 0)) > 0 for p in all_positions)
                             pos_info = next((p for p in all_positions if p['symbol'].replace("/", "").upper() == ticker_norm), None)
+
+                        if is_active and not is_options_enabled and not is_crypto:
+                            try:
+                                await self._reconcile_corporate_actions(ticker, ticker_norm, t_settings, pos_info, has_this_pos)
+                            except Exception as split_err:
+                                print(f"[corporate-action-{self.uid}] {ticker_norm} reconcile skipped: {type(split_err).__name__}")
+
+                        # Strategy scan policy: a flat bot whose strategy decides once per completed candle
+                        # is not re-evaluated every refresh. An open position, a pending order, a forced scan
+                        # or a paused split reconcile always use the normal refresh.
+                        if is_active and not is_opt_bot and not is_crypto and not force_triggered and self.preset_scan_markers.get(ticker):
+                            if strategy_presets.effective_scan_policy(t_settings) is None:
+                                self.preset_scan_markers.pop(ticker, None)
+                            elif preset_runtime.scan_should_skip(
+                                self.preset_scan_markers.get(ticker), t_settings, self.get_now(),
+                                has_position=bool(has_this_pos),
+                                has_open_order=any(
+                                    str(o.get('symbol', '')).replace('/', '').upper() == ticker_norm for o in all_orders
+                                ),
+                            ):
+                                continue
 
                         result = None
                         if is_active:
@@ -3814,6 +4286,37 @@ class UserEngine:
                                     result['reason'] = "Market Closed. Trade execution skipped."
                                     if result['action'] in ['BUY', 'SELL']:
                                         result['action'] = 'HOLD'
+
+                                # Strategy presets: ownership, regular-session execution
+                                # window, duplicate-signal and split-pause gates. The
+                                # protective stop below is never blocked by these.
+                                preset_active = (not is_options_enabled) and strategy_presets.is_strategy_preset_active(t_settings)
+                                if preset_active:
+                                    preset_state = preset_runtime.sync_position_state(
+                                        t_settings, bool(has_this_pos), _safe_float(pos_info.get('qty'), 0.0) if pos_info else 0.0,
+                                        has_open_buy_order=any(
+                                            str(o.get('symbol', '')).replace('/', '').upper() == ticker_norm
+                                            and str(o.get('side', '')).lower() == 'buy'
+                                            for o in all_orders
+                                        ),
+                                        now=self.get_now(),
+                                    )
+                                    preset_runtime.gate_result(t_settings, result, state=preset_state, now=self.get_now())
+                                    if strategy_presets.effective_scan_policy(t_settings) is None:
+                                        self.preset_scan_markers.pop(ticker, None)
+                                    elif preset_runtime.can_mark_scan_done(
+                                        result, preset_state,
+                                        has_position=bool(has_this_pos),
+                                        has_open_order=any(
+                                            str(o.get('symbol', '')).replace('/', '').upper() == ticker_norm for o in all_orders
+                                        ),
+                                        now=self.get_now(),
+                                    ):
+                                        self.preset_scan_markers[ticker] = preset_runtime.scan_marker(t_settings, self.get_now())
+                                    else:
+                                        self.preset_scan_markers.pop(ticker, None)
+                                    if preset_state == preset_runtime.STATE_MANAGED:
+                                        preset_runtime.ensure_stop_recorded(t_settings, result.get('strategy_preset') or {}, self.get_now().isoformat())
 
                                 tf_seconds = parse_timeframe_to_seconds(tf_to_use)
                                 
@@ -4033,6 +4536,8 @@ class UserEngine:
                                         result['continuous_grid_final_level'] = bool(grid_decision.get("final_level"))
                                         result['continuous_grid_runner_exit'] = bool(grid_decision.get("continuous_grid_runner_exit"))
                                 enable_cooldown = t_settings.get("enable_cooldown", True)
+                                if (not is_options_enabled) and strategy_presets.is_strategy_preset_active(t_settings):
+                                    enable_cooldown = False  # a strategy owns its re-entries; the manual cooldown does not apply
                                 if enable_cooldown and not has_this_pos:
                                     # Use custom cooldown if set, otherwise default to 4 candles
                                     custom_cooldown_min = t_settings.get("cooldown_minutes")
@@ -4089,7 +4594,7 @@ class UserEngine:
                                         and _continuous_grid_pair_enabled(t_settings)
                                         and t_settings.get('grid_flat_reentry_armed')
                                     )
-                                    if enable_signal_reset and not adaptive_grid_reentry:
+                                    if enable_signal_reset and not adaptive_grid_reentry and not preset_active:
                                         action = result.get('action', 'HOLD')
                                         locked_dir = self._get_signal_reset_lock(ticker, t_settings)
                                         if locked_dir:
@@ -4107,7 +4612,7 @@ class UserEngine:
                                             await self.save_settings()
 
                                     # Apply Smart Re-entry Pullback Filters
-                                    if enable_smart_reentry:
+                                    if enable_smart_reentry and not preset_active:
                                         action = result.get('action', 'HOLD')
                                         if action in ['BUY', 'SELL']:
                                             if smart_reentry_type == 'RSI':
@@ -4155,6 +4660,7 @@ class UserEngine:
                                         if guard_reason:
                                             result['action'] = 'HOLD'
                                             result['reason'] = guard_reason
+                                            result['entry_guard_reason'] = guard_reason
                                             if guard_reason.startswith(('Loss circuit breaker', 'Daily strategy-loss limit')):
                                                 t_settings['paused'] = True
                                                 t_settings['pause_reason'] = guard_reason
@@ -4465,7 +4971,19 @@ class UserEngine:
                                     else:
                                         # Standard Stock/Crypto Sell Mode Logic
                                         entry_price = float(pos_info.get('avg_price', result['price_raw']))
-                                        current_price = float(result.get('price_raw', 0.0))
+                                        # Stops, targets and trailing levels are checked against the live position price
+                                        # from the broker, not the last completed candle's close (which, on a 1 Hour or
+                                        # 1 Day bot, can be an hour or a day old). Entry/exit *signals* stay on completed
+                                        # candles.
+                                        live_exit_price = _safe_float(pos_info.get('current_price'), 0.0)
+                                        current_price = live_exit_price if live_exit_price > 0 else _safe_float(result.get('price_raw'), 0.0)
+                                        result['exit_price_source'] = 'live_position' if live_exit_price > 0 else 'candle_close'
+                                        if live_exit_price > 0:
+                                            result['live_price'] = live_exit_price
+                                        # A trailing stop restored after a restart is kept only for the position it belongs to.
+                                        restored_avg = self._restored_trailing_avg.pop(ticker, None)
+                                        if restored_avg is not None and abs(entry_price - restored_avg) > max(1e-6, abs(entry_price) * 0.0001):
+                                            self.last_trailing_stops.pop(ticker, None)
                                         if current_price <= 0:
                                             result['action'] = 'HOLD'
                                             result['reason'] = 'Live quote unavailable ($0.00)'
@@ -4707,6 +5225,31 @@ class UserEngine:
                                                         )
                                                 elif result.get('action') != 'SELL':
                                                     _mark_exit_signal_watch(result, t_settings, is_long=True, prefix="Position open. Swing exit levels unavailable")
+
+                                            elif sell_mode == 'strategy_preset':
+                                                # The strategy's own exit arrives through result['action'] (state
+                                                # based). This adds the protective ATR stop, anchored to the broker's
+                                                # average cost, for positions the strategy manages. Software only: it
+                                                # depends on the process running and on a usable live quote.
+                                                if preset_active and t_settings.get(preset_runtime.OWNS_KEY):
+                                                    stop_info = preset_runtime.protective_stop(
+                                                        t_settings, result.get('strategy_preset') or {}, entry_price
+                                                    )
+                                                    if stop_info is not None:
+                                                        preset_stop, preset_mult, preset_atr = stop_info
+                                                        if current_price <= preset_stop:
+                                                            result['action'] = 'SELL'
+                                                            result['reason'] = (
+                                                                f'Stop Loss Hit (${current_price:.{precision}f} <= ${preset_stop:.{precision}f}, '
+                                                                f'{preset_mult:g}x ATR protective stop)'
+                                                            )
+                                                        elif result.get('action') != 'SELL':
+                                                            _mark_exit_level_watch(
+                                                                result,
+                                                                "Strategy Exit",
+                                                                f"Position open. Waiting for the strategy exit; protective stop ${preset_stop:.{precision}f} ({preset_mult:g}x ATR). Price ${current_price:.{precision}f}.",
+                                                                {"price": current_price, "stop_loss": preset_stop, "atr": preset_atr, "stop_atr_mult": preset_mult},
+                                                            )
 
                                             else:
                                                 # ── EXISTING: ATR-based logic (unchanged) ───────────────────
@@ -5156,7 +5699,26 @@ class UserEngine:
                                                 current_price=result.get('price_raw'),
                                                 client_order_id=self._order_intent_id(ticker, "buy", result),
                                             )
-                                            if self._order_result_is_filled(order_result):
+                                            if preset_active and isinstance(order_result, dict) and order_result.get('success'):
+                                                # A live broker receipt is never "filled" at submission, so record the
+                                                # strategy's ownership of this position, the signal key and the entry ATR
+                                                # as soon as the order is accepted. The stable client order id makes a
+                                                # retry idempotent at the broker.
+                                                preset_runtime.record_entry(t_settings, result, self.get_now().isoformat())
+                                                await self.save_settings()
+                                            order_result = await self._confirm_fill(order_result)
+                                            buy_status = _order_status((order_result or {}).get('status')) if isinstance(order_result, dict) else ''
+                                            buy_submitted = isinstance(order_result, dict) and bool(order_result.get('success'))
+                                            is_grid_buy = result.get('continuous_grid_side') == 'entry'
+                                            if buy_submitted and buy_status in DEAD_ORDER_STATUSES and _safe_float(order_result.get('filled_qty'), 0.0) <= 0:
+                                                result['action'] = 'HOLD'
+                                                result['reason'] = f"Buy order {buy_status} by the broker without a fill; nothing changed."
+                                                signal_key = (result.get('strategy_preset') or {}).get('signal_key') if isinstance(result.get('strategy_preset'), dict) else None
+                                                if preset_active and signal_key and t_settings.get(preset_runtime.LAST_ENTRY_KEY) == signal_key:
+                                                    t_settings.pop(preset_runtime.LAST_ENTRY_KEY, None)
+                                                await self.save_settings()
+                                            elif buy_submitted and is_grid_buy and (self._order_result_is_filled(order_result) or not self.broker.simulation_mode):
+                                                # Adaptive-grid buys keep their own deferred confirmation (position-change reconcile).
                                                 result['order'] = order_result
                                                 result['order_id'] = order_result.get('order_id')
                                                 trade_executed = True
@@ -5224,9 +5786,37 @@ class UserEngine:
                                                         print(f"[exit-protect] {ticker_norm} buy accepted; watcher and exit snapshot will be applied after position fill is visible")
                                                 except Exception as protect_err:
                                                     print(f"[exit-protect] {ticker_norm} post-buy protection error: {protect_err}")
+                                            elif buy_submitted and self._order_result_is_filled(order_result):
+                                                result['order'] = order_result
+                                                result['order_id'] = order_result.get('order_id')
+                                                trade_executed = True
+                                                if not has_this_pos:
+                                                    portfolio_count += 1
+                                                fill_price = _safe_float(order_result.get('filled_avg_price'), 0.0) or _safe_float(result.get('price_raw'), 0.0)
+                                                fill_qty = (
+                                                    _safe_float(order_result.get('filled_qty'), 0.0)
+                                                    or _safe_float(order_result.get('qty'), 0.0)
+                                                    or (sizing['notional'] / fill_price if fill_price > 0 else 0.0)
+                                                )
+                                                result['fees'] = float(order_result.get('fees', 0) or 0)
+                                                await self._book_buy_fill(ticker, t_settings, result, fill_qty, fill_price, had_position=has_this_pos)
+                                            elif buy_submitted:
+                                                # Accepted, not filled yet: bookkeeping waits for the broker's confirmed fill.
+                                                result['order'] = order_result
+                                                result['order_id'] = order_result.get('order_id')
+                                                self._remember_pending_fill(
+                                                    t_settings, 'buy', order_result, result,
+                                                    position_qty=_safe_float(pos_info.get('qty'), 0.0) if pos_info else 0.0,
+                                                )
+                                                self.last_trade_timestamps[ticker] = self.get_now()
+                                                result['reason'] = (
+                                                    f"⏳ Buy order accepted ({buy_status or 'submitted'}); it is booked when the broker confirms the fill: {result['reason']}"
+                                                )
+                                                await self.save_settings()
                                             else:
+                                                self._note_order_rejected(ticker, "buy", result, order_result)
                                                 result['action'] = 'HOLD'
-                                                result['reason'] = f"Buy order failed: {order_result.get('error', 'Broker Error')}"
+                                                result['reason'] = f"Buy order failed: {(order_result or {}).get('error', 'Broker Error')}"
                                                 print(f"[engine] Buy order failed for {ticker}: {result['reason']}")
                                                 
                                 # Sell Execution (or PUT option entry)
@@ -5456,7 +6046,7 @@ class UserEngine:
                                                     order_result = self.broker.close_position(
                                                         ticker,
                                                         market_session=t_settings.get('market_session', 'Regular'),
-                                                        current_price=result.get('price_raw'),
+                                                        current_price=result.get('live_price') or result.get('price_raw'),
                                                         client_order_id=self._order_intent_id(ticker, "sell", result)
                                                     )
                                                 else:
@@ -5464,10 +6054,17 @@ class UserEngine:
                                                     order_result = self.broker.place_order(
                                                         symbol=ticker, notional=sell_notional, side='sell',
                                                         market_session=t_settings.get('market_session', 'Regular'),
-                                                        current_price=result.get('price_raw'),
+                                                        current_price=result.get('live_price') or result.get('price_raw'),
                                                         client_order_id=self._order_intent_id(ticker, "sell", result)
                                                     )
-                                                if self._order_result_is_filled(order_result):
+                                                order_result = await self._confirm_fill(order_result)
+                                                sell_status = _order_status((order_result or {}).get('status')) if isinstance(order_result, dict) else ''
+                                                sell_submitted = isinstance(order_result, dict) and bool(order_result.get('success'))
+                                                if sell_submitted and sell_status in DEAD_ORDER_STATUSES and _safe_float(order_result.get('filled_qty'), 0.0) <= 0:
+                                                    result['action'] = 'HOLD'
+                                                    result['reason'] = f"Sell order {sell_status} by the broker without a fill; the position is still open and the exit is retried."
+                                                elif sell_submitted and grid_scale_out and (self._order_result_is_filled(order_result) or not self.broker.simulation_mode):
+                                                    # Adaptive-grid scale-outs keep their own deferred confirmation (position-change reconcile).
                                                     result['order'] = order_result
                                                     result['order_id'] = order_result.get('order_id')
                                                     trade_executed = True
@@ -5552,12 +6149,52 @@ class UserEngine:
                                                         self._set_signal_reset_lock(ticker, 'BUY', t_settings)
                                                         await self.save_settings()
                                                         print(f"[engine-{self.uid}] Signal Reset Activated: Locked BUY re-entry for standard asset {ticker}")
+                                                elif sell_submitted and self._order_result_is_filled(order_result):
+                                                    result['order'] = order_result
+                                                    result['order_id'] = order_result.get('order_id')
+                                                    trade_executed = True
+                                                    if closes_position:
+                                                        portfolio_count -= 1
+                                                    fill_price = _safe_float(order_result.get('filled_avg_price'), 0.0) or _safe_float(result.get('price_raw'), 0.0)
+                                                    fill_qty = (
+                                                        _safe_float(order_result.get('filled_qty'), 0.0)
+                                                        or _safe_float(order_result.get('qty'), 0.0)
+                                                        or (total_qty if closes_position else sell_qty)
+                                                    )
+                                                    result['fees'] = float(order_result.get('fees', 0) or 0)
+                                                    await self._book_sell_fill(
+                                                        ticker, t_settings, result, fill_qty, fill_price,
+                                                        entry_price=_safe_float(pos_info.get('avg_price'), 0.0) if pos_info else 0.0,
+                                                        # A close that filled only part of the position is not a completed trade yet.
+                                                        closes_position=bool(closes_position and fill_qty >= total_qty - 1e-6),
+                                                    )
+                                                elif sell_submitted:
+                                                    # Accepted, not filled yet: realized P/L and the rest wait for the confirmed fill.
+                                                    result['order'] = order_result
+                                                    result['order_id'] = order_result.get('order_id')
+                                                    self._remember_pending_fill(
+                                                        t_settings, 'sell', order_result, result,
+                                                        entry_price=_safe_float(pos_info.get('avg_price'), 0.0) if pos_info else 0.0,
+                                                        position_qty=total_qty, closes_position=closes_position,
+                                                    )
+                                                    self.last_trade_timestamps[ticker] = self.get_now()
+                                                    result['reason'] = (
+                                                        f"⏳ Sell order accepted ({sell_status or 'submitted'}); it is booked when the broker confirms the fill: {result['reason']}"
+                                                    )
+                                                    await self.save_settings()
                                                 else:
-                                                    result['reason'] = f"Sell order failed: {order_result.get('error', 'Broker Error')}"
+                                                    self._note_order_rejected(ticker, "sell", result, order_result)
+                                                    result['reason'] = f"Sell order failed: {(order_result or {}).get('error', 'Broker Error')}"
                                         else:
-                                            result['reason'] = "Signal SELL ignored: No open position detected."
+                                            result['reason'] = "No open position: watching for a long entry; the sell signal is not used."
                                             result['action'] = "HOLD"
                             
+                            try:
+                                phase_info = self._scan_phase_for(ticker, t_settings, result, has_this_pos, tf_to_use if 'tf_to_use' in locals() else t_settings.get('timeframe', '5Min'))
+                                if phase_info:
+                                    result['scan_phase'] = phase_info
+                            except Exception as phase_error:
+                                print(f"[scheduler-{self.uid}] scan phase unavailable for {ticker}: {type(phase_error).__name__}")
                             result['log_type'] = "Active Bot" if is_active else "Watchlist"
                             log_bucket_format = "%Y-%m-%dT%H:%M:%S" if is_opt_bot else "%Y-%m-%dT%H:%M"
                             log_time_bucket = self.get_now().strftime(log_bucket_format)
@@ -5569,6 +6206,8 @@ class UserEngine:
                                     return f"{t_str}_{log_entry.get('ticker','')}_{log_entry.get('action','')}"
                                 except: return ""
                                 
+                            if ticker_force_reason and isinstance(result, dict):
+                                result["forced_scan"] = {"reason": ticker_force_reason, "at": self.get_now().isoformat(), "status": "ok"}
                             if is_active:
                                 self._record_bot_scan(result)
                                 _print_detailed_bot_scan(ticker, result, t_settings, has_this_pos, is_opt_bot, ticker_norm)
@@ -5579,6 +6218,8 @@ class UserEngine:
                                     self.trade_log.insert(0, result)
                                 if trade_executed and is_active:
                                     await self.save_history_throttled(force=True)
+                            if is_active and not is_options_enabled and self._sync_trailing_stop_state(ticker, t_settings, pos_info if has_this_pos else None):
+                                await self.save_settings()
 
                     except Exception as e:
                         print(f"[scheduler-{self.uid}] Error scanning {ticker}: {e}")
@@ -5597,6 +6238,22 @@ class UserEngine:
                     self.config.TICKER_SETTINGS.get(t, {}).get('options_trading', self.config.TICKER_SETTINGS.get(t, {}).get('is_option', False))
                     for t in self.config.TRADELIST
                 ) else getattr(self.config, 'SCAN_INTERVAL_SECONDS', 60)
+                try:
+                    # The loop also runs risk checks and reconciliation, so it never sleeps longer than the engine
+                    # default; a bot asking for a faster scan than the default lowers it.
+                    for t in self.config.TRADELIST:
+                        t_cfg = self.config.TICKER_SETTINGS.get(t, {})
+                        if isinstance(t_cfg, dict) and bot_scan_interval.is_configured(t_cfg):
+                            min_sleep = min(float(min_sleep), float(bot_scan_interval.effective_seconds(t_cfg, min_sleep)))
+                    # A Malik bot must wake at its decision time even with a long scan interval.
+                    alloc_wait = allocation_executor.seconds_until_next_decision(self)
+                    if alloc_wait is not None:
+                        min_sleep = max(1.0, min(float(min_sleep), alloc_wait + 0.5))
+                    session_wait = session_executor.seconds_until_wake(self)
+                    if session_wait is not None:
+                        min_sleep = max(0.5, min(float(min_sleep), session_wait))
+                except Exception:
+                    pass
                 await asyncio.wait_for(self.force_scan_trigger.wait(), timeout=min_sleep)
                 self.force_scan_trigger.clear()
             except asyncio.TimeoutError:
@@ -5684,6 +6341,13 @@ class UserManager:
                 async with engine.load_lock:
                     if not engine.loaded_from_cloud:
                         await engine.load_from_cloud()
+                # Bots keep trading and watching their positions after a restart without waiting for the user to open
+                # the app. Every pass re-reads broker positions and open orders and settles pending fills first.
+                if list(getattr(engine.config, "TRADELIST", []) or []):
+                    async with engine.task_start_lock:
+                        if not engine.bot_running and not (engine.task and not engine.task.done()):
+                            engine.task = asyncio.create_task(engine.trading_loop())
+                            print(f"[UserManager] Resumed trading loop for {len(engine.config.TRADELIST)} active bot(s).")
         except Exception as e:
             print(f"[UserManager] Error streaming users from Firestore: {e}")
         print(f"[UserManager] Started {len(self.engines)} user engines.")

@@ -162,7 +162,7 @@ class ScreenerSignalIntegrityTests(unittest.TestCase):
             {
                 "virtual_position": True,
                 "direction_watch_mode": "BOTH",
-                "direction_watch_label": "Both directions",
+                "direction_watch_label": "Buy & Sell",
                 "direction_watch_directions": ["BULLISH", "BEARISH"],
                 "direction_watch_bullish_enabled": True,
                 "direction_watch_bearish_enabled": True,
@@ -173,7 +173,7 @@ class ScreenerSignalIntegrityTests(unittest.TestCase):
         self.assertEqual(scan_log["phase"], "WATCH")
         self.assertEqual(scan_log["bullish_confirmed_weight"], 1)
         self.assertEqual(scan_log["bearish_confirmed_weight"], 1)
-        self.assertIn("Both directions", scan_log["final_summary"])
+        self.assertIn("Buy & Sell", scan_log["final_summary"])
 
     def test_empty_indicator_pool_cannot_trigger_indicator_decision(self):
         config = UserConfig("empty-indicator-decision")

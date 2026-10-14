@@ -97,45 +97,13 @@ def _chart_indicator_fields(row, digits, enabled_indicators=None, buy_mode="", s
         "di_minus": _safe_chart_level(row, "DI_Minus", 4),
         "mystic_bull": _safe_chart_level(row, "Bull_Pulse", 4),
         "mystic_bear": _safe_chart_level(row, "Bear_Pulse", 4),
-        "wt1": _safe_chart_level(row, "WT1", 6),
-        "wt2": _safe_chart_level(row, "WT2", 6),
-        "mfi": _safe_chart_level(row, "MFI_14", 6),
-        "lx_smart_trail": _safe_chart_level(row, "LX_SmartTrail", digits),
-        "lx_trend_tracer": _safe_chart_level(row, "LX_TrendTracer", digits),
-        "lx_rz_upper": _safe_chart_level(row, "LX_RZ_Upper", digits),
-        "lx_rz_lower": _safe_chart_level(row, "LX_RZ_Lower", digits),
-        "ha_close": _safe_chart_level(row, "HA_Close", digits),
-        "ut_trail": _safe_chart_level(row, "UT_Trail", digits),
-        "ba1_buy": _safe_chart_bool(row, "BA1_Buy"),
-        "ba1_sell": _safe_chart_bool(row, "BA1_Sell"),
-        "ba1_bullish": _safe_chart_bool(row, "BA1_Bullish"),
-        "ba1_bearish": _safe_chart_bool(row, "BA1_Bearish"),
-        "ba2_buy": _safe_chart_bool(row, "BA2_Buy"),
-        "ba2_sell": _safe_chart_bool(row, "BA2_Sell"),
-        "ba3_buy": _safe_chart_bool(row, "BA3_Buy"),
-        "ba3_sell": _safe_chart_bool(row, "BA3_Sell"),
-        "bb5_upper": _safe_chart_level(row, "BB5_Upper", digits),
-        "bb5_lower": _safe_chart_level(row, "BB5_Lower", digits),
-        "bb5_target": _safe_chart_level(row, "BB5_Target", digits),
-        "bb5_invalidation": _safe_chart_level(row, "BB5_Invalidation", digits),
-        "bb5_breakout_level": _safe_chart_level(row, "BB5_Breakout_Level", digits),
-        "bb5_upper_start": _safe_chart_level(row, "BB5_Upper_Start", digits),
-        "bb5_lower_start": _safe_chart_level(row, "BB5_Lower_Start", digits),
-        "bb5_formation_start_time": _safe_chart_level(row, "BB5_Formation_Start_Time", 0),
-        "bb5_formation_end_time": _safe_chart_level(row, "BB5_Formation_End_Time", 0),
-        "bb5_pole_start_time": _safe_chart_level(row, "BB5_Pole_Start_Time", 0),
-        "bb5_pole_end_time": _safe_chart_level(row, "BB5_Pole_End_Time", 0),
-        "bb5_formation_bars": int(_safe_chart_level(row, "BB5_Formation_Bars", 0) or 0),
-        "bb5_confidence": _safe_chart_level(row, "BB5_Confidence", 2),
-        "bb5_direction": int(_safe_chart_level(row, "BB5_Direction", 0) or 0),
-        "bb5_reasons": str(row.get("BB5_Reasons", "")),
-        "bb5_breakout_bull": _safe_chart_bool(row, "BB5_Breakout_Bull"),
-        "bb5_breakout_bear": _safe_chart_bool(row, "BB5_Breakout_Bear"),
-        "bb5_pattern": str(row.get("BB5_Pattern", "NONE")),
-        "bb5_state": str(row.get("BB5_State", "NONE")),
         "cdl_name": str(row.get("cdl_name", "Neutral")),
         "cdl_bullish": _safe_chart_bool(row, "cdl_bullish"),
         "cdl_bearish": _safe_chart_bool(row, "cdl_bearish"),
+        "cp_name": str(row.get("CP_Name", "Neutral")),
+        "cp_bullish": _safe_chart_bool(row, "CP_Bullish"),
+        "cp_bearish": _safe_chart_bool(row, "CP_Bearish"),
+        "cp_quality": _safe_chart_level(row, "CP_Quality", 0),
     }
     fields.update({
         api_key: _safe_chart_level(row, column, 6)
@@ -158,10 +126,6 @@ def _chart_indicator_fields(row, digits, enabled_indicators=None, buy_mode="", s
         "ADX Trend": {"adx", "di_plus", "di_minus"},
         "Mystic Pulse": {"mystic_bull", "mystic_bear"},
         "Volume Profile": {"volume_profile_poc", "volume_profile_vah", "volume_profile_val", "volume_profile_bullish", "volume_profile_bearish"},
-        "BotBulls1": {"wt1", "wt2", "mfi", "ba1_buy", "ba1_sell", "ba1_bullish", "ba1_bearish"},
-        "BotBulls2": {"lx_smart_trail", "lx_trend_tracer", "lx_rz_upper", "lx_rz_lower", "ba2_buy", "ba2_sell"},
-        "BotBulls3": {"ha_close", "ut_trail", "ba3_buy", "ba3_sell"},
-        "BotBulls5": {"bb5_upper", "bb5_lower", "bb5_target", "bb5_invalidation", "bb5_breakout_level", "bb5_upper_start", "bb5_lower_start", "bb5_formation_start_time", "bb5_formation_end_time", "bb5_pole_start_time", "bb5_pole_end_time", "bb5_formation_bars", "bb5_confidence", "bb5_direction", "bb5_reasons", "bb5_breakout_bull", "bb5_breakout_bear", "bb5_pattern", "bb5_state"},
         "Candle Patterns": {"cdl_name", "cdl_bullish", "cdl_bearish"},
     }
     groups.update({
@@ -181,7 +145,7 @@ def _chart_indicator_fields(row, digits, enabled_indicators=None, buy_mode="", s
     return {key: fields[key] for key in keys}
 
 class Backtester:
-    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=0.02, max_pos_pct=0.25, ext_hours=True, buy_mode="indicator", custom_buy_price=0.0, sell_mode="indicator", atr_stop_multiplier=2.0, atr_trail_multiplier=3.0, atr_take_profit_multiplier=4.0, enable_atr_trail=True, ai_autopilot=False, ai_interval=10, ai_model="llama-3.3-70b-versatile", enable_cooldown=True, cooldown_minutes=None, regular_stop_loss_pct=0.05, regular_take_profit_pct=0.10, regular_trailing_pct=0.03, enable_pct_trail=True, cancel_event=None, entry_atr_multiplier=None, entry_pct_move=None, entry_atr_style="pullback_reclaim", entry_pct_style="dip_reclaim", swing_entry_mode="bounce_retest", swing_entry_lookback_days=20, swing_exit_lookback_days=20, market_session="Regular", allocation_mode="fixed", trade_amount=None, custom_stop_loss_price=0.0, custom_take_profit_price=0.0, enable_signal_reset=True, enable_smart_reentry=False, smart_reentry_type="RSI", smart_reentry_rsi_call_max=70.0, smart_reentry_rsi_put_min=30.0, smart_reentry_vwap_call_max_dist_pct=0.5, smart_reentry_vwap_put_max_dist_pct=0.5, enable_risk=True, daily_high_low_buffer_pct=None, trade_direction_mode="long", max_completed_trades=None, indicator_overrides=None, post_stop_stabilization_bars=3, max_consecutive_losses=2, max_daily_loss_pct=0.0, enable_liquidity_filter=True, min_relative_volume=0.10, continuous_grid_settings=None):
+    def __init__(self, ticker, timeframe, start_date, end_date, initial_capital=1000.0, threshold=5, sell_threshold=3, enabled_indicators=None, risk_per_trade=0.02, max_pos_pct=0.25, ext_hours=True, buy_mode="indicator", custom_buy_price=0.0, sell_mode="indicator", atr_stop_multiplier=2.0, atr_trail_multiplier=3.0, atr_take_profit_multiplier=4.0, enable_atr_trail=True, ai_autopilot=False, ai_interval=10, ai_model="llama-3.3-70b-versatile", enable_cooldown=True, cooldown_minutes=None, regular_stop_loss_pct=0.05, regular_take_profit_pct=0.10, regular_trailing_pct=0.03, enable_pct_trail=True, cancel_event=None, entry_atr_multiplier=None, entry_pct_move=None, entry_atr_style="pullback_reclaim", entry_pct_style="dip_reclaim", swing_entry_mode="bounce_retest", swing_entry_lookback_days=20, swing_exit_lookback_days=20, market_session="Regular", allocation_mode="fixed", trade_amount=None, custom_stop_loss_price=0.0, custom_take_profit_price=0.0, enable_signal_reset=True, enable_smart_reentry=False, smart_reentry_type="RSI", smart_reentry_rsi_call_max=70.0, smart_reentry_rsi_put_min=30.0, smart_reentry_vwap_call_max_dist_pct=0.5, smart_reentry_vwap_put_max_dist_pct=0.5, enable_risk=True, daily_high_low_buffer_pct=None, trade_direction_mode="long", max_completed_trades=None, indicator_overrides=None, post_stop_stabilization_bars=3, max_consecutive_losses=2, max_daily_loss_pct=0.0, enable_liquidity_filter=True, min_relative_volume=0.10, continuous_grid_settings=None, strategy_preset=None, strategy_preset_variant=None, allocation_settings=None, session_settings=None):
         self.ticker = ticker
         self.timeframe = timeframe
         self.start_date = start_date
@@ -288,6 +252,9 @@ class Backtester:
         self.daily_realized_pl = 0.0
         self.guard_session_date = None
         self.current_bar_index = 0
+        # Signal entries of the indicator/structure modes are decided on a
+        # completed bar and filled at the next bar's open (like live bots).
+        self.pending_entry = None
         
         self.equity = initial_capital
         self.position = None 
@@ -298,6 +265,29 @@ class Backtester:
         self.data_source = "yahoo"
         self.max_completed_trades = int(max_completed_trades) if max_completed_trades else None
         self.overtrade_limit_hit = False
+        self.data_feed = None
+        self.data_quality = "OK"
+        self.price_adjustment = "split"
+        self.equity_history_offset = 30
+        self.strategy_preset = None
+        self.strategy_preset_variant = None
+        self.allocation_settings = dict(allocation_settings or {})
+        self.session_settings = dict(session_settings or {})
+        if strategy_preset:
+            import strategy_presets as _sp
+            if _sp.get_preset(strategy_preset) is not None:
+                self.strategy_preset = _sp.get_preset(strategy_preset).id
+                self.strategy_preset_variant = _sp.get_variant(_sp.get_preset(strategy_preset), strategy_preset_variant).id
+                # The strategy owns entries and exits: manual Entry/Exit, indicators,
+                # thresholds, signal reset and smart re-entry do not apply.
+                self.buy_mode = self.sell_mode = _sp.PRESET_MODE
+                self.enabled_indicators = []
+                self.threshold = self.sell_threshold = 0
+                self.enable_signal_reset = False
+                self.enable_smart_reentry = False
+                self.enable_cooldown = False
+                self.trade_direction_mode = "long"
+                self.equity_history_offset = 0
 
         # Pre-cache timezones to prevent massive slowdowns in tight loops
         import pytz
@@ -446,6 +436,14 @@ class Backtester:
         if hasattr(self.end_date, "tzinfo") and self.end_date.tzinfo is not None:
             self.end_date = self.end_date.replace(tzinfo=None)
 
+        if self.strategy_preset:
+            import strategy_presets as _sp
+            if _sp.is_allocation(self.strategy_preset):
+                return self._run_allocation_strategy()
+            if _sp.is_schedule(self.strategy_preset):
+                return self._run_session_strategy()
+            return self._run_strategy_preset(precomputed_df=precomputed_df, fast_metrics=fast_metrics)
+
         if precomputed_df is not None:
             self.df = precomputed_df.loc[self.start_date:self.end_date]
         else:
@@ -457,6 +455,7 @@ class Backtester:
 
             if raw_df is None or raw_df.empty:
                 return {"error": "No data found for the selected range."}
+            self._capture_provenance(raw_df)
 
             # Filter for Regular Hours (RTH) if stocks & self.ext_hours is False and not daily
             clean_ticker = self.ticker.upper().replace("/", "")
@@ -544,6 +543,8 @@ class Backtester:
             signal_cache = self._build_simple_signal_cache()
 
         # 4. Simulate bar-by-bar
+        self.pending_entry = None
+        self._equity_recorded_index = None
         for i in range(len(self.df)):
             self.current_bar_index = i
             if self.overtrade_limit_hit:
@@ -561,6 +562,22 @@ class Backtester:
 
             prev_bar = self.df.iloc[i-1]
             current_price = current_bar['Close']
+
+            # Exit paths `continue` before the per-bar equity record below. Record a
+            # skipped bar here so the history keeps exactly one point per bar and the
+            # equity chart (matched to candles by position) stays aligned.
+            if not fast_metrics and i > 30 and self._equity_recorded_index != i - 1:
+                self.equity_history.append({
+                    'time': self.df.index[i - 1],
+                    'equity': self.equity + (self._get_unrealized_pl(current_price=prev_bar['Close']) if self.position else 0)
+                })
+                self._equity_recorded_index = i - 1
+
+            if self.pending_entry is not None:
+                pending = self.pending_entry
+                self.pending_entry = None
+                if not self.position:
+                    self._fill_pending_entry(pending, current_bar, timestamp)
 
             if self.adaptive_continuous_grid:
                 from engine import _evaluate_continuous_grid
@@ -1090,9 +1107,9 @@ class Backtester:
                         action = "HOLD"
                         reason = block_reason
                     elif action == 'BUY' and self._direction_allowed("long"):
-                        self._enter_trade(current_bar, timestamp, reason, side=entry_side)
+                        self._queue_entry(current_bar, timestamp, reason, entry_side, i)
                     elif action == 'SELL' and self._direction_allowed("short"):
-                        self._enter_trade(current_bar, timestamp, reason, side=entry_side)
+                        self._queue_entry(current_bar, timestamp, reason, entry_side, i)
                 elif action == 'SELL' and self.position and position_side == "long":
                     self._exit_trade(current_bar, timestamp, reason)
                 elif action == 'BUY' and self.position and position_side == "short":
@@ -1104,6 +1121,15 @@ class Backtester:
                     'time': timestamp,
                     'equity': self.equity + (self._get_unrealized_pl(current_price=current_bar['Close']) if self.position else 0)
                 })
+                self._equity_recorded_index = i
+
+        if not fast_metrics and len(self.df) > 30 and self._equity_recorded_index != len(self.df) - 1:
+            last_close = self.df.iloc[-1]['Close']
+            self.equity_history.append({
+                'time': self.df.index[-1],
+                'equity': self.equity + (self._get_unrealized_pl(current_price=last_close) if self.position else 0)
+            })
+            self._equity_recorded_index = len(self.df) - 1
 
         # Force close any open position at the end of the backtest
         if self.position:
@@ -1115,6 +1141,794 @@ class Backtester:
             s = results["summary"]
             print(f"\n[backtest] COMPLETED for {self.ticker}")
             print(f"[backtest] ROI: {s['roi_pct']}% | Trades: {s['total_trades']} | Win Rate: {s['win_rate_pct']}%")
+        return results
+
+    # ── Data provenance ─────────────────────────────────────────────────────
+    def _capture_provenance(self, frame):
+        attrs = getattr(frame, "attrs", {}) or {}
+        self.data_source = str(attrs.get("data_source") or self.data_source or "yahoo").lower()
+        self.data_feed = attrs.get("feed")
+        self.data_quality = str(attrs.get("data_quality") or "OK").upper()
+        self.price_adjustment = attrs.get("adjustment") or "split"
+
+    def _provenance_summary(self):
+        return {
+            "data_feed": self.data_feed,
+            "data_quality": self.data_quality,
+            "price_adjustment": self.price_adjustment,
+        }
+
+    # ── Strategy presets ────────────────────────────────────────────────────
+    @staticmethod
+    def _regular_hours_only(df):
+        """Keep bars that open inside the 09:30-16:00 ET regular session."""
+        index = pd.DatetimeIndex(df.index)
+        local = index.tz_localize("America/New_York", ambiguous="infer", nonexistent="shift_forward") if index.tz is None else index.tz_convert("America/New_York")
+        minutes = local.hour * 60 + local.minute
+        return df[(minutes >= 9 * 60 + 30) & (minutes < 16 * 60)]
+
+    def _sizing_equity(self):
+        """Capital the entry caps (cash, max position, risk) are measured against.
+
+        Fixed: every buy uses the same Amount, so caps are measured against the starting capital
+        and a losing streak can never shrink later buys (the simulated account is assumed to fund
+        the Amount; ROI is still measured on the starting capital). Compound: the account itself,
+        because the next buy is the Amount plus realized P/L."""
+        return float(self.initial_capital) if self.allocation_mode == "fixed" else float(self.equity)
+
+    def _reset_state(self):
+        """Fresh simulation state (used for the variant-comparison clones)."""
+        self.equity = self.initial_capital
+        self.position = None
+        self.trades = []
+        self.equity_history = []
+        self.df = None
+        self.current_trade_amount = self.trade_amount
+        self.last_exit_time = None
+        self.stop_exit_state = None
+        self.consecutive_losses = 0
+        self.daily_realized_pl = 0.0
+        self.guard_session_date = None
+        self.current_bar_index = 0
+        self.overtrade_limit_hit = False
+
+    def _preset_open_position(self, qty, price, timestamp, stop, reason, signal_time):
+        self.position = {
+            'qty': qty,
+            'entry_price': price,
+            'entry_time': timestamp,
+            'stop_loss': stop,
+            'take_profit': 0.0,
+            'initial_stop_loss': stop,
+            'initial_take_profit': 0.0,
+            'side': 'long',
+            'reason': reason,
+            'signal_time': signal_time,
+        }
+        print(f"[{self._to_central_str(timestamp)}] BUY  {self.ticker} @ ${price:.2f} | Stop: ${stop:.2f} | Reason: {reason}")
+
+    def _preset_exit(self, bar, timestamp, reason, price, exit_signal_time, stop=None):
+        entry_signal_time = (self.position or {}).get('signal_time')
+        self._exit_trade(bar, timestamp, reason, exit_price_override=price, exit_stop_price=stop)
+        if self.trades:
+            self.trades[-1]["entry_signal_time"] = entry_signal_time
+            self.trades[-1]["exit_signal_time"] = exit_signal_time
+
+    def _run_strategy_preset(self, precomputed_df=None, fast_metrics=False, _compare=True):
+        """Simulate a strategy preset on completed daily bars.
+
+        Signals are decided on the close of a completed bar and filled at the
+        next bar's open (live trading cannot act before the candle closes).
+        Stocks and ETFs, long-only. Fees and slippage are not modelled.
+        """
+        import copy
+        from datetime import timedelta
+        import strategy_presets as sp
+
+        preset = sp.get_preset(self.strategy_preset)
+        if preset is None:
+            return {"error": "Unknown strategy preset."}
+        variant = sp.get_variant(preset, self.strategy_preset_variant)
+        errors = sp.validate_strategy_preset(
+            {"strategy_preset_enabled": True, "strategy_preset": preset.id},
+            ticker=self.ticker, is_crypto=self.is_crypto,
+        )
+        if errors:
+            return {"error": errors[0]}
+        if self.timeframe not in preset.allowed_timeframes:
+            return {"error": f"{preset.label} runs on {', '.join(preset.allowed_timeframes)} (selected {self.timeframe})."}
+
+        # Pad by the longest warmup of any variant so every variant sees the same history.
+        padding_days = max(sp.preset_backtest_padding_days(preset.id, v.id, self.timeframe) for v in preset.variants)
+        padded_start = self.start_date - timedelta(days=padding_days)
+        raw_df = precomputed_df
+        if raw_df is None or len(raw_df) == 0 or raw_df.index[0] > padded_start + timedelta(days=7):
+            raw_df = get_historical_data(self.ticker, self.timeframe, padded_start, self.end_date, force_yahoo=False)
+        if raw_df is None or raw_df.empty:
+            return {"error": "No data found for the selected range."}
+        self._capture_provenance(raw_df)
+        if self.data_quality == "DEGRADED":
+            return {"error": "Market data failed the split-adjustment check, so the strategy was not run. Try again later or switch the data source."}
+
+        prepared = getattr(self, "_preset_prepared", None)
+        if prepared is None or prepared["raw"] is not raw_df:
+            source_df = raw_df
+            if self.timeframe != "1Day" and not self.is_crypto and str(self.market_session or "Regular").lower() == "regular":
+                source_df = self._regular_hours_only(raw_df)
+                if source_df.empty:
+                    return {"error": "No regular-session bars are available for the selected range."}
+                source_df.attrs.update(getattr(raw_df, "attrs", {}) or {})
+            bars = sp.completed_bars(source_df, self.timeframe)
+            if bars.empty:
+                return {"error": "No completed bars are available for the selected range."}
+            bars.attrs.update(getattr(raw_df, "attrs", {}) or {})
+            calc_settings = {
+                **(self.indicator_settings or {}),
+                # VWAP/Auto-AVWAP are computed (not placeholders equal to Close) because the post-stop
+                # reclaim guard compares the signal bar's close with them; they cast no strategy vote.
+                "enabled_indicators": ["VWAP", "Auto-AVWAP"],
+                "buy_mode": "indicator",
+                "sell_mode": "indicator",
+            }
+            result = calculate_indicators_for_df(bars, self.timeframe, self.ticker, settings=calc_settings)
+            if not result:
+                return {"error": "Failed to prepare price data."}
+            # Variant-comparison clones reuse this prepared frame instead of recomputing it.
+            prepared = {"raw": raw_df, "df": result["df"], "volume_profile": result.get("volume_profile") or {}}
+            self._preset_prepared = prepared
+        self.volume_profile = prepared["volume_profile"]
+        frame = sp.compute_strategy_frame(prepared["df"], preset.id, variant.id)
+        self.df = frame.loc[self.start_date:self.end_date]
+        if self.df.empty:
+            return {"error": "No data available in the requested range after filtering."}
+
+        rows = len(self.df)
+        opens = self.df["Open"].to_numpy(dtype=float)
+        highs = self.df["High"].to_numpy(dtype=float)
+        lows = self.df["Low"].to_numpy(dtype=float)
+        closes = self.df["Close"].to_numpy(dtype=float)
+        atrs = self.df["SP_atr"].to_numpy(dtype=float)
+        entries = self.df["SP_entry"].to_numpy(dtype=bool)
+        exits = self.df["SP_exit_cond"].to_numpy(dtype=bool)
+        ready = self.df["SP_ready"].to_numpy(dtype=bool)
+
+        risk_fraction = float(self.risk_per_trade or 0.0)
+        risk_fraction = risk_fraction / 100.0 if risk_fraction > 1.0 else risk_fraction
+        if not self.enable_risk:
+            risk_fraction = 0.0
+        max_position_fraction = float(self.max_pos_pct) if self.enable_risk else 1.0
+        max_position_fraction = max_position_fraction / 100.0 if max_position_fraction > 1.0 else max_position_fraction
+        stop_mult = preset.protective_stop_atr_mult
+
+        pending = None
+        bars_in_position = 0
+        blocked_entries = []
+        for i in range(rows):
+            self.current_bar_index = i
+            if self.cancel_event and self.cancel_event.is_set():
+                return {"error": "Backtest cancelled by user"}
+            bar = self.df.iloc[i]
+            timestamp = self.df.index[i]
+            self._refresh_guard_session(timestamp)
+
+            # 1. fill the order decided on the previous completed bar at this open
+            if pending is not None:
+                if pending["action"] == "SELL" and self.position:
+                    self._preset_exit(bar, timestamp, pending["reason"], float(opens[i]), pending["signal_time"])
+                elif pending["action"] == "BUY" and not self.position:
+                    # The order fills at this bar's open, before this bar's own close or volume
+                    # exist. Guards (post-stop structure/VWAP, relative volume) must therefore
+                    # judge the completed signal bar, never the fill bar.
+                    fill_index, self.current_bar_index = self.current_bar_index, pending["index"]
+                    try:
+                        allowed, why = self._entry_guard_allows("BUY", pending["bar"], float(opens[i]), timestamp)
+                    finally:
+                        self.current_bar_index = fill_index
+                    if not allowed:
+                        blocked_entries.append({"time": pending["signal_time"], "reason": why})
+                    else:
+                        base_amount = self.current_trade_amount if self.allocation_mode == "compound" else self.trade_amount
+                        sizing = sp.preset_position_size(
+                            equity=self._sizing_equity(), price=float(opens[i]), atr=pending["atr"], base_amount=base_amount,
+                            risk_fraction=risk_fraction, max_position_fraction=max_position_fraction,
+                            stop_atr_mult=stop_mult, fractional=True,
+                        )
+                        if sizing["qty"] > 0:
+                            stop = float(opens[i]) - stop_mult * pending["atr"]
+                            self._preset_open_position(
+                                sizing["qty"], float(opens[i]), timestamp, stop,
+                                f"{preset.label}: entry signal ({sizing['limit']} sized)", pending["signal_time"],
+                            )
+                pending = None
+
+            # 2. protective stop against this bar's low (a gap below the stop fills at the open)
+            if self.position:
+                stop = float(self.position["stop_loss"])
+                if lows[i] <= stop:
+                    fill = min(stop, float(opens[i]))
+                    self._preset_exit(
+                        bar, timestamp, f"Stop Loss Hit (${stop:.2f}, {stop_mult:g}×ATR protective stop)",
+                        fill, None, stop=stop,
+                    )
+
+            # 3. decide on this completed bar for the next open (shared decision rule)
+            if ready[i]:
+                action = sp.preset_action(bool(self.position), bool(entries[i]), bool(exits[i]))
+                if action != "HOLD":
+                    signal_time = self._to_utc_iso(timestamp)
+                    pending = {
+                        "action": action,
+                        "bar": bar,
+                        "index": i,
+                        "atr": float(atrs[i]),
+                        "signal_time": signal_time,
+                        "reason": (f"Strategy exit: {preset.label} exit condition met"
+                                   if action == "SELL" else f"{preset.label} entry"),
+                    }
+            if self.position:
+                bars_in_position += 1
+            if not fast_metrics or getattr(self, "_record_equity_in_fast_mode", False):
+                self.equity_history.append({
+                    'time': timestamp,
+                    'equity': self.equity + (self._get_unrealized_pl(current_price=float(closes[i])) if self.position else 0),
+                })
+            if self.overtrade_limit_hit:
+                break
+
+        if self.position:
+            self._preset_exit(self.df.iloc[-1], self.df.index[-1], 'End of Backtest', float(closes[-1]), None)
+
+        results = self._calculate_fast_metrics() if fast_metrics else self._calculate_metrics()
+        summary = results.get("summary")
+        if summary is None:
+            return results
+
+        first_ready = next((self.df.index[i] for i in range(rows) if ready[i]), None)
+        info = {
+            "id": preset.id,
+            "variant_id": variant.id,
+            "label": preset.label,
+            "variant_label": variant.label.replace(" · Recommended", ""),
+            "direction": "long_only",
+            "catalog_version": sp.CATALOG_VERSION,
+            "fill_model": "next_bar_open",
+            "execution_note": f"Signals are decided on a completed {self.timeframe} bar and filled at the next bar's open. No fees or slippage are modelled.",
+            "untested_note": sp.untested_settings_note(preset.id, self.timeframe, self.market_session, variant.id),
+            "protective_stop_atr_mult": stop_mult,
+            "warmup_bars": sp.warmup_bars(preset.id, variant.id),
+            "first_ready_date": first_ready.isoformat() if first_ready is not None else None,
+            "exposure_pct": round(100.0 * bars_in_position / rows, 2) if rows else 0.0,
+            "low_sample_warning": len(self.trades) < 30,
+            "blocked_entries": blocked_entries[:20],
+            "pending_signal": ({"action": pending["action"], "signal_time": pending["signal_time"]} if pending else None),
+        }
+        if first_ready is None:
+            info["warning"] = (f"Not enough history: {sp.warmup_bars(preset.id, variant.id)} completed bars are required "
+                               f"before {preset.label} can signal.")
+        if not self.trades:
+            summary["no_trade_reason"] = info.get("warning") or (
+                f"{preset.label} produced no completed trade in this window. Entries need a fresh signal on a completed bar."
+            )
+        if _compare and not fast_metrics:
+            rows_out = []
+            for candidate in preset.variants:
+                if candidate.id == variant.id:
+                    source = summary
+                else:
+                    clone = copy.copy(self)
+                    clone._reset_state()
+                    clone.strategy_preset_variant = candidate.id
+                    clone._record_equity_in_fast_mode = True
+                    other = clone._run_strategy_preset(precomputed_df=raw_df, fast_metrics=True, _compare=False)
+                    source = (other or {}).get("summary") or {}
+                rows_out.append({
+                    "id": candidate.id,
+                    "label": candidate.label.replace(" · Recommended", ""),
+                    "selected": candidate.id == variant.id,
+                    "roi_pct": source.get("roi_pct"),
+                    "annualised_roi_pct": source.get("annualised_roi_pct"),
+                    "max_drawdown_pct": source.get("max_drawdown_pct"),
+                    "calmar_ratio": source.get("calmar_ratio"),
+                    "total_trades": source.get("total_trades"),
+                    "win_rate_pct": source.get("win_rate_pct"),
+                    "profit_factor": source.get("profit_factor"),
+                })
+            info["variants"] = rows_out
+        summary["strategy_preset"] = info
+        print(f"[backtest] STRATEGY {preset.label} ({variant.id}) for {self.ticker}: "
+              f"ROI {summary.get('roi_pct')}% | Trades {summary.get('total_trades')}")
+        return results
+
+    # ------------------------------------------------------------------ Malik allocation strategies
+    @staticmethod
+    def _title_ohlc(frame):
+        rename = {c: c.capitalize() for c in frame.columns if str(c).lower() in ("open", "high", "low", "close", "volume")}
+        return frame.rename(columns=rename)
+
+    def _allocation_intraday_plan(self, signal, legs, days, exec_setting, closes):
+        """Decision price at T and fill price after T from 15-minute bars (bars are stamped at their start).
+
+        Decision = close of the last bar completed by T; fill = open of the first bar starting at or after T.
+        Returns None when intraday data cannot be loaded for the signal or a leg."""
+        import allocation_strategy as A
+        from datetime import timedelta
+        start = days[0] - timedelta(days=3)
+        end = self.end_date
+        bars = {}
+        for sym in [signal] + [s for s in legs if s]:
+            frame = get_historical_data(sym, "15Min", start, end, force_yahoo=False)
+            if frame is None or frame.empty or frame.index[0] > days[0] + timedelta(days=5):
+                return None
+            frame = frame[~frame.index.duplicated(keep="last")].sort_index()
+            bars[sym] = {c.lower(): frame[c] for c in frame.columns if c.lower() in ("open", "close")}
+        rows = []
+        for day in days:
+            dt = A.decision_time(day.date(), exec_setting)
+            if dt is None:
+                continue
+            T = pd.Timestamp(dt["at"].replace(tzinfo=None))
+            floor = T.floor("15min")
+            sig_bar = floor - pd.Timedelta(minutes=15)
+            fill_bar = floor if floor == T else floor + pd.Timedelta(minutes=15)
+            row = {"day": day, "T": T, "adjusted": dt["adjusted"],
+                   "P": float(bars[signal]["close"].get(sig_bar, np.nan))}
+            for key, sym in zip(("fill_bull", "fill_bear"), legs):
+                row[key] = float(bars[sym]["open"].get(fill_bar, np.nan)) if sym else np.nan
+            rows.append(row)
+        return pd.DataFrame(rows).set_index("day")
+
+    def _run_allocation_strategy(self):
+        """Simulate a Malik leveraged-ETF allocation strategy (shared rules in allocation_strategy.py).
+
+        The benchmark's regime is decided once a day at the execution time from completed daily closes
+        plus the price at that time; the chosen ETF legs are rebalanced to their target % right after.
+        No fees, slippage or dividends are modelled."""
+        from datetime import timedelta
+        import allocation_strategy as A
+        import strategy_presets as sp
+
+        preset = sp.get_preset(self.strategy_preset)
+        settings = {**self.allocation_settings, "strategy_preset_variant": self.strategy_preset_variant}
+        errors = A.validate_settings(preset.id, settings, self.ticker)
+        if errors:
+            return {"error": errors[0]}
+        if self.timeframe != "1Day":
+            return {"error": f"{preset.label} decides once a day; set the timeframe to 1Day."}
+        direction = A.normalize_direction(self.strategy_preset_variant)
+        legs = A.resolve_legs(preset.id, settings)
+        alloc = A.normalized_settings(preset.id, settings)
+        bull, bear_sel = legs["bull"], legs["bear"]
+        bear_any = bear_sel or alloc["allocation_bear_etf"]  # loaded for the direction comparison
+        exec_setting = alloc["allocation_exec_time"]
+
+        padded_start = self.start_date - timedelta(days=int(A.WARMUP_BARS * 7 / 5) + 20)
+        sig_raw = get_historical_data(self.ticker, "1Day", padded_start, self.end_date, force_yahoo=False)
+        if sig_raw is None or sig_raw.empty:
+            return {"error": f"No {self.ticker} data found for the selected range."}
+        self._capture_provenance(sig_raw)
+        if self.data_quality == "DEGRADED":
+            return {"error": "Market data failed the split-adjustment check, so the strategy was not run. Try again later."}
+        sig = sp.completed_bars(sig_raw, "1Day")
+        sig = self._title_ohlc(sig)
+        sig.index = pd.DatetimeIndex(sig.index).normalize()
+        sig = sig[~sig.index.duplicated(keep="last")]
+        closes = sig["Close"].astype(float)
+        leg_daily = {}
+        for sym in (bull, bear_any):
+            frame = get_historical_data(sym, "1Day", self.start_date - timedelta(days=10), self.end_date, force_yahoo=False)
+            if frame is None or frame.empty:
+                return {"error": f"No {sym} data found for the selected range."}
+            if str((frame.attrs or {}).get("data_quality", "OK")).upper() == "DEGRADED":
+                return {"error": f"{sym} data failed the split-adjustment check, so the strategy was not run."}
+            frame = self._title_ohlc(sp.completed_bars(frame, "1Day"))
+            frame.index = pd.DatetimeIndex(frame.index).normalize()
+            leg_daily[sym] = frame[~frame.index.duplicated(keep="last")]
+
+        window = sig.loc[self.start_date:self.end_date]
+        if window.empty:
+            return {"error": "No data available in the requested range after filtering."}
+        days = window.index
+
+        model = "intraday"
+        intraday = self._allocation_intraday_plan(self.ticker, (bull, bear_any), days, exec_setting, closes)
+        if intraday is None:
+            model = "next_open"
+        if model == "intraday":
+            provisional = intraday["P"]
+            fill_day = pd.Series(intraday.index, index=intraday.index)
+            fills_bull, fills_bear = intraday["fill_bull"], intraday["fill_bear"]
+            decision_label = intraday["T"].dt.strftime("%Y-%m-%d %H:%M ET")
+            adjusted_days = int(intraday["adjusted"].sum())
+        else:
+            provisional = window["Close"]
+            nxt = pd.Series(list(days[1:]) + [pd.NaT], index=days)
+            fill_day = nxt
+            fills_bull = leg_daily[bull]["Open"].reindex(nxt.values).set_axis(days)
+            fills_bear = leg_daily[bear_any]["Open"].reindex(nxt.values).set_axis(days)
+            decision_label = pd.Series([f"{d.date()} close" for d in days], index=days)
+            adjusted_days = 0
+
+        max_frac = None
+        if self.enable_risk and self.max_pos_pct:
+            max_frac = float(self.max_pos_pct) / 100.0 if float(self.max_pos_pct) > 1.0 else float(self.max_pos_pct)
+        marks = {s: leg_daily[s]["Close"] for s in leg_daily}
+
+        def run(direction_, weights=None):
+            hist = A.regime_history(closes, provisional, direction_)
+            plan = pd.DataFrame({
+                "fill_day": fill_day.reindex(hist.index).values,
+                "decision_time": decision_label.reindex(hist.index).values,
+                "regime": hist["regime"].values,
+                "w_bull": (weights if weights is not None else hist["w_bull"]).values,
+                "w_bear": hist["w_bear"].values if direction_ == A.DIRECTION_INVERSE else np.where(hist["regime"].isna(), np.nan, 0.0),
+                "fill_bull": fills_bull.reindex(hist.index).values,
+                "fill_bear": fills_bear.reindex(hist.index).values,
+            }, index=hist.index)
+            out = A.simulate(plan, marks, bull=bull, bear=(bear_sel or bear_any) if direction_ == A.DIRECTION_INVERSE else None,
+                             initial_capital=float(self.initial_capital), allocation_mode=self.allocation_mode,
+                             base_amount=self.trade_amount, max_position_fraction=max_frac, calendar=days)
+            return hist, out
+
+        hist, out = run(direction)
+        if out["daily"].empty:
+            return {"error": "The strategy produced no results for this range."}
+
+        # Standard result shape: signal candles, average-cost round trips per leg, daily equity.
+        self.df = window
+        self.equity_history_offset = 0
+        self.equity_history = [{"time": d, "equity": float(e)} for d, e in out["daily"]["equity"].items()]
+        self.equity = float(out["daily"]["equity"].iloc[-1])
+        trades = list(out["trades"])
+        last_day = days[-1]
+        for sym, leg in out["open_legs"].items():
+            px = float(marks[sym].reindex([last_day]).ffill().iloc[0])
+            trades.append({"symbol": sym, "entry_time": leg["opened_at"], "exit_time": last_day, "qty": leg["qty"],
+                           "entry_price": leg["avg"], "exit_price": px, "entry_cost": leg["qty"] * leg["avg"],
+                           "exit_value": leg["qty"] * px, "pl": (px - leg["avg"]) * leg["qty"],
+                           "pl_pct": (px / leg["avg"] - 1) * 100 if leg["avg"] else 0.0, "reason": "End of Backtest"})
+        self.trades = [{
+            "ticker": t["symbol"], "entry_time": self._to_utc_iso(t["entry_time"]), "exit_time": self._to_utc_iso(t["exit_time"]),
+            "qty": round(t["qty"], 4), "entry_price": round(t["entry_price"], 2), "exit_price": round(t["exit_price"], 2),
+            "entry_cost": round(t["entry_cost"], 2), "exit_value": round(t["exit_value"], 2), "fees": 0.0,
+            "pl": round(t["pl"], 2), "pl_pct": round(t["pl_pct"], 2), "reason": f"{t['symbol']}: {t['reason']}", "side": "long",
+            "stop_loss": 0.0, "take_profit": 0.0, "initial_stop_loss": 0.0, "initial_take_profit": 0.0, "exit_stop_price": None,
+            "entry_signal_time": None, "exit_signal_time": None,
+        } for t in trades]
+        results = self._calculate_metrics()
+        summary = results.get("summary")
+        if summary is None:
+            return results
+
+        def stats(curve):
+            curve = curve.dropna()
+            if len(curve) < 2 or curve.iloc[0] <= 0:
+                return {}
+            years = max((curve.index[-1] - curve.index[0]).days / 365.25, 1e-9)
+            dd = float((curve / curve.cummax() - 1).min() * 100)
+            cagr = ((curve.iloc[-1] / curve.iloc[0]) ** (1 / years) - 1) * 100
+            return {"roi_pct": round((curve.iloc[-1] / curve.iloc[0] - 1) * 100, 2), "annualised_roi_pct": round(cagr, 2),
+                    "max_drawdown_pct": round(dd, 2), "mar": round(cagr / abs(dd), 2) if dd < 0 else None}
+
+        start_eq = pd.Series([float(self.initial_capital)], index=[days[0] - pd.Timedelta(days=1)])
+        own_curve = pd.concat([start_eq, out["daily"]["equity"]])
+        rule_w = pd.Series(np.where(hist["regime"].isna(), np.nan, (hist["P"] > hist["sma_slow"]).astype(float)), index=hist.index)
+        _, rule_out = run(A.DIRECTION_LONG_ONLY, weights=rule_w)
+        other_dir = A.DIRECTION_INVERSE if direction == A.DIRECTION_LONG_ONLY else A.DIRECTION_LONG_ONLY
+        _, other_out = run(other_dir)
+        benchmarks = [
+            {"label": f"Buy & hold {self.ticker}", **stats(closes.loc[days[0]:days[-1]])},
+            {"label": f"Buy & hold {bull}", **stats(leg_daily[bull]["Close"].loc[days[0]:days[-1]])},
+            {"label": f"250-day rule on {bull}",
+             **stats(pd.concat([start_eq, rule_out["daily"]["equity"]]))},
+        ]
+        regimes = hist["regime"].reindex(days)
+        share = regimes.dropna().value_counts(normalize=True)
+        segments = []
+        for day, reg in regimes.dropna().items():
+            if segments and segments[-1]["regime"] == reg:
+                segments[-1]["end"] = day.date().isoformat()
+            else:
+                segments.append({"regime": reg, "label": A.REGIMES[reg], "start": day.date().isoformat(), "end": day.date().isoformat()})
+        daily = out["daily"]
+        step = max(1, len(daily) // 400)
+        alloc_cols = [c for c in daily.columns if c.startswith("w_")]
+        allocation_series = [{"time": d.date().isoformat(), **{c[2:]: round(float(daily.loc[d, c]) * 100, 1) for c in alloc_cols}}
+                             for d in daily.index[::step]]
+        variant_rows = []
+        for vid, o in ((direction, out), (other_dir, other_out)):
+            st = stats(pd.concat([start_eq, o["daily"]["equity"]]))
+            v = sp.get_variant(preset, vid)
+            variant_rows.append({"id": vid, "label": v.label.replace(" · Recommended", ""), "selected": vid == direction,
+                                 "roi_pct": st.get("roi_pct"), "annualised_roi_pct": st.get("annualised_roi_pct"),
+                                 "max_drawdown_pct": abs(st.get("max_drawdown_pct") or 0.0),
+                                 "total_trades": len(o["fills"]), "win_rate_pct": None, "profit_factor": None})
+        exec_label = next((o["label"] for o in A.exec_time_options() if o["value"] == exec_setting), f"{exec_setting} ET")
+        fill_note = ("Decided on the benchmark's last 15-minute bar completed by the execution time (completed daily closes "
+                     "through yesterday plus that price) and filled at the next 15-minute bar's open."
+                     if model == "intraday" else
+                     "Intraday bars were unavailable, so this run decides on each completed daily close and fills at the next open (an approximation).")
+        info = {
+            "id": preset.id, "variant_id": direction, "label": preset.label,
+            "variant_label": sp.get_variant(preset, direction).label.replace(" · Recommended", ""),
+            "kind": A.KIND, "direction": direction, "catalog_version": sp.CATALOG_VERSION,
+            "fill_model": model, "execution_time": exec_setting, "execution_time_label": exec_label,
+            "execution_note": (f"Rebalances once a day at {exec_label}. {fill_note} Legs trade only when more than "
+                               f"{A.REBALANCE_BAND * 100:.0f}% of the sleeve off target. No fees, slippage or dividends."),
+            "legs": {"bull": bull, "bear": bear_sel}, "signal": self.ticker,
+            "research_note": A.research_note(preset.id), "research_report_url": A.RESEARCH_REPORT_URL,
+            "untested_note": "", "warmup_bars": A.WARMUP_BARS,
+            "exposure_pct": round(float(daily["exposure"].mean() * 100), 2),
+            "rebalances": len({f["day"] for f in out["fills"]}), "fills": len(out["fills"]),
+            "skipped_days": int(out["skipped_days"]), "no_decision_days": int(regimes.isna().sum()),
+            "early_close_adjusted_days": adjusted_days,
+            "regime_share": {A.REGIMES[k]: round(float(v) * 100, 1) for k, v in share.items()},
+            "regime_segments": segments[-200:], "allocation_series": allocation_series,
+            "benchmarks": benchmarks, "strategy_stats": stats(own_curve),
+            "low_sample_warning": len(days) < 250,
+            "variants": variant_rows,
+            "rebalance_log": [{"day": f["day"].date().isoformat(), "time": f["decision_time"], "symbol": f["symbol"], "side": f["side"],
+                               "qty": round(f["qty"], 4), "price": round(f["price"], 2), "notional": round(f["notional"], 2),
+                               "regime": A.REGIMES.get(f["regime"], f["regime"]), "limit": f.get("limit")}
+                              for f in out["fills"][-300:]][::-1],
+        }
+        if regimes.dropna().empty:
+            info["warning"] = f"Not enough history: {A.MIN_COMPLETED_CLOSES} completed daily closes are required before the strategy can decide."
+        if not self.trades:
+            summary["no_trade_reason"] = info.get("warning") or f"{preset.label} held cash for the whole window."
+        summary["strategy_preset"] = info
+        print(f"[backtest] ALLOCATION {preset.label} ({direction}, {bull}/{bear_sel}) {self.ticker}: ROI {summary.get('roi_pct')}% | fills {len(out['fills'])}")
+        return results
+
+    # ── Session Rider (schedule) ────────────────────────────────────────────
+    SESSION_BAR_TOLERANCE = pd.Timedelta(minutes=5)
+
+    def _session_intraday_bars(self, timeframe, first_day, last_day, window_last=None):
+        """Alpaca intraday bars for the window, fetched one calendar year at a time.
+
+        Returns (frame, error). Yahoo keeps only days of intraday history, so a Yahoo
+        fallback is refused rather than silently testing a few days."""
+        from datetime import timedelta
+        frames = []
+        year_start = first_day
+        while year_start <= last_day:
+            year_end = min(last_day, pd.Timestamp(year_start.year, 12, 31))
+            frame = get_historical_data(self.ticker, timeframe, year_start.to_pydatetime(),
+                                        (year_end + timedelta(days=1)).to_pydatetime(), force_yahoo=False)
+            if frame is None or frame.empty:
+                if window_last is not None and year_start > window_last:
+                    break  # only the padding after the end date (a sell after the window) is missing
+                return None, f"No {timeframe} bars for {self.ticker} in {year_start.year}."
+            source = str((frame.attrs or {}).get("data_source") or "").lower()
+            if source != "alpaca":
+                return None, (f"Session Rider needs Alpaca {timeframe} bars, but the data came from {source or 'another source'} "
+                              f"(Yahoo keeps only 7 days of 1-minute and 60 days of 5-minute bars). Link your Alpaca keys or try again later.")
+            if str((frame.attrs or {}).get("data_quality", "OK")).upper() == "DEGRADED":
+                return None, f"{self.ticker} {timeframe} bars failed the split-adjustment check, so the strategy was not run."
+            self.data_feed = (frame.attrs or {}).get("feed") or self.data_feed
+            frames.append(frame)
+            year_start = pd.Timestamp(year_start.year + 1, 1, 1)
+        bars = pd.concat(frames)
+        bars.index = pd.DatetimeIndex(bars.index)
+        if bars.index.tz is not None:
+            bars.index = bars.index.tz_convert("America/New_York").tz_localize(None)
+        bars = bars[~bars.index.duplicated(keep="last")].sort_index()
+        bars = self._title_ohlc(self._regular_hours_only(bars))
+        first_bar_day = bars.index[0].normalize() if not bars.empty else None
+        if first_bar_day is None or first_bar_day > first_day + pd.Timedelta(days=5):
+            return None, (f"{timeframe} bars for {self.ticker} only start on "
+                          f"{first_bar_day.date() if first_bar_day is not None else 'n/a'}; choose a start date after that.")
+        return bars, None
+
+    def _session_price(self, opens, at, *, exit_side=False):
+        """Open of the bar that starts at ``at``; else the next bar within 5 minutes.
+
+        An exit may not be skipped, so it falls back to the next bar at any later time."""
+        pos = opens.index.searchsorted(at, side="left")
+        if pos >= len(opens):
+            return None, None
+        ts = opens.index[pos]
+        if ts - at <= self.SESSION_BAR_TOLERANCE or exit_side:
+            return ts, float(opens.iloc[pos])
+        return None, None
+
+    def _run_session_strategy(self):
+        """Simulate Session Rider: buy at the Buy time, sell at the Sell time (rules in session_schedule.py).
+
+        Fills are the open of the intraday bar that starts at the scheduled time (bars are stamped at
+        their start). The entry ignores price, so there is no signal lookahead. No fees, slippage or
+        dividends in the headline; a separate cost table shows 2/5/10 bps per side."""
+        from datetime import timedelta
+        import session_schedule as S
+        import strategy_presets as sp
+
+        preset = sp.get_preset(self.strategy_preset)
+        errors = S.validate(self.session_settings)
+        if errors:
+            return {"error": errors[0]}
+        cfg = S.normalized_settings(self.session_settings)
+        buy, sell, mode = cfg[S.BUY_KEY], cfg[S.SELL_KEY], cfg["mode"]
+        if self.timeframe != "1Day":
+            return {"error": f"{preset.label} uses its own clock times; set the timeframe to 1Day."}
+        if self.is_crypto:
+            return {"error": f"{preset.label} supports US stocks and ETFs only."}
+
+        daily_raw = get_historical_data(self.ticker, "1Day", self.start_date - timedelta(days=10), self.end_date, force_yahoo=False)
+        if daily_raw is None or daily_raw.empty:
+            return {"error": f"No {self.ticker} data found for the selected range."}
+        self._capture_provenance(daily_raw)
+        if self.data_quality == "DEGRADED":
+            return {"error": "Market data failed the split-adjustment check, so the strategy was not run. Try again later."}
+        daily = self._title_ohlc(sp.completed_bars(daily_raw, "1Day"))
+        daily.index = pd.DatetimeIndex(daily.index).normalize()
+        daily = daily[~daily.index.duplicated(keep="last")]
+        window = daily.loc[self.start_date:self.end_date]
+        if window.empty:
+            return {"error": "No data available in the requested range after filtering."}
+        days = window.index
+
+        bar_tf = "1Min" if S.needs_minute_bars(buy, sell) else "5Min"
+        bars, err = self._session_intraday_bars(bar_tf, days[0], days[-1] + pd.Timedelta(days=7), window_last=days[-1])
+        if err:
+            return {"error": err}
+        opens = bars["Open"].astype(float).dropna()
+        closes = window["Close"].astype(float)
+
+        # One schedule, priced once; the cost table reuses it.
+        plan, skipped = [], {"missing bar": 0, "early close": 0, "weekend/holiday rule": 0}
+        adjusted = 0
+        last_exit_ts = None
+        for day in days:
+            reason = S.skip_reason(day.date(), cfg)
+            if reason:
+                if "early close" in reason:
+                    skipped["early close"] += 1
+                elif "weekend" in reason:
+                    skipped["weekend/holiday rule"] += 1
+                continue
+            ev = S.buy_event(day.date(), cfg)
+            t_buy = ev["at"].replace(tzinfo=None)
+            if last_exit_ts is not None and t_buy <= last_exit_ts:
+                skipped["missing bar"] += 1  # the previous exit was late; never hold two positions
+                continue
+            b_ts, b_px = self._session_price(opens, pd.Timestamp(t_buy))
+            if b_ts is None or b_ts.normalize() != day:
+                skipped["missing bar"] += 1
+                continue
+            t_sell = ev["sell"]["at"].replace(tzinfo=None)
+            if pd.Timestamp(t_sell).normalize() > days[-1]:
+                break  # its sell falls after the end date: the last entry is not taken
+            s_ts, s_px = self._session_price(opens, pd.Timestamp(t_sell), exit_side=True)
+            if s_ts is None:
+                break  # no bar left to sell into
+            late = s_ts - pd.Timestamp(t_sell) > self.SESSION_BAR_TOLERANCE
+            adjusted += int(ev["adjusted"] or ev["sell"]["adjusted"])
+            plan.append({"day": day, "buy_ts": b_ts, "buy_px": b_px, "sell_ts": s_ts, "sell_px": s_px, "late": late})
+            last_exit_ts = s_ts
+        max_frac = None
+        if self.enable_risk and self.max_pos_pct:
+            max_frac = float(self.max_pos_pct) / 100.0 if float(self.max_pos_pct) > 1.0 else float(self.max_pos_pct)
+
+        def simulate(cost_bps=0.0):
+            cost = cost_bps / 10000.0
+            realized, trades = 0.0, []
+            for row in plan:
+                equity_now = float(self.initial_capital) + realized
+                amount = self.trade_amount + (realized if self.allocation_mode == "compound" else 0.0)
+                cap_base = float(self.initial_capital) if self.allocation_mode == "fixed" else equity_now
+                if max_frac is not None:
+                    amount = min(amount, cap_base * max_frac)
+                if self.allocation_mode == "compound":
+                    amount = min(amount, equity_now)
+                if amount < 1.0:
+                    continue
+                entry = row["buy_px"] * (1 + cost)
+                qty = amount / entry
+                exit_px = row["sell_px"] * (1 - cost)
+                pl = (exit_px - entry) * qty
+                realized += pl
+                trades.append({"row": row, "qty": qty, "entry": entry, "exit": exit_px, "pl": pl})
+            curve = []
+            running, ti = 0.0, 0
+            closed = sorted(trades, key=lambda t: t["row"]["sell_ts"])
+            for day in days:
+                while ti < len(closed) and closed[ti]["row"]["sell_ts"].normalize() <= day:
+                    running += closed[ti]["pl"]
+                    ti += 1
+                eq = float(self.initial_capital) + running
+                held = next((t for t in trades if t["row"]["buy_ts"].normalize() <= day < t["row"]["sell_ts"].normalize()), None)
+                if held is not None:
+                    eq += (float(closes.loc[day]) - held["entry"]) * held["qty"]
+                curve.append(eq)
+            return trades, pd.Series(curve, index=days)
+
+        trades, equity = simulate(0.0)
+        self.df = window
+        self.equity_history_offset = 0
+        self.equity_history = [{"time": d, "equity": float(e)} for d, e in equity.items()]
+        self.equity = float(equity.iloc[-1])
+        label_buy, label_sell = S.et_ct_label(buy), S.et_ct_label(sell)
+        rows = []
+        for t in trades:
+            r = t["row"]
+            rows.append({"entry_time": r["buy_ts"], "exit_time": r["sell_ts"], "qty": t["qty"], "entry": t["entry"], "exit": t["exit"],
+                         "pl": t["pl"], "reason": "Scheduled sell (late: no bar at the sell time)" if r["late"] else "Scheduled sell"})
+        self.trades = [{
+            "ticker": self.ticker, "entry_time": self._to_utc_iso(r["entry_time"]), "exit_time": self._to_utc_iso(r["exit_time"]),
+            "qty": round(r["qty"], 6), "entry_price": round(r["entry"], 4), "exit_price": round(r["exit"], 4),
+            "entry_cost": round(r["qty"] * r["entry"], 2), "exit_value": round(r["qty"] * r["exit"], 2), "fees": 0.0,
+            "pl": round(r["pl"], 2), "pl_pct": round((r["exit"] / r["entry"] - 1) * 100, 3) if r["entry"] else 0.0,
+            "reason": r["reason"], "side": "long", "stop_loss": 0.0, "take_profit": 0.0, "initial_stop_loss": 0.0,
+            "initial_take_profit": 0.0, "exit_stop_price": None, "entry_signal_time": None, "exit_signal_time": None,
+        } for r in rows]
+        results = self._calculate_metrics()
+        summary = results.get("summary")
+        if summary is None:
+            return results
+
+        def total_pct(series):
+            series = series.dropna()
+            return round((float(series.prod()) - 1) * 100, 2) if len(series) else None
+
+        opens_d, closes_d = window["Open"].astype(float), closes
+        overnight_parts = opens_d / closes_d.shift(1)
+        intraday_parts = closes_d / opens_d
+        start_eq = float(self.initial_capital)
+        by_year = []
+        eq_with_start = pd.concat([pd.Series([start_eq], index=[days[0] - pd.Timedelta(days=1)]), equity])
+        for year in sorted({d.year for d in days}):
+            in_year = eq_with_start[eq_with_start.index.year <= year]
+            prior = eq_with_start[eq_with_start.index.year < year]
+            base = float(prior.iloc[-1]) if len(prior) else start_eq
+            yc = closes[closes.index.year == year]
+            prev_close = closes[closes.index.year < year]
+            bh_base = float(prev_close.iloc[-1]) if len(prev_close) else float(opens_d[opens_d.index.year == year].iloc[0])
+            by_year.append({
+                "year": int(year),
+                "strategy_pct": round((float(in_year.iloc[-1]) / base - 1) * 100, 2) if base else None,
+                "buy_hold_pct": round((float(yc.iloc[-1]) / bh_base - 1) * 100, 2) if len(yc) and bh_base else None,
+                "trades": sum(1 for t in trades if t["row"]["sell_ts"].year == year),
+            })
+        cost_rows = []
+        for bps in (2, 5, 10):
+            _, c_equity = simulate(float(bps))
+            cost_rows.append({"bps_per_side": bps, "roi_pct": round((float(c_equity.iloc[-1]) / start_eq - 1) * 100, 2)})
+        pause_after = cfg[S.LOSS_PAUSE_KEY] or S.LOSS_PAUSE_DEFAULT
+        pauses, streak = 0, 0
+        for t in trades:
+            streak = streak + 1 if t["pl"] < 0 else 0
+            if streak >= pause_after:
+                pauses += 1
+                streak = 0
+        notes = [
+            "No fees, slippage or dividends in the headline result (cost table below).",
+            "Prices are split-adjusted only, so overnight results are understated: the ex-dividend drop happens overnight and the dividend is not credited.",
+            "The first and last minutes of the session have wider spreads and more noise; live fills can differ from these bar prices.",
+            f"The live bot pauses after {pause_after} losses in a row and waits for your review; the backtest keeps trading.",
+        ]
+        info = {
+            "id": preset.id, "variant_id": self.strategy_preset_variant, "label": preset.label,
+            "variant_label": "Scheduled buy and sell", "kind": S.KIND, "catalog_version": sp.CATALOG_VERSION,
+            "mode": mode, "buy_time": buy, "sell_time": sell, "buy_label": f"{S.describe(buy)} · {label_buy}" if not buy[0].isdigit() else label_buy,
+            "sell_label": f"{S.describe(sell)} · {label_sell}" if not sell[0].isdigit() else label_sell,
+            "bar_timeframe": bar_tf, "fill_model": "bar_open_at_time",
+            "execution_note": (f"Buys at the open of the {bar_tf} bar starting at the buy time and sells at the open of the bar starting at "
+                               "the sell time (next bar within 5 minutes if one is missing). The entry ignores price, so nothing after "
+                               "the buy time is used to decide it."),
+            "round_trips": len(trades), "skipped_days": skipped, "early_close_adjusted_trades": adjusted,
+            "late_exits": sum(1 for t in trades if t["row"]["late"]),
+            "would_pause_count": pauses, "loss_pause_after": pause_after,
+            "buy_hold_split": [
+                {"label": f"Buy & hold {self.ticker} (first open → last close)", "roi_pct": total_pct(pd.concat([overnight_parts, intraday_parts]))},
+                {"label": "Overnight part (close → next open)", "roi_pct": total_pct(overnight_parts)},
+                {"label": "Intraday part (open → close)", "roi_pct": total_pct(intraday_parts)},
+            ],
+            "by_year": by_year, "cost_table": cost_rows, "notes": notes,
+            "low_sample_warning": len(trades) < 100, "untested_note": "", "warmup_bars": 0,
+        }
+        if not self.trades:
+            summary["no_trade_reason"] = "No scheduled trade could be filled in this window."
+        summary["strategy_preset"] = info
+        print(f"[backtest] SESSION RIDER {self.ticker} {mode} {buy}->{sell}: ROI {summary.get('roi_pct')}% | round trips {len(trades)}")
         return results
 
     def _enter_trade_ai(self, bar, timestamp, ai_decision, side="long"):
@@ -1156,8 +1970,37 @@ class Backtester:
         entry_label = "BUY" if side == "long" else "SELL"
         print(f"[{self._to_central_str(timestamp)}] {entry_label}  {self.ticker} @ ${price:.2f} | Stop: ${stop_loss:.2f} | Target: ${take_profit:.2f} | Reason: AI Autopilot Entry (Conf: {ai_decision.get('confidence'):.0%})")
 
-    def _enter_trade(self, bar, timestamp, reason, side="long"):
-        price = bar['Close']
+    def _queue_entry(self, signal_bar, signal_timestamp, reason, side, signal_index):
+        """Hold an entry decided on a completed bar until the next bar's open."""
+        if signal_index >= len(self.df) - 1:
+            print(f"[{self._to_central_str(signal_timestamp)}] HOLD {self.ticker} | Entry signal on the final bar; no next bar to fill.")
+            return
+        self.pending_entry = {
+            'bar': signal_bar,
+            'timestamp': signal_timestamp,
+            'reason': reason,
+            'side': side,
+            'index': signal_index,
+        }
+
+    def _fill_pending_entry(self, pending, fill_bar, fill_timestamp):
+        try:
+            fill_price = float(fill_bar.get('Open', fill_bar['Close']))
+        except (TypeError, ValueError):
+            fill_price = 0.0
+        if not np.isfinite(fill_price) or fill_price <= 0:
+            fill_price = float(fill_bar['Close'])
+        self._enter_trade(
+            pending['bar'], fill_timestamp, pending['reason'], side=pending['side'],
+            fill_price=fill_price, signal_index=pending['index'],
+        )
+        if self.position is not None:
+            self.position['signal_time'] = pending['timestamp']
+
+    def _enter_trade(self, bar, timestamp, reason, side="long", fill_price=None, signal_index=None):
+        # ``bar`` is the completed signal bar (ATR, structure); ``fill_price``
+        # is the next bar's open when the entry was queued.
+        price = float(fill_price) if fill_price is not None else bar['Close']
         atr = bar['ATR']
         if atr <= 0:
             atr = price * 0.01  # Fallback: treat 1% of price as synthetic ATR
@@ -1173,8 +2016,9 @@ class Backtester:
         if self.adaptive_continuous_grid and side == "long":
             from engine import _initial_continuous_grid_entry_instruction
             self.continuous_grid_settings["compound_amount"] = self.current_trade_amount
+            history_end = self.current_bar_index if signal_index is None else int(signal_index)
             grid_history = (
-                self.df.iloc[max(0, self.current_bar_index - 79):self.current_bar_index + 1]
+                self.df.iloc[max(0, history_end - 79):history_end + 1]
                 if self.df is not None
                 else [bar.to_dict() if hasattr(bar, "to_dict") else dict(bar)]
             )
@@ -1189,8 +2033,9 @@ class Backtester:
                     f"Adaptive Grid Initial Buy L{initial_grid['level']}/5: "
                     f"{initial_grid['allocation_pct']:.1f}% (${base_notional:.2f}). {reason}"
                 )
-        max_notional = self.equity * self.max_pos_pct if self.enable_risk else self.equity
-        allocated_cash = min(base_notional, max_notional, self.equity)
+        sizing_equity = self._sizing_equity()
+        max_notional = sizing_equity * self.max_pos_pct if self.enable_risk else sizing_equity
+        allocated_cash = min(base_notional, max_notional, sizing_equity)
         qty = allocated_cash / price if price > 0 else 0
 
         if qty <= 0:
@@ -1615,6 +2460,7 @@ class Backtester:
                     "start_date_utc": self.df.index[0].isoformat(),
                     "end_date_utc": self.df.index[-1].isoformat(),
                     "data_source": self.data_source,
+                    **self._provenance_summary(),
                     "initial_capital": self.initial_capital,
                     "final_equity": round(self.equity, 2),
                     "total_pl": 0.0,
@@ -1698,7 +2544,12 @@ class Backtester:
         avg_win_pct = round(df_trades[df_trades['pl'] > 0]['pl_pct'].mean(), 2) if len(winning_pl) > 0 else 0.0
         avg_loss_pct = round(df_trades[df_trades['pl'] <= 0]['pl_pct'].mean(), 2) if len(losing_pl) > 0 else 0.0
         period_days = max((self.end_date - self.start_date).days, 1)
-        annualised_roi = roi * (365 / period_days)
+        import backtest_metrics as bm
+        annualised_roi = bm.annualized_return(
+            roi, bm.basis_days(self.df.index), self.allocation_mode)["annualised_roi_pct"]
+        fast_max_dd = bm.max_drawdown_pct([e["equity"] for e in self.equity_history]) if self.equity_history else 0.0
+        fast_calmar = (round(annualised_roi / fast_max_dd, 2)
+                       if (annualised_roi is not None and fast_max_dd > 0) else (None if self.equity_history else 0.0))
 
         return {
             "summary": {
@@ -1708,6 +2559,7 @@ class Backtester:
                 "start_date_utc": self.df.index[0].isoformat(),
                 "end_date_utc": self.df.index[-1].isoformat(),
                 "data_source": self.data_source,
+                    **self._provenance_summary(),
                 "initial_capital": self.initial_capital,
                 "final_equity": round(self.equity, 2),
                 "total_pl": round(total_pl, 2),
@@ -1721,10 +2573,10 @@ class Backtester:
                 "avg_trade_pl": round(df_trades['pl'].mean(), 2),
                 "best_trade": round(df_trades['pl'].max(), 2),
                 "worst_trade": round(df_trades['pl'].min(), 2),
-                "max_drawdown_pct": 0.0,
+                "max_drawdown_pct": round(fast_max_dd, 2),
                 "sharpe_ratio": sharpe,
                 "sortino_ratio": sortino,
-                "calmar_ratio": 0.0,
+                "calmar_ratio": fast_calmar,
                 "profit_factor": profit_factor,
                 "avg_win": avg_win,
                 "avg_loss": avg_loss,
@@ -1735,7 +2587,7 @@ class Backtester:
                 "max_win_streak": max_win_streak,
                 "max_loss_streak": max_loss_streak,
                 "expectancy": expectancy,
-                "annualised_roi_pct": round(annualised_roi, 2),
+                "annualised_roi_pct": annualised_roi,
             },
             "equity_curve": [],
             "trades": self.trades[::-1],
@@ -1745,6 +2597,85 @@ class Backtester:
         }
 
     def _calculate_metrics(self):
+        results = self._calculate_metrics_base()
+        try:
+            self._enrich_metrics(results)
+        except Exception as exc:  # analytics must never break a backtest result
+            print(f"[backtest] Result analytics unavailable: {type(exc).__name__}: {exc}")
+        return results
+
+    def _enrich_metrics(self, results):
+        """Corrected annualisation and risk ratios, buy & hold edge, exposure,
+        drawdown profile, monthly returns, period split, trade tags and the run
+        record (see backtest_metrics.py). Shared by every backtest path."""
+        import backtest_metrics as bm
+
+        summary = results.get("summary") if isinstance(results, dict) else None
+        if not isinstance(summary, dict) or self.df is None or self.df.empty:
+            return
+        initial = float(self.initial_capital or 0.0)
+        fmt = self._to_utc_iso
+
+        def to_utc(index):
+            idx = pd.DatetimeIndex(index)
+            if idx.tz is None:  # bars are exchange-local, like _localize_dt
+                idx = idx.tz_localize(self.local_tz, ambiguous=False, nonexistent="shift_forward")
+            return idx.tz_convert("UTC")
+
+        def unix_of(index):
+            delta = to_utc(index) - pd.Timestamp(0, tz="UTC")
+            return [int(v) for v in (delta // pd.Timedelta(seconds=1))]
+
+        equity = bm.equity_series(self.equity_history)
+        if equity.empty:
+            equity = pd.Series([initial, float(self.equity)],
+                               index=pd.DatetimeIndex([self.df.index[0], self.df.index[-1]]))
+        roi = float(summary.get("roi_pct") or 0.0)
+        max_dd = abs(float(summary.get("max_drawdown_pct") or 0.0))
+
+        summary.update(bm.annualized_return(roi, bm.basis_days(equity.index), self.allocation_mode))
+        annualised = summary.get("annualised_roi_pct")
+        summary["calmar_ratio"] = round(annualised / max_dd, 2) if (annualised is not None and max_dd > 0) else None
+        summary.update(bm.risk_ratios(equity, initial, self.is_crypto))
+
+        closes = pd.to_numeric(self.df["Close"], errors="coerce")
+        bh_curve = bm.buy_hold_curve(closes, initial)
+        bh_dd = bm.max_drawdown_pct(bh_curve.to_numpy()) if not bh_curve.empty else 0.0
+        summary["buy_hold_max_drawdown_pct"] = round(bh_dd, 2)
+        summary["edge_vs_buy_hold"] = bm.edge_vs_buy_hold(roi, max_dd, summary.get("buy_hold_roi_pct"), bh_dd)
+        if not bh_curve.empty and results.get("equity_curve"):
+            lookup = dict(zip(to_utc(bh_curve.index).strftime("%Y-%m-%d %H:%M:%SZ"), bh_curve.to_numpy(dtype=float)))
+            results["buy_hold_curve"] = [
+                {"time": p["time"], "equity": round(lookup[p["time"]], 2)}
+                for p in results["equity_curve"] if p.get("time") in lookup
+            ]
+
+        def iso_unix(value):
+            try:
+                stamp = pd.Timestamp(value)
+                return None if pd.isna(stamp) else int(stamp.timestamp())
+            except (TypeError, ValueError):
+                return None
+
+        trades = list(self.trades or [])
+        summary["exposure_pct"] = bm.exposure_pct(
+            unix_of(self.df.index),
+            [(iso_unix(t.get("entry_time")), iso_unix(t.get("exit_time"))) for t in trades],
+        )
+        summary.update(bm.drawdown_profile(equity, fmt))
+        summary["monthly_returns"] = bm.monthly_returns(equity, initial)
+        summary["period_split"] = bm.period_split(
+            equity, unix_of(equity.index), initial, trades,
+            lambda t: iso_unix(t.get("exit_time")), fmt,
+        )
+        for trade in results.get("trades") or []:
+            trade["exit_category"] = bm.classify_exit(trade.get("reason"), trade.get("side", "long"))
+            trade["hold_hours"] = bm.hold_hours(trade.get("entry_time"), trade.get("exit_time"))
+        summary["run_settings"] = bm.run_settings(
+            self, fill_model="signal_bar_close" if self.ai_autopilot else "next_bar_open")
+        summary["metrics_version"] = bm.METRICS_VERSION
+
+    def _calculate_metrics_base(self):
         if not self.trades:
             start_price = self.df.iloc[0]['Close']
             end_price = self.df.iloc[-1]['Close']
@@ -1793,6 +2724,7 @@ class Backtester:
                     "start_date_utc": self.df.index[0].isoformat(),
                     "end_date_utc": self.df.index[-1].isoformat(),
                     "data_source": self.data_source,
+                    **self._provenance_summary(),
                     "initial_capital": self.initial_capital,
                     "final_equity": round(self.equity, 2),
                     "total_pl": 0.0,
@@ -1948,7 +2880,7 @@ class Backtester:
                     })
                     
                     # Grab perfectly aligned equity point
-                    eq_idx = i - 30
+                    eq_idx = i - self.equity_history_offset
                     if 0 <= eq_idx < len(self.equity_history):
                         eq_val = self.equity_history[eq_idx]['equity']
                     else:
@@ -1970,6 +2902,7 @@ class Backtester:
                 "start_date_utc": self.df.index[0].isoformat(),
                 "end_date_utc": self.df.index[-1].isoformat(),
                 "data_source": self.data_source,
+                    **self._provenance_summary(),
                 "initial_capital": self.initial_capital,
                 "final_equity": round(self.equity, 2),
                 "total_pl": round(total_pl, 2),

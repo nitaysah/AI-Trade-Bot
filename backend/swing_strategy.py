@@ -208,6 +208,7 @@ def _extract_context(
     lookback_days: int = 20,
     market_session: str = "Regular",
     is_crypto: bool = False,
+    pivot_strength: int = 2,
 ) -> dict:
     candles = []
     if price_history:
@@ -266,7 +267,8 @@ def _extract_context(
 
     support_candidates = []
     resistance_candidates = []
-    window = 2 if len(candles) >= 9 else 1
+    strength = max(1, min(10, int(pivot_strength or 2)))
+    window = strength if len(candles) >= (strength * 2 + 5) else 1
 
     for idx in range(window, len(candles) - window):
         candle = candles[idx]
@@ -381,6 +383,7 @@ def detect_swing_entry(
     lookback_days: int = 20,
     market_session: str = "Regular",
     is_crypto: bool = False,
+    pivot_strength: int = 2,
 ) -> dict:
     ctx = _extract_context(
         price_history=price_history,
@@ -388,6 +391,7 @@ def detect_swing_entry(
         lookback_days=lookback_days,
         market_session=market_session,
         is_crypto=is_crypto,
+        pivot_strength=pivot_strength,
     )
     candles = ctx["candles"]
     if len(candles) < 2:

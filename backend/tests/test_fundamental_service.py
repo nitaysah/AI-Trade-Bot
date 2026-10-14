@@ -79,6 +79,8 @@ class FundamentalServiceTests(unittest.TestCase):
             report = fundamental_service.build_fundamental_report("EXMP", force=True)
         self.assertEqual(report["status"], "current")
         self.assertEqual(report["assessment"], "Worth considering")
+        self.assertEqual(report["score"], 100)
+        self.assertEqual({c["rating"] for c in report["scorecard"]}, {"strong"})
         self.assertEqual(report["ownership"]["institutional_pct"], 60.0)
         growth = report["metrics"]["growth"][0]
         self.assertEqual(growth["value"], "20.0%")
@@ -105,7 +107,7 @@ class FundamentalServiceTests(unittest.TestCase):
         self.assertIn("provider down", report["error"])
 
     def test_detail_uses_fresh_cache_until_next_check(self):
-        cached = {"report_version": 1, "ticker": "EXMP", "status": "current", "next_check_at": fundamental_service.time.time() + 3600}
+        cached = {"report_version": fundamental_service.REPORT_VERSION, "ticker": "EXMP", "status": "current", "next_check_at": fundamental_service.time.time() + 3600}
         with patch.object(fundamental_service, "_build_report", side_effect=AssertionError("fresh cache was not used")):
             report = fundamental_service.get_fundamental_report_detail("EXMP", cached)
         self.assertEqual(report, cached)

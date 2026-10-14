@@ -160,7 +160,8 @@ class ScreenerScanGateTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(status["is_active_window"])
         self.assertEqual(status["market_session_label"], "Regular")
-        self.assertIn("9:30 AM ET", status["next_open_str"])
+        self.assertIn("8:30 AM CT", status["next_open_str"])
+        self.assertNotIn("ET", status["next_open_str"])
 
     def test_crypto_market_status_is_always_active(self):
         eastern = pytz.timezone("US/Eastern")
@@ -242,10 +243,20 @@ class ScreenerScanGateTests(unittest.IsolatedAsyncioTestCase):
                 "timeframe": "15Min",
                 "market_session": "Regular",
                 "scan_interval_seconds": 60,
+                "scan_interval_auto": False,
             }
         }
         state.order = ["AAPL"]
         state.evaluation_state["AAPL"] = {"baseline_required": True}
+        # A valid scan is on file, so the closed-session rule applies. (A profile with no valid scan yet is evaluated
+        # once so its card has last-session evidence; see test_screener_alert_source.SaveThenScanTests.)
+        last_open = int(time.time()) - 1800
+        state.latest_scans["AAPL"] = {
+            "ticker": "AAPL", "evaluation_status": "valid", "data_status": "current", "direction": "NEUTRAL",
+            "price": "$100.00", "price_raw": 100.0, "signals": {},
+            "candle_meta": {"candle_key": f"15MIN:{last_open}", "candle_open_ts": last_open, "candle_close_ts": last_open + 900, "candle_status": "closed"},
+            "scan_log": {"status": "WATCHING_BOTH"},
+        }
 
         closed = {
             "is_active_window": False,
@@ -375,7 +386,7 @@ class ScreenerScanGateTests(unittest.IsolatedAsyncioTestCase):
     def test_empty_scan_uses_configured_interval(self):
         scan = main._empty_screener_scan(
             "AAPL",
-            {"scan_interval_seconds": 60, "options_trading": False},
+            {"scan_interval_seconds": 60, "scan_interval_auto": False, "options_trading": False},
         )
         self.assertEqual(scan["scan_log"]["refresh_rate_sec"], 60)
 

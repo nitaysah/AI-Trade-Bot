@@ -49,7 +49,6 @@ class FinnhubNewsProviderTests(unittest.TestCase):
         }]
         with patch.object(ai_indicator.global_config, "FINNHUB_API_KEY", "test-key"), \
              patch.object(ai_indicator, "_fetch_finnhub_news_articles", return_value=finnhub), \
-             patch.object(ai_indicator, "_fetch_yahoo_news_articles", return_value=[]), \
              patch.object(ai_indicator, "_fetch_google_news_articles", return_value=[]), \
              patch.object(ai_indicator, "_fetch_cnbc_news_articles", return_value=([], [])):
             articles, status = ai_indicator._fetch_news_article_metadata("AAPL", 8)

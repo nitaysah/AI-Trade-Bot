@@ -76,20 +76,33 @@ def create_broker(uid: str = None):
         return broker
 
 
+def get_alpaca_data_credentials():
+    """Return ``(api_key, secret_key)`` for market-data requests, or ``(None, None)``.
+
+    The user's own linked keys win; the server's keys are the fallback. The
+    values are never logged.
+    """
+    from user_config import get_user_config
+
+    usr_cfg = get_user_config()
+    api_key = (getattr(usr_cfg, 'ALPACA_API_KEY', '') or '').strip()
+    secret_key = (getattr(usr_cfg, 'ALPACA_SECRET_KEY', '') or '').strip()
+
+    if not api_key or api_key.startswith("your_alpaca"):
+        api_key = (getattr(config, 'ALPACA_API_KEY', '') or '').strip()
+        secret_key = (getattr(config, 'ALPACA_SECRET_KEY', '') or '').strip()
+
+    if not api_key or api_key.startswith("your_alpaca"):
+        return None, None
+    return api_key, secret_key
+
+
 def get_alpaca_clients():
     """Returns (StockHistoricalDataClient, CryptoHistoricalDataClient) for data fetching."""
     from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
-    from user_config import get_user_config
-    
-    usr_cfg = get_user_config()
-    api_key = getattr(usr_cfg, 'ALPACA_API_KEY', '').strip()
-    secret_key = getattr(usr_cfg, 'ALPACA_SECRET_KEY', '').strip()
 
-    if not api_key or api_key.startswith("your_alpaca"):
-        api_key = getattr(config, 'ALPACA_API_KEY', '').strip()
-        secret_key = getattr(config, 'ALPACA_SECRET_KEY', '').strip()
-
-    if not api_key or api_key.startswith("your_alpaca"):
+    api_key, secret_key = get_alpaca_data_credentials()
+    if not api_key:
         return None, None
 
     cache_key = (api_key, secret_key)

@@ -108,10 +108,6 @@ ENABLE_DAILY_HIGH_LOW = True
 ENABLE_PIVOT_POINTS = True
 ENABLE_VOLUME_PROFILE = True
 ENABLE_SWING_POINTS = True
-ENABLE_BOTBULLS1 = True
-ENABLE_BOTBULLS2 = True
-ENABLE_BOTBULLS3 = True
-ENABLE_BOTBULLS5 = True
 
 # The added classical catalog is available everywhere but stays disabled in
 # global confluence until the user explicitly enables an indicator. Bot and
@@ -185,27 +181,7 @@ SWING_POINTS_LEVEL_COUNT = 1
 # Shared industry defaults for the extended standard-indicator catalog.
 globals().update(EXTENSION_INDICATOR_DEFAULTS)
 
-# Premium BotBulls Parameters
-BOTBULLS1_WT_CHANNEL = 10
-BOTBULLS1_WT_AVERAGE = 21
-BOTBULLS1_MFI_CONFIRM = 30
-BOTBULLS1_WT_OVERSOLD = -55
-BOTBULLS1_WT_OVERBOUGHT = 55
-BOTBULLS1_MFI_BUY_RECLAIM = 35
-BOTBULLS1_MFI_SELL_REJECT = 65
-BOTBULLS1_CONFIRM_LOOKBACK = 3
-BOTBULLS1_REQUIRE_MFI_CONFIRM = 1
-BOTBULLS1_REQUIRE_CANDLE_CONFIRM = 1
-BOTBULLS1_REQUIRE_PRICE_CONFIRM = 1
-BOTBULLS1_PRICE_CONFIRM_EMA = 9
-BOTBULLS1_PRICE_CONFIRM_LOOKBACK = 4
 
-BOTBULLS2_ATR_MULT = 2.0
-BOTBULLS2_TREND_TRACER_PERIOD = 50
-BOTBULLS2_REVERSAL_ZONE_PERIOD = 50
-
-BOTBULLS3_ATR_PERIOD = 10
-BOTBULLS3_ATR_MULT = 1.0
 
 # BotBulls5 — causal multi-pattern recognition and breakout confirmation.
 # Defaults are deliberately balanced: forming patterns are shown on the chart,

@@ -46,11 +46,11 @@ def direction_watch_label(mode: Any) -> str:
     """Return concise, user-facing copy for the directional alert watch."""
     normalized = str(mode or "BOTH").strip().upper()
     return {
-        "BOTH": "Both directions",
-        "BULLISH": "Bullish only",
-        "BEARISH": "Bearish only",
+        "BOTH": "Buy & Sell",
+        "BULLISH": "Buy only",
+        "BEARISH": "Sell only",
         "NONE": "Alerts disabled",
-    }.get(normalized, "Both directions")
+    }.get(normalized, "Buy & Sell")
 
 
 def direction_watch_directions(mode: Any) -> list[str]:
@@ -96,6 +96,98 @@ def screening_strategy_logic(value: Any) -> str:
         "combined": "Combined entry rule: both indicator and event qualifications must be true in the same direction.",
         "discovery": "Discovery entry rule: either leg may qualify, but an explicit opposing qualified event blocks the setup.",
     }.get(mode, "Combined entry rule: both indicator and event qualifications must be true in the same direction.")
+
+
+# Per-ticker alert source: exactly one of three independent setups, or "none"
+# (alerts paused). It maps onto the screening policy kept for compatibility:
+# indicators/strategy -> "technical" (a strategy preset is a technical rule set),
+# event -> "event". Combined/Discovery no longer exist as selectable sources.
+ALERT_SOURCES = ("indicators", "strategy", "event", "none")
+ALERT_SOURCE_LABELS = {
+    "indicators": "Indicators",
+    "strategy": "Strategy",
+    "event": "Event-Driven",
+    "none": "Alerts paused",
+}
+_ALERT_SOURCE_POLICY = {
+    "indicators": "technical",
+    "strategy": "technical",
+    "event": "event",
+    "none": "technical",
+}
+LEGACY_SCREENING_MODES = {"combined", "discovery"}
+
+
+def normalize_alert_source(value: Any, default: str | None = None) -> str | None:
+    """Return a valid alert source, or ``default`` when the value is unknown."""
+    candidate = str(value or "").strip().lower().replace("-", "_")
+    aliases = {
+        "indicator": "indicators",
+        "technical": "indicators",
+        "preset": "strategy",
+        "strategy_preset": "strategy",
+        "event_driven": "event",
+        "events": "event",
+        "off": "none",
+        "paused": "none",
+    }
+    candidate = aliases.get(candidate, candidate)
+    return candidate if candidate in ALERT_SOURCES else default
+
+
+def derive_alert_source(settings: Any) -> str:
+    """Derive the alert source for a profile saved before ``alert_source`` existed.
+
+    An explicit valid ``alert_source`` wins. Otherwise an active preset means
+    Strategy, the old ``event`` policy means Event-Driven, and everything else
+    (technical, combined, discovery, missing) means Indicators.
+    """
+    data = settings if isinstance(settings, dict) else {}
+    explicit = normalize_alert_source(data.get("alert_source"))
+    if explicit:
+        return explicit
+    preset = str(data.get("strategy_preset") or "none").strip().lower()
+    if bool(data.get("strategy_preset_enabled")) and preset not in {"", "none"}:
+        return "strategy"
+    if normalize_screening_strategy_mode(data.get("strategy_mode"), "technical") == "event":
+        return "event"
+    return "indicators"
+
+
+def alert_source_policy(source: Any) -> str:
+    """Screening policy value (technical/event) implied by an alert source."""
+    return _ALERT_SOURCE_POLICY.get(normalize_alert_source(source, "indicators"), "technical")
+
+
+def alert_source_label(source: Any) -> str:
+    return ALERT_SOURCE_LABELS.get(normalize_alert_source(source, "indicators"), "Indicators")
+
+
+def migrate_legacy_alert_source(settings: dict) -> bool:
+    """Bring a stored profile onto the alert-source model, in place.
+
+    Returns True only when the *behaviour* changed and the user should be told:
+    Combined/Discovery (the catalyst is no longer required) or a preset that was
+    saved together with the Event policy (Strategy wins; the two are exclusive).
+    The old value is kept in ``legacy_strategy_mode`` and ``migration_notice``
+    is set. Profiles that already carry a valid ``alert_source`` are untouched,
+    and plain technical/event profiles only gain the derived ``alert_source``.
+    """
+    if not isinstance(settings, dict):
+        return False
+    if normalize_alert_source(settings.get("alert_source")):
+        return False
+    stored = str(settings.get("strategy_mode") or "").strip().lower()
+    stored_policy = normalize_screening_strategy_mode(stored, "") if stored else ""
+    source = derive_alert_source({**settings, "strategy_mode": stored_policy if stored_policy == "event" else "technical"})
+    target = alert_source_policy(source)
+    settings["alert_source"] = source
+    changed = bool(stored_policy) and stored_policy != target
+    if changed:
+        settings["legacy_strategy_mode"] = stored_policy
+        settings["migration_notice"] = True
+    settings["strategy_mode"] = target
+    return changed
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -180,6 +272,14 @@ def assess_event_catalyst(
         "confidence": _safe_float(watch.get("sentiment_confidence"), 0.0),
         "impact": str(latest.get("impact") or "UNKNOWN").upper(),
         "new_count": int(_safe_float(watch.get("new_count"), 0.0)),
+        # The exact gates this assessment applied, so the UI explains what a buy/sell setup needs from the same numbers.
+        "gates": {
+            "min_bullish_pct": float(min_bullish_pct),
+            "max_bearish_pct": float(max_bearish_pct),
+            "min_confidence": float(min_confidence),
+            "max_age_days": age_limit_days,
+            "allowed_impacts": ["HIGH", "MEDIUM", "UNKNOWN"],
+        },
     }
     if status not in {"current", "degraded"} or not watch.get("initialized"):
         if status in {"stale", "unavailable"}:
@@ -331,6 +431,56 @@ def assess_swing_technical(scan: dict | None, settings: dict | None = None) -> d
         if trend_pass
         else f"Indicator setup blocked: {trend_text} is not true on the latest completed candle."
     )
+    return result
+
+
+def assess_strategy_preset_technical(scan: dict | None) -> dict:
+    """Technical leg for a strategy preset.
+
+    The preset owns its indicator values, so there is no indicator-weight
+    recount and no extra trend guard: the shared evaluator already ran on
+    completed candles. Anything not READY (warming up, degraded data, open
+    candle) is never treated as a neutral pass.
+    """
+    scan = scan if isinstance(scan, dict) else {}
+    info = scan.get("strategy_preset") if isinstance(scan.get("strategy_preset"), dict) else {}
+    direction = str(info.get("alert_direction") or "NEUTRAL").upper()
+    status = str(info.get("status") or "").upper()
+    result = {
+        "eligible": False,
+        "direction": "NEUTRAL",
+        "status": "WAITING",
+        "reason": str(info.get("reason") or "Waiting for a completed-candle strategy evaluation."),
+        "indicator_reason": str(scan.get("reason") or ""),
+        "price": _safe_float(scan.get("price_raw"), 0.0),
+        "sma20": None,
+        "sma50": None,
+        "volume_ratio": None,
+        "timeframe": str(scan.get("timeframe") or ""),
+        "technical_indicators": [str(info.get("label") or "Strategy")],
+        "strategy_preset": True,
+    }
+    if str(info.get("kind") or "") == "allocation":
+        # Malik allocation strategy: the "direction" is invested (BULLISH) vs cash/inverse (BEARISH);
+        # the reason names the confirmed regime and target and, during the session, the live-price view.
+        result["technical_indicators"] = [str(info.get("label") or "Strategy"), "Regime allocation"]
+        if info.get("regime_label"):
+            prov = info.get("provisional") if isinstance(info.get("provisional"), dict) else {}
+            live = (f" Live price now points to {prov.get('regime_label')} ({prov.get('target_text')}); it is confirmed at the close."
+                    if prov and prov.get("regime") != info.get("regime") else "")
+            result["reason"] = f"{info.get('regime_label')}: target {info.get('target_text') or 'cash'} (confirmed at the last close).{live}"
+    if str(info.get("kind") or "") == "schedule":
+        # Session Rider: a clock schedule, not a signal; alerts come from the schedule itself.
+        result["technical_indicators"] = [str(info.get("label") or "Strategy"), "Time schedule"]
+        result["reason"] = str(info.get("reason") or "Session Rider schedule")
+        result["status"] = "NEUTRAL"
+        return result
+    if str(scan.get("evaluation_status") or "").lower() != "valid" or status != "READY":
+        return result
+    if direction not in {"BULLISH", "BEARISH"}:
+        result["status"] = "NEUTRAL"
+        return result
+    result.update({"eligible": True, "direction": direction, "status": "QUALIFIED"})
     return result
 
 

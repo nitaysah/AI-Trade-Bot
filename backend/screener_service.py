@@ -21,6 +21,7 @@ from typing import Any
 
 from user_config import UserConfig
 from screener_tasks import ScreenerWorkTracker
+from screener_strategy import migrate_legacy_alert_source
 
 
 _SYMBOL_RE = re.compile(r"[A-Z0-9.\-]{1,15}")
@@ -217,6 +218,11 @@ class ScreenerUserState:
                 # migrate them on load instead of leaving their news watcher
                 # permanently disabled until the user re-saves the ticker.
                 settings["news_watch_enabled"] = True
+                # Alert-source model: derive/convert once on load. Only the
+                # behaviour-changing legacy profiles change strategy_mode (and
+                # therefore their revision); the rest gain a derived field that
+                # profile_revision ignores, so no baseline is reset.
+                migrate_legacy_alert_source(settings)
                 clean_profiles[symbol] = settings
 
         requested_order = raw.get("order", raw.get("tradelist", []))
@@ -505,10 +511,9 @@ class ScreenerUserState:
                 "last_bearish_alert_at": 0,
             })
         current_candle_ts = _safe_float(candle_key.rsplit(":", 1)[-1], 0.0)
-        previous_candle_ts = _safe_float(str(last_observed_candle_key or "").rsplit(":", 1)[-1], 0.0)
         if current_candle_ts <= 0:
             return None
-        if current_candle_ts and previous_candle_ts and current_candle_ts < previous_candle_ts:
+        if candle_key_regressed(last_observed_candle_key, candle_key):
             # Never let a delayed provider response move the virtual lifecycle
             # backward or create a reversal from an older completed candle.
             return None
@@ -532,6 +537,7 @@ class ScreenerUserState:
                 return None
 
         previous = state.get("last_direction")
+        baseline_before = bool(state.get("baseline_required"))
         state_update = {
             "profile_revision": revision,
             "last_candle_key": candle_key,
@@ -595,7 +601,42 @@ class ScreenerUserState:
         # but it must not hide the first setup from Alerts or Signal Activity.
         if direction == "NEUTRAL":
             return None
-        if previous == direction:
+        preset_info = evaluation.get("strategy_preset")
+        if isinstance(preset_info, dict):
+            # A strategy publishes a STATE, so only a change of state is an
+            # alert. This also skips the generic "recover an unpersisted alert"
+            # path below, which would re-announce a trend that was seeded silently.
+            if str(preset_info.get("kind") or "") == "allocation":
+                # A Malik allocation strategy alerts on a change of its confirmed regime
+                # (completed daily closes only), including changes inside one direction
+                # such as Bull rider -> Momentum trim. The first evaluation is recorded silently.
+                regime = str(preset_info.get("regime") or "")
+                previous_regime = state.get("last_allocation_regime")
+                state["last_allocation_regime"] = regime or previous_regime
+                if not regime or previous_regime is None or baseline_before or previous_regime == regime:
+                    return None
+            elif previous == direction:
+                return None
+            elif previous is None or baseline_before:
+                # First evaluation: record the current state silently. Only a
+                # signal that just happened on the latest completed candle is
+                # announced; a trend that began weeks ago is not a new BUY.
+                age = preset_info.get("signal_age_bars")
+                if age is None or age > 0:
+                    return None
+        allocation_alert = isinstance(preset_info, dict) and str(preset_info.get("kind") or "") == "allocation"
+        # Event-Driven: a different qualifying headline (a new catalyst) in the same direction is a new alert, subject
+        # to the normal cooldown, so the first headline does not silence every later one until the tone flips. A profile
+        # with no recorded catalyst yet (older profiles, a fresh baseline) is not treated as new, so nothing is re-sent.
+        event_info = evaluation.get("event_qualification") if isinstance(evaluation.get("event_qualification"), dict) else {}
+        catalyst_id = str(event_info.get("catalyst_id") or "") if str(profile.get("alert_source") or "") == "event" else ""
+        last_catalyst_id = str(state.get("last_event_catalyst_id") or "")
+        new_catalyst = bool(catalyst_id and last_catalyst_id and catalyst_id != last_catalyst_id)
+        if catalyst_id and not last_catalyst_id and previous == direction:
+            # Adopt the catalyst this profile is already acting on (an alert from before catalysts were tracked) as the
+            # reference, silently, so only later headlines count as new.
+            state["last_event_catalyst_id"] = catalyst_id
+        if previous == direction and not allocation_alert and not new_catalyst:
             generation = str(state.get("generation") or 1)
             has_generation_alert = any(
                 item.get("symbol") == symbol
@@ -609,6 +650,8 @@ class ScreenerUserState:
                 return None
 
         opposite_transition = previous in {"BULLISH", "BEARISH"} and direction in {"BULLISH", "BEARISH"} and previous != direction
+        if allocation_alert:
+            opposite_transition = True  # a regime change is a new state, not a repeat to throttle
         direction_enabled = bool(profile.get(
             f"alert_{direction.lower()}_enabled",
             self.notification_settings.get(f"{direction.lower()}_enabled", True),
@@ -642,6 +685,13 @@ class ScreenerUserState:
             exp_days = profile.get("options_expiry_days", 3)
             strike_type = profile.get("options_strike_type", "ATM")
             title = f"{symbol} {play_type} Setup (~{exp_days}D {strike_type})"
+        elif isinstance(evaluation.get("strategy_preset"), dict) and str(evaluation["strategy_preset"].get("kind") or "") == "allocation":
+            info = evaluation["strategy_preset"]
+            title = (f"{symbol} {info.get('label') or 'Strategy'}: {info.get('regime_label') or info.get('regime')} "
+                     f"· target {info.get('target_text') or 'cash'}")
+        elif isinstance(evaluation.get("strategy_preset"), dict):
+            preset_label = str(evaluation["strategy_preset"].get("label") or "Strategy")
+            title = f"{symbol} {'BUY' if direction == 'BULLISH' else 'SELL (exit)'} signal: {preset_label}"
         else:
             title = f"{symbol} {direction.title()} setup"
         browser_enabled = bool(self.notification_settings.get("browser_enabled", True))
@@ -684,6 +734,8 @@ class ScreenerUserState:
         self.notifications.insert(0, notification)
         self.notifications = self.notifications[:1000]
         state[f"last_{direction.lower()}_alert_at"] = now_ts
+        if catalyst_id:
+            state["last_event_catalyst_id"] = catalyst_id
         if notification["email_status"] == "queued":
             self.email_outbox.append({
                 "id": notification_id,
@@ -1034,6 +1086,98 @@ class ScreenerUserState:
         return notification
 
 
+    def commit_schedule_event(self, symbol: str, event: dict, now_ts: float | None = None) -> dict | None:
+        """Commit one Session Rider schedule alert (buy time / sell time reached).
+
+        Clock events, not candle signals: each (session, BUY|SELL) key alerts once. They follow
+        the profile's schedule-alert switch, not the bullish/bearish filters (a scheduled sell is
+        an exit, not a bearish signal). Analysis only; nothing is ordered."""
+        now_ts = now_ts or time.time()
+        symbol = normalize_screener_symbol(symbol)
+        key = str((event or {}).get("key") or "").strip()
+        kind = str((event or {}).get("event") or "").upper()
+        if not symbol or not key or kind not in {"BUY", "SELL"}:
+            return None
+        profile = self.profiles.get(symbol, {})
+        state = self.evaluation_state.setdefault(symbol, {})
+        seen = [k for k in (state.get("schedule_event_keys") or []) if isinstance(k, str)]
+        if key in seen:
+            return None
+        state["schedule_event_keys"] = (seen + [key])[-20:]
+        state["last_schedule_event"] = {"key": key, "event": kind, "at": now_ts}
+        if not bool(profile.get("session_alerts_enabled", True)):
+            return None
+        revision = self.profile_revision(symbol)
+        notification_id = hashlib.sha256("|".join([self.uid, symbol, revision, "schedule", key]).encode()).hexdigest()
+        if any(item.get("id") == notification_id for item in self.notifications):
+            return None
+        browser_enabled = bool(self.notification_settings.get("browser_enabled", True))
+        email_enabled = bool(profile.get("email_enabled", self.notification_settings.get("email_enabled")))
+        sms_enabled = bool(self.notification_settings.get("sms_enabled"))
+        sms_phone_number = normalize_screener_sms_phone(self.notification_settings.get("sms_phone_number"))
+        if not browser_enabled and not email_enabled and not sms_enabled:
+            return None
+        verb = "Buy" if kind == "BUY" else "Sell"
+        notification = {
+            "id": notification_id,
+            "uid": self.uid,
+            "symbol": symbol,
+            "direction": "BULLISH" if kind == "BUY" else "BEARISH",
+            "event_direction": "BULLISH" if kind == "BUY" else "BEARISH",
+            "event_type": "SCHEDULE",
+            "alert_kind": "SCHEDULE",
+            "title": f"{symbol} Session Rider: {verb} time",
+            "created_at": now_ts,
+            "candle_key": "",
+            "profile_revision": revision,
+            "settings_snapshot": copy.deepcopy(profile),
+            "generation": str(state.get("generation") or 1),
+            "price": event.get("price"),
+            "reason": str(event.get("text") or f"Scheduled {verb.lower()} time reached."),
+            "schedule_event": {k: v for k, v in event.items() if k in ("event", "key", "at_label", "mode", "entry_session")},
+            "signals": {},
+            "sentiment": {},
+            "atr_levels": {},
+            "read": False,
+            "browser_status": "delivered" if browser_enabled else "disabled",
+            "email_status": "queued" if email_enabled else "not_requested",
+            "sms_status": "queued" if sms_enabled and sms_phone_number else ("setup_required" if sms_enabled else "not_requested"),
+        }
+        self.notifications.insert(0, notification)
+        self.notifications = self.notifications[:1000]
+        if notification["email_status"] == "queued":
+            self.email_outbox.append({"id": notification_id, "notification_id": notification_id, "status": "queued",
+                                      "attempts": 0, "next_attempt_at": now_ts, "created_at": now_ts})
+            self.email_outbox = self.email_outbox[-1000:]
+        if notification["sms_status"] == "queued":
+            self.sms_outbox.append({"id": notification_id, "notification_id": notification_id, "to": sms_phone_number,
+                                    "status": "queued", "attempts": 0, "next_attempt_at": now_ts, "created_at": now_ts})
+            self.sms_outbox = self.sms_outbox[-1000:]
+        print(f"[screener] Schedule alert created: {symbol} {kind} key={key}")
+        return notification
+
+
+def candle_key_regressed(previous_key: Any, current_key: Any) -> bool:
+    """True when ``current_key`` is an older completed candle than ``previous_key`` of the SAME timeframe.
+
+    Keys look like ``30MIN:1760000000``. Timestamps of different timeframes (a timeframe change, or a
+    Strategy that scans daily bars after intraday ones) are not comparable, so they never count as a
+    regression; the baseline reset on a settings save already starts a new candle ledger for them.
+    """
+    def parts(key: Any):
+        text = str(key or "")
+        timeframe, _, stamp = text.rpartition(":")
+        return timeframe.strip().upper(), _safe_float(stamp, 0.0)
+
+    previous_tf, previous_ts = parts(previous_key)
+    current_tf, current_ts = parts(current_key)
+    if previous_ts <= 0 or current_ts <= 0:
+        return False
+    if previous_tf != current_tf:
+        return False
+    return current_ts < previous_ts
+
+
 def profile_revision(settings: dict) -> str:
     ignored = {
         "revision", "profile_revision", "started_at", "enabled", "paused",
@@ -1043,13 +1187,33 @@ def profile_revision(settings: dict) -> str:
         "price_watch_interval_seconds",
         "alert_preferences", "alert_bullish_enabled", "alert_bearish_enabled",
         "alert_cooldown_minutes", "news_watch_enabled", "earnings_watch_enabled", "fundamental_watch_enabled",
+        "session_alerts_enabled",
         "symbol", "ticker",
+        # alert_source is derived from strategy_mode + the preset flags, which
+        # are hashed already. The migration markers are display-only.
+        "alert_source", "legacy_strategy_mode", "migration_notice",
     }
     clean = {
         key: value for key, value in (settings or {}).items()
         if not str(key).startswith("_") and key not in ignored
     }
+    if str((settings or {}).get("alert_source") or "").lower() == "none":
+        # Pausing alerts must start a fresh baseline on resume.
+        clean["alert_source_paused"] = True
     return hashlib.sha256(json.dumps(clean, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+# Exits that are decided by price levels alone. Like the Bots engine ("Sell Signal Ignored"), an indicator SELL does not
+# end a setup under these exits; the exit fires when its levels are reached. Hybrid exits (…_atr/_pct/_pivot/…) and the
+# plain indicator exit still use the bearish indicator confluence.
+PURE_STRUCTURAL_EXIT_MODES = frozenset({
+    "sltp", "atr", "percentage", "custom_sltp", "custom_underlying_sltp",
+    "pivot_points", "high_low", "swing_points",
+})
+
+
+def indicator_sell_is_ignored(sell_mode: str) -> bool:
+    return str(sell_mode or "").strip().lower() in PURE_STRUCTURAL_EXIT_MODES
 
 
 def evaluate_screener_profile(uid: str, settings: dict, context_settings: dict | None = None) -> dict:
@@ -1084,12 +1248,35 @@ def evaluate_screener_profile(uid: str, settings: dict, context_settings: dict |
         if result.get("evaluation_status") != "valid" or not result.get("candle_meta", {}).get("candle_key"):
             result["evaluation_status"] = "waiting"
             return result
-        result["direction"] = {"BUY": "BULLISH", "SELL": "BEARISH"}.get(result.get("action"), "NEUTRAL")
+        preset_info = result.get("strategy_preset")
+        if isinstance(preset_info, dict):
+            # A strategy preset publishes its STATE (long regime = BULLISH,
+            # flat after an exit = BEARISH) so one missed scan cannot lose an
+            # exit alert. The Screener has no position, so ``action`` is not used.
+            result["direction"] = str(preset_info.get("alert_direction") or "NEUTRAL").upper()
+        else:
+            result["direction"] = {"BUY": "BULLISH", "SELL": "BEARISH"}.get(result.get("action"), "NEUTRAL")
         result["profile_revision"] = profile_revision(snapshot)
         atr = float(result.get("atr") or 0)
         price = float(result.get("price_raw") or 0)
         buy_mode = str(snapshot.get("buy_mode") or "indicator").strip().lower()
         sell_mode = str(snapshot.get("sell_mode") or snapshot.get("options_exit_strategy") or "indicator").strip().lower()
+        if (
+            not isinstance(preset_info, dict)
+            and result["direction"] == "BEARISH"
+            and indicator_sell_is_ignored(sell_mode)
+        ):
+            # The exit is a price-level exit: bearish indicators are not the Sell trigger, so they must not send a Sell
+            # alert. The card's Sell evidence shows the exit levels; the exit alert comes from the level watcher once a
+            # Buy alert has opened the (analysis-only) virtual position.
+            ignored_reason = str(result.get("reason") or "").strip()
+            result["indicator_sell_ignored"] = True
+            result["direction"] = "NEUTRAL"
+            result["action"] = "HOLD"
+            result["reason"] = (
+                f"Sell signal ignored: the exit is {sell_mode.replace('_', ' ')} (price levels), not indicators."
+                + (f" | {ignored_reason}" if ignored_reason else "")
+            )
         active_mode = buy_mode if result["direction"] == "BULLISH" else sell_mode
         atr_modes = {"atr", "hybrid", "hybrid_atr", "sltp"}
         if active_mode in atr_modes and atr > 0 and price > 0:
@@ -1143,7 +1330,15 @@ class ScreenerManager:
         # independent screener scheduler lose its users.
         self._registry_cache_namespace = "screener_registry"
         self._registry_last_warning_at = 0.0
+        # One Firestore registry read at a time. asyncio.wait_for cannot stop a worker thread, so a read that
+        # outlives its timeout is reused by the next refresh instead of piling up another query behind it.
+        self._registry_read_future = None
+        self._registry_failures = 0
+        self._registry_retry_at = 0.0
         self.evaluation_semaphore = asyncio.Semaphore(4)
+        # The completed-candle probe is a tiny request. It gets its own slots so it never queues behind 45 s full
+        # evaluations (that queueing was the cause of intermittent "probe unavailable" warnings).
+        self.probe_semaphore = asyncio.Semaphore(4)
         self.work_tracker = ScreenerWorkTracker()
         self.news_semaphore = asyncio.Semaphore(3)
         self.earnings_semaphore = asyncio.Semaphore(3)
@@ -1244,15 +1439,30 @@ class ScreenerManager:
                 )
                 return list(query.stream(timeout=3.0, retry=None))
 
-            try:
-                documents = await asyncio.wait_for(
-                    asyncio.to_thread(_read_registry), timeout=4.0
-                )
-                return await _apply_registry({document.id for document in documents})
-            except Exception as exc:
-                if now - self._registry_last_warning_at >= 60:
-                    self._registry_last_warning_at = now
-                    print(f"[ScreenerManager] Registry unavailable; using local cache: {exc}")
+            if now >= self._registry_retry_at:
+                try:
+                    future = self._registry_read_future
+                    if future is None or future.done():
+                        future = asyncio.ensure_future(asyncio.to_thread(_read_registry))
+                        self._registry_read_future = future
+                    # The read has its own 3 s network timeout; this outer limit only covers a busy worker pool.
+                    documents = await asyncio.wait_for(asyncio.shield(future), timeout=10.0)
+                    self._registry_failures = 0
+                    return await _apply_registry({document.id for document in documents})
+                except Exception as exc:
+                    self._registry_failures += 1
+                    # Bounded exponential backoff with jitter (30 s .. 5 min) so a struggling Firestore is not hammered.
+                    import random
+
+                    delay = min(300.0, 30.0 * (2 ** min(self._registry_failures - 1, 3))) * (0.8 + 0.4 * random.random())
+                    self._registry_retry_at = now + delay
+                    if now - self._registry_last_warning_at >= 60:
+                        self._registry_last_warning_at = now
+                        detail = str(exc) or "read exceeded 10s while the worker pool was busy"
+                        print(
+                            f"[ScreenerManager] Registry unavailable ({type(exc).__name__}: {detail}); "
+                            f"using local cache, retrying in {delay:.0f}s"
+                        )
 
         # Prefer the last explicit registry cache. If it does not exist yet,
         # discover persisted state files and authenticated in-memory users.

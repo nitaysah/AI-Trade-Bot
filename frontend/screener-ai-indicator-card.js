@@ -5,14 +5,16 @@
  */
 
 const AI_MODEL_MIGRATIONS_SHARED = {
-    'mixtral-8x7b-32768': 'llama-3.3-70b-versatile',
-    'mistral-saba-24b': 'llama-3.3-70b-versatile',
-    'openai/gpt-oss-120b': 'llama-3.3-70b-versatile',
-    'openai/gpt-oss-20b': 'llama-3.1-8b-instant'
+    'mixtral-8x7b-32768': 'openai/gpt-oss-120b',
+    'mistral-saba-24b': 'openai/gpt-oss-120b',
+    'llama-3.3-70b-versatile': 'openai/gpt-oss-120b',
+    'llama-3.1-8b-instant': 'openai/gpt-oss-20b'
 };
 
 function normalizeAIModel(model) {
-    const value = String(model || '').trim() || 'llama-3.3-70b-versatile';
+    const value = String(model || '').trim() || 'openai/gpt-oss-120b';
+    // Local Ollama models were removed; fall back to the hosted default.
+    if (/^ollama[/:]/.test(value)) return 'openai/gpt-oss-120b';
     return AI_MODEL_MIGRATIONS_SHARED[value] || value;
 }
 window.normalizeAIModel = normalizeAIModel;
@@ -162,8 +164,8 @@ function _getAIModelOptionsHtml(selectedModel) {
     let optionsHtml = '';
     optionsHtml += '<optgroup label="Groq AI (Cloud)">';
     const groqModels = [
-        { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B (Recommended)' },
-        { value: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B (Fast)' }
+        { value: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B (Recommended)' },
+        { value: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B (Fast)' }
     ];
     groqModels.forEach(m => {
         const sel = selectedModel === m.value ? 'selected' : '';
@@ -171,24 +173,6 @@ function _getAIModelOptionsHtml(selectedModel) {
     });
     optionsHtml += '</optgroup>';
 
-    optionsHtml += '<optgroup label="Ollama (Local)">';
-    const localModels = Array.isArray(window.ollamaModels) ? [...window.ollamaModels] : [];
-    const selectedLocalName = selectedModel.startsWith('ollama/')
-        ? selectedModel.slice('ollama/'.length)
-        : (selectedModel.startsWith('ollama:') ? selectedModel.slice('ollama:'.length) : '');
-    if (selectedLocalName && !localModels.includes(selectedLocalName)) localModels.unshift(selectedLocalName);
-    if (localModels.length > 0) {
-        localModels.forEach(m => {
-            const val = `ollama/${m}`;
-            const selectedValue = selectedModel === `ollama:${m}` ? selectedModel : val;
-            const sel = selectedModel === val || selectedModel === `ollama:${m}` ? 'selected' : '';
-            const unavailable = m === selectedLocalName && !(window.ollamaModels || []).includes(m) ? ' (saved)' : '';
-            optionsHtml += `<option value="${escapeAIHtml(selectedValue)}" ${sel}>${escapeAIHtml(m)}${unavailable}</option>`;
-        });
-    } else {
-        optionsHtml += `<option disabled>No local models found</option>`;
-    }
-    optionsHtml += '</optgroup>';
     return optionsHtml;
 }
 window._getAIModelOptionsHtml = _getAIModelOptionsHtml;
@@ -994,7 +978,11 @@ window.renderCachedAIIndicatorForTicker = renderCachedAIIndicatorForTicker;
 
 const aiIndicatorRequestLocks = new Map();
 
-async function fetchAIIndicator(ticker, timeframe, force = false) {
+// One model fallback per request chain: the old llama default migrates back to the primary model, so a fallback that
+// compared against it never stopped and re-sent the failing request in a tight loop.
+const AI_FALLBACK_MODEL = 'openai/gpt-oss-20b';
+
+async function fetchAIIndicator(ticker, timeframe, force = false, _fallbackTried = false) {
     if (force) return performAIIndicatorFetch(ticker, timeframe, true);
     const normalizedTicker = normalizeAIIndicatorTicker(ticker);
     if (!normalizedTicker) return;
@@ -1080,10 +1068,10 @@ async function performAIIndicatorFetch(ticker, timeframe, force = false) {
                 console.warn(`[ai-indicator] ${data.error}; showing the last cached analysis.`);
                 return fallback;
             }
-            if (selectedModel !== 'llama-3.3-70b-versatile') {
-                console.warn(`[ai-indicator] Model ${selectedModel} failed. Falling back to default Groq model.`);
-                setSelectedAIModelForContext('llama-3.3-70b-versatile');
-                return fetchAIIndicator(ticker, tf, force);
+            if (!_fallbackTried && selectedModel !== AI_FALLBACK_MODEL) {
+                console.warn(`[ai-indicator] Model ${selectedModel} failed. Trying ${AI_FALLBACK_MODEL} once.`);
+                setSelectedAIModelForContext(AI_FALLBACK_MODEL);
+                return fetchAIIndicator(ticker, tf, force, true);
             }
             _showAIIndicatorError(data.error, normalizedTicker);
             return;
@@ -1108,10 +1096,13 @@ async function performAIIndicatorFetch(ticker, timeframe, force = false) {
             } else {
                 console.error('[ai-indicator] Fetch error:', e);
             }
-            if (selectedModel !== 'llama-3.3-70b-versatile') {
-                console.warn(`[ai-indicator] Fetch failed for ${selectedModel}. Falling back to default Groq model.`);
-                setSelectedAIModelForContext('llama-3.3-70b-versatile');
-                return fetchAIIndicator(ticker, tf, force);
+            // Only a server-side failure or a timeout can be the model's fault. A blocked or unreachable request (CORS,
+            // offline, 401) fails identically for every model, so it must not switch the user's saved model or retry.
+            const modelRelated = e.name === 'TimeoutError' || /^HTTP 5/.test(String(e.message || ''));
+            if (modelRelated && !_fallbackTried && selectedModel !== AI_FALLBACK_MODEL) {
+                console.warn(`[ai-indicator] Fetch failed for ${selectedModel}. Trying ${AI_FALLBACK_MODEL} once.`);
+                setSelectedAIModelForContext(AI_FALLBACK_MODEL);
+                return fetchAIIndicator(ticker, tf, force, true);
             }
             const stale = getStaleAICache(key);
             if (stale?.data) {

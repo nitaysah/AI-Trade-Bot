@@ -125,6 +125,9 @@ AI_MODEL_MIGRATIONS = {
 def normalize_ai_model_name(model: str) -> str:
     """Map known retired provider IDs to their supported replacements."""
     model_name = str(model or "").strip()
+    if model_name.startswith(("ollama/", "ollama:")):
+        # Local Ollama models are no longer offered; use the hosted default.
+        return "openai/gpt-oss-120b"
     return AI_MODEL_MIGRATIONS.get(model_name, model_name)
 
 
@@ -601,7 +604,7 @@ def _title_mentions_ticker(title: str, terms: set[str]) -> bool:
 
 
 def _is_crypto_news_ticker(ticker: str) -> bool:
-    """Use the RSS provider for crypto symbols whose Yahoo feed is rate-limited."""
+    """True for crypto symbols, which use the RSS provider."""
     normalized = str(ticker or "").upper().replace("/", "").replace("-", "")
     return normalized.endswith(("USD", "USDT", "USDC")) or normalized in {
         "BTC", "ETH", "XRP", "DOGE", "LTC", "ADA", "SOL"
@@ -672,68 +675,6 @@ def _fetch_finnhub_news_articles(ticker: str, max_articles: int = 8) -> list[dic
             "age_hours": round(max(0.0, (now_ts - published_ts) / 3600.0), 1),
             "excerpt": summary,
         })
-    articles.sort(key=lambda item: int(item.get("published_ts") or 0), reverse=True)
-    return articles[:max_articles]
-
-
-def _fetch_yahoo_news_articles(ticker: str, max_articles: int = 8) -> list[dict]:
-    params = urllib.parse.urlencode({
-        "q": str(ticker).upper(),
-        "quotesCount": 1,
-        "newsCount": max(20, max_articles * 3),
-        "enableFuzzyQuery": "false",
-        "newsQueryId": "news_cie_vespa",
-        "enableNavLinks": "false",
-    })
-    url = f"https://query2.finance.yahoo.com/v1/finance/search?{params}"
-    raw = _fetch_public_url(url, max_bytes=256_000)
-    if not raw or not raw.strip():
-        raise ValueError("Yahoo returned an empty response")
-    try:
-        payload = json.loads(raw.decode("utf-8", "ignore"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("Yahoo returned a non-JSON response") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("Yahoo returned an invalid JSON payload")
-    quotes = payload.get("quotes") or []
-    company_name = ""
-    for quote in quotes:
-        if str(quote.get("symbol", "")).upper() == str(ticker).upper():
-            company_name = quote.get("longname") or quote.get("shortname") or ""
-            break
-    if company_name:
-        _NEWS_COMPANY_NAME_CACHE[str(ticker).upper()] = str(company_name)
-    terms = _ticker_news_terms(ticker, company_name)
-    now_ts = time.time()
-    articles = []
-    seen = set()
-    for item in payload.get("news") or []:
-        title = _clean_news_text(item.get("title"), 240)
-        published_ts = _recent_news_timestamp(item.get("providerPublishTime"), now_ts)
-        related = {str(symbol).upper() for symbol in (item.get("relatedTickers") or [])}
-        directly_relevant = _title_mentions_ticker(title, terms)
-        if not title or published_ts is None or not directly_relevant or str(ticker).upper() not in related:
-            continue
-        dedupe_key = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
-        if dedupe_key in seen:
-            continue
-        seen.add(dedupe_key)
-        link = str(item.get("link") or "")
-        if not link.startswith(("http://", "https://")):
-            link = ""
-        articles.append({
-            "title": title,
-            "source": _clean_news_text(item.get("publisher"), 80) or "Unknown source",
-            "feed_provider": "yahoo",
-            "url": link,
-            "published_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(published_ts)),
-            "published_ts": published_ts,
-            "age_hours": round(max(0.0, (time.time() - published_ts) / 3600.0), 1),
-            "excerpt": "",
-        })
-    # Provider order is not a freshness contract.  Sort before truncating so
-    # an older result near the front of Yahoo's response cannot hide a newer
-    # result later in the payload.
     articles.sort(key=lambda item: int(item.get("published_ts") or 0), reverse=True)
     return articles[:max_articles]
 
@@ -939,7 +880,6 @@ def _fetch_news_article_metadata(ticker: str, max_articles: int = 8) -> tuple[li
     """Fetch lightweight article metadata and report provider health."""
     provider_status = {
         "finnhub": "not_checked",
-        "yahoo": "not_checked",
         "google": "not_checked",
         "cnbc": "not_checked",
         "errors": [],
@@ -963,20 +903,7 @@ def _fetch_news_article_metadata(ticker: str, max_articles: int = 8) -> tuple[li
     else:
         provider_status["finnhub"] = "not_configured"
 
-    # Yahoo's search JSON endpoint currently returns HTTP 429 for crypto
-    # symbols. Keep that provider skipped for crypto, while still checking
-    # Google and CNBC for fresh public headline metadata.
-    if not _is_crypto_news_ticker(ticker):
-        try:
-            yahoo_articles = _fetch_yahoo_news_articles(ticker, max_articles)
-            provider_status["yahoo"] = "ok" if yahoo_articles else "empty"
-            batches.append(yahoo_articles)
-        except Exception as exc:
-            provider_status["yahoo"] = "error"
-            status = getattr(exc, "status", None)
-            error_label = f"Yahoo: HTTP {status}" if status else f"Yahoo: {type(exc).__name__}"
-            provider_status["errors"].append(error_label)
-            print(f"[ai_indicator] Yahoo news unavailable for {ticker} ({error_label}); continuing with other providers")
+    # Yahoo is no longer a news source (its search endpoint returned HTTP 429 for every ticker).
 
     try:
         google_articles = _fetch_google_news_articles(ticker, max_articles)
@@ -1300,7 +1227,7 @@ def gather_market_context(ticker: str, timeframe: str = "1Hour") -> dict:
                 pass
 
     except Exception as e:
-        print(f"[ai_indicator] yfinance error for {ticker}: {e}")
+        pass  # technical-decision logging removed: that part is not shown in the UI
         ticker_returns = None
 
     # ── 2. SPY 5-day trend + correlation ─────────────────────────────────
@@ -1329,7 +1256,7 @@ def gather_market_context(ticker: str, timeframe: str = "1Hour") -> dict:
             except Exception:
                 pass
     except Exception as e:
-        print(f"[ai_indicator] SPY trend error: {e}")
+        pass  # technical-decision logging removed: that part is not shown in the UI
 
     # ── 3. VIX level ─────────────────────────────────────────────────────
     try:
@@ -1343,7 +1270,7 @@ def gather_market_context(ticker: str, timeframe: str = "1Hour") -> dict:
         else:
             ctx["vix_regime"] = "CRYPTO"
     except Exception as e:
-        print(f"[ai_indicator] VIX error: {e}")
+        pass  # technical-decision logging removed: that part is not shown in the UI
 
     # ── 4. Sector ETF trend ──────────────────────────────────────────────
     try:
@@ -1366,7 +1293,7 @@ def gather_market_context(ticker: str, timeframe: str = "1Hour") -> dict:
                     else "NEUTRAL"
                 )
     except Exception as e:
-        print(f"[ai_indicator] Sector ETF error: {e}")
+        pass  # technical-decision logging removed: that part is not shown in the UI
 
     return ctx
 
@@ -2204,7 +2131,6 @@ def get_ai_indicator(
         return result
 
     # ── Gather context ───────────────────────────────────────────────────
-    print(f"[ai_indicator] Gathering context for {ticker} ({decision_timeframe})…")
     ctx = gather_market_context(ticker, decision_timeframe)
 
     # ── Gather News Sentiment ────────────────────────────────────────────
@@ -2225,7 +2151,7 @@ def get_ai_indicator(
     # ── Groq availability check ──────────────────────────────────────────
     groq_key = getattr(cfg, "GROQ_API_KEY", "")
     if not _GROQ_AVAILABLE or not groq_key or groq_key in ("", "your_groq_api_key_here"):
-        print(f"[ai_indicator] Groq unavailable for {ticker}, using deterministic quant decision.")
+        pass  # technical-decision logging removed: that part is not shown in the UI
         result = dict(quant)
         result.update({
             "model": "deterministic-quant",
@@ -2448,7 +2374,7 @@ Output ONLY valid JSON:
                 
             fallback_model = "openai/gpt-oss-20b"
             if model_to_use != fallback_model:
-                print(f"[ai_indicator] Primary Groq model ({model_to_use}) failed: {e}. Trying automatic fallback to {fallback_model}...")
+                pass  # technical-decision logging removed: that part is not shown in the UI
                 raw, actual_model = _call_llm(
                     prompt=prompt,
                     system_msg=system_msg,
@@ -2570,13 +2496,12 @@ Output ONLY valid JSON:
 
         result = _sanitize_for_json(result)
         _AI_CACHE.set(cache_key, {"data": result})
-        print(f"[ai_indicator] {ticker}: {signal} (setup_score={result.get('setup_score', 0):.0f})")
         return result
 
     except json.JSONDecodeError as e:
-        print(f"[ai_indicator] JSON parse error for {ticker}: {e}")
+        pass  # technical-decision logging removed: that part is not shown in the UI
     except Exception as e:
-        print(f"[ai_indicator] AI Model error for {ticker}: {e}")
+        pass  # technical-decision logging removed: that part is not shown in the UI
 
     # The narrative model may fail without affecting the deterministic signal.
     result = dict(quant)
@@ -3466,6 +3391,11 @@ Confidence guide:
 
         # Save to cache
         SENTIMENT_CACHE.set(sentiment_cache_key, {"data": result})
+        print(
+            f"[ai_indicator] {ticker} news: {sentiment_direction(result.get('score', 0.0), result.get('confidence', 0.0), cfg)} "
+            f"{sentiment_percentage(result.get('score', 0.0)):.0f}/100, {result.get('headline_count', 0)} articles, "
+            f"confidence {float(result.get('confidence', 0.0)) * 100:.0f}% ({actual_news_model})"
+        )
 
         return result
 

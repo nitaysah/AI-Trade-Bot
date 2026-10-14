@@ -58,9 +58,23 @@ These instructions apply throughout this repository. This root file is the autho
 - Keep balances, personal data, and sensitive financial payloads out of general logs. Retain necessary reconciliation evidence in restricted audit storage with appropriate retention; include correlation IDs and decision/rejection reasons without secrets.
 - Preserve the dark/glassmorphic theme, responsive layouts, accessible controls, and user selections. Throttle frequent rendering and prevent stale requests from overwriting newer state.
 
+## Mobile-first UI
+
+Most users run BotBulls on phones. Treat the phone layout as the primary experience, not an afterthought, on Dashboard, Bots, Screener, and Backtest.
+
+- Every UI change (HTML, CSS, JS-rendered markup, charts, modals, tables) must be designed for phone widths (about 360-430px) and desktop in the same change. Do not deliver a desktop-only UI change unless the user explicitly asks for that.
+- Put phone-specific overrides inside `@media (max-width: 767px)` (or the page's existing breakpoint). Unscoped "mobile" rules leak onto desktop. Do not change desktop appearance as a side effect of a mobile fix, or the reverse, unless asked.
+- Scope CSS selectors to your own ids/classes. Bare element selectors such as `table td` or `canvas` can hit third-party internals (the chart library renders its own `<table>`, whose padding pushed the date axis out of view). Never use `!important` size rules on elements you do not own.
+- Charts: the drawn chart height must equal its container height (read the container's size; do not hard-code a second number in JS). Resize observers update width and height. The time axis, price axis, and marker labels must stay fully visible; use shorter tick and marker labels on narrow screens instead of letting text clip.
+- No horizontal page scroll. Wide tables scroll inside their own container, or use compact columns. Long labels wrap or truncate with a tooltip, never overflow the viewport.
+- Keep key numbers legible. Shrink secondary labels, padding, and gaps first; do not push important values below readable size. Interactive controls need touch-friendly hit areas.
+- Do not rely on hover for information or actions. Charts must work with touch (drag to pan, pinch to zoom) and must not trap page scrolling.
+- Bump the cache-busting query string on any changed JS or CSS reference, and remember mobile browsers cache aggressively; mention a hard refresh when a change does not appear.
+
 ## Verification and handoff
 
 - Run checks proportional to the change. Trading, signal, persistence, and recovery changes require relevant failure-path checks using mocked brokers/providers and isolated storage, including stale data, duplicate events, partial fills, and restart recovery where applicable.
 - Verify signal parity, session boundaries, and timing assumptions when changing calculations or market-data handling. Do not validate with live orders or production test writes.
 - Before proposing live strategy activation, require out-of-sample evidence, paper forward testing, documented risk settings, monitoring, and rollback procedures. Live activation still requires explicit authorization; paper results do not prove live fill quality.
+- For UI changes, check the result at a phone width (about 390px) and at desktop width, for example with a headless-browser screenshot using mocked data. Do not claim mobile was verified from reading the code alone; say what was and was not rendered.
 - Report changes, actual checks, results, and remaining limitations. Syntax checks alone do not establish a full audit, profitable strategy, or production readiness.

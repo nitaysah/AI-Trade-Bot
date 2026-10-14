@@ -30,6 +30,7 @@ import firebase_admin
 from firebase_admin import firestore
 import base64
 import tempfile
+from datetime import datetime, timezone
 from firebase_credentials import load_firebase_credential
 
 _token_sync_lock = threading.Lock()
@@ -78,6 +79,63 @@ def _write_token_securely(token_content: str) -> None:
         except OSError:
             pass
         raise
+def _prepare_sdk_token_dir() -> str:
+    """Point the Webull SDK at the same private directory the Firestore sync uses, and carry over an old token.
+
+    The SDK keeps its token in ``./conf/token.txt`` unless told otherwise, while the restore/save logic below reads
+    and writes ``_token_path()``. With the two locations different, restored tokens were never seen by the SDK and
+    the SDK's own token was never saved. Returns the directory to pass to ``ApiClient.set_token_dir``."""
+    token_dir = os.path.dirname(_token_path())
+    try:
+        os.makedirs(token_dir, mode=0o700, exist_ok=True)
+        os.chmod(token_dir, 0o700)
+        target = _token_path()
+        legacy = os.path.join(os.path.abspath("conf"), "token.txt")
+        if not os.path.exists(target) and os.path.isfile(legacy):
+            with open(legacy, "r") as handle:
+                legacy_content = handle.read()
+            if legacy_content.strip():
+                _write_token_securely(legacy_content)
+                print("[webull] Copied the existing SDK token into the private token directory.")
+    except OSError as exc:
+        print(f"[webull] WARNING token directory setup failed: {type(exc).__name__}; SDK default location stays in use")
+    return token_dir
+
+
+def _apply_sdk_token_dir(api_client) -> None:
+    try:
+        api_client.set_token_dir(_prepare_sdk_token_dir())
+    except Exception as exc:
+        print(f"[webull] WARNING could not set the SDK token directory: {type(exc).__name__}")
+
+
+def _fernet_written_at(encrypted) -> str:
+    """UTC date a Fernet token was created (read from its public header; says nothing about the contents)."""
+    try:
+        import base64
+        import struct
+
+        raw = base64.urlsafe_b64decode(encrypted.encode() if isinstance(encrypted, str) else bytes(encrypted))
+        return datetime.fromtimestamp(struct.unpack(">Q", raw[1:9])[0], timezone.utc).strftime("%Y-%m-%d")
+    except Exception:
+        return "unknown date"
+
+
+_foreign_token_warned = False
+
+
+def _stored_token_is_ours(doc_data) -> bool:
+    """True when the stored Firestore token is missing or readable with this environment's vault keys."""
+    enc = (doc_data or {}).get("token_content", "")
+    if not enc:
+        return True
+    try:
+        _decrypt_with_vault_rotation(enc)
+        return True
+    except Exception:
+        return False
+
+
 try:
     from cryptography.fernet import Fernet
 except ImportError:
@@ -182,7 +240,14 @@ def sync_token_from_firestore():
                     plaintext, key_source = _decrypt_with_vault_rotation(token_content_enc)
                     token_content = plaintext.decode()
                 except Exception:
-                    print("[webull] Could not decrypt stored token; refusing plaintext fallback")
+                    global _foreign_token_warned
+                    if not _foreign_token_warned:
+                        _foreign_token_warned = True
+                        print(
+                            f"[webull] WARNING stored Firestore token (written {_fernet_written_at(token_content_enc)}) was "
+                            "encrypted with a different vault key; ignoring it and using the local token. To use it here, "
+                            "set VAULT_SECRET_KEY_PREVIOUS to the key that wrote it."
+                        )
                     return
 
                 _write_token_securely(token_content)
@@ -224,7 +289,20 @@ def sync_token_to_firestore():
                     with _token_sync_lock:
                         if content_digest == _last_token_sync_digest:
                             return
-                        db.collection("system").document("webull_token").set({
+                        doc_ref = db.collection("system").document("webull_token")
+                        existing = doc_ref.get(timeout=2.0, retry=None)
+                        overwrite_ok = (
+                            os.getenv("ENV", "").lower() == "production"
+                            or os.getenv("BOTBULLS_WEBULL_TOKEN_OVERWRITE", "").strip() == "1"
+                        )
+                        if existing.exists and not _stored_token_is_ours(existing.to_dict()) and not overwrite_ok:
+                            # Another environment (different vault key) owns this document. Replacing it would force that
+                            # environment through a fresh Webull login, so leave it alone.
+                            _last_token_sync_digest = content_digest
+                            print("[webull] Skipped saving the auth token because the stored copy belongs to another vault key "
+                                  "(set BOTBULLS_WEBULL_TOKEN_OVERWRITE=1 to replace it).")
+                            return
+                        doc_ref.set({
                             "token_content": token_content_enc,
                             "updated_at": firestore.SERVER_TIMESTAMP
                         }, timeout=2.0, retry=None)
@@ -367,6 +445,7 @@ class WebullBroker:
 
             # ── Market data client (always needed) ──────────────────────────
             market_api = ApiClient(app_key, app_secret, "us")
+            _apply_sdk_token_dir(market_api)
             self._quiet_sdk_logging(market_api)
             market_api.add_endpoint("us", ENDPOINTS["market_data"])
             self.market_client = DataClient(market_api)
@@ -391,6 +470,7 @@ class WebullBroker:
 
             # ── Trade client (only when trading is enabled) ─────────────────
             self.api_client = ApiClient(app_key, app_secret, "us")
+            _apply_sdk_token_dir(self.api_client)
             self._quiet_sdk_logging(self.api_client)
             self.api_client.add_endpoint("us", ENDPOINTS["trade"])
             self.trade_client = TradeClient(self.api_client)

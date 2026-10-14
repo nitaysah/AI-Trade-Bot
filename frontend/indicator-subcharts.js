@@ -177,15 +177,6 @@
             ],
         },
         {
-            name: 'BotBulls5',
-            series: [
-                { field: 'bb5_upper', startField: 'bb5_upper_start', color: '#f59e0b', lineWidth: 2, title: 'BB5 upper boundary', botbulls5Geometry: true },
-                { field: 'bb5_lower', startField: 'bb5_lower_start', color: '#06b6d4', lineWidth: 2, title: 'BB5 lower boundary', botbulls5Geometry: true },
-                { field: 'bb5_target', color: 'rgba(16,185,129,.85)', lineWidth: 1, lineStyle: 2, title: 'BB5 measured target', botbulls5Geometry: true },
-                { field: 'bb5_invalidation', color: 'rgba(244,63,94,.85)', lineWidth: 1, lineStyle: 2, title: 'BB5 invalidation', botbulls5Geometry: true },
-            ],
-        },
-        {
             name: 'Ichimoku Cloud',
             series: [
                 { field: 'ichimoku_conversion', color: '#2563eb', lineWidth: 1.5, title: 'Conversion' },
@@ -209,6 +200,24 @@
                 { field: 'keltner_mid', color: '#6366f1', lineWidth: 1, lineStyle: 2, title: 'Middle' },
                 { field: 'keltner_lower', color: '#14b8a6', lineWidth: 1.5, title: 'Lower' },
             ],
+        },
+        {
+            // Trend lines that change colour with the trend, plus a marker where the trend flips.
+            name: 'Trend Rider',
+            series: [
+                { field: 'tr_trail', color: '#10b981', colorField: 'tr_trend', upColor: '#10b981', downColor: '#ef4444', lineWidth: 2.5, title: 'Trail' },
+                { field: 'tr_tracer', color: '#8b5cf6', lineWidth: 1.5, title: 'Tracer' },
+                { field: 'tr_zone_upper', color: '#f59e0b', lineWidth: 1, lineStyle: 1, title: 'Zone high' },
+                { field: 'tr_zone_lower', color: '#ec4899', lineWidth: 1, lineStyle: 1, title: 'Zone low' },
+            ],
+            flipMarkers: { trendField: 'tr_trend', trailField: 'tr_trail', buyText: 'TR BUY', sellText: 'TR SELL', upColor: '#10b981', downColor: '#ef4444', size: 1 },
+        },
+        {
+            name: 'HA+UT',
+            series: [
+                { field: 'haut_trail', color: '#0ea5e9', colorField: 'haut_above', upColor: '#0ea5e9', downColor: '#f43f5e', lineWidth: 2.5, title: 'UT trail' },
+            ],
+            flipMarkers: { trendField: 'haut_above', trailField: 'haut_trail', buyText: 'HA+UT BUY', sellText: 'HA+UT SELL', upColor: '#0ea5e9', downColor: '#f43f5e', size: 1.2 },
         },
         { name: 'DEMA', series: [{ field: 'dema', color: '#2563eb', lineWidth: 2, title: 'DEMA' }] },
         { name: 'TEMA', series: [{ field: 'tema', color: '#7c3aed', lineWidth: 2, title: 'TEMA' }] },
@@ -234,148 +243,7 @@
         return Array.from(byTime.values()).sort((a, b) => a.time - b.time);
     }
 
-    function botBulls5Point(rows, index, field) {
-        const row = rows[index];
-        const time = Number(row?.time);
-        const valueAtPoint = Number(row?.[field]);
-        return Number.isFinite(time) && Number.isFinite(valueAtPoint)
-            ? { time, value: valueAtPoint, index }
-            : null;
-    }
-
-    function botBulls5SourceTime(row) {
-        const sourceTime = Number(row?.source_time);
-        return Number.isFinite(sourceTime) ? sourceTime : Number(row?.time);
-    }
-
-    function botBulls5IndexAtOrAfter(rows, sourceTime, fallbackIndex = 0) {
-        const target = Number(sourceTime);
-        if (!Number.isFinite(target)) return fallbackIndex;
-        const match = rows.findIndex(row => botBulls5SourceTime(row) >= target);
-        return match >= 0 ? match : fallbackIndex;
-    }
-
-    function botBulls5IndexAtOrBefore(rows, sourceTime, fallbackIndex = 0) {
-        const target = Number(sourceTime);
-        if (!Number.isFinite(target)) return fallbackIndex;
-        for (let index = rows.length - 1; index >= 0; index -= 1) {
-            if (botBulls5SourceTime(rows[index]) <= target) return index;
-        }
-        return fallbackIndex;
-    }
-
-    function botBulls5Extrema(rows, startIndex, endIndex) {
-        const highs = [];
-        const lows = [];
-        const span = 2;
-        for (let index = startIndex + span; index <= endIndex - span; index += 1) {
-            const current = rows[index];
-            const high = Number(current?.high);
-            const low = Number(current?.low);
-            const windowRows = rows.slice(index - span, index + span + 1);
-            if (
-                Number.isFinite(high)
-                && windowRows.every(row => high >= Number(row?.high))
-            ) {
-                highs.push({ index, time: Number(current.time), value: high, kind: 'high' });
-            }
-            if (
-                Number.isFinite(low)
-                && windowRows.every(row => low <= Number(row?.low))
-            ) {
-                lows.push({ index, time: Number(current.time), value: low, kind: 'low' });
-            }
-        }
-        return { highs, lows };
-    }
-
-    function botBulls5StrongPivots(points, count, descending, minimumSpacing = 2) {
-        const ranked = [...points].sort((left, right) =>
-            descending ? right.value - left.value : left.value - right.value
-        );
-        const selected = [];
-        ranked.forEach(point => {
-            if (
-                selected.length < count
-                && selected.every(existing => Math.abs(existing.index - point.index) >= minimumSpacing)
-            ) {
-                selected.push(point);
-            }
-        });
-        return selected.sort((left, right) => left.index - right.index);
-    }
-
-    function botBulls5OppositeBetween(points, leftIndex, rightIndex, chooseLow) {
-        const between = points.filter(point => point.index > leftIndex && point.index < rightIndex);
-        if (!between.length) return null;
-        return between.reduce((best, point) =>
-            chooseLow
-                ? (point.value < best.value ? point : best)
-                : (point.value > best.value ? point : best)
-        );
-    }
-
-    function botBulls5AlternatingSwingPath(primary, opposite, chooseLowBetween) {
-        const path = [];
-        primary.forEach((point, position) => {
-            path.push(point);
-            if (position >= primary.length - 1) return;
-            const between = botBulls5OppositeBetween(
-                opposite,
-                point.index,
-                primary[position + 1].index,
-                chooseLowBetween,
-            );
-            if (between) path.push(between);
-        });
-        return path.sort((left, right) => left.index - right.index);
-    }
-
-    function botBulls5ShoulderPath(highs, lows, inverse) {
-        const primary = inverse ? lows : highs;
-        const opposite = inverse ? highs : lows;
-        let best = null;
-        const recent = primary.slice(-8);
-        for (let left = 0; left < recent.length - 2; left += 1) {
-            for (let middle = left + 1; middle < recent.length - 1; middle += 1) {
-                for (let right = middle + 1; right < recent.length; right += 1) {
-                    const points = [recent[left], recent[middle], recent[right]];
-                    const headQualified = inverse
-                        ? points[1].value < points[0].value && points[1].value < points[2].value
-                        : points[1].value > points[0].value && points[1].value > points[2].value;
-                    if (!headQualified) continue;
-                    const headProminence = inverse
-                        ? Math.min(points[0].value, points[2].value) - points[1].value
-                        : points[1].value - Math.max(points[0].value, points[2].value);
-                    const shoulderDifference = Math.abs(points[0].value - points[2].value);
-                    const score = headProminence - shoulderDifference;
-                    if (!best || score > best.score) best = { points, score };
-                }
-            }
-        }
-        if (!best) {
-            const fallback = botBulls5StrongPivots(primary, 3, !inverse, 2);
-            return botBulls5AlternatingSwingPath(fallback, opposite, !inverse);
-        }
-        return botBulls5AlternatingSwingPath(best.points, opposite, !inverse);
-    }
-
-    function botBulls5SampleClosePath(rows, startIndex, endIndex, maximumPoints = 12) {
-        const length = endIndex - startIndex + 1;
-        const step = Math.max(1, Math.ceil(length / maximumPoints));
-        const points = [];
-        for (let index = startIndex; index <= endIndex; index += step) {
-            const point = botBulls5Point(rows, index, 'close');
-            if (point) points.push(point);
-        }
-        if (points.at(-1)?.index !== endIndex) {
-            const last = botBulls5Point(rows, endIndex, 'close');
-            if (last) points.push(last);
-        }
-        return points;
-    }
-
-    function botBulls5RecentEventTimes(history, options = {}) {
+    function recentEventTimes(history, options = {}) {
         const rows = (Array.isArray(history) ? history : [])
             .filter(row => Number.isFinite(Number(row?.source_time ?? row?.time)));
         const latest = rows.at(-1);
@@ -451,7 +319,7 @@
             .sort((left, right) => (
                 Number(left?.source_time ?? left?.time) - Number(right?.source_time ?? right?.time)
             ));
-        const recentTimes = botBulls5RecentEventTimes(rows, options);
+        const recentTimes = recentEventTimes(rows, options);
         const maxCandles = Math.floor(Number(options.maxCandles));
         const displayWindow = Number.isFinite(maxCandles) && maxCandles > 0
             ? new Set(rows.slice(-maxCandles).map(row => Number(row?.time)).filter(Number.isFinite))
@@ -495,7 +363,7 @@
 
     function buildCandlePatternMarkers(history, options = {}) {
         const rows = Array.isArray(history) ? history : [];
-        const recentTimes = botBulls5RecentEventTimes(rows, options);
+        const recentTimes = recentEventTimes(rows, options);
         const markers = [];
 
         rows.forEach(row => {
@@ -539,232 +407,55 @@
         return markers;
     }
 
-    function selectBotBulls5Pattern(history, options = {}) {
+    /* Chart Patterns: one marker where a confirmed flag/pennant/wedge breakout starts (a run of identical flags
+       from the engine's short hold shows once), labelled with the pattern name. */
+    function buildChartPatternMarkers(history, options = {}) {
         const rows = Array.isArray(history) ? history : [];
-        const latestIndex = rows.length - 1;
-        const latest = rows[latestIndex];
-        if (!Number.isFinite(Number(latest?.time))) return null;
-
-        const recentTimes = botBulls5RecentEventTimes(rows, options);
-        const hasPattern = row => (
-            Number.isFinite(Number(row?.time))
-            && row?.bb5_pattern
-            && row.bb5_pattern !== 'NONE'
-        );
-        if (hasPattern(latest) && recentTimes.has(Number(latest.time))) {
-            return { row: latest, index: latestIndex, source: 'current' };
-        }
-
-        for (let index = latestIndex; index >= 0; index -= 1) {
-            const row = rows[index];
-            if (!recentTimes.has(Number(row?.time)) || !hasPattern(row)) continue;
-            if (row.bb5_breakout_bull || row.bb5_breakout_bear) {
-                return { row, index, source: 'latest-day-breakout' };
-            }
-        }
-        return null;
+        const recentTimes = recentEventTimes(rows, options);
+        const flagged = row => (row?.cp_bullish === true || Number(row?.cp_bullish) === 1)
+            ? 'bull' : ((row?.cp_bearish === true || Number(row?.cp_bearish) === 1) ? 'bear' : '');
+        const markers = [];
+        rows.forEach((row, index) => {
+            const time = Number(row?.time);
+            const kind = flagged(row);
+            const name = String(row?.cp_name || '').trim();
+            if (!kind || !Number.isFinite(time) || !recentTimes.has(time) || !name || name === 'Neutral') return;
+            const previous = rows[index - 1];
+            if (previous && flagged(previous) === kind && String(previous?.cp_name || '').trim() === name) return;
+            markers.push(kind === 'bull'
+                ? { time, position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: name, size: 1.1 }
+                : { time, position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: name, size: 1.1 });
+        });
+        return markers;
     }
 
-    function buildBotBulls5PatternDrawing(history, options = {}) {
+    /* Trend-flip markers for every enabled overlay indicator that declares ``flipMarkers`` (Trend Rider, HA+UT): an
+       up arrow where the trend turns up and a down arrow where it turns down. ``enabledNames`` is a Set or array. */
+    function buildFlipMarkers(history, enabledNames) {
         const rows = Array.isArray(history) ? history : [];
-        const selection = selectBotBulls5Pattern(rows, options);
-        if (!selection) return [];
-        const endIndex = selection.index;
-        if (endIndex < 1) return [];
-
-        const patternRow = selection.row;
-        const pattern = String(patternRow.bb5_pattern || '').toUpperCase();
-        const formationBars = Math.max(3, Math.round(Number(patternRow.bb5_formation_bars) || 3));
-        const fallbackStartIndex = Math.max(0, endIndex - formationBars + 1);
-        const startIndex = botBulls5IndexAtOrAfter(
-            rows,
-            patternRow.bb5_formation_start_time,
-            fallbackStartIndex,
-        );
-        const direction = Number(patternRow.bb5_direction)
-            || (patternRow.bb5_breakout_bull ? 1 : patternRow.bb5_breakout_bear ? -1 : 0);
-        const bullishColor = direction < 0 ? '#f43f5e' : '#10b981';
-        let breakoutIndex = -1;
-        const patternState = String(patternRow.bb5_state || '').toUpperCase();
-        const confirmedOrFailed = patternState.startsWith('CONFIRMED')
-            || patternState === 'FAILED'
-            || patternRow.bb5_breakout_bull
-            || patternRow.bb5_breakout_bear;
-        if (confirmedOrFailed) {
-            for (let index = endIndex; index >= Math.max(0, startIndex - 2); index -= 1) {
-                if (
-                    rows[index]?.bb5_pattern === patternRow.bb5_pattern
-                    && (rows[index]?.bb5_breakout_bull || rows[index]?.bb5_breakout_bear)
-                ) {
-                    breakoutIndex = index;
-                    break;
+        const enabled = enabledNames instanceof Set ? enabledNames : new Set(enabledNames || []);
+        const markers = [];
+        (window.STANDARD_EXTENSION_OVERLAYS || []).forEach(definition => {
+            const spec = definition.flipMarkers;
+            if (!spec || !enabled.has(definition.name)) return;
+            const isUp = row => row?.[spec.trendField] === true || Number(row?.[spec.trendField]) === 1;
+            for (let index = 1; index < rows.length; index += 1) {
+                const current = rows[index];
+                const previous = rows[index - 1];
+                const time = Number(current?.time);
+                if (!Number.isFinite(time) || !Number.isFinite(Number(current?.[spec.trailField])) || !Number.isFinite(Number(previous?.[spec.trailField]))) continue;
+                if (isUp(current) && !isUp(previous)) {
+                    markers.push({ time, position: 'belowBar', color: spec.upColor, shape: 'arrowUp', text: spec.buyText, size: spec.size || 1 });
+                } else if (!isUp(current) && isUp(previous)) {
+                    markers.push({ time, position: 'aboveBar', color: spec.downColor, shape: 'arrowDown', text: spec.sellText, size: spec.size || 1 });
                 }
             }
-        }
-        const drawingEndIndex = breakoutIndex >= 0 ? breakoutIndex : endIndex;
-        const layers = [];
-        const addLayer = (key, data, options) => {
-            const clean = (data || [])
-                .filter(point => Number.isFinite(Number(point?.time)) && Number.isFinite(Number(point?.value)))
-                .map(point => ({ time: Number(point.time), value: Number(point.value) }))
-                .sort((left, right) => left.time - right.time);
-            const unique = Array.from(new Map(clean.map(point => [point.time, point])).values());
-            if (unique.length >= 2) layers.push({ key, data: unique, ...options });
-        };
-
-        const continuationWithPole = /(FLAG|PENNANT|WEDGE_CONTINUATION)/.test(pattern);
-        if (continuationWithPole) {
-            const fallbackPoleEnd = Math.max(0, startIndex - 1);
-            const poleEnd = botBulls5IndexAtOrBefore(
-                rows,
-                patternRow.bb5_pole_end_time,
-                fallbackPoleEnd,
-            );
-            const poleStart = botBulls5IndexAtOrAfter(
-                rows,
-                patternRow.bb5_pole_start_time,
-                Math.max(0, poleEnd - 11),
-            );
-            addLayer(
-                'pole',
-                [
-                    botBulls5Point(rows, poleStart, 'close'),
-                    botBulls5Point(rows, poleEnd, 'close'),
-                ],
-                { color: bullishColor, lineWidth: 3, lineStyle: 0 },
-            );
-        }
-
-        const { highs, lows } = botBulls5Extrema(rows, startIndex, drawingEndIndex);
-        let swingPath = [];
-        let pathLabel = 'swing-outline';
-        if (/DOUBLE_TOP/.test(pattern)) {
-            swingPath = botBulls5AlternatingSwingPath(
-                highs.slice(-2),
-                lows,
-                true,
-            );
-        } else if (/TRIPLE_TOP/.test(pattern)) {
-            swingPath = botBulls5AlternatingSwingPath(
-                highs.slice(-3),
-                lows,
-                true,
-            );
-        } else if (/DOUBLE_BOTTOM/.test(pattern)) {
-            swingPath = botBulls5AlternatingSwingPath(
-                lows.slice(-2),
-                highs,
-                false,
-            );
-        } else if (/TRIPLE_BOTTOM/.test(pattern)) {
-            swingPath = botBulls5AlternatingSwingPath(
-                lows.slice(-3),
-                highs,
-                false,
-            );
-        } else if (/HEAD_AND_SHOULDERS_TOP/.test(pattern)) {
-            swingPath = botBulls5ShoulderPath(highs, lows, false);
-        } else if (/HEAD_AND_SHOULDERS_BOTTOM/.test(pattern)) {
-            swingPath = botBulls5ShoulderPath(highs, lows, true);
-        } else if (/(ROUNDING_BOTTOM|CUP_WITH_HANDLE)/.test(pattern)) {
-            swingPath = botBulls5SampleClosePath(rows, startIndex, drawingEndIndex, 14);
-            pathLabel = 'rounded-outline';
-        } else if (/(MEASURED_MOVE|BUMP_AND_RUN)/.test(pattern)) {
-            swingPath = botBulls5SampleClosePath(rows, startIndex, drawingEndIndex, 9);
-            pathLabel = 'measured-outline';
-        }
-        const necklinePattern = /(DOUBLE_TOP|TRIPLE_TOP|DOUBLE_BOTTOM|TRIPLE_BOTTOM|HEAD_AND_SHOULDERS|ROUNDING_BOTTOM|CUP_WITH_HANDLE|MEASURED_MOVE|BUMP_AND_RUN)/.test(pattern);
-        if (necklinePattern && swingPath.length < 2) {
-            swingPath = botBulls5SampleClosePath(rows, startIndex, drawingEndIndex, 10);
-        }
-
-        addLayer(
-            pathLabel,
-            swingPath,
-            { color: 'rgba(124,58,237,0.9)', lineWidth: 2, lineStyle: 0 },
-        );
-
-        const breakoutLevel = Number(patternRow.bb5_breakout_level);
-        if (
-            Number.isFinite(breakoutLevel)
-            && necklinePattern
-        ) {
-            addLayer(
-                'neckline',
-                [
-                    { time: Number(rows[startIndex]?.time), value: breakoutLevel },
-                    { time: Number(rows[drawingEndIndex]?.time), value: breakoutLevel },
-                ],
-                { color: '#f97316', lineWidth: 2, lineStyle: 2 },
-            );
-        }
-
-        if (breakoutIndex >= 1) {
-            const previousIndex = Math.max(startIndex, breakoutIndex - 1);
-            addLayer(
-                'breakout-leg',
-                [
-                    botBulls5Point(rows, previousIndex, 'close'),
-                    botBulls5Point(rows, breakoutIndex, 'close'),
-                ],
-                { color: bullishColor, lineWidth: 3, lineStyle: 0 },
-            );
-        }
-
-        return layers;
+        });
+        return markers;
     }
 
     function buildOverlayData(history, spec, parameters = {}) {
         const rows = Array.isArray(history) ? history : [];
-        if (spec?.botbulls5Geometry) {
-            const selection = selectBotBulls5Pattern(rows, parameters);
-            if (!selection) return [];
-            let endIndex = selection.index;
-            const latestPatternRow = selection.row;
-            if (
-                latestPatternRow?.bb5_state === 'CONFIRMED_BULLISH'
-                || latestPatternRow?.bb5_state === 'CONFIRMED_BEARISH'
-                || latestPatternRow?.bb5_state === 'FAILED'
-            ) {
-                for (let index = endIndex; index >= 0; index -= 1) {
-                    if (
-                        rows[index]?.bb5_pattern === latestPatternRow.bb5_pattern
-                        && (rows[index]?.bb5_breakout_bull || rows[index]?.bb5_breakout_bear)
-                    ) {
-                        endIndex = index;
-                        break;
-                    }
-                }
-            }
-            const endRow = rows[endIndex];
-            const endRawValue = endRow?.[spec.field];
-            const endValue = Number(endRawValue);
-            if (
-                endRawValue === null
-                || endRawValue === undefined
-                || !Number.isFinite(endValue)
-            ) return [];
-            const formationBars = Math.max(2, Math.round(Number(endRow.bb5_formation_bars) || 2));
-            const startIndex = botBulls5IndexAtOrAfter(
-                rows,
-                endRow.bb5_formation_start_time,
-                Math.max(0, endIndex - formationBars + 1),
-            );
-            const startRow = rows[startIndex];
-            const rawStart = spec.startField ? endRow[spec.startField] : endValue;
-            const proposedStart = Number(rawStart);
-            const startValue = rawStart !== null && rawStart !== undefined && Number.isFinite(proposedStart)
-                ? proposedStart
-                : endValue;
-            if (!Number.isFinite(Number(startRow?.time)) || !Number.isFinite(Number(endRow?.time))) return [];
-            if (Number(startRow.time) === Number(endRow.time)) {
-                return [{ time: Number(endRow.time), value: endValue }];
-            }
-            return [
-                { time: Number(startRow.time), value: startValue },
-                { time: Number(endRow.time), value: endValue },
-            ];
-        }
         if (spec?.preserveGaps && !spec?.shiftPeriodsKey) {
             const byTime = new Map();
             rows.forEach(bar => {
@@ -784,7 +475,17 @@
         const shift = spec?.shiftPeriodsKey
             ? Math.max(0, Math.round(value(parameters, spec.shiftPeriodsKey, spec.shiftPeriodsFallback || 0)))
             : 0;
-        if (!shift) return cleanData(rows, spec?.field, spec?.type);
+        if (!shift) {
+            const data = cleanData(rows, spec?.field, spec?.type);
+            if (!spec?.colorField) return data;
+            // A trend line takes each point's colour from its trend flag (true = up), like the premium trend lines.
+            const trendByTime = new Map(rows.map(bar => [Number(bar?.time), bar?.[spec.colorField]]));
+            return data.map(point => {
+                const flag = trendByTime.get(point.time);
+                const up = flag === true || Number(flag) === 1;
+                return { ...point, color: up ? (spec.upColor || spec.color) : (spec.downColor || spec.color) };
+            });
+        }
 
         const times = rows.map(bar => Number(bar?.time)).filter(Number.isFinite);
         const intervals = [];
@@ -1027,17 +728,18 @@
     window.STANDARD_EXTENSION_OVERLAYS = Object.freeze(overlayDefinitions.map(definition => Object.freeze({
         name: definition.name,
         series: Object.freeze(definition.series.map(series => Object.freeze({ ...series }))),
+        ...(definition.flipMarkers ? { flipMarkers: Object.freeze({ ...definition.flipMarkers }) } : {}),
     })));
     window.StandardIndicatorSubcharts = Object.freeze({
         render,
         sync,
         destroy,
         buildOverlayData,
-        buildBotBulls5PatternDrawing,
         buildCandlePatternMarkers,
+        buildChartPatternMarkers,
+        buildFlipMarkers,
         candlePatternContextTimes,
         highlightCandlePatternContext,
-        botBulls5RecentEventTimes,
-        selectBotBulls5Pattern,
+        recentEventTimes,
     });
 })();

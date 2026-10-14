@@ -185,3 +185,54 @@ class ObsoleteQuoteTests(unittest.IsolatedAsyncioTestCase):
                     await main._watch_screener_price_levels_state(state)
                 state.commit_price_entry.assert_not_called()
                 self.assertEqual(state.notifications, [])
+
+
+class PriceWatchFailureReasonTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_quote_records_reason_logs_once_and_never_enters(self):
+        main._screener_price_watch_last_logged.clear()
+        state = ScreenerUserState('quote-failure-review', None)
+        state.profiles = {'MSFT': {'enabled': True, 'buy_mode': 'custom_price', 'custom_buy_price': 100}}
+        state.order = ['MSFT']
+        state.evaluation_state['MSFT'] = {'generation': '1'}
+        state.save = AsyncMock(return_value=True)
+        state.refresh_from_persistence = AsyncMock(return_value=False)
+        state.try_acquire_process_scan_lock = AsyncMock(return_value=True)
+        state.release_process_scan_lock = AsyncMock()
+        state.commit_price_entry = Mock()
+        printed = []
+        for _ in range(2):
+            state.evaluation_state['MSFT']['next_price_watch_at'] = 0
+            with patch.object(main.screener_manager.work_tracker, 'run', side_effect=ScreenerWorkBusy('busy')), \
+                 patch.object(main, '_screener_market_status', return_value={'is_active_window': True}), \
+                 patch('builtins.print', side_effect=lambda *a, **k: printed.append(' '.join(map(str, a)))):
+                await main._watch_screener_price_levels_state(state)
+        watch = state.latest_scans['MSFT']['price_watch']
+        self.assertEqual(watch['status'], 'STALE')
+        self.assertEqual(watch['source'], 'unavailable')
+        self.assertEqual(watch['failure'], 'ScreenerWorkBusy')
+        state.commit_price_entry.assert_not_called()
+        self.assertEqual(state.notifications, [])
+        self.assertEqual(len([line for line in printed if 'Price watch quote failed for MSFT' in line]), 1)
+
+    async def test_quote_lookup_itself_runs_and_a_fresh_quote_is_not_marked_stale(self):
+        # Regression: SimpleNamespace was never imported in main, so every lookup raised NameError and every
+        # Price watch showed "STALE / unavailable". Run the real lookup path (only the provider call is faked).
+        main._screener_price_watch_last_logged.clear()
+        state = ScreenerUserState('quote-ok-review', None)
+        state.profiles = {'MSFT': {'enabled': True, 'buy_mode': 'custom_price', 'custom_buy_price': 100}}
+        state.order = ['MSFT']
+        state.evaluation_state['MSFT'] = {'generation': '1'}
+        state.save = AsyncMock(return_value=True)
+        state.refresh_from_persistence = AsyncMock(return_value=False)
+        state.try_acquire_process_scan_lock = AsyncMock(return_value=True)
+        state.release_process_scan_lock = AsyncMock()
+        state.commit_price_entry = Mock()
+        fresh = {'price': 537.64, 'cache_age': 0.0, 'source': 'webull', 'stale': False}
+        with patch.object(main, '_get_cached_quote_detail', return_value=fresh) as lookup, \
+             patch.object(main, '_screener_market_status', return_value={'is_active_window': True}):
+            await main._watch_screener_price_levels_state(state)
+        lookup.assert_called_once()
+        watch = state.latest_scans['MSFT']['price_watch']
+        self.assertNotIn(watch['status'], ('STALE', 'UNAVAILABLE'))
+        self.assertEqual(watch['price'], 537.64)
+        self.assertEqual(watch['status'], 'WAITING_FOR_ENTRY')

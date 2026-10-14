@@ -209,6 +209,15 @@ class RiskManager:
         )
         if self.trading_halted:
             return False
+
+        # A non-positive equity reading means the account data failed to
+        # load (broker/API error degrading to a 0 fallback), not a real
+        # total loss. Treating it as real would compute a false 100%
+        # drawdown and permanently latch a halt. Skip evaluation instead of
+        # tripping on it, and never let it update baselines or latch a halt.
+        if current_equity is None or float(current_equity) <= 0:
+            return True
+
         if self.daily_starting_equity is None or self.daily_starting_equity <= 0:
             return True
 
@@ -307,6 +316,63 @@ class RiskManager:
                 'risk_amount': 0.0,
                 'stop_distance': 0.0,
                 'error': 'Invalid maximum position concentration',
+            }
+
+        if sell_mode == 'strategy_preset':
+            # Strategy presets are long-only and size with the same function the
+            # Backtester uses: the smallest of the fixed/compounded amount, the
+            # risk-based size (stop = protective ATR distance), the maximum
+            # position and available cash. Nothing here loosens a limit.
+            if side != 'long':
+                return {
+                    'shares': 0, 'notional': 0.0, 'stop_loss': 0.0, 'take_profit': 0.0,
+                    'risk_amount': 0.0, 'stop_distance': 0.0,
+                    'error': 'Strategy presets are long-only',
+                }
+            import strategy_presets as _sp
+            preset = _sp.get_preset(t_settings.get('strategy_preset'))
+            stop_mult_preset = preset.protective_stop_atr_mult if preset else 3.0
+            try:
+                preset_amount = float(custom_amount) if custom_amount is not None else 0.0
+            except (TypeError, ValueError):
+                preset_amount = 0.0
+            try:
+                risk_fraction = float(risk_pct)
+            except (TypeError, ValueError):
+                risk_fraction = 0.0
+            risk_fraction = risk_fraction / 100.0 if risk_fraction > 1.0 else risk_fraction
+            sizing = _sp.preset_position_size(
+                equity=capital_basis,
+                price=entry_price,
+                atr=atr,
+                base_amount=preset_amount if math.isfinite(preset_amount) else 0.0,
+                risk_fraction=risk_fraction if enable_risk else 0.0,
+                max_position_fraction=bot_max_pos,
+                stop_atr_mult=stop_mult_preset,
+                # 2% buffer, as for every other sizing mode
+                buying_power=(available_cash * 0.98) if available_cash is not None else None,
+                fractional=True,
+            )
+            preset_stop_distance = stop_mult_preset * atr
+            shares = sizing['qty']
+            notional = sizing['notional']
+            print(
+                f"[risk] {ticker}: Strategy preset sizing ${notional:.2f} (limit: {sizing['limit']}) | "
+                f"Entry Price: ${entry_price:.2f} | Shares: {shares:.6f} | "
+                f"Protective stop: {stop_mult_preset:g}x ATR (${preset_stop_distance:.2f})"
+            )
+            precision_preset = 6 if entry_price < 1.0 else 2
+            return {
+                'shares': round(shares, 6),
+                'notional': round(notional, 2),
+                # The protective stop is watched by the engine in software; no
+                # broker-side stop/bracket is attached to the entry order.
+                'stop_loss': None,
+                'protective_stop': round(entry_price - preset_stop_distance, precision_preset),
+                'take_profit': None,
+                'risk_amount': round(shares * preset_stop_distance, 2),
+                'stop_distance': round(preset_stop_distance, 2),
+                'sizing_limit': sizing['limit'],
             }
 
         # Accumulate strategy exit parameters for logging inside parenthesis

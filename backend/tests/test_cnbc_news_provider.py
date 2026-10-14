@@ -40,13 +40,6 @@ class CnbcNewsProviderTests(unittest.TestCase):
 
     def test_metadata_merge_preserves_newest_cnbc_article_across_providers(self):
         now = int(time.time())
-        yahoo = [{
-            "title": "Tesla prior report",
-            "source": "Yahoo Finance",
-            "feed_provider": "yahoo",
-            "url": "https://finance.yahoo.com/tesla-prior",
-            "published_ts": now - 1800,
-        }]
         google = [{
             "title": "Tesla related context",
             "source": "Reuters",
@@ -61,17 +54,16 @@ class CnbcNewsProviderTests(unittest.TestCase):
             "url": "https://www.cnbc.com/tesla-roadster-delay",
             "published_ts": now - 60,
         }]
-        with patch.object(ai_indicator, "_fetch_yahoo_news_articles", return_value=yahoo), \
-             patch.object(ai_indicator, "_fetch_google_news_articles", return_value=google), \
+        with patch.object(ai_indicator, "_fetch_google_news_articles", return_value=google), \
              patch.object(ai_indicator, "_fetch_cnbc_news_articles", return_value=(cnbc, [])):
             articles, status = ai_indicator._fetch_news_article_metadata("TSLA", 8)
 
-        self.assertEqual(status["yahoo"], "ok")
+        self.assertNotIn("yahoo", status)
         self.assertEqual(status["google"], "ok")
         self.assertEqual(status["cnbc"], "ok")
         self.assertEqual(articles[0]["source"], "CNBC")
         self.assertEqual(articles[0]["published_ts"], now - 60)
-        self.assertEqual({item["feed_provider"] for item in articles}, {"yahoo", "google", "cnbc"})
+        self.assertEqual({item["feed_provider"] for item in articles}, {"google", "cnbc"})
 
     def test_cnbc_uses_google_site_index_when_direct_feed_is_blocked(self):
         indexed = [{

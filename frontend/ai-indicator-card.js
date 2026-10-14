@@ -1,18 +1,20 @@
 /**
  * ai-indicator-card.js
- * Shared, unified UI component and model selector for the BotBulls AI Analysis card (#aiIndicatorCard).
+ * Shared, unified UI component and model selector for the BotBulls News AI card (#aiIndicatorCard).
  * Used by dashboard.html, bots.html, and backtest.html to ensure 100% streamlined presentation across all pages.
  */
 
 const AI_MODEL_MIGRATIONS_SHARED = {
-    'mixtral-8x7b-32768': 'llama-3.3-70b-versatile',
-    'mistral-saba-24b': 'llama-3.3-70b-versatile',
-    'openai/gpt-oss-120b': 'llama-3.3-70b-versatile',
-    'openai/gpt-oss-20b': 'llama-3.1-8b-instant'
+    'mixtral-8x7b-32768': 'openai/gpt-oss-120b',
+    'mistral-saba-24b': 'openai/gpt-oss-120b',
+    'llama-3.3-70b-versatile': 'openai/gpt-oss-120b',
+    'llama-3.1-8b-instant': 'openai/gpt-oss-20b'
 };
 
 function normalizeAIModel(model) {
-    const value = String(model || '').trim() || 'llama-3.3-70b-versatile';
+    const value = String(model || '').trim() || 'openai/gpt-oss-120b';
+    // Local Ollama models were removed; fall back to the hosted default.
+    if (/^ollama[/:]/.test(value)) return 'openai/gpt-oss-120b';
     return AI_MODEL_MIGRATIONS_SHARED[value] || value;
 }
 window.normalizeAIModel = normalizeAIModel;
@@ -28,14 +30,14 @@ function getAIIndicatorPageContext() {
 window.getAIIndicatorPageContext = getAIIndicatorPageContext;
 
 function getAIDetailedAnalysisStorageKey(context = getAIIndicatorPageContext()) {
-    return `ai_detailed_analysis_expanded:${context}`;
+    return `ai_news_articles_expanded:${context}`;
 }
 
 var aiDetailedAnalysisExpanded = (() => {
     try {
-        return localStorage.getItem(getAIDetailedAnalysisStorageKey()) === 'true';
+        return localStorage.getItem(getAIDetailedAnalysisStorageKey()) !== 'false';
     } catch (error) {
-        return false;
+        return true;
     }
 })();
 
@@ -127,7 +129,7 @@ async function loadAIIndicatorSettings(force = false) {
             _aiSettingsLoadedAt = Date.now();
             return settings;
         } catch (error) {
-            console.warn('[ai-indicator] Using locally cached Quant AI settings:', error);
+            console.warn('[ai-indicator] Using locally cached News AI settings:', error);
             return getLocalAIIndicatorSettings(context);
         } finally {
             _aiSettingsRequest = null;
@@ -164,8 +166,8 @@ function _getAIModelOptionsHtml(selectedModel) {
     let optionsHtml = '';
     optionsHtml += '<optgroup label="Groq AI (Cloud)">';
     const groqModels = [
-        { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B (Recommended)' },
-        { value: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B (Fast)' }
+        { value: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B (Recommended)' },
+        { value: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B (Fast)' }
     ];
     groqModels.forEach(m => {
         const sel = selectedModel === m.value ? 'selected' : '';
@@ -173,24 +175,6 @@ function _getAIModelOptionsHtml(selectedModel) {
     });
     optionsHtml += '</optgroup>';
 
-    optionsHtml += '<optgroup label="Ollama (Local)">';
-    const localModels = Array.isArray(window.ollamaModels) ? [...window.ollamaModels] : [];
-    const selectedLocalName = selectedModel.startsWith('ollama/')
-        ? selectedModel.slice('ollama/'.length)
-        : (selectedModel.startsWith('ollama:') ? selectedModel.slice('ollama:'.length) : '');
-    if (selectedLocalName && !localModels.includes(selectedLocalName)) localModels.unshift(selectedLocalName);
-    if (localModels.length > 0) {
-        localModels.forEach(m => {
-            const val = `ollama/${m}`;
-            const selectedValue = selectedModel === `ollama:${m}` ? selectedModel : val;
-            const sel = selectedModel === val || selectedModel === `ollama:${m}` ? 'selected' : '';
-            const unavailable = m === selectedLocalName && !(window.ollamaModels || []).includes(m) ? ' (saved)' : '';
-            optionsHtml += `<option value="${escapeAIHtml(selectedValue)}" ${sel}>${escapeAIHtml(m)}${unavailable}</option>`;
-        });
-    } else {
-        optionsHtml += `<option disabled>No local models found</option>`;
-    }
-    optionsHtml += '</optgroup>';
     return optionsHtml;
 }
 window._getAIModelOptionsHtml = _getAIModelOptionsHtml;
@@ -210,10 +194,10 @@ function _showAIIndicatorLoading(ticker) {
         <div class="flex flex-col gap-1.5 mb-3 relative z-10">
             <div class="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
                 <img src="assets/bot_bulls_logo.png" alt="BotBulls" class="h-4 w-4 sm:h-5 sm:w-5 rounded-md border border-amber-200/80 bg-white/80 object-cover shadow-sm shrink-0">
-                <span class="flex-1 min-w-0 overflow-hidden text-ellipsis font-black text-xs text-amber-900 tracking-wide uppercase whitespace-nowrap">BotBulls AI Analysis - ${escapeAIHtml(ticker || '---')}</span>
+                <span class="flex-1 min-w-0 overflow-hidden text-ellipsis font-black text-xs text-amber-900 tracking-wide uppercase whitespace-nowrap">BotBulls News AI — ${escapeAIHtml(ticker || '---')}</span>
                 <div class="ai-analysis-actions flex items-center gap-1.5 sm:gap-2 relative z-30 shrink-0">
-                    <button onclick="openAISettingsModal()" title="Quant AI decision settings" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[11px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm shrink-0">⚙</button>
-                    <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm shrink-0">ℹ</button>
+                    <button onclick="openAISettingsModal()" title="News AI settings" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[11px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm shrink-0">⚙</button>
+                    <button onclick="openAIInfoModal()" title="How News AI works" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors border border-amber-300/50 shadow-sm shrink-0">ℹ</button>
                     <button disabled class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-xs text-amber-300 bg-amber-50 border border-amber-200 animate-spin shrink-0">↻</button>
                 </div>
             </div>
@@ -234,7 +218,7 @@ function _showAIIndicatorLoading(ticker) {
             <svg class="h-3 w-3 animate-spin text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 4v4m0 8v4m4-12h-4m4 8h-4" />
             </svg>
-            Analyzing market catalysts and news sentiment...
+            Reading the latest ticker news...
         </p>
     `;
 }
@@ -249,11 +233,11 @@ function _showAIIndicatorError(err, ticker) {
         <div class="flex flex-col gap-1.5 mb-3 relative z-10">
             <div class="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
                 <img src="assets/bot_bulls_logo.png" alt="BotBulls" class="h-4 w-4 sm:h-5 sm:w-5 rounded-md border border-red-200/80 bg-white/80 object-cover shadow-sm shrink-0">
-                <span class="flex-1 min-w-0 overflow-hidden text-ellipsis font-black text-xs text-red-800 tracking-wide uppercase whitespace-nowrap">BotBulls AI Analysis - ${escapeAIHtml(ticker || '---')}</span>
+                <span class="flex-1 min-w-0 overflow-hidden text-ellipsis font-black text-xs text-red-800 tracking-wide uppercase whitespace-nowrap">BotBulls News AI — ${escapeAIHtml(ticker || '---')}</span>
                 <div class="ai-analysis-actions flex items-center gap-1.5 sm:gap-2 relative z-30 shrink-0">
-                    <button onclick="openAISettingsModal()" title="Quant AI decision settings" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[11px] font-bold text-red-600 bg-red-100/50 hover:bg-red-100 border border-red-300/30 shrink-0">⚙</button>
-                    <button onclick="openAIInfoModal()" title="How AI analysis works" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-red-500 hover:text-red-700 bg-red-100/50 hover:bg-red-100 transition-colors border border-red-300/30 shrink-0">ℹ</button>
-                    <button id="aiRefreshBtn" onclick="refreshAIIndicator()" title="Force refresh AI analysis" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-xs text-red-500 hover:text-red-700 bg-red-100/50 hover:bg-red-100 transition-colors border border-red-300/30 shrink-0">↻</button>
+                    <button onclick="openAISettingsModal()" title="News AI settings" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[11px] font-bold text-red-600 bg-red-100/50 hover:bg-red-100 border border-red-300/30 shrink-0">⚙</button>
+                    <button onclick="openAIInfoModal()" title="How News AI works" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-red-500 hover:text-red-700 bg-red-100/50 hover:bg-red-100 transition-colors border border-red-300/30 shrink-0">ℹ</button>
+                    <button id="aiRefreshBtn" onclick="refreshAIIndicator()" title="Refresh ticker news analysis" class="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-xs text-red-500 hover:text-red-700 bg-red-100/50 hover:bg-red-100 transition-colors border border-red-300/30 shrink-0">↻</button>
                 </div>
             </div>
             <div class="flex flex-nowrap items-center justify-between gap-2 overflow-x-auto pb-1 ai-hdr-scroll" style="scrollbar-width: none; -ms-overflow-style: none;">
@@ -302,78 +286,23 @@ function renderAIIndicatorCard(data, fromCache = false) {
     const el = document.getElementById('aiIndicatorCard');
     if (!el || !data) return;
     rememberAIDetailedAnalysisState(el);
-    const signal = String(data.signal || 'HOLD').toUpperCase();
-    const setupScore = Math.round(Number(data.setup_score ?? ((data.confidence || 0) * 100)));
-    const minimumScore = Math.round(Number(data.minimum_setup_score ?? 70));
-    const dataQuality = Math.round(Number(data.data_quality_score ?? 0));
-    const technicalBias = String(data.technical_bias || 'NEUTRAL').toUpperCase();
-    const regime = String(data.volatility_regime || data.vix_regime || 'UNKNOWN').toUpperCase();
     const sentScore = normalizeCachedAISentimentScore(data.sentiment_score) ?? 0;
-    const sentPct = Math.round(normalizeAISentimentPct(data.sentiment_pct, sentScore));
-    const newsDirection = getAISentimentDirectionFromPct(sentPct, {}, data.sentiment_direction);
+    const sentPct = Math.max(0, Math.min(100, Math.round(normalizeAISentimentPct(data.sentiment_pct, sentScore))));
+    const newsDirection = String(getAISentimentDirectionFromPct(sentPct, {}, data.sentiment_direction) || 'NEUTRAL').toUpperCase();
     const sentConfidence = Math.round(Number(data.sentiment_confidence || 0) * 100);
-    const rr = Number(data.reward_risk || 0);
-    const minRr = Number(data.minimum_reward_risk || 1.5);
     const cached = fromCache || data.cached || false;
     const selectedModel = getSelectedAIModelForContext();
-    const usedModelRaw = String(data.model || selectedModel);
+    const usedModelRaw = String(data.news_analysis_model || data.model || selectedModel);
     const usedModel = escapeAIHtml(usedModelRaw);
-    const activeTf = escapeAIHtml(data.decision_timeframe || data.candle_timeframe || getAIDecisionTimeframe());
     const ticker = escapeAIHtml(data.ticker || getAIActiveTicker('---'));
     const generated = Number(data.generated_at) ? new Date(Number(data.generated_at) * 1000).toLocaleString() : '';
     const cacheAge = Number(data.cache_age_seconds);
     const freshness = cached ? `Cached${Number.isFinite(cacheAge) ? ` ${Math.max(0, Math.round(cacheAge / 60))}m` : ''}` : (generated ? `Updated ${generated}` : 'Fresh analysis');
-    const signalStyle = signal === 'BUY'
+    const verdict = newsDirection === 'BULLISH'
         ? { badge: 'bg-emerald-100 text-emerald-700 border-emerald-300', icon: '▲', bar: 'bg-emerald-500' }
-        : signal === 'SELL'
+        : newsDirection === 'BEARISH'
             ? { badge: 'bg-rose-100 text-rose-700 border-rose-300', icon: '▼', bar: 'bg-rose-500' }
             : { badge: 'bg-slate-100 text-slate-700 border-slate-300', icon: '●', bar: 'bg-slate-500' };
-    const decisionLabel = signal === 'HOLD'
-        ? (String(data.position_state || '').toUpperCase() === 'LONG' ? 'HOLD POSITION' : 'WAIT — NO NEW ENTRY')
-        : signal;
-    const bullishEvidence = Array.isArray(data.bullish_evidence) ? data.bullish_evidence : [];
-    const bearishEvidence = Array.isArray(data.bearish_evidence) ? data.bearish_evidence : [];
-    const cautions = Array.isArray(data.cautions) ? data.cautions : [];
-    const evidenceList = (items, icon, empty) => items.length
-        ? items.map(item => `<li class="flex gap-1.5"><span>${icon}</span><span>${escapeAIHtml(item)}</span></li>`).join('')
-        : `<li class="text-slate-400">${empty}</li>`;
-    const technicalDetails = data.technical_details && typeof data.technical_details === 'object'
-        ? data.technical_details
-        : {};
-    const technicalSections = [
-        ['Trend structure', technicalDetails.trend],
-        ['Momentum', technicalDetails.momentum],
-        ['Price structure', technicalDetails.structure],
-        ['Volume / participation', technicalDetails.participation],
-        ['Volatility', technicalDetails.volatility],
-        ['Market / sector context', technicalDetails.market_context],
-    ].filter(([, value]) => value);
-    const technicalDetailsHtml = technicalSections.length
-        ? technicalSections.map(([label, value]) => `
-            <div class="rounded-lg border border-slate-200 bg-white p-2.5">
-                <div class="text-[9px] font-black uppercase tracking-wide text-slate-500 mb-1">${escapeAIHtml(label)}</div>
-                <p class="text-[10px] font-semibold text-slate-700 leading-relaxed">${escapeAIHtml(value)}</p>
-            </div>`).join('')
-        : `<div class="sm:col-span-2 rounded-lg border border-slate-200 bg-white p-2.5 text-[10px] text-slate-600">${escapeAIHtml(data.summary || 'Detailed technical inputs will appear after the next recalculation.')}</div>`;
-    const gateChecks = Array.isArray(data.gate_checks) ? data.gate_checks : [];
-    const gateChecksHtml = gateChecks.length
-        ? gateChecks.map(gate => {
-            const status = String(gate.status || 'INFO').toUpperCase();
-            const style = status === 'PASS'
-                ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-                : status === 'BLOCK'
-                    ? 'border-rose-200 bg-rose-50 text-rose-800'
-                    : 'border-slate-200 bg-slate-50 text-slate-700';
-            const icon = status === 'PASS' ? '✓' : status === 'BLOCK' ? '×' : 'i';
-            return `<div class="rounded-lg border ${style} p-2">
-                <div class="flex items-center justify-between gap-2">
-                    <span class="text-[9px] font-black">${icon} ${escapeAIHtml(gate.label || gate.key || 'Gate')}</span>
-                    <span class="text-[8px] font-black uppercase">${escapeAIHtml(status)}</span>
-                </div>
-                <div class="mt-1 text-[9px] font-semibold">Current ${escapeAIHtml(gate.current || '—')} · Required ${escapeAIHtml(gate.required || '—')}</div>
-            </div>`;
-        }).join('')
-        : `<div class="text-[10px] text-slate-500">Gate-by-gate diagnostics will appear after the next recalculation.</div>`;
     const fallbackHeadlines = Array.isArray(data.news_headlines) ? data.news_headlines.filter(Boolean).slice(0, 5) : [];
     const newsArticles = Array.isArray(data.news_articles) && data.news_articles.length
         ? data.news_articles.filter(article => article && article.title).slice(0, 5)
@@ -415,12 +344,12 @@ function renderAIIndicatorCard(data, fromCache = false) {
             </article>`;
         }).join('')}</div>`
         : `<p class="mt-2 text-[9px] text-slate-500">No recent, directly attributable article evidence was returned. Treat the news score as limited evidence.</p>`;
-    const newsCoverage = String(data.news_coverage_quality || (Number(data.headline_count || 0) >= 3 ? 'MODERATE' : 'LIMITED')).toUpperCase();
-    const newsAnalysisModel = String(data.news_analysis_model || usedModelRaw || 'unknown');
+    const articleCount = Number(data.headline_count || newsArticles.length || 0);
+    const relevantCount = newsArticles.filter(article => String(article.relevance || 'DIRECT').toUpperCase() !== 'IRRELEVANT').length;
+    const newsCoverage = String(data.news_coverage_quality || (articleCount >= 3 ? 'MODERATE' : 'LIMITED')).toUpperCase();
+    const thinCoverage = relevantCount < 3 || newsCoverage === 'LIMITED';
     const isOllamaActive = selectedModel.startsWith('ollama/') || selectedModel.startsWith('ollama:');
-    const providerBadge = usedModelRaw === 'deterministic-quant'
-        ? '<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-slate-700 text-white">QUANT CORE</span>'
-        : isOllamaActive
+    const providerBadge = isOllamaActive
         ? '<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-indigo-600 text-white">OLLAMA</span>'
         : '<span class="px-1.5 py-0.5 rounded text-[0.55rem] font-black bg-amber-200 text-amber-800 border border-amber-300">GROQ AI</span>';
 
@@ -429,115 +358,51 @@ function renderAIIndicatorCard(data, fromCache = false) {
         <div class="flex flex-col gap-1.5 mb-3 relative z-10">
             <div class="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
                 <img src="assets/bot_bulls_logo.png" alt="BotBulls" class="h-4 w-4 sm:h-5 sm:w-5 rounded-md border border-amber-200/80 bg-white/80 object-cover shadow-sm shrink-0">
-                <span class="flex-1 min-w-0 overflow-hidden text-ellipsis font-black text-xs text-amber-900 tracking-wide uppercase whitespace-nowrap" id="aiIndicatorHeader">BotBulls Quant AI — ${escapeAIHtml(ticker)}</span>
+                <span class="flex-1 min-w-0 overflow-hidden text-ellipsis font-black text-xs text-amber-900 tracking-wide uppercase whitespace-nowrap" id="aiIndicatorHeader">BotBulls News AI — ${ticker}</span>
                 <div class="ai-analysis-actions flex items-center gap-1.5 sm:gap-2 relative z-30 shrink-0">
-                    <button onclick="openAISettingsModal()" title="Quant AI decision settings" class="w-5 h-5 sm:w-6 sm:h-6 flex items-center justify-center rounded-full text-[11px] sm:text-[12px] font-bold text-amber-700 bg-amber-100 hover:bg-amber-200 border border-amber-300 shrink-0">⚙</button>
-                    <button onclick="openAIInfoModal()" title="How Quant AI works" class="w-5 h-5 sm:w-6 sm:h-6 flex items-center justify-center rounded-full text-[10px] font-bold text-amber-700 bg-amber-100 hover:bg-amber-200 border border-amber-300 shrink-0">ℹ</button>
-                    <button id="aiRefreshBtn" onclick="refreshAIIndicator()" title="Refresh technical decision and ticker news" class="w-5 h-5 sm:w-6 sm:h-6 flex items-center justify-center rounded-full text-[11px] sm:text-xs text-amber-700 bg-amber-100 hover:bg-amber-200 border border-amber-300 shrink-0">↻</button>
+                    <button onclick="openAISettingsModal()" title="News AI settings" class="w-6 h-6 flex items-center justify-center rounded-full text-[11px] font-bold text-amber-700 hover:bg-amber-100 border border-amber-200 shrink-0">⚙</button>
+                    <button onclick="openAIInfoModal()" title="How News AI works" class="w-6 h-6 flex items-center justify-center rounded-full text-[10px] font-bold text-amber-700 hover:bg-amber-100 border border-amber-200 shrink-0">i</button>
+                    <button id="aiRefreshBtn" onclick="refreshAIIndicator()" title="Refresh ticker news analysis" class="w-6 h-6 flex items-center justify-center rounded-full text-xs text-amber-700 hover:bg-amber-100 border border-amber-200 shrink-0">↻</button>
                 </div>
             </div>
-            <div class="flex flex-nowrap items-center justify-between gap-2 overflow-x-auto pb-1 ai-hdr-scroll" style="scrollbar-width: none; -ms-overflow-style: none;">
-                <style>.ai-hdr-scroll::-webkit-scrollbar { display: none; }</style>
-                <div class="flex flex-nowrap items-center gap-1.5 sm:gap-2 shrink-0">
-                    <div class="shrink-0 flex">${providerBadge}</div>
-                    <span class="px-1.5 py-0.5 rounded text-[0.5rem] font-bold bg-white text-slate-600 border border-slate-200 shrink-0 whitespace-nowrap">${usedModel}</span>
-                    <span class="px-1.5 py-0.5 rounded text-[0.5rem] font-bold bg-fuchsia-50 text-fuchsia-700 border border-fuchsia-200 shrink-0 whitespace-nowrap">Decision ${activeTf}</span>
-                    <span class="text-[0.5rem] text-slate-500 shrink-0 whitespace-nowrap">${escapeAIHtml(freshness)}</span>
-                </div>
+            <div class="flex flex-wrap items-center gap-1.5">
+                ${providerBadge}
+                <span class="px-1.5 py-0.5 rounded text-[0.5rem] font-bold bg-white text-slate-600 border border-slate-200 whitespace-nowrap">${usedModel}</span>
+                <span class="text-[0.5rem] text-slate-500 whitespace-nowrap">${escapeAIHtml(freshness)}</span>
             </div>
         </div>
 
-        <div class="ai-summary-metrics grid grid-cols-2 md:grid-cols-5 gap-2 mb-3 relative z-10">
-            <div class="col-span-2 md:col-span-1 rounded-xl border p-2.5 ${signalStyle.badge}">
-                <div class="text-[0.52rem] uppercase font-black tracking-wider opacity-70">Decision</div>
-                <div class="text-xs font-black mt-1">${escapeAIHtml(decisionLabel)} ${signalStyle.icon}</div>
+        <div class="ai-summary-metrics grid grid-cols-3 gap-1.5 sm:gap-2 mb-3 relative z-10">
+            <div class="min-w-0 rounded-xl border p-2 sm:p-2.5 ${verdict.badge}">
+                <div class="text-[0.5rem] sm:text-[0.52rem] uppercase font-black tracking-wider opacity-70 truncate">Verdict</div>
+                <div class="text-[11px] sm:text-sm font-black mt-1 truncate">${escapeAIHtml(newsDirection)} ${verdict.icon}</div>
             </div>
-            <div class="rounded-xl border border-slate-200 bg-white/80 p-2.5">
-                <div class="text-[0.52rem] uppercase font-black tracking-wider text-slate-500">Setup score</div>
-                <div class="text-xs font-black text-slate-800 mt-1">${setupScore}/100 <span class="text-[9px] text-slate-400">min ${minimumScore}</span></div>
-                <div class="mt-1.5 h-1 rounded bg-slate-200 overflow-hidden"><div class="h-1 ${signalStyle.bar}" style="width:${Math.max(0, Math.min(100, setupScore))}%"></div></div>
+            <div class="min-w-0 rounded-xl border border-slate-200 bg-white/80 p-2 sm:p-2.5">
+                <div class="text-[0.5rem] sm:text-[0.52rem] uppercase font-black tracking-wider text-slate-500 truncate">News score</div>
+                <div class="text-[11px] sm:text-sm font-black text-slate-800 mt-1">${sentPct}<span class="text-[10px] text-slate-400">/100</span></div>
+                <div class="mt-1.5 h-1 rounded bg-slate-200 overflow-hidden"><div class="h-1 ${verdict.bar}" style="width:${sentPct}%"></div></div>
             </div>
-            <div class="rounded-xl border border-slate-200 bg-white/80 p-2.5">
-                <div class="text-[0.52rem] uppercase font-black tracking-wider text-slate-500">Technical bias</div>
-                <div class="text-xs font-black text-slate-800 mt-1">${escapeAIHtml(technicalBias)}</div>
-                <div class="text-[9px] text-slate-500 mt-1">Bull ${Number(data.bullish_score || 0).toFixed(0)} · Bear ${Number(data.bearish_score || 0).toFixed(0)}</div>
-            </div>
-            <div class="rounded-xl border border-slate-200 bg-white/80 p-2.5">
-                <div class="text-[0.52rem] uppercase font-black tracking-wider text-slate-500">News · no timeframe</div>
-                <div class="text-xs font-black text-slate-800 mt-1">${sentPct}/100 ${escapeAIHtml(newsDirection)}</div>
-                <div class="text-[9px] text-slate-500 mt-1">Classifier confidence ${sentConfidence}%</div>
-            </div>
-            <div class="rounded-xl border border-slate-200 bg-white/80 p-2.5">
-                <div class="text-[0.52rem] uppercase font-black tracking-wider text-slate-500">Risk context</div>
-                <div class="text-xs font-black text-slate-800 mt-1">${escapeAIHtml(regime)} volatility</div>
-                <div class="text-[9px] text-slate-500 mt-1">Data quality ${dataQuality}%</div>
+            <div class="min-w-0 rounded-xl border border-slate-200 bg-white/80 p-2 sm:p-2.5">
+                <div class="text-[0.5rem] sm:text-[0.52rem] uppercase font-black tracking-wider text-slate-500 truncate">Confidence</div>
+                <div class="text-[11px] sm:text-sm font-black text-slate-800 mt-1">${sentConfidence}%</div>
+                <div class="text-[8px] sm:text-[9px] text-slate-500 mt-0.5 truncate">${articleCount} article${articleCount === 1 ? '' : 's'} · ${escapeAIHtml(newsCoverage.toLowerCase())}</div>
             </div>
         </div>
 
-        <div class="ai-trade-plan rounded-xl border border-indigo-200 bg-indigo-50/55 p-3 mb-3 relative z-10">
-            <div class="flex items-center justify-between gap-2 mb-2">
-                <span class="text-[0.58rem] font-black text-indigo-700 uppercase tracking-wider">Trade plan</span>
-                <span class="text-[9px] font-bold ${rr >= minRr ? 'text-emerald-700' : 'text-amber-700'}">R:R ${rr.toFixed(2)} · minimum ${minRr.toFixed(2)}${Number(data.position_size_usd || 0) > 0 ? ` · planned ${formatAIPrice(data.position_size_usd)}` : ''}</span>
-            </div>
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-2">
-                <div><div class="text-[9px] text-slate-500">Current / Entry</div><div class="text-xs font-black text-slate-800">${formatAIPrice(data.entry_price || data.price)}</div></div>
-                <div><div class="text-[9px] text-slate-500">Invalidation / Stop</div><div class="text-xs font-black text-rose-700">${formatAIPrice(data.stop_loss)}</div></div>
-                <div><div class="text-[9px] text-slate-500">Measured target</div><div class="text-xs font-black text-emerald-700">${formatAIPrice(data.sell_target)}</div></div>
-                <div><div class="text-[9px] text-slate-500">Setup quality</div><div class="text-xs font-black text-slate-800">${escapeAIHtml(data.setup_quality || 'NO_TRADE')}</div></div>
-            </div>
-            <div class="rounded-lg bg-white/75 border border-indigo-100 p-2 text-[10px] text-indigo-900 font-semibold"><span class="font-black">Trigger:</span> ${escapeAIHtml(data.entry_trigger || data.wait_reason || 'Wait for configured confirmation gates.')}</div>
-            <div class="mt-1.5 text-[9px] text-slate-600"><span class="font-black">Invalidation:</span> ${escapeAIHtml(data.invalidation_condition || 'Not available')}</div>
-        </div>
+        ${thinCoverage ? `<div class="mb-3 rounded-lg border border-amber-300 bg-amber-50 p-2 text-[10px] font-semibold text-amber-800 relative z-10">Limited news coverage: fewer than 3 relevant articles, so treat this score as weak evidence.</div>` : ''}
 
-        <div class="ai-evidence-grid grid grid-cols-1 md:grid-cols-3 gap-2 mb-3 relative z-10">
-            <div class="rounded-xl border border-emerald-200 bg-emerald-50/55 p-2.5"><div class="text-[0.54rem] font-black text-emerald-700 uppercase mb-1.5">Supports long</div><ul class="space-y-1 text-[9px] text-emerald-900 font-semibold">${evidenceList(bullishEvidence, '✓', 'No bullish confirmation')}</ul></div>
-            <div class="rounded-xl border border-rose-200 bg-rose-50/55 p-2.5"><div class="text-[0.54rem] font-black text-rose-700 uppercase mb-1.5">Supports sell / avoid</div><ul class="space-y-1 text-[9px] text-rose-900 font-semibold">${evidenceList(bearishEvidence, '▼', 'No bearish confirmation')}</ul></div>
-            <div class="rounded-xl border border-amber-200 bg-amber-50/55 p-2.5"><div class="text-[0.54rem] font-black text-amber-700 uppercase mb-1.5">Blocks or cautions</div><ul class="space-y-1 text-[9px] text-amber-900 font-semibold">${evidenceList(cautions, '⚠', 'No additional caution')}</ul></div>
+        <div class="rounded-xl border border-purple-200 bg-purple-50/45 p-3 mb-3 relative z-10">
+            <div class="text-[10px] font-black text-purple-800 uppercase tracking-wide mb-1.5">Summary</div>
+            <p class="text-[10px] text-slate-700 font-semibold leading-relaxed">${escapeAIHtml(data.sentiment_summary || 'No detailed ticker-news summary is available yet.')}</p>
+            <div class="mt-2 rounded-lg border border-purple-100 bg-white/80 p-2 text-[10px] text-purple-900"><span class="font-black">Main catalyst:</span> ${escapeAIHtml(data.sentiment_key_factor || 'Mixed or insufficient evidence')}</div>
         </div>
-
-        <div class="rounded-lg border ${data.news_alignment_applied ? 'border-amber-300 bg-amber-50' : 'border-slate-200 bg-slate-50'} p-2 mb-2 text-[9px] text-slate-700 font-semibold relative z-10"><span class="font-black">News alignment:</span> ${escapeAIHtml(data.news_alignment_reason || 'News is confirmation only and does not override the quantitative decision.')}</div>
 
         <details data-ai-detailed-analysis class="rounded-xl border border-violet-200 bg-white/70 p-3 mb-2 relative z-10"${aiDetailedAnalysisExpanded ? ' open' : ''} ontoggle="setAIDetailedAnalysisExpanded(this.open)">
-            <summary class="cursor-pointer text-[10px] font-black text-violet-700">Detailed stock analysis — technical, gates, news and risk</summary>
-            <div class="mt-3 space-y-3">
-                <section class="rounded-xl border border-violet-200 bg-violet-50/40 p-3">
-                    <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
-                        <div>
-                            <div class="text-[10px] font-black text-violet-800 uppercase tracking-wide">Technical bias · ${escapeAIHtml(technicalBias)}</div>
-                            <div class="text-[9px] text-violet-600 mt-0.5">Completed ${activeTf} candle · Bull ${Number(data.bullish_score || 0).toFixed(0)} vs Bear ${Number(data.bearish_score || 0).toFixed(0)}</div>
-                        </div>
-                        <span class="rounded-full bg-white border border-violet-200 px-2 py-1 text-[9px] font-black text-violet-700">${setupScore}/100 setup</span>
-                    </div>
-                    <p class="rounded-lg bg-white/80 border border-violet-100 p-2 text-[10px] text-slate-700 font-semibold leading-relaxed mb-2">${escapeAIHtml(data.summary || '')}</p>
-                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">${technicalDetailsHtml}</div>
-                </section>
-
-                <section class="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-                    <div class="text-[10px] font-black text-slate-800 uppercase tracking-wide mb-2">Decision gates · why the signal passed or waited</div>
-                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">${gateChecksHtml}</div>
-                    <div class="mt-2 rounded-lg border border-indigo-100 bg-indigo-50 p-2 text-[10px] text-indigo-900 font-semibold"><span class="font-black">Next confirmation:</span> ${escapeAIHtml(data.entry_trigger || data.wait_reason || 'Wait for configured confirmation gates.')}</div>
-                </section>
-
-                <section class="rounded-xl border border-purple-200 bg-purple-50/45 p-3">
-                    <div class="flex flex-wrap items-center justify-between gap-2">
-                        <div class="text-[10px] font-black text-purple-800 uppercase tracking-wide">News briefing · ${escapeAIHtml(newsDirection)}</div>
-                        <div class="text-[9px] font-black text-purple-700">${sentPct}/100 tone · ${sentConfidence}% confidence · ${escapeAIHtml(newsCoverage)} coverage</div>
-                    </div>
-                    <div class="mt-1 text-[8px] font-bold text-purple-600">Article classifier: ${escapeAIHtml(newsAnalysisModel)}</div>
-                    <p class="mt-2 text-[10px] text-slate-700 font-semibold leading-relaxed">${escapeAIHtml(data.sentiment_summary || 'No detailed ticker-news summary is available.')}</p>
-                    <div class="mt-2 rounded-lg border border-purple-100 bg-white/80 p-2 text-[10px] text-purple-900"><span class="font-black">Primary news factor:</span> ${escapeAIHtml(data.sentiment_key_factor || 'Mixed or insufficient evidence')}</div>
-                    <div class="mt-2 text-[9px] font-black uppercase tracking-wide text-slate-500">Article-by-article sentiment (${Number(data.headline_count || 0)} analyzed)</div>
-                    ${newsArticlesHtml}
-                    <p class="mt-2 text-[9px] text-slate-500">Analysis uses each article’s title, publisher, publication time, and available public preview—not unavailable or paywalled body text. News has no chart timeframe; its score is not the probability that price will rise and cannot create a trade by itself.</p>
-                </section>
-
-                <section class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <div class="rounded-xl border border-rose-200 bg-rose-50/60 p-3 text-[10px] text-rose-900 leading-relaxed"><div class="font-black uppercase tracking-wide mb-1">Risk and invalidation</div><p>${escapeAIHtml(data.risk_factors || data.invalidation_condition || 'No specific risk condition available.')}</p><p class="mt-1.5 font-semibold">${escapeAIHtml(data.invalidation_condition || '')}</p></div>
-                    <div class="rounded-xl border border-emerald-200 bg-emerald-50/60 p-3 text-[10px] text-emerald-900 leading-relaxed"><div class="font-black uppercase tracking-wide mb-1">Trade management</div><p>${escapeAIHtml(data.exit_plan || 'Wait for a valid entry, stop and target structure.')}</p></div>
-                </section>
-            </div>
+            <summary class="cursor-pointer text-[10px] font-black text-violet-700">Articles analysed (${articleCount})</summary>
+            ${newsArticlesHtml}
+            <p class="mt-2 text-[9px] text-slate-500">Each article is read from its title, publisher, publication time and available public preview.</p>
         </details>
-        <div class="flex items-center justify-between pt-2 border-t border-slate-200 text-[8px] text-slate-500 relative z-10"><span>${Number(data.headline_count || 0)} ticker news articles · news cached independently</span><span>Setup score is not a profit probability · advisory only</span></div>`;
+        <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 pt-2 border-t border-slate-200 text-[8px] text-slate-500 relative z-10"><span>News cached independently of the chart timeframe</span><span>Sentiment is not a profit probability · advisory only</span></div>`;
 }
 window.renderAIIndicatorCard = renderAIIndicatorCard;
 
@@ -561,7 +426,7 @@ function ensureAISettingsModal() {
         <div class="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-white rounded-2xl shadow-2xl border border-amber-200">
             <div class="sticky top-0 bg-white/95 backdrop-blur px-5 py-4 border-b border-slate-200 flex items-center justify-between z-10">
                 <div>
-                    <h3 class="text-sm font-black text-slate-900">Quant AI Decision Settings</h3>
+                    <h3 class="text-sm font-black text-slate-900">News AI Settings</h3>
                     <p id="aiSettingsContextLabel" class="text-[10px] text-slate-500 mt-0.5"></p>
                 </div>
                 <button onclick="closeAISettingsModal()" class="w-8 h-8 rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 font-black">×</button>
@@ -572,8 +437,16 @@ function ensureAISettingsModal() {
                     <select id="aiSettingModel" class="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm font-bold text-slate-800">
                         ${_getAIModelOptionsHtml(getSelectedAIModelForContext())}
                     </select>
-                    <p class="text-[10px] text-amber-800 mt-1.5">Choose the cloud or local model used to explain the quantitative decision. The deterministic quant rules still own BUY, SELL, HOLD, entry, stop and target.</p>
+                    <p class="text-[10px] text-amber-800 mt-1.5">Choose the cloud or local model used to read and score the ticker news.</p>
                 </div>
+                <div class="grid grid-cols-1 gap-3">
+                    <label class="rounded-xl border border-slate-200 p-3 ">
+                        <span class="block text-xs font-black text-slate-800">Analysis cache (minutes)</span>
+                        <input id="aiSettingCache" type="number" min="1" max="120" step="1" class="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold">
+                        <span class="block text-[9px] text-slate-500 mt-1">A manual refresh bypasses this cache and re-reads the ticker news.</span>
+                    </label>
+                </div>
+                <div hidden aria-hidden="true">
                 <div class="rounded-xl bg-indigo-50 border border-indigo-200 p-3">
                     <label class="block text-xs font-black text-indigo-900 mb-1">Decision candle timeframe</label>
                     <select id="aiSettingTimeframe" class="w-full rounded-lg border border-indigo-200 bg-white px-3 py-2 text-sm font-bold text-slate-800">
@@ -614,11 +487,7 @@ function ensureAISettingsModal() {
                         </select>
                         <span class="block text-[9px] text-slate-500 mt-1">News has limited weight and never creates a trade.</span>
                     </label>
-                    <label class="rounded-xl border border-slate-200 p-3 sm:col-span-2">
-                        <span class="block text-xs font-black text-slate-800">Analysis cache (minutes)</span>
-                        <input id="aiSettingCache" type="number" min="1" max="120" step="1" class="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold">
-                        <span class="block text-[9px] text-slate-500 mt-1">A manual refresh bypasses this cache and refreshes both technical context and ticker news.</span>
-                    </label>
+                </div>
                 </div>
                 <div id="aiSettingsMessage" class="hidden text-xs rounded-lg px-3 py-2"></div>
                 <div class="flex items-center justify-between gap-3 pt-2">
@@ -989,7 +858,11 @@ function renderCachedAIIndicatorForTicker(ticker, timeframe) {
 }
 window.renderCachedAIIndicatorForTicker = renderCachedAIIndicatorForTicker;
 
-async function fetchAIIndicator(ticker, timeframe, force = false) {
+// One model fallback per request chain: the old llama default migrates back to the primary model, so a fallback that
+// compared against it never stopped and re-sent the failing request in a tight loop.
+const AI_FALLBACK_MODEL = 'openai/gpt-oss-20b';
+
+async function fetchAIIndicator(ticker, timeframe, force = false, _fallbackTried = false) {
     if (!ticker) return;
     const normalizedTicker = normalizeAIIndicatorTicker(ticker);
     const pageContext = getAIIndicatorPageContext();
@@ -1062,10 +935,10 @@ async function fetchAIIndicator(ticker, timeframe, force = false) {
                 console.warn(`[ai-indicator] ${data.error}; showing the last cached analysis.`);
                 return fallback;
             }
-            if (selectedModel !== 'llama-3.3-70b-versatile') {
-                console.warn(`[ai-indicator] Model ${selectedModel} failed. Falling back to default Groq model.`);
-                setSelectedAIModelForContext('llama-3.3-70b-versatile');
-                return fetchAIIndicator(ticker, tf, force);
+            if (!_fallbackTried && selectedModel !== AI_FALLBACK_MODEL) {
+                console.warn(`[ai-indicator] Model ${selectedModel} failed. Trying ${AI_FALLBACK_MODEL} once.`);
+                setSelectedAIModelForContext(AI_FALLBACK_MODEL);
+                return fetchAIIndicator(ticker, tf, force, true);
             }
             _showAIIndicatorError(data.error, normalizedTicker);
             return;
@@ -1090,10 +963,13 @@ async function fetchAIIndicator(ticker, timeframe, force = false) {
             } else {
                 console.error('[ai-indicator] Fetch error:', e);
             }
-            if (selectedModel !== 'llama-3.3-70b-versatile') {
-                console.warn(`[ai-indicator] Fetch failed for ${selectedModel}. Falling back to default Groq model.`);
-                setSelectedAIModelForContext('llama-3.3-70b-versatile');
-                return fetchAIIndicator(ticker, tf, force);
+            // Only a server-side failure or a timeout can be the model's fault. A blocked or unreachable request (CORS,
+            // offline, 401) fails identically for every model, so it must not switch the user's saved model or retry.
+            const modelRelated = e.name === 'TimeoutError' || /^HTTP 5/.test(String(e.message || ''));
+            if (modelRelated && !_fallbackTried && selectedModel !== AI_FALLBACK_MODEL) {
+                console.warn(`[ai-indicator] Fetch failed for ${selectedModel}. Trying ${AI_FALLBACK_MODEL} once.`);
+                setSelectedAIModelForContext(AI_FALLBACK_MODEL);
+                return fetchAIIndicator(ticker, tf, force, true);
             }
             const stale = getStaleAICache(key);
             if (stale?.data) {

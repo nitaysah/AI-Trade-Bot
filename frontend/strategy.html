@@ -3,42 +3,38 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Strategies — Bot Bulls</title>
     <meta name="description"
-        content="AI-powered quantitative trading dashboard with multi-indicator confluence and sentiment analysis.">
+        content="Session Rider: Institutional overnight momentum & auction edge strategy for SPY, QQQ, SOXL, TQQQ and core ETFs.">
     <link rel="icon" type="image/png" sizes="32x32" href="assets/bot_bulls_logo.png">
     <link rel="icon" type="image/png" sizes="16x16" href="assets/bot_bulls_logo.png">
     <link rel="shortcut icon" href="assets/bot_bulls_logo.png">
     <link rel="apple-touch-icon" href="assets/bot_bulls_logo.png">
-    <link rel="apple-touch-icon" sizes="180x180" href="assets/bot_bulls_logo.png">
-    <link rel="apple-touch-icon" sizes="152x152" href="assets/bot_bulls_logo.png">
-    <link rel="apple-touch-icon" sizes="167x167" href="assets/bot_bulls_logo.png">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="BotBulls">
     <meta name="application-name" content="BotBulls">
-    <meta name="msapplication-TileImage" content="assets/bot_bulls_logo.png">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Outfit:wght@400;700;900&display=swap"
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Outfit:wght@400;600;700;800;900&display=swap"
         rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=62">
-    <script src="alpaca-status-cache.js?v=1"></script>
+    <link rel="stylesheet" href="styles.css?v=84">
+    <script src="alpaca-status-cache.js?v=2"></script>
     <style id="auth-guard-style">
         html.auth-pending body { visibility: hidden; }
     </style>
     <script>
         document.documentElement.classList.add('auth-pending');
     </script>
-    <script src="auth-guard.js?v=1"></script>
+    <script src="auth-guard.js?v=2"></script>
+
     <!-- Firebase Sentinel (Auth Guard) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
-
         import { firebaseConfig } from "./firebase-config.js";
 
         const app = initializeApp(firebaseConfig);
@@ -122,20 +118,22 @@
                 window.AlpacaStatusCache?.writeFromData(data);
                 if (window.AlpacaStatusCache?.render()) return;
 
+                const redirectBtn = document.getElementById('alpacaLinkRedirectBtn');
+                if (data.simulation && !data.has_keys) {
+                    if (redirectBtn) redirectBtn.classList.remove('hidden');
+                    statusPill.classList.add('hidden');
+                    if (btnUnlink) btnUnlink.classList.add('hidden');
+                    return;
+                }
+                if (redirectBtn) redirectBtn.classList.add('hidden');
                 if (data.simulation) {
-                    if (data.has_keys) {
-                        statusPill.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-amber-50 text-amber-600 border-2 border-amber-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
-                        statusDot.className = "h-2 w-2 rounded-full mr-2 bg-amber-500 animate-pulse";
-                        statusText.textContent = "RETRYING...";
-                    } else {
-                        statusPill.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-rose-50 text-rose-600 border-2 border-rose-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
-                        statusDot.className = "h-2 w-2 rounded-full mr-2 bg-rose-500 animate-pulse";
-                        statusText.textContent = "SIMULATION";
-                    }
+                    statusPill.className = "flex items-center justify-center h-8 text-[11px] font-black px-4 rounded-full bg-amber-50 text-amber-600 border border-amber-200 shadow-sm whitespace-nowrap uppercase tracking-wider";
+                    statusDot.className = "h-2 w-2 rounded-full mr-1.5 bg-amber-500 animate-pulse";
+                    statusText.textContent = "RETRYING...";
                     if (btnUnlink) btnUnlink.classList.add('hidden');
                 } else {
-                    statusPill.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-emerald-50 text-emerald-600 border-2 border-emerald-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
-                    statusDot.className = "h-2 w-2 rounded-full mr-2 bg-emerald-500 animate-pulse";
+                    statusPill.className = "flex items-center justify-center h-8 text-[11px] font-black px-4 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200 shadow-sm whitespace-nowrap uppercase tracking-wider";
+                    statusDot.className = "h-2 w-2 rounded-full mr-1.5 bg-emerald-500 animate-pulse";
                     statusText.textContent = "Alpaca";
                     if (btnUnlink) btnUnlink.classList.remove('hidden');
                 }
@@ -144,28 +142,6 @@
                 console.error('[strategy] Alpaca status check failed:', e);
             }
         }
-
-        window.unlinkAlpaca = async () => {
-            if (!confirm("Are you sure you want to unlink your Alpaca account?")) return;
-            try {
-                const user = window.auth.currentUser;
-                const token = user ? await user.getIdToken() : null;
-                const headers = token 
-                    ? { 'Authorization': `Bearer ${token}`, 'Bypass-Tunnel-Reminder': 'true' } 
-                    : { 'Bypass-Tunnel-Reminder': 'true' };
-                const response = await fetch(`${API_BASE}/api/alpaca_config`, {
-                    method: 'DELETE',
-                    headers: headers
-                });
-                const data = await response.json();
-                if (data.status === 'success') {
-                    alert(data.message);
-                    window.AlpacaStatusCache?.clear();
-                    window.AlpacaStatusCache?.render({ status: 'disconnected', has_keys: false, simulation: true, updatedAt: Date.now() });
-                    pollAlpacaStatus();
-                }
-            } catch (err) {}
-        };
 
         const checkAuth = setInterval(() => {
             if (window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true')) {
@@ -178,170 +154,222 @@
     </script>
 
     <style>
-        /* Custom aesthetics for Strategy page */
-        h1, h2, h3, .font-outfit { font-family: 'Outfit', sans-serif; }
-        
+        h1, h2, h3, h4, .font-outfit { font-family: 'Outfit', sans-serif; }
+        body { font-family: 'Inter', sans-serif; }
+
         .strategy-modal-overlay {
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            background: rgba(255, 255, 255, 0.4);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            background: rgba(15, 23, 42, 0.45);
         }
 
         .strategy-modal {
-            background: rgba(255, 255, 255, 0.65);
-            border: 1px solid rgba(255, 255, 255, 0.9);
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.1), 0 0 40px rgba(139, 92, 246, 0.15);
+            background: rgba(255, 255, 255, 0.96);
+            border: 1px solid rgba(255, 255, 255, 0.95);
+            box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.2), 0 0 30px rgba(139, 92, 246, 0.15);
         }
 
-        .strategy-details[open] summary ~ * {
-            animation: slideDown 0.3s ease-out forwards;
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: rgba(243, 232, 255, 0.4);
+            border-radius: 9999px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: rgba(147, 51, 234, 0.3);
+            border-radius: 9999px;
         }
 
-        @keyframes slideDown {
-            from { opacity: 0; transform: translateY(-10px); }
-            to { opacity: 1; transform: translateY(0); }
+        .session-table-container {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(147, 51, 234, 0.3) transparent;
+        }
+        .session-table-container::-webkit-scrollbar {
+            height: 4px;
+        }
+        .session-table-container::-webkit-scrollbar-track {
+            background: rgba(243, 232, 255, 0.4);
+            border-radius: 9999px;
+        }
+        .session-table-container::-webkit-scrollbar-thumb {
+            background: rgba(147, 51, 234, 0.3);
+            border-radius: 9999px;
         }
 
-        .strategy-summary {
-            list-style: none;
-        }
-        .strategy-summary::-webkit-details-marker {
-            display: none;
+        .session-table-container th,
+        .session-table-container td {
+            padding: 0.25rem 0.4rem;
+            font-size: 0.65rem;
         }
 
-        .strategy-details[open] .arrow-icon {
-            transform: rotate(180deg);
+        .ticker-pill {
+            transition: all 0.15s ease;
         }
+        .ticker-pill.active {
+            background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%) !important;
+            color: #ffffff !important;
+            border-color: #6366f1 !important;
+            box-shadow: 0 2px 8px -1px rgba(99, 102, 241, 0.35);
+            transform: translateY(-1px);
+        }
+
+        .session-tab-btn {
+            transition: all 0.15s ease;
+        }
+        .session-tab-btn.active {
+            background: #4f46e5 !important;
+            color: #ffffff !important;
+            border-color: #4338ca !important;
+            box-shadow: 0 2px 6px rgba(79, 70, 229, 0.2);
+        }
+
+        @media (max-width: 767px) {
+            .session-table-container th,
+            .session-table-container td {
+                padding: 0.2rem 0.3rem !important;
+                font-size: 0.6rem !important;
+                white-space: nowrap;
+            }
+        }
+    </style>
+    <style id="page-loader-style">
+        #pageLoader { display: none; }
+        html:not(.page-ready) footer { display: none !important; }
+        html:not(.page-ready) #pageLoader { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; padding: 1.5rem 1rem 1rem; margin-top: 0.75rem; border-top: 1px solid rgba(233, 213, 255, 0.8); color: #a855f7; font-size: 0.65rem; font-weight: 900; letter-spacing: 0.25em; text-transform: uppercase; text-align: center; }
+        #pageLoader img { width: 3rem; height: 3rem; border-radius: 0.75rem; animation: pageLoaderSpin 1.1s linear infinite; }
+        @keyframes pageLoaderSpin { to { transform: rotate(360deg); } }
+        @media (prefers-reduced-motion: reduce) { #pageLoader img { animation-duration: 3s; } }
     </style>
 </head>
 
 <body
-    class="bg-gradient-to-br from-fuchsia-50 via-purple-100 to-indigo-100 text-indigo-950 min-h-screen font-sans relative overflow-x-hidden"
-    style="font-family: 'Inter', sans-serif;">
+    class="bg-gradient-to-br from-fuchsia-50 via-purple-100 to-indigo-100 text-indigo-950 min-h-screen font-sans relative overflow-x-hidden text-xs">
     <div class="fixed inset-0 z-[-1] bg-[radial-gradient(ellipse_at_top_left,_var(--tw-gradient-stops))] from-white/80 via-purple-200/20 to-transparent"></div>
     <div class="fixed inset-0 z-[-1] bg-[radial-gradient(ellipse_at_bottom_right,_var(--tw-gradient-stops))] from-indigo-200/30 via-transparent to-transparent"></div>
 
-    <main class="max-w-5xl mx-auto px-4 py-4">
+    <main class="max-w-4xl mx-auto px-3 py-3">
 
-        <!-- ═══════════════ HEADER ═══════════════ -->
-        <header class="flex flex-col items-center text-center mb-3 gap-2 border-b border-purple-200/80 pb-2.5">
-            <div class="space-y-1">
+        <!-- ═══════════════ COMPACT HEADER ═══════════════ -->
+        <header class="flex flex-col items-center text-center mb-2.5 gap-1.5 border-b border-purple-200/80 pb-2">
+            <div class="space-y-0.5">
                 <h1
-                    class="flex items-center justify-center gap-3 text-2xl md:text-4xl font-black text-transparent bg-clip-text botbulls-brand-gradient bg-gradient-to-r from-purple-500 via-teal-400 to-emerald-500 leading-tight">
-                    <img src="assets/bot_bulls_logo.png" alt="BotBulls logo" class="h-12 w-12 rounded-2xl border border-purple-200/80 bg-white/80 object-cover shadow-md shadow-purple-500/15">
+                    class="flex items-center justify-center gap-2 text-xl md:text-2xl font-black text-indigo-950 leading-tight font-outfit">
+                    <img src="assets/bot_bulls_logo.png" alt="BotBulls logo" class="h-8 w-8 sm:h-9 sm:w-9 rounded-xl border border-purple-200/80 bg-white/80 object-cover shadow-sm shadow-purple-500/15">
                     <span>Strategies</span>
                 </h1>
-                <p class="text-purple-500 text-xs md:text-sm font-black uppercase tracking-[0.2em] opacity-80">
-                    Backtested playbooks for entries, exits, risk, and deployment
+                <p class="text-purple-600 text-[10px] sm:text-[11px] font-black uppercase tracking-wider opacity-90">
+                    Backtested quantitative playbooks for entries, exits, risk, and deployment
                 </p>
             </div>
 
-            <div class="mobile-nav-grid flex flex-wrap justify-center items-center gap-2 md:gap-3 w-full font-sans">
+            <div class="mobile-nav-grid flex flex-wrap justify-center items-center gap-1.5 md:gap-2 w-full font-sans">
                 <a href="dashboard.html"
-                    class="flex items-center justify-center h-9 text-xs font-black bg-purple-50 text-indigo-600 border-2 border-purple-100 rounded-full px-5 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
+                    class="flex items-center justify-center h-8 text-[11px] font-black bg-purple-50 text-indigo-600 border border-purple-200 rounded-full px-3.5 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
                     Dashboard
                 </a>
 
                 <a href="bots.html"
-                    class="flex items-center justify-center h-9 text-xs font-black bg-purple-50 text-indigo-600 border-2 border-purple-100 rounded-full px-5 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
+                    class="flex items-center justify-center h-8 text-[11px] font-black bg-purple-50 text-indigo-600 border border-purple-200 rounded-full px-3.5 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
                     Active Bots
                 </a>
 
                 <a href="screener.html"
-                    class="flex items-center justify-center h-9 text-xs font-black bg-purple-50 text-indigo-600 border-2 border-purple-100 rounded-full px-5 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
+                    class="flex items-center justify-center h-8 text-[11px] font-black bg-purple-50 text-indigo-600 border border-purple-200 rounded-full px-3.5 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
                     Screener
                 </a>
 
                 <a href="backtest.html"
-                    class="flex items-center justify-center h-9 text-xs font-black bg-purple-50 text-indigo-600 border-2 border-purple-100 rounded-full px-5 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
+                    class="flex items-center justify-center h-8 text-[11px] font-black bg-purple-50 text-indigo-600 border border-purple-200 rounded-full px-3.5 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
                     Backtest Center
                 </a>
 
                 <a href="strategy.html"
-                    class="flex items-center justify-center h-9 text-xs font-black bg-indigo-600 text-white border-2 border-indigo-600 rounded-full px-5 hover:bg-indigo-700 hover:border-indigo-700 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
+                    class="flex items-center justify-center h-8 text-[11px] font-black bg-indigo-600 text-white border border-indigo-600 rounded-full px-3.5 hover:bg-indigo-700 hover:border-indigo-700 transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
                     Strategies
                 </a>
 
-                <div class="nav-group flex items-center gap-2 md:gap-3">
-                    <div id="alpacaConnectionContainer" class="nav-group flex items-center">
-                        <button onclick="window.location.href='bots.html'" id="alpacaLinkRedirectBtn"
-                            class="flex items-center justify-center h-9 text-xs font-black bg-emerald-50 text-emerald-600 border-2 border-emerald-100 rounded-full px-5 hover:bg-emerald-600 hover:text-white transition-all shadow-sm whitespace-nowrap uppercase tracking-wider">
-                            Connect Alpaca
-                        </button>
-                        <span id="alpacaLinkStatus"
-                            class="hidden flex items-center justify-center h-9 text-xs font-black px-5 rounded-full border-2 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider">
-                            <span class="h-2 w-2 rounded-full mr-2" id="alpacaStatusDot"></span>
-                            <span id="alpacaStatusText">Checking...</span>
-                            <button id="btnUnlinkAlpaca" onclick="unlinkAlpaca()"
-                                class="hidden ml-3 px-2 py-0.5 bg-rose-500 text-white rounded-full text-[9px] hover:bg-rose-600 transition-all uppercase tracking-tighter">
-                                Unlink
-                            </button>
-                        </span>
-                    </div>
-
+                <div class="nav-group flex items-center gap-1.5">
                     <button onclick="window.logoutCommander()"
-                        class="flex items-center justify-center h-9 text-xs font-black bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white transition-all px-5 rounded-full border-2 border-rose-100 shadow-sm whitespace-nowrap uppercase tracking-wider">
+                        class="flex items-center justify-center h-8 text-[11px] font-black bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white transition-all px-3.5 rounded-full border border-rose-200 shadow-sm whitespace-nowrap uppercase tracking-wider">
                         Logout
                     </button>
                 </div>
             </div>
         </header>
 
-
-        <!-- ═══════════════ MAIN CONTENT ═══════════════ -->
-        <div class="animate-in fade-in duration-700">
-            <div class="text-center mb-10">
-                <h2 class="text-3xl font-black text-indigo-950 uppercase tracking-tight font-outfit">Strategies Journal</h2>
-                <p class="text-sm font-bold text-purple-500 uppercase tracking-widest mt-2 font-sans">Backtested strategy setups based on millions of simulations</p>
+        <!-- ═══════════════ MAIN CONTENT: STRATEGY CARDS ═══════════════ -->
+        <div class="animate-in fade-in duration-300 space-y-2.5">
+            <div class="text-center mb-1">
+                <h2 class="text-base sm:text-lg font-black text-indigo-950 uppercase tracking-tight font-outfit">Strategies Journal</h2>
+                <p class="text-[9px] sm:text-[10px] font-bold text-purple-600 uppercase tracking-wider mt-0.5">
+                    Empirically verified algorithmic trading playbooks
+                </p>
             </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 max-w-4xl mx-auto">
-                <!-- SPY Card -->
-                <div class="relative group cursor-pointer" onclick="openSpyModal()">
-                    <div class="absolute inset-0 bg-gradient-to-r from-purple-500 to-indigo-500 rounded-3xl blur opacity-20 group-hover:opacity-40 transition-opacity duration-300"></div>
-                    <div class="relative bg-white/60 backdrop-blur-xl border border-white/80 p-8 rounded-3xl shadow-xl hover:shadow-2xl transition-all duration-300 transform group-hover:-translate-y-2 flex flex-col items-center text-center">
-                        <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-100 to-purple-100 border border-purple-200 flex items-center justify-center mb-4 shadow-inner">
-                            <span class="text-2xl font-black text-indigo-700 font-outfit tracking-tighter">SPY</span>
-                        </div>
-                        <h3 class="text-xl font-black text-indigo-950 uppercase tracking-widest font-outfit">SPDR S&P 500</h3>
-                        <p class="text-xs font-bold text-slate-500 mt-2 font-sans leading-relaxed">
-                            Discover the Top 5 meticulously backtested strategies for the S&P 500 ETF, ranging from 0-DTE scalps to Macro LEAPS.
-                        </p>
-                        <div class="mt-6 px-4 py-1.5 bg-indigo-50 border border-indigo-100 rounded-full text-[10px] font-black text-indigo-600 uppercase tracking-widest">
-                            View Journal ➔
-                        </div>
-                    </div>
-                </div>
+            <!-- COMPACT SESSION RIDER CARD PILL -->
+            <div class="max-w-md mx-auto">
+                <div onclick="openSessionRiderModal()" class="relative group cursor-pointer transition-all duration-200 transform hover:-translate-y-0.5">
+                    <!-- Glow effect -->
+                    <div class="absolute -inset-0.5 bg-gradient-to-r from-purple-600 via-indigo-600 to-teal-400 rounded-xl blur-xs opacity-20 group-hover:opacity-50 transition-opacity"></div>
 
-                <!-- Placeholder for future cards -->
-                <div class="relative group cursor-pointer" onclick="openQqqModal()">
-                    <div class="absolute inset-0 bg-gradient-to-r from-blue-500 to-cyan-500 rounded-3xl blur opacity-20 group-hover:opacity-40 transition-opacity duration-300"></div>
-                    <div class="relative bg-white/60 backdrop-blur-xl border border-white/80 p-8 rounded-3xl shadow-xl hover:shadow-2xl transition-all duration-300 transform group-hover:-translate-y-2 flex flex-col items-center text-center h-full">
-                        <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-cyan-100 to-blue-100 border border-blue-200 flex items-center justify-center mb-4 shadow-inner">
-                            <span class="text-2xl font-black text-blue-700 font-outfit tracking-tighter">QQQ</span>
+                    <!-- Main Card Body -->
+                    <div class="relative bg-white/80 backdrop-blur-xl border border-white/90 group-hover:border-indigo-300 p-3 sm:p-3.5 rounded-xl shadow-xs group-hover:shadow-md transition-all space-y-2">
+                        <div class="flex items-center justify-between gap-2">
+                            <div class="flex items-center gap-2">
+                                <div class="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-gradient-to-br from-indigo-500 via-purple-600 to-pink-500 flex items-center justify-center text-white shadow-xs border border-indigo-200">
+                                    <span class="text-xs sm:text-sm">⚡</span>
+                                </div>
+                                <div>
+                                    <div class="flex items-center gap-1">
+                                        <span class="px-1.5 py-0.2 rounded-full text-[8px] font-black uppercase tracking-wider bg-purple-100 text-purple-700">Algo Strategy #1</span>
+                                        <span class="px-1.5 py-0.2 rounded-full text-[7.5px] font-extrabold uppercase tracking-wider bg-emerald-100 text-emerald-800 border border-emerald-200">✓ Alpaca SIP</span>
+                                    </div>
+                                    <h3 class="text-sm sm:text-base font-black text-indigo-950 font-outfit tracking-tight">Session Rider</h3>
+                                </div>
+                            </div>
+                            <span class="px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider">
+                                Overnight Edge
+                            </span>
                         </div>
-                        <h3 class="text-xl font-black text-indigo-950 uppercase tracking-widest font-outfit">Invesco QQQ</h3>
-                        <p class="text-xs font-bold text-slate-500 mt-2 font-sans leading-relaxed">
-                            Discover the Top 5 meticulously backtested strategies for the Nasdaq-100 ETF, ranging from 0-DTE scalps to Tech Momentum.
-                        </p>
-                        <div class="mt-6 px-4 py-1.5 bg-blue-50 border border-blue-100 rounded-full text-[10px] font-black text-blue-600 uppercase tracking-widest mt-auto">
-                            View Journal ➔
-                        </div>
-                    </div>
-                </div>
 
-                <div class="relative group cursor-pointer" onclick="openIwmModal()">
-                    <div class="absolute inset-0 bg-gradient-to-r from-emerald-500 to-teal-500 rounded-3xl blur opacity-20 group-hover:opacity-40 transition-opacity duration-300"></div>
-                    <div class="relative bg-white/60 backdrop-blur-xl border border-white/80 p-8 rounded-3xl shadow-xl hover:shadow-2xl transition-all duration-300 transform group-hover:-translate-y-2 flex flex-col items-center text-center h-full">
-                        <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-teal-100 to-emerald-100 border border-emerald-200 flex items-center justify-center mb-4 shadow-inner">
-                            <span class="text-2xl font-black text-emerald-700 font-outfit tracking-tighter">IWM</span>
-                        </div>
-                        <h3 class="text-xl font-black text-indigo-950 uppercase tracking-widest font-outfit">Russell 2000</h3>
-                        <p class="text-xs font-bold text-slate-500 mt-2 font-sans leading-relaxed">
-                            Discover the Top 5 meticulously backtested strategies for the Small Cap ETF, focused on mean reversion and volatility.
+                        <p class="text-[9.5px] sm:text-[10px] text-slate-600 font-medium leading-normal">
+                            Captures institutional Market-On-Close (MOC) flow at <strong>15:56 ET</strong> and exits at <strong>09:36 ET</strong> opening surge. Bypasses daytime chop and halves drawdowns with exponential Alpha.
                         </p>
-                        <div class="mt-6 px-4 py-1.5 bg-emerald-50 border border-emerald-100 rounded-full text-[10px] font-black text-emerald-600 uppercase tracking-widest mt-auto">
-                            View Journal ➔
+
+                        <!-- 4 Stat Badges Grid (Compact) -->
+                        <div class="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-center pt-0.5">
+                            <div class="bg-purple-50/80 border border-purple-100 p-1.5 rounded-lg">
+                                <span class="text-[7.5px] sm:text-[8px] font-black text-purple-600 uppercase tracking-wider block">Top 1Y Return</span>
+                                <span class="text-xs sm:text-[13px] font-black text-emerald-600 font-outfit block mt-0.5">+881.12%</span>
+                                <span class="text-[7px] font-semibold text-slate-400 block">SOXL (3x)</span>
+                            </div>
+                            <div class="bg-indigo-50/80 border border-indigo-100 p-1.5 rounded-lg">
+                                <span class="text-[7.5px] sm:text-[8px] font-black text-indigo-600 uppercase tracking-wider block">Avg 3X ROI</span>
+                                <span class="text-xs sm:text-[13px] font-black text-indigo-700 font-outfit block mt-0.5">+222.32%</span>
+                                <span class="text-[7px] font-semibold text-slate-400 block">5 Major ETFs</span>
+                            </div>
+                            <div class="bg-teal-50/80 border border-teal-100 p-1.5 rounded-lg">
+                                <span class="text-[7.5px] sm:text-[8px] font-black text-teal-600 uppercase tracking-wider block">Timing Window</span>
+                                <span class="text-[11px] sm:text-xs font-black text-slate-800 font-outfit block mt-0.5">15:56 ➔ 09:36</span>
+                                <span class="text-[7px] font-semibold text-slate-400 block">Close ➔ Open</span>
+                            </div>
+                            <div class="bg-rose-50/80 border border-rose-100 p-1.5 rounded-lg">
+                                <span class="text-[7.5px] sm:text-[8px] font-black text-rose-600 uppercase tracking-wider block">Drawdown</span>
+                                <span class="text-xs sm:text-[13px] font-black text-rose-600 font-outfit block mt-0.5">~50% Lower</span>
+                                <span class="text-[7px] font-semibold text-slate-400 block">vs Buy & Hold</span>
+                            </div>
+                        </div>
+
+                        <!-- Card Action Pill -->
+                        <div class="flex items-center justify-between pt-1.5 border-t border-purple-100/70">
+                            <span class="text-[8.5px] sm:text-[9px] font-semibold text-slate-500">Tap to inspect strategy & data matrix</span>
+                            <div class="px-3 py-1 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-full text-[9px] sm:text-[9.5px] font-black uppercase tracking-wider shadow-xs group-hover:shadow-indigo-500/20 group-hover:scale-102 transition-all flex items-center gap-1">
+                                <span>Explore Strategy</span>
+                                <span>➔</span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -349,655 +377,907 @@
         </div>
     </main>
 
-    <!-- ═══════════════ SPY STRATEGY MODAL ═══════════════ -->
-    <div id="spyModal" class="fixed inset-0 z-[100] hidden flex items-center justify-center p-4 sm:p-6 strategy-modal-overlay animate-in fade-in duration-200">
-        <!-- Close overlay -->
-        <div class="absolute inset-0 cursor-pointer" onclick="closeSpyModal()"></div>
+    <!-- ═══════════════ COMPACT SESSION RIDER FULL STRATEGY MODAL ═══════════════ -->
+    <div id="sessionRiderModal" class="fixed inset-0 z-[100] hidden flex items-center justify-center p-2 sm:p-3 strategy-modal-overlay animate-in fade-in duration-150">
+        <!-- Close overlay backdrop -->
+        <div class="absolute inset-0 cursor-pointer" onclick="closeSessionRiderModal()"></div>
         
-        <div class="relative w-full max-w-3xl strategy-modal rounded-3xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-300">
+        <div class="relative w-full max-w-2xl strategy-modal rounded-xl overflow-hidden shadow-xl flex flex-col max-h-[88vh] animate-in zoom-in-95 duration-200">
             <!-- Modal Header -->
-            <div class="bg-gradient-to-r from-fuchsia-100/90 to-purple-100/90 p-6 flex justify-between items-center border-b border-purple-200/50 relative z-10 backdrop-blur-xl">
-                <div>
-                    <h2 class="text-2xl font-black text-indigo-950 uppercase tracking-wider font-outfit">SPY Trading Journal</h2>
-                    <p class="text-xs font-bold text-purple-600 uppercase tracking-widest mt-1 font-sans">Backtested Strategy Setups</p>
+            <div class="bg-gradient-to-r from-fuchsia-100/95 via-purple-100/95 to-indigo-100/95 px-3 py-2 sm:px-3.5 sm:py-2.5 flex justify-between items-center border-b border-purple-200/60 relative z-10 backdrop-blur-xl">
+                <div class="flex items-center gap-2">
+                    <div class="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white shadow-xs">
+                        <span class="text-xs sm:text-sm">⚡</span>
+                    </div>
+                    <div>
+                        <div class="flex items-center gap-1.5">
+                            <h2 class="text-xs sm:text-sm font-black text-indigo-950 uppercase tracking-tight font-outfit">Session Rider</h2>
+                            <span class="px-1.5 py-0.2 bg-emerald-100 text-emerald-800 text-[8px] font-black uppercase tracking-wider rounded border border-emerald-300">✓ Alpaca SIP</span>
+                        </div>
+                        <p class="text-[8.5px] sm:text-[9px] font-bold text-purple-600 uppercase tracking-wider">Overnight Momentum & Institutional Auction Edge</p>
+                    </div>
                 </div>
-                <button onclick="closeSpyModal()" class="text-purple-600 hover:text-white transition-colors bg-white/80 hover:bg-white/80 p-2 rounded-xl">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>
+                <button onclick="closeSessionRiderModal()" class="text-purple-600 hover:text-white hover:bg-purple-600 transition-colors bg-white/90 p-1 rounded-lg shadow-xs border border-purple-200/60" title="Close">
+                    <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>
                 </button>
             </div>
 
-            <!-- Modal Body (Scrollable) -->
-            <div class="p-6 overflow-y-auto custom-scrollbar space-y-4 text-slate-700 font-sans relative z-10">
+            <!-- Modal Body (Scrollable, Compact) -->
+            <div class="p-2.5 sm:p-3 overflow-y-auto custom-scrollbar space-y-2.5 text-slate-700 font-sans relative z-10 text-[9.5px] sm:text-[10px]">
 
-                <!-- NEW: Strategy 0: 5-Min Pivot Quant (PCT Trailing Sniper) -->
-                <details class="strategy-details group bg-gradient-to-br from-indigo-50/90 via-purple-50/80 to-fuchsia-50/90 border-2 border-indigo-500/40 rounded-2xl overflow-hidden hover:border-indigo-500/70 transition-all shadow-[0_0_20px_rgba(99,102,241,0.15)] open">
-                    <summary class="strategy-summary p-5 cursor-pointer flex justify-between items-center outline-none">
-                        <div class="flex items-center gap-4">
-                            <div class="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl flex items-center justify-center border border-indigo-400 text-white shadow-md">
-                                <span class="text-xl">⚡</span>
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-black text-indigo-950 font-outfit tracking-wide flex items-center gap-2">Pivot Quant Sniper <span class="px-2 py-0.5 bg-indigo-600 text-white text-[9px] font-black uppercase rounded-sm shadow-sm">Institutional Quant</span></h3>
-                                <div class="flex gap-2 mt-1">
-                                    <span class="px-2 py-0.5 bg-indigo-100 text-indigo-700 text-[10px] font-black uppercase rounded-md">5-Min Chart</span>
-                                    <span class="px-2 py-0.5 bg-purple-100 text-purple-700 text-[10px] font-black uppercase rounded-md">3-DTE Options</span>
-                                    <span class="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] font-black uppercase rounded-md">+342.80% Return</span>
-                                </div>
-                            </div>
+                <!-- 1. "WHICH IS THE BEST OPTION FOR WHICH TICKER?" DECISION CENTER -->
+                <div class="bg-white/90 border border-purple-200/80 p-2.5 sm:p-3 rounded-lg shadow-xs space-y-2">
+                    <div class="border-b border-purple-100 pb-1">
+                        <h3 class="text-[11px] sm:text-xs font-black text-indigo-950 font-outfit uppercase tracking-tight flex items-center gap-1">
+                            <span>🎯</span> Which Option Should You Choose For Which Ticker?
+                        </h3>
+                        <p class="text-[8.5px] sm:text-[9px] font-semibold text-purple-600">
+                            Tap any ticker to see execution window, return comparison, and advice
+                        </p>
+                    </div>
+
+                    <!-- Ticker Selector Pill Bar -->
+                    <div class="flex flex-wrap gap-1 pt-0.5" id="tickerSelectorBar">
+                        <!-- Leveraged 3X Buttons -->
+                        <button onclick="selectTicker('SOXL')" id="pill-SOXL" class="ticker-pill active px-2 py-0.5 rounded-md text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider flex items-center gap-1 border border-purple-200 bg-white">
+                            <span class="w-1 h-1 rounded-full bg-emerald-400"></span> SOXL <span class="text-[7.5px] opacity-80">(+881%)</span>
+                        </button>
+                        <button onclick="selectTicker('TQQQ')" id="pill-TQQQ" class="ticker-pill px-2 py-0.5 rounded-md text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider flex items-center gap-1 border border-purple-200 bg-white">
+                            TQQQ <span class="text-[7.5px] opacity-80">(+80%)</span>
+                        </button>
+                        <button onclick="selectTicker('TNA')" id="pill-TNA" class="ticker-pill px-2 py-0.5 rounded-md text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider flex items-center gap-1 border border-purple-200 bg-white">
+                            TNA <span class="text-[7.5px] opacity-80">(+82%)</span>
+                        </button>
+                        <button onclick="selectTicker('UPRO')" id="pill-UPRO" class="ticker-pill px-2 py-0.5 rounded-md text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider flex items-center gap-1 border border-purple-200 bg-white">
+                            UPRO <span class="text-[7.5px] opacity-80">(+61%)</span>
+                        </button>
+                        <button onclick="selectTicker('UDOW')" id="pill-UDOW" class="ticker-pill px-2 py-0.5 rounded-md text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider flex items-center gap-1 border border-purple-200 bg-white">
+                            UDOW <span class="text-[7.5px] opacity-80">(+57%)</span>
+                        </button>
+                        <!-- Core 1X Buttons -->
+                        <button onclick="selectTicker('SOXX')" id="pill-SOXX" class="ticker-pill px-2 py-0.5 rounded-md text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider flex items-center gap-1 border border-purple-200 bg-white">
+                            SOXX (1X) <span class="text-[7.5px] opacity-80">(+150%)</span>
+                        </button>
+                        <button onclick="selectTicker('SPY')" id="pill-SPY" class="ticker-pill px-2 py-0.5 rounded-md text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider flex items-center gap-1 border border-purple-200 bg-white">
+                            SPY (1X) <span class="text-[7.5px] opacity-80">(+31%)</span>
+                        </button>
+                        <button onclick="selectTicker('QQQ')" id="pill-QQQ" class="ticker-pill px-2 py-0.5 rounded-md text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider flex items-center gap-1 border border-purple-200 bg-white">
+                            QQQ (1X) <span class="text-[7.5px] opacity-80">(+27%)</span>
+                        </button>
+                        <button onclick="selectTicker('IWM')" id="pill-IWM" class="ticker-pill px-2 py-0.5 rounded-md text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider flex items-center gap-1 border border-purple-200 bg-white">
+                            IWM (1X) <span class="text-[7.5px] opacity-80">(+26%)</span>
+                        </button>
+                        <button onclick="selectTicker('DIA')" id="pill-DIA" class="ticker-pill px-2 py-0.5 rounded-md text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider flex items-center gap-1 border border-purple-200 bg-white">
+                            DIA (1X) <span class="text-[7.5px] opacity-80">(+19%)</span>
+                        </button>
+                    </div>
+
+                    <!-- Dynamic Ticker Highlight Card -->
+                    <div id="dynamicTickerCard" class="bg-gradient-to-br from-purple-50/70 to-indigo-50/70 border border-indigo-200/80 p-2.5 rounded-lg shadow-xs transition-all duration-200">
+                        <!-- Populated dynamically via JS -->
+                    </div>
+
+                    <!-- 3 Profile Archetype Recommendation Cards (Compact) -->
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-1.5 pt-0.5">
+                        <div class="bg-white p-2 rounded-lg border border-purple-100 shadow-xs space-y-0.5">
+                            <span class="px-1 py-0.2 rounded text-[7.5px] font-black uppercase bg-rose-100 text-rose-700">Aggressive Alpha</span>
+                            <h4 class="text-[11px] font-black text-indigo-950 font-outfit">SOXL (3x Semis)</h4>
+                            <p class="text-[8.5px] sm:text-[9px] text-slate-600 leading-snug">
+                                <strong>Buy 15:56 ET ➔ Sell 09:36 ET</strong>. <strong>+881.12% 1Y Return</strong> (2.81 Sharpe). Halves B&H drawdown from -69.0% to -33.9%.
+                            </p>
+                            <button onclick="selectTicker('SOXL')" class="text-[8px] font-bold text-indigo-600 hover:text-indigo-800 underline block pt-0.5">Select SOXL ➔</button>
                         </div>
-                        <svg class="w-5 h-5 text-indigo-600 transition-transform duration-300 arrow-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
-                        </svg>
-                    </summary>
-                    <div class="p-5 pt-0 border-t border-indigo-200/50 mt-2">
-                        <div class="grid grid-cols-2 gap-4 text-sm mb-4 bg-white/80 p-4 rounded-xl border border-indigo-100/80 shadow-sm">
-                            <div><span class="text-indigo-600/80 uppercase text-[10px] font-black block">Asset Type</span><span class="font-bold text-indigo-950">1-DTE to 3-DTE ATM Options</span></div>
-                            <div><span class="text-indigo-600/80 uppercase text-[10px] font-black block">Entry Logic</span><span class="font-bold text-indigo-950">Pivot / Swing Resistance Rejections</span></div>
-                            <div><span class="text-indigo-600/80 uppercase text-[10px] font-black block">Exits (PCT Level)</span><span class="font-bold text-indigo-950">TP: +30% | SL: -15% | Trail: 10%</span></div>
-                            <div><span class="text-indigo-600/80 uppercase text-[10px] font-black block">Win Rate</span><span class="font-bold text-emerald-600">68.4%</span></div>
+
+                        <div class="bg-white p-2 rounded-lg border border-purple-100 shadow-xs space-y-0.5">
+                            <span class="px-1 py-0.2 rounded text-[7.5px] font-black uppercase bg-indigo-100 text-indigo-700">Balanced Tech</span>
+                            <h4 class="text-[11px] font-black text-indigo-950 font-outfit">TQQQ or UPRO</h4>
+                            <p class="text-[8.5px] sm:text-[9px] text-slate-600 leading-snug">
+                                <strong>Buy 15:56 ET ➔ Sell 09:38 ET</strong>. <strong>+79.62%</strong> (TQQQ) & <strong>+60.79%</strong> (UPRO). Cuts tech DD from -37.6% to -17.9%.
+                            </p>
+                            <button onclick="selectTicker('TQQQ')" class="text-[8px] font-bold text-indigo-600 hover:text-indigo-800 underline block pt-0.5">Select TQQQ ➔</button>
                         </div>
-                        <div class="bg-indigo-50/90 border-l-4 border-indigo-600 p-3.5 rounded-r-xl text-xs text-indigo-950 font-medium shadow-inner leading-relaxed">
-                            <strong class="text-indigo-700 font-bold block mb-1">AI Quant Analysis:</strong> 
-                            Traditional indicators lag 30 minutes on 5-minute charts. By entering on the first closing rejection candle at pre-calculated institutional Pivot ceilings ($R_1$) and utilizing a 10% algorithmic trailing ratchet, this setup captures explosive intraday option moves while locking in a 2-to-1 reward-to-risk ratio without hindsight.
+
+                        <div class="bg-white p-2 rounded-lg border border-purple-100 shadow-xs space-y-0.5">
+                            <span class="px-1 py-0.2 rounded text-[7.5px] font-black uppercase bg-emerald-100 text-emerald-700">Safe Capital 1X</span>
+                            <h4 class="text-[11px] font-black text-indigo-950 font-outfit">SPY, QQQ, or SOXX</h4>
+                            <p class="text-[8.5px] sm:text-[9px] text-slate-600 leading-snug">
+                                <strong>Buy 15:56 ET ➔ Sell 09:36 ET</strong>. <strong>+150.3%</strong> (SOXX), <strong>+31.3%</strong> (SPY). Minimal DD with steady outperformance.
+                            </p>
+                            <button onclick="selectTicker('SPY')" class="text-[8px] font-bold text-indigo-600 hover:text-indigo-800 underline block pt-0.5">Select SPY ➔</button>
                         </div>
                     </div>
-                </details>
+                </div>
 
-                <!-- Strategy 1: Options Sniper -->
-                <details class="strategy-details group bg-white/60 border border-purple-200/60 rounded-2xl overflow-hidden hover:bg-white/80 transition-colors">
-                    <summary class="strategy-summary p-5 cursor-pointer flex justify-between items-center outline-none">
-                        <div class="flex items-center gap-4">
-                            <div class="w-10 h-10 bg-purple-100 rounded-xl flex items-center justify-center border border-purple-400/30">
-                                <span class="text-xl">🚀</span>
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-black text-indigo-950 font-outfit tracking-wide">Options Sniper</h3>
-                                <div class="flex gap-2 mt-1">
-                                    <span class="px-2 py-0.5 bg-purple-100 text-purple-600 text-[10px] font-black uppercase rounded-md">1-Hour Chart</span>
-                                    <span class="px-2 py-0.5 bg-indigo-100 text-indigo-600 text-[10px] font-black uppercase rounded-md">+197.46% Return</span>
-                                </div>
-                            </div>
+                <!-- 2. WHY DOES IT WORK: THE 4 INSTITUTIONAL PILLARS -->
+                <div class="bg-white/90 border border-purple-200/80 p-2.5 sm:p-3 rounded-lg shadow-xs space-y-1.5">
+                    <div class="border-b border-purple-100 pb-1">
+                        <h3 class="text-[11px] sm:text-xs font-black text-indigo-950 font-outfit uppercase tracking-tight flex items-center gap-1">
+                            <span>🧠</span> Why Does Session Rider Beat Buy & Hold?
+                        </h3>
+                        <p class="text-[8.5px] sm:text-[9px] font-semibold text-purple-600">
+                            The quantitative structural edge explained in simple terms
+                        </p>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                        <div class="bg-purple-50/50 border border-purple-100 p-2 rounded-lg space-y-0.5">
+                            <h4 class="text-[10px] font-bold text-indigo-950 font-outfit flex items-center gap-1">
+                                <span class="w-3.5 h-3.5 rounded bg-indigo-600 text-white flex items-center justify-center text-[8px] font-black">1</span>
+                                MOC Inflow (15:50–15:58 ET)
+                            </h4>
+                            <p class="text-[8.5px] sm:text-[9px] text-slate-600 leading-snug">
+                                Index trackers execute massive rebalancing right before 16:00 ET. Buying at <strong>15:56 ET</strong> captures closing liquidity and markup impulse.
+                            </p>
                         </div>
-                        <svg class="w-5 h-5 text-purple-600 transition-transform duration-300 arrow-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
-                        </svg>
-                    </summary>
-                    <div class="p-5 pt-0 border-t border-slate-200/50 mt-2">
-                        <div class="grid grid-cols-2 gap-4 text-sm mb-4 bg-white/60 p-4 rounded-xl">
-                            <div><span class="text-purple-500/80 uppercase text-[10px] font-black block">Asset Type</span><span class="font-bold">60-DTE ATM Options</span></div>
-                            <div><span class="text-purple-500/80 uppercase text-[10px] font-black block">Entry Logic</span><span class="font-bold">SMA (21/200) + Supertrend (20/4.0)</span></div>
-                            <div><span class="text-purple-500/80 uppercase text-[10px] font-black block">Exits (ATR)</span><span class="font-bold">TP: 2.5 | SL: 1.5</span></div>
-                            <div><span class="text-purple-500/80 uppercase text-[10px] font-black block">Win Rate</span><span class="font-bold">51.1%</span></div>
+
+                        <div class="bg-purple-50/50 border border-purple-100 p-2 rounded-lg space-y-0.5">
+                            <h4 class="text-[10px] font-bold text-indigo-950 font-outfit flex items-center gap-1">
+                                <span class="w-3.5 h-3.5 rounded bg-purple-600 text-white flex items-center justify-center text-[8px] font-black">2</span>
+                                Overnight Earnings & News
+                            </h4>
+                            <p class="text-[8.5px] sm:text-[9px] text-slate-600 leading-snug">
+                                90% of earnings break after hours. In 10-year testing on IWM, <strong>Overnight returned +294.39%</strong> while <strong>Daytime lost -35.96%</strong>.
+                            </p>
                         </div>
-                        <div class="bg-purple-50 border-l-4 border-purple-500 p-3 rounded-r-xl text-xs text-purple-900 font-medium">
-                            <strong class="text-purple-600">AI Analysis:</strong> Options traders fail because they hold too long. By using a tight 2.5 ATR take profit, this strategy captures explosive 20-25% option returns in under 48 hours, eliminating Theta decay entirely.
+
+                        <div class="bg-purple-50/50 border border-purple-100 p-2 rounded-lg space-y-0.5">
+                            <h4 class="text-[10px] font-bold text-indigo-950 font-outfit flex items-center gap-1">
+                                <span class="w-3.5 h-3.5 rounded bg-emerald-600 text-white flex items-center justify-center text-[8px] font-black">3</span>
+                                Opening Continuation (09:30–09:36 ET)
+                            </h4>
+                            <p class="text-[8.5px] sm:text-[9px] text-slate-600 leading-snug">
+                                Exiting at 09:30 leaves money on table. Holding until <strong>09:36 ET</strong> captures the opening burst before midday chop.
+                            </p>
+                        </div>
+
+                        <div class="bg-purple-50/50 border border-purple-100 p-2 rounded-lg space-y-0.5">
+                            <h4 class="text-[10px] font-bold text-indigo-950 font-outfit flex items-center gap-1">
+                                <span class="w-3.5 h-3.5 rounded bg-rose-600 text-white flex items-center justify-center text-[8px] font-black">4</span>
+                                3X Volatility Decay Immunity
+                            </h4>
+                            <p class="text-[8.5px] sm:text-[9px] text-slate-600 leading-snug">
+                                Leveraged ETFs decay from choppy daytime hours. Holding purely overnight <strong>completely bypasses daytime chop</strong>, cutting DD in half.
+                            </p>
                         </div>
                     </div>
-                </details>
+                </div>
 
-                <!-- Strategy 2: Safe Bounce -->
-                <details class="strategy-details group bg-white/60 border border-amber-200/60 rounded-2xl overflow-hidden hover:bg-white/80 transition-colors">
-                    <summary class="strategy-summary p-5 cursor-pointer flex justify-between items-center outline-none">
-                        <div class="flex items-center gap-4">
-                            <div class="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center border border-amber-400/30">
-                                <span class="text-xl">🎯</span>
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-black text-indigo-950 font-outfit tracking-wide">Safe Bounce</h3>
-                                <div class="flex gap-2 mt-1">
-                                    <span class="px-2 py-0.5 bg-amber-100 text-amber-600 text-[10px] font-black uppercase rounded-md">15-Min Chart</span>
-                                    <span class="px-2 py-0.5 bg-emerald-100 text-emerald-600 text-[10px] font-black uppercase rounded-md">+829.43% Return</span>
-                                </div>
-                            </div>
+                <!-- 3. TABULAR DATA CENTER (FULL RESEARCH & BACKTEST TABLES) -->
+                <div class="bg-white/90 border border-purple-200/80 p-2.5 sm:p-3 rounded-lg shadow-xs space-y-1.5">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 border-b border-purple-100 pb-1">
+                        <div>
+                            <h3 class="text-[11px] sm:text-xs font-black text-indigo-950 font-outfit uppercase tracking-tight flex items-center gap-1">
+                                <span>📊</span> Tabular Data Center & Multi-Year Matrix
+                            </h3>
+                            <p class="text-[8.5px] sm:text-[9px] font-semibold text-purple-600">
+                                1-minute execution benchmarks and historical proof
+                            </p>
                         </div>
-                        <svg class="w-5 h-5 text-amber-300 transition-transform duration-300 arrow-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
-                        </svg>
-                    </summary>
-                    <div class="p-5 pt-0 border-t border-slate-200/50 mt-2">
-                        <div class="grid grid-cols-2 gap-4 text-sm mb-4 bg-white/60 p-4 rounded-xl">
-                            <div><span class="text-amber-600/80 uppercase text-[10px] font-black block">Asset Type</span><span class="font-bold">1-DTE Options (Scalping)</span></div>
-                            <div><span class="text-amber-600/80 uppercase text-[10px] font-black block">Entry Logic</span><span class="font-bold">Bollinger Bands (20/2) + RSI (<30)</span></div>
-                            <div><span class="text-amber-600/80 uppercase text-[10px] font-black block">Exits (ATR)</span><span class="font-bold">TP: 1.0 | SL: 0.5</span></div>
-                            <div><span class="text-amber-600/80 uppercase text-[10px] font-black block">Win Rate</span><span class="font-bold text-emerald-400">77.8%</span></div>
-                        </div>
-                        <div class="bg-amber-50 border-l-4 border-amber-500 p-3 rounded-r-xl text-xs text-amber-900 font-medium">
-                            <strong class="text-amber-300">AI Analysis:</strong> Trend-following fails intraday due to chop. Buying the bottom Bollinger Band when RSI is oversold and taking a microscopic 1.0 ATR profit wins nearly 80% of trades, holding for an average of just 24 minutes.
+
+                        <!-- Tab Buttons -->
+                        <div class="flex flex-wrap gap-0.5 bg-purple-50 p-0.5 rounded-md border border-purple-200/80 w-fit">
+                            <button onclick="switchTab('tab3x')" id="btn-tab3x" class="session-tab-btn active px-2 py-0.5 rounded text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider">
+                                3X ETFs
+                            </button>
+                            <button onclick="switchTab('tab1x')" id="btn-tab1x" class="session-tab-btn px-2 py-0.5 rounded text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider">
+                                1X Core
+                            </button>
+                            <button onclick="switchTab('tabCycles')" id="btn-tabCycles" class="session-tab-btn px-2 py-0.5 rounded text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider">
+                                10-Yr Cycles
+                            </button>
+                            <button onclick="switchTab('tabConsensus')" id="btn-tabConsensus" class="session-tab-btn px-2 py-0.5 rounded text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider">
+                                Consensus
+                            </button>
                         </div>
                     </div>
-                </details>
 
-                <!-- Strategy 3: 0-DTE Momentum -->
-                <details class="strategy-details group bg-white/60 border border-red-500/60 rounded-2xl overflow-hidden hover:bg-white/80 transition-colors shadow-[0_0_15px_rgba(239,68,68,0.2)]">
-                    <summary class="strategy-summary p-5 cursor-pointer flex justify-between items-center outline-none">
-                        <div class="flex items-center gap-4">
-                            <div class="w-10 h-10 bg-red-100 rounded-xl flex items-center justify-center border border-red-500">
-                                <span class="text-xl">⚠️</span>
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-black text-red-700 font-outfit tracking-wide flex items-center gap-2">0-DTE Momentum <span class="px-2 py-0.5 bg-red-600 text-white text-[9px] font-black uppercase rounded-sm animate-pulse">Extreme Volatility</span></h3>
-                                <div class="flex gap-2 mt-1">
-                                    <span class="px-2 py-0.5 bg-red-100 text-red-600 text-[10px] font-black uppercase rounded-md">5-Min Chart</span>
-                                    <span class="px-2 py-0.5 bg-red-600 text-white text-[10px] font-black uppercase rounded-md">+4,406.50% Return</span>
-                                </div>
-                            </div>
-                        </div>
-                        <svg class="w-5 h-5 text-red-500 transition-transform duration-300 arrow-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
-                        </svg>
-                    </summary>
-                    <div class="p-5 pt-0 border-t border-red-200/50 mt-2">
-                        <div class="grid grid-cols-2 gap-4 text-sm mb-4 bg-red-50/50 p-4 rounded-xl border border-red-100">
-                            <div><span class="text-red-600/80 uppercase text-[10px] font-black block">Asset Type</span><span class="font-bold text-red-950">0-DTE Options (Hyper-Scalping)</span></div>
-                            <div><span class="text-red-600/80 uppercase text-[10px] font-black block">Entry Logic</span><span class="font-bold text-red-950">BotBulls 3 (Institutional Block)</span></div>
-                            <div><span class="text-red-600/80 uppercase text-[10px] font-black block">Exits (ATR)</span><span class="font-bold text-red-950">TP: 1.0 | SL: 0.5</span></div>
-                            <div><span class="text-red-600/80 uppercase text-[10px] font-black block">Trade Cap</span><span class="font-bold text-red-950">$100 per trade</span></div>
-                        </div>
-                        <div class="bg-red-50 border-l-4 border-red-600 p-3 rounded-r-xl text-xs text-red-900 font-medium shadow-inner">
-                            <strong class="text-red-700 block mb-1">DANGER - EXPERT ONLY:</strong> 
-                            This strategy generates astronomical returns (turning $10k into $450k in 30 days with just a $100 trade cap) by riding 0-DTE gamma ramps. However, the portfolio swings are violently aggressive. A 0.08% move in SPY creates a 460% options swing. Do not trade this without strict BotBulls 3 Stop-Loss execution.
+                    <!-- TAB 1: 3X Leveraged ETFs Table -->
+                    <div id="tabContent-tab3x" class="space-y-1">
+                        <div class="session-table-container bg-white rounded-lg border border-purple-100 shadow-xs">
+                            <table class="w-full text-left border-collapse text-[8.5px] sm:text-[9px]">
+                                <thead>
+                                    <tr class="bg-purple-100/70 text-indigo-950 text-[8px] sm:text-[8.5px] font-black uppercase tracking-wider border-b border-purple-200">
+                                        <th class="p-1">Ticker</th>
+                                        <th class="p-1">Underlying</th>
+                                        <th class="p-1 text-center">Timing</th>
+                                        <th class="p-1 text-right">Strategy 1Y</th>
+                                        <th class="p-1 text-right">B&H 1Y</th>
+                                        <th class="p-1 text-right">Alpha</th>
+                                        <th class="p-1 text-right">Strategy DD</th>
+                                        <th class="p-1 text-right">B&H DD</th>
+                                        <th class="p-1 text-center">Sharpe</th>
+                                        <th class="p-1 text-center">Win Rate</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-purple-100 font-medium text-slate-700">
+                                    <tr class="hover:bg-purple-50/50 transition-colors">
+                                        <td class="p-1 font-black text-indigo-950 flex items-center gap-1"><span class="w-1 h-1 rounded-full bg-emerald-500"></span> SOXL</td>
+                                        <td class="p-1 text-slate-500 text-[8px]">3x Semis</td>
+                                        <td class="p-1 text-center font-bold text-purple-700 text-[8px]">15:56 ➔ 09:36</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+881.12%</td>
+                                        <td class="p-1 text-right text-slate-600">+234.69%</td>
+                                        <td class="p-1 text-right font-black text-emerald-700">+646.43%</td>
+                                        <td class="p-1 text-right font-bold text-rose-600">-33.92%</td>
+                                        <td class="p-1 text-right text-slate-400">-69.02%</td>
+                                        <td class="p-1 text-center font-bold text-indigo-700">2.81</td>
+                                        <td class="p-1 text-center font-semibold text-emerald-600">59.8%</td>
+                                    </tr>
+                                    <tr class="hover:bg-purple-50/50 transition-colors">
+                                        <td class="p-1 font-black text-indigo-950 flex items-center gap-1"><span class="w-1 h-1 rounded-full bg-blue-500"></span> TNA</td>
+                                        <td class="p-1 text-slate-500 text-[8px]">3x Russell</td>
+                                        <td class="p-1 text-center font-bold text-purple-700 text-[8px]">15:52 ➔ 09:38</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+81.56%</td>
+                                        <td class="p-1 text-right text-slate-600">+21.89%</td>
+                                        <td class="p-1 text-right font-black text-emerald-700">+59.67%</td>
+                                        <td class="p-1 text-right font-bold text-rose-600">-31.56%</td>
+                                        <td class="p-1 text-right text-slate-400">-33.54%</td>
+                                        <td class="p-1 text-center font-bold text-indigo-700">1.72</td>
+                                        <td class="p-1 text-center font-semibold text-emerald-600">53.8%</td>
+                                    </tr>
+                                    <tr class="hover:bg-purple-50/50 transition-colors">
+                                        <td class="p-1 font-black text-indigo-950 flex items-center gap-1"><span class="w-1 h-1 rounded-full bg-purple-500"></span> TQQQ</td>
+                                        <td class="p-1 text-slate-500 text-[8px]">3x QQQ</td>
+                                        <td class="p-1 text-center font-bold text-purple-700 text-[8px]">15:56 ➔ 09:38</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+79.62%</td>
+                                        <td class="p-1 text-right text-slate-600">+47.55%</td>
+                                        <td class="p-1 text-right font-black text-emerald-700">+32.08%</td>
+                                        <td class="p-1 text-right font-bold text-rose-600">-17.92%</td>
+                                        <td class="p-1 text-right text-slate-400">-37.61%</td>
+                                        <td class="p-1 text-center font-bold text-indigo-700">1.66</td>
+                                        <td class="p-1 text-center font-semibold text-emerald-600">55.8%</td>
+                                    </tr>
+                                    <tr class="hover:bg-purple-50/50 transition-colors">
+                                        <td class="p-1 font-black text-indigo-950 flex items-center gap-1"><span class="w-1 h-1 rounded-full bg-teal-500"></span> UPRO</td>
+                                        <td class="p-1 text-slate-500 text-[8px]">3x SPY</td>
+                                        <td class="p-1 text-center font-bold text-purple-700 text-[8px]">15:59 ➔ 09:38</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+60.79%</td>
+                                        <td class="p-1 text-right text-slate-600">+34.55%</td>
+                                        <td class="p-1 text-right font-black text-emerald-700">+26.24%</td>
+                                        <td class="p-1 text-right font-bold text-rose-600">-19.14%</td>
+                                        <td class="p-1 text-right text-slate-400">-27.56%</td>
+                                        <td class="p-1 text-center font-bold text-indigo-700">1.91</td>
+                                        <td class="p-1 text-center font-semibold text-emerald-600">57.0%</td>
+                                    </tr>
+                                    <tr class="hover:bg-purple-50/50 transition-colors">
+                                        <td class="p-1 font-black text-indigo-950 flex items-center gap-1"><span class="w-1 h-1 rounded-full bg-indigo-500"></span> UDOW</td>
+                                        <td class="p-1 text-slate-500 text-[8px]">3x Dow 30</td>
+                                        <td class="p-1 text-center font-bold text-purple-700 text-[8px]">15:59 ➔ 09:32</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+57.42%</td>
+                                        <td class="p-1 text-right text-slate-600">+19.61%</td>
+                                        <td class="p-1 text-right font-black text-emerald-700">+37.81%</td>
+                                        <td class="p-1 text-right font-bold text-rose-600">-22.18%</td>
+                                        <td class="p-1 text-right text-slate-400">-29.04%</td>
+                                        <td class="p-1 text-center font-bold text-indigo-700">1.82</td>
+                                        <td class="p-1 text-center font-semibold text-emerald-600">56.6%</td>
+                                    </tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
-                </details>
 
-                <!-- Strategy 4: Golden Trend -->
-                <details class="strategy-details group bg-white/60 border border-emerald-200/60 rounded-2xl overflow-hidden hover:bg-white/80 transition-colors">
-                    <summary class="strategy-summary p-5 cursor-pointer flex justify-between items-center outline-none">
-                        <div class="flex items-center gap-4">
-                            <div class="w-10 h-10 bg-emerald-100 rounded-xl flex items-center justify-center border border-emerald-400/30">
-                                <span class="text-xl">📈</span>
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-black text-indigo-950 font-outfit tracking-wide">Golden Trend</h3>
-                                <div class="flex gap-2 mt-1">
-                                    <span class="px-2 py-0.5 bg-emerald-100 text-emerald-600 text-[10px] font-black uppercase rounded-md">1-Hour Chart</span>
-                                    <span class="px-2 py-0.5 bg-indigo-100 text-indigo-600 text-[10px] font-black uppercase rounded-md">+19.12% Return</span>
-                                </div>
-                            </div>
-                        </div>
-                        <svg class="w-5 h-5 text-emerald-300 transition-transform duration-300 arrow-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
-                        </svg>
-                    </summary>
-                    <div class="p-5 pt-0 border-t border-slate-200/50 mt-2">
-                        <div class="grid grid-cols-2 gap-4 text-sm mb-4 bg-white/60 p-4 rounded-xl">
-                            <div><span class="text-emerald-600/80 uppercase text-[10px] font-black block">Asset Type</span><span class="font-bold">Underlying Shares (SPY)</span></div>
-                            <div><span class="text-emerald-600/80 uppercase text-[10px] font-black block">Entry Logic</span><span class="font-bold">SMA (21/200) + Supertrend (20/4.0)</span></div>
-                            <div><span class="text-emerald-600/80 uppercase text-[10px] font-black block">Exits (ATR)</span><span class="font-bold">TP: 10.0 | SL: 1.5</span></div>
-                            <div><span class="text-emerald-600/80 uppercase text-[10px] font-black block">Win Rate</span><span class="font-bold text-red-400">19.0%</span></div>
-                        </div>
-                        <div class="bg-emerald-50 border-l-4 border-emerald-500 p-3 rounded-r-xl text-xs text-emerald-900 font-medium">
-                            <strong class="text-emerald-300">AI Analysis:</strong> Because shares do not decay, you can hold for massive home runs. A low win rate is irrelevant when a single 10.0 ATR take-profit pays for six tiny 1.5 ATR stop-loss paper cuts.
+                    <!-- TAB 2: 1X Core Index ETFs Table -->
+                    <div id="tabContent-tab1x" class="space-y-1 hidden">
+                        <div class="session-table-container bg-white rounded-lg border border-purple-100 shadow-xs">
+                            <table class="w-full text-left border-collapse text-[8.5px] sm:text-[9px]">
+                                <thead>
+                                    <tr class="bg-indigo-100/70 text-indigo-950 text-[8px] sm:text-[8.5px] font-black uppercase tracking-wider border-b border-indigo-200">
+                                        <th class="p-1">Ticker</th>
+                                        <th class="p-1">Underlying</th>
+                                        <th class="p-1 text-center">Timing</th>
+                                        <th class="p-1 text-right">Strategy 1Y</th>
+                                        <th class="p-1 text-right">B&H 1Y</th>
+                                        <th class="p-1 text-right">Alpha</th>
+                                        <th class="p-1 text-right">Strategy DD</th>
+                                        <th class="p-1 text-right">B&H DD</th>
+                                        <th class="p-1 text-center">Sharpe</th>
+                                        <th class="p-1 text-center">Win Rate</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-purple-100 font-medium text-slate-700">
+                                    <tr class="hover:bg-purple-50/50 transition-colors">
+                                        <td class="p-1 font-black text-indigo-950">SOXX</td>
+                                        <td class="p-1 text-slate-500 text-[8px]">Semis (1X)</td>
+                                        <td class="p-1 text-center font-bold text-indigo-700 text-[8px]">15:56 ➔ 09:36</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+150.32%</td>
+                                        <td class="p-1 text-right text-slate-600">+93.65%</td>
+                                        <td class="p-1 text-right font-black text-emerald-700">+56.67%</td>
+                                        <td class="p-1 text-right font-bold text-rose-600">-10.13%</td>
+                                        <td class="p-1 text-right text-slate-400">-28.54%</td>
+                                        <td class="p-1 text-center font-bold text-indigo-700">2.91</td>
+                                        <td class="p-1 text-center font-semibold text-emerald-600">61.4%</td>
+                                    </tr>
+                                    <tr class="hover:bg-purple-50/50 transition-colors">
+                                        <td class="p-1 font-black text-indigo-950">SPY</td>
+                                        <td class="p-1 text-slate-500 text-[8px]">S&P 500 (1X)</td>
+                                        <td class="p-1 text-center font-bold text-indigo-700 text-[8px]">15:46 ➔ 09:40</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+31.31%</td>
+                                        <td class="p-1 text-right text-slate-600">+19.88%</td>
+                                        <td class="p-1 text-right font-black text-emerald-700">+11.43%</td>
+                                        <td class="p-1 text-right font-bold text-rose-600">-14.69%</td>
+                                        <td class="p-1 text-right text-slate-400">-19.88%</td>
+                                        <td class="p-1 text-center font-bold text-indigo-700">1.32</td>
+                                        <td class="p-1 text-center font-semibold text-emerald-600">56.2%</td>
+                                    </tr>
+                                    <tr class="hover:bg-purple-50/50 transition-colors">
+                                        <td class="p-1 font-black text-indigo-950">QQQ</td>
+                                        <td class="p-1 text-slate-500 text-[8px]">Nasdaq 100 (1X)</td>
+                                        <td class="p-1 text-center font-bold text-indigo-700 text-[8px]">15:56 ➔ 09:38</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+27.11%</td>
+                                        <td class="p-1 text-right text-slate-600">+22.29%</td>
+                                        <td class="p-1 text-right font-black text-emerald-700">+4.82%</td>
+                                        <td class="p-1 text-right font-bold text-rose-600">-5.95%</td>
+                                        <td class="p-1 text-right text-slate-400">-12.40%</td>
+                                        <td class="p-1 text-center font-bold text-indigo-700">1.85</td>
+                                        <td class="p-1 text-center font-semibold text-emerald-600">55.0%</td>
+                                    </tr>
+                                    <tr class="hover:bg-purple-50/50 transition-colors">
+                                        <td class="p-1 font-black text-indigo-950">IWM</td>
+                                        <td class="p-1 text-slate-500 text-[8px]">Russell 2000 (1X)</td>
+                                        <td class="p-1 text-center font-bold text-indigo-700 text-[8px]">15:55 ➔ 09:38</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+26.17%</td>
+                                        <td class="p-1 text-right text-slate-600">+13.12%</td>
+                                        <td class="p-1 text-right font-black text-emerald-700">+13.05%</td>
+                                        <td class="p-1 text-right font-bold text-rose-600">-11.60%</td>
+                                        <td class="p-1 text-right text-slate-400">-11.66%</td>
+                                        <td class="p-1 text-center font-bold text-indigo-700">1.87</td>
+                                        <td class="p-1 text-center font-semibold text-emerald-600">54.2%</td>
+                                    </tr>
+                                    <tr class="hover:bg-purple-50/50 transition-colors">
+                                        <td class="p-1 font-black text-indigo-950">DIA</td>
+                                        <td class="p-1 text-slate-500 text-[8px]">Dow 30 (1X)</td>
+                                        <td class="p-1 text-center font-bold text-indigo-700 text-[8px]">15:59 ➔ 09:32</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+19.00%</td>
+                                        <td class="p-1 text-right text-slate-600">+10.24%</td>
+                                        <td class="p-1 text-right font-black text-emerald-700">+8.76%</td>
+                                        <td class="p-1 text-right font-bold text-rose-600">-7.85%</td>
+                                        <td class="p-1 text-right text-slate-400">-10.39%</td>
+                                        <td class="p-1 text-center font-bold text-indigo-700">1.97</td>
+                                        <td class="p-1 text-center font-semibold text-emerald-600">57.4%</td>
+                                    </tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
-                </details>
 
-                <!-- Strategy 5: Macro Investor -->
-                <details class="strategy-details group bg-white/60 border border-blue-200/60 rounded-2xl overflow-hidden hover:bg-white/80 transition-colors">
-                    <summary class="strategy-summary p-5 cursor-pointer flex justify-between items-center outline-none">
-                        <div class="flex items-center gap-4">
-                            <div class="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center border border-blue-400/30">
-                                <span class="text-xl">🐢</span>
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-black text-indigo-950 font-outfit tracking-wide">Macro Investor</h3>
-                                <div class="flex gap-2 mt-1">
-                                    <span class="px-2 py-0.5 bg-blue-100 text-blue-600 text-[10px] font-black uppercase rounded-md">4-Hour Chart</span>
-                                    <span class="px-2 py-0.5 bg-blue-100 text-blue-600 text-[10px] font-black uppercase rounded-md">Hold: Months</span>
-                                </div>
-                            </div>
-                        </div>
-                        <svg class="w-5 h-5 text-blue-300 transition-transform duration-300 arrow-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
-                        </svg>
-                    </summary>
-                    <div class="p-5 pt-0 border-t border-slate-200/50 mt-2">
-                        <div class="grid grid-cols-2 gap-4 text-sm mb-4 bg-white/60 p-4 rounded-xl">
-                            <div><span class="text-blue-500/80 uppercase text-[10px] font-black block">Asset Type</span><span class="font-bold">Shares or LEAPS</span></div>
-                            <div><span class="text-blue-500/80 uppercase text-[10px] font-black block">Entry Logic</span><span class="font-bold">SMA (50/200) + Supertrend (10/3.0)</span></div>
-                            <div><span class="text-blue-500/80 uppercase text-[10px] font-black block">Exits (ATR)</span><span class="font-bold">TP: 10.0 | SL: 1.5</span></div>
-                            <div><span class="text-blue-500/80 uppercase text-[10px] font-black block">Frequency</span><span class="font-bold">1-2 per Quarter</span></div>
-                        </div>
-                        <div class="bg-blue-50 border-l-4 border-blue-500 p-3 rounded-r-xl text-xs text-blue-900 font-medium">
-                            <strong class="text-blue-300">AI Analysis:</strong> For the patient swing trader. Slowing down the SMA to the classic Golden Cross filters out 4-hour market noise, riding macroeconomic waves with incredible reliability.
+                    <!-- TAB 3: 10-Year Macro Cycles Table -->
+                    <div id="tabContent-tabCycles" class="space-y-1 hidden">
+                        <div class="session-table-container bg-white rounded-lg border border-purple-100 shadow-xs">
+                            <table class="w-full text-left border-collapse text-[8.5px] sm:text-[9px]">
+                                <thead>
+                                    <tr class="bg-amber-100/70 text-indigo-950 text-[8px] sm:text-[8.5px] font-black uppercase tracking-wider border-b border-amber-200">
+                                        <th class="p-1">Ticker</th>
+                                        <th class="p-1">Horizon</th>
+                                        <th class="p-1 text-right">Overnight</th>
+                                        <th class="p-1 text-right">Daytime</th>
+                                        <th class="p-1 text-right">B&H Total</th>
+                                        <th class="p-1 text-left">Empirical Finding</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-purple-100 font-medium text-slate-700">
+                                    <tr class="hover:bg-purple-50/50 transition-colors">
+                                        <td class="p-1 font-black text-indigo-950">IWM</td>
+                                        <td class="p-1 text-purple-700 font-bold text-[8px]">10 Yrs</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+294.39%</td>
+                                        <td class="p-1 text-right font-black text-rose-600">-35.96%</td>
+                                        <td class="p-1 text-right font-bold text-slate-600">+153.95%</td>
+                                        <td class="p-1 text-left text-slate-600 text-[8px] sm:text-[8.5px]">Overnight beat B&H by <strong>+140.4% Alpha</strong>. Daytime destroyed capital.</td>
+                                    </tr>
+                                    <tr class="hover:bg-purple-50/50 transition-colors">
+                                        <td class="p-1 font-black text-indigo-950">SOXX</td>
+                                        <td class="p-1 text-purple-700 font-bold text-[8px]">10 Yrs</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+1,139.96%</td>
+                                        <td class="p-1 text-right text-slate-500">+53.88%</td>
+                                        <td class="p-1 text-right font-bold text-slate-600">+1,791.25%</td>
+                                        <td class="p-1 text-left text-slate-600 text-[8px] sm:text-[8.5px]">Overnight generated <strong>21x more return</strong> than Daytime.</td>
+                                    </tr>
+                                    <tr class="hover:bg-purple-50/50 transition-colors">
+                                        <td class="p-1 font-black text-indigo-950">QQQ</td>
+                                        <td class="p-1 text-purple-700 font-bold text-[8px]">10 Yrs</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+241.43%</td>
+                                        <td class="p-1 text-right text-slate-500">+101.15%</td>
+                                        <td class="p-1 text-right font-bold text-slate-600">+586.48%</td>
+                                        <td class="p-1 text-left text-slate-600 text-[8px] sm:text-[8.5px]">Overnight generated <strong>2.4x more profit</strong> than Daytime.</td>
+                                    </tr>
+                                    <tr class="hover:bg-purple-50/50 transition-colors">
+                                        <td class="p-1 font-black text-indigo-950">SPY</td>
+                                        <td class="p-1 text-purple-700 font-bold text-[8px]">10 Yrs</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+123.26%</td>
+                                        <td class="p-1 text-right text-slate-500">+73.94%</td>
+                                        <td class="p-1 text-right font-bold text-slate-600">+287.31%</td>
+                                        <td class="p-1 text-left text-slate-600 text-[8px] sm:text-[8.5px]">Overnight generated <strong>1.7x more profit</strong> than Daytime.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
-                </details>
 
+                    <!-- TAB 4: Universal Consensus Timings -->
+                    <div id="tabContent-tabConsensus" class="space-y-1 hidden">
+                        <div class="session-table-container bg-white rounded-lg border border-purple-100 shadow-xs">
+                            <table class="w-full text-left border-collapse text-[8.5px] sm:text-[9px]">
+                                <thead>
+                                    <tr class="bg-emerald-100/70 text-indigo-950 text-[8px] sm:text-[8.5px] font-black uppercase tracking-wider border-b border-emerald-200">
+                                        <th class="p-1 text-center">Rank</th>
+                                        <th class="p-1 text-center">Buy Time</th>
+                                        <th class="p-1 text-center">Sell Time</th>
+                                        <th class="p-1 text-right">Avg 3X ROI</th>
+                                        <th class="p-1 text-right">Min 3X ROI</th>
+                                        <th class="p-1 text-right">Max 3X ROI</th>
+                                        <th class="p-1 text-right">Avg DD</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-purple-100 font-medium text-slate-700">
+                                    <tr class="hover:bg-emerald-50/50 transition-colors bg-emerald-50/30">
+                                        <td class="p-1 text-center font-black text-emerald-700 text-[8px]">👑 #1</td>
+                                        <td class="p-1 text-center font-bold text-slate-900">15:56 ET</td>
+                                        <td class="p-1 text-center font-bold text-slate-900">09:36 ET</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+222.32%</td>
+                                        <td class="p-1 text-right text-slate-600">+31.85%</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+881.12%</td>
+                                        <td class="p-1 text-right font-bold text-rose-600">-25.44%</td>
+                                    </tr>
+                                    <tr class="hover:bg-purple-50/50 transition-colors">
+                                        <td class="p-1 text-center font-black text-indigo-700 text-[8px]">#2</td>
+                                        <td class="p-1 text-center font-bold text-slate-900">15:55 ET</td>
+                                        <td class="p-1 text-center font-bold text-slate-900">09:36 ET</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+207.13%</td>
+                                        <td class="p-1 text-right text-slate-600">+27.68%</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+815.85%</td>
+                                        <td class="p-1 text-right font-bold text-rose-600">-25.48%</td>
+                                    </tr>
+                                    <tr class="hover:bg-purple-50/50 transition-colors">
+                                        <td class="p-1 text-center font-black text-indigo-700 text-[8px]">#3</td>
+                                        <td class="p-1 text-center font-bold text-slate-900">15:56 ET</td>
+                                        <td class="p-1 text-center font-bold text-slate-900">09:33 ET</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+203.33%</td>
+                                        <td class="p-1 text-right text-slate-600">+42.61%</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+769.80%</td>
+                                        <td class="p-1 text-right font-bold text-rose-600">-23.74%</td>
+                                    </tr>
+                                    <tr class="hover:bg-purple-50/50 transition-colors">
+                                        <td class="p-1 text-center font-black text-indigo-700 text-[8px]">#4</td>
+                                        <td class="p-1 text-center font-bold text-slate-900">15:56 ET</td>
+                                        <td class="p-1 text-center font-bold text-slate-900">09:38 ET</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+203.09%</td>
+                                        <td class="p-1 text-right text-slate-600">+41.71%</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+753.60%</td>
+                                        <td class="p-1 text-right font-bold text-rose-600">-26.75%</td>
+                                    </tr>
+                                    <tr class="hover:bg-purple-50/50 transition-colors">
+                                        <td class="p-1 text-center font-black text-indigo-700 text-[8px]">#5</td>
+                                        <td class="p-1 text-center font-bold text-slate-900">16:00 ET</td>
+                                        <td class="p-1 text-center font-bold text-slate-900">09:36 ET</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+199.47%</td>
+                                        <td class="p-1 text-right text-slate-600">+36.10%</td>
+                                        <td class="p-1 text-right font-black text-emerald-600 text-[9.5px] sm:text-[10px]">+783.33%</td>
+                                        <td class="p-1 text-right font-bold text-rose-600">-26.36%</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 4. STEP-BY-STEP PLAYBOOK -->
+                <div class="bg-white/90 border border-purple-200/80 p-2 sm:p-2.5 rounded-lg shadow-xs space-y-1.5">
+                    <h3 class="text-[11px] sm:text-xs font-black text-indigo-950 font-outfit uppercase tracking-tight flex items-center gap-1">
+                        <span>🚀</span> Step-by-Step Execution Playbook
+                    </h3>
+                    <div class="grid grid-cols-1 sm:grid-cols-4 gap-1.5 text-[8.5px] sm:text-[9px]">
+                        <div class="bg-purple-50/60 p-1.5 rounded-md border border-purple-100">
+                            <span class="font-black text-purple-600 block mb-0.5 text-[8.5px]">Step 1: Pick Ticker</span>
+                            <span class="text-slate-600">Choose <strong>SOXL</strong> / <strong>TQQQ</strong> for alpha, or <strong>SPY</strong> for safety.</span>
+                        </div>
+                        <div class="bg-purple-50/60 p-1.5 rounded-md border border-purple-100">
+                            <span class="font-black text-purple-600 block mb-0.5 text-[8.5px]">Step 2: Sync Clock</span>
+                            <span class="text-slate-600">Buy at <strong>15:56 ET</strong>, sell morning at <strong>09:36 ET</strong>.</span>
+                        </div>
+                        <div class="bg-purple-50/60 p-1.5 rounded-md border border-purple-100">
+                            <span class="font-black text-purple-600 block mb-0.5 text-[8.5px]">Step 3: Deploy Bot</span>
+                            <span class="text-slate-600">Connect to Alpaca and activate automated order execution.</span>
+                        </div>
+                        <div class="bg-purple-50/60 p-1.5 rounded-md border border-purple-100">
+                            <span class="font-black text-purple-600 block mb-0.5 text-[8.5px]">Step 4: 100% Cash Day</span>
+                            <span class="text-slate-600">Hold cash from 09:36 to 15:56 ET. Zero screen watching.</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 5. FAQ -->
+                <div class="bg-white/90 border border-purple-200/80 p-2 sm:p-2.5 rounded-lg shadow-xs space-y-1 text-[8.5px] sm:text-[9px]">
+                    <h3 class="text-[11px] sm:text-xs font-black text-indigo-950 font-outfit uppercase tracking-tight flex items-center gap-1 mb-0.5">
+                        <span>💡</span> Frequently Asked Questions
+                    </h3>
+                    <details class="bg-purple-50/50 border border-purple-100 p-1.5 rounded-md cursor-pointer">
+                        <summary class="font-bold text-indigo-950 flex justify-between items-center outline-none">
+                            <span>Why exit at 09:36 ET instead of 09:30 ET?</span>
+                            <span class="text-purple-600">▾</span>
+                        </summary>
+                        <p class="mt-0.5 text-slate-600 leading-snug">
+                            The opening bell generates a 5-6 minute momentum surge. Exiting at 09:36 ET captures this initial surge before midday chop begins.
+                        </p>
+                    </details>
+                </div>
+
+            </div>
+
+            <!-- Modal Footer -->
+            <div class="bg-purple-50/80 px-3 py-1.5 sm:px-3.5 sm:py-2 border-t border-purple-200/60 flex items-center justify-between">
+                <span class="text-[8.5px] font-semibold text-slate-500">Alpaca SIP Backtested</span>
+                <div class="flex items-center gap-1.5">
+                    <button onclick="closeSessionRiderModal()" class="px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-[8.5px] sm:text-[9px] font-bold uppercase tracking-wider transition-all">
+                        Close
+                    </button>
+                    <a href="bots.html?strategy=session_rider" class="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider shadow-xs transition-all">
+                        ⚡ Deploy in Active Bots
+                    </a>
+                </div>
             </div>
         </div>
     </div>
 
+    <div id="pageLoader" role="status" aria-live="polite"><img src="assets/bot_bulls_logo.png" alt="" width="48" height="48"><span>Refreshing…</span></div>
     
-<!-- ═══════════════ QQQ STRATEGY MODAL ═══════════════ -->
-    <div id="qqqModal" class="fixed inset-0 z-[100] hidden flex items-center justify-center p-4 sm:p-6 strategy-modal-overlay animate-in fade-in duration-200">
-        <!-- Close overlay -->
-        <div class="absolute inset-0 cursor-pointer" onclick="closeQqqModal()"></div>
-        
-        <div class="relative w-full max-w-3xl strategy-modal rounded-3xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-300">
-            <!-- Modal Header -->
-            <div class="bg-gradient-to-r from-fuchsia-100/90 to-purple-100/90 p-6 flex justify-between items-center border-b border-purple-200/50 relative z-10 backdrop-blur-xl">
-                <div>
-                    <h2 class="text-2xl font-black text-indigo-950 uppercase tracking-wider font-outfit">QQQ Trading Journal</h2>
-                    <p class="text-xs font-bold text-purple-600 uppercase tracking-widest mt-1 font-sans">Backtested Strategy Setups</p>
-                </div>
-                <button onclick="closeQqqModal()" class="text-purple-600 hover:text-white transition-colors bg-white/80 hover:bg-white/80 p-2 rounded-xl">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>
-                </button>
+    <footer class="mt-3 text-center text-[0.65rem] text-purple-400 font-black uppercase tracking-[0.25em] pb-4 border-t border-purple-100 pt-3 px-3">
+        <div class="flex flex-col items-center gap-1.5">
+            <div class="flex items-center gap-1.5">
+                <span class="h-1 w-1 rounded-full bg-purple-400 opacity-50"></span>
+                <p>Bot Bulls — Strategy Playbook</p>
+                <span class="h-1 w-1 rounded-full bg-purple-400 opacity-50"></span>
             </div>
-
-            <!-- Modal Body (Scrollable) -->
-            <div class="p-6 overflow-y-auto custom-scrollbar space-y-4 text-slate-700 font-sans relative z-10">
-
-                <!-- Strategy 1: Options Sniper -->
-                <details class="strategy-details group bg-white/60 border border-purple-200/60 rounded-2xl overflow-hidden hover:bg-white/80 transition-colors">
-                    <summary class="strategy-summary p-5 cursor-pointer flex justify-between items-center outline-none">
-                        <div class="flex items-center gap-4">
-                            <div class="w-10 h-10 bg-purple-100 rounded-xl flex items-center justify-center border border-purple-400/30">
-                                <span class="text-xl">🚀</span>
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-black text-indigo-950 font-outfit tracking-wide">Options Sniper</h3>
-                                <div class="flex gap-2 mt-1">
-                                    <span class="px-2 py-0.5 bg-purple-100 text-purple-600 text-[10px] font-black uppercase rounded-md">1-Hour Chart</span>
-                                    <span class="px-2 py-0.5 bg-indigo-100 text-indigo-600 text-[10px] font-black uppercase rounded-md">+197.46% Return</span>
-                                </div>
-                            </div>
-                        </div>
-                        <svg class="w-5 h-5 text-purple-600 transition-transform duration-300 arrow-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
-                        </svg>
-                    </summary>
-                    <div class="p-5 pt-0 border-t border-slate-200/50 mt-2">
-                        <div class="grid grid-cols-2 gap-4 text-sm mb-4 bg-white/60 p-4 rounded-xl">
-                            <div><span class="text-purple-500/80 uppercase text-[10px] font-black block">Asset Type</span><span class="font-bold">60-DTE ATM Options</span></div>
-                            <div><span class="text-purple-500/80 uppercase text-[10px] font-black block">Entry Logic</span><span class="font-bold">SMA (21/200) + Supertrend (20/4.0)</span></div>
-                            <div><span class="text-purple-500/80 uppercase text-[10px] font-black block">Exits (ATR)</span><span class="font-bold">TP: 2.5 | SL: 1.5</span></div>
-                            <div><span class="text-purple-500/80 uppercase text-[10px] font-black block">Win Rate</span><span class="font-bold">51.1%</span></div>
-                        </div>
-                        <div class="bg-purple-50 border-l-4 border-purple-500 p-3 rounded-r-xl text-xs text-purple-900 font-medium">
-                            <strong class="text-purple-600">AI Analysis:</strong> Options traders fail because they hold too long. By using a tight 2.5 ATR take profit, this strategy captures explosive 20-25% option returns in under 48 hours, eliminating Theta decay entirely.
-                        </div>
-                    </div>
-                </details>
-
-                <!-- Strategy 2: Safe Bounce -->
-                <details class="strategy-details group bg-white/60 border border-amber-200/60 rounded-2xl overflow-hidden hover:bg-white/80 transition-colors">
-                    <summary class="strategy-summary p-5 cursor-pointer flex justify-between items-center outline-none">
-                        <div class="flex items-center gap-4">
-                            <div class="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center border border-amber-400/30">
-                                <span class="text-xl">🎯</span>
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-black text-indigo-950 font-outfit tracking-wide">Safe Bounce</h3>
-                                <div class="flex gap-2 mt-1">
-                                    <span class="px-2 py-0.5 bg-amber-100 text-amber-600 text-[10px] font-black uppercase rounded-md">15-Min Chart</span>
-                                    <span class="px-2 py-0.5 bg-emerald-100 text-emerald-600 text-[10px] font-black uppercase rounded-md">+829.43% Return</span>
-                                </div>
-                            </div>
-                        </div>
-                        <svg class="w-5 h-5 text-amber-300 transition-transform duration-300 arrow-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
-                        </svg>
-                    </summary>
-                    <div class="p-5 pt-0 border-t border-slate-200/50 mt-2">
-                        <div class="grid grid-cols-2 gap-4 text-sm mb-4 bg-white/60 p-4 rounded-xl">
-                            <div><span class="text-amber-600/80 uppercase text-[10px] font-black block">Asset Type</span><span class="font-bold">1-DTE Options (Scalping)</span></div>
-                            <div><span class="text-amber-600/80 uppercase text-[10px] font-black block">Entry Logic</span><span class="font-bold">Bollinger Bands (20/2) + RSI (<30)</span></div>
-                            <div><span class="text-amber-600/80 uppercase text-[10px] font-black block">Exits (ATR)</span><span class="font-bold">TP: 1.0 | SL: 0.5</span></div>
-                            <div><span class="text-amber-600/80 uppercase text-[10px] font-black block">Win Rate</span><span class="font-bold text-emerald-400">77.8%</span></div>
-                        </div>
-                        <div class="bg-amber-50 border-l-4 border-amber-500 p-3 rounded-r-xl text-xs text-amber-900 font-medium">
-                            <strong class="text-amber-300">AI Analysis:</strong> Trend-following fails intraday due to chop. Buying the bottom Bollinger Band when RSI is oversold and taking a microscopic 1.0 ATR profit wins nearly 80% of trades, holding for an average of just 24 minutes.
-                        </div>
-                    </div>
-                </details>
-
-                <!-- Strategy 3: 0-DTE Momentum -->
-                <details class="strategy-details group bg-white/60 border border-red-500/60 rounded-2xl overflow-hidden hover:bg-white/80 transition-colors shadow-[0_0_15px_rgba(239,68,68,0.2)]">
-                    <summary class="strategy-summary p-5 cursor-pointer flex justify-between items-center outline-none">
-                        <div class="flex items-center gap-4">
-                            <div class="w-10 h-10 bg-red-100 rounded-xl flex items-center justify-center border border-red-500">
-                                <span class="text-xl">⚠️</span>
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-black text-red-700 font-outfit tracking-wide flex items-center gap-2">0-DTE Momentum <span class="px-2 py-0.5 bg-red-600 text-white text-[9px] font-black uppercase rounded-sm animate-pulse">Extreme Volatility</span></h3>
-                                <div class="flex gap-2 mt-1">
-                                    <span class="px-2 py-0.5 bg-red-100 text-red-600 text-[10px] font-black uppercase rounded-md">5-Min Chart</span>
-                                    <span class="px-2 py-0.5 bg-red-600 text-white text-[10px] font-black uppercase rounded-md">+4,406.50% Return</span>
-                                </div>
-                            </div>
-                        </div>
-                        <svg class="w-5 h-5 text-red-500 transition-transform duration-300 arrow-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
-                        </svg>
-                    </summary>
-                    <div class="p-5 pt-0 border-t border-red-200/50 mt-2">
-                        <div class="grid grid-cols-2 gap-4 text-sm mb-4 bg-red-50/50 p-4 rounded-xl border border-red-100">
-                            <div><span class="text-red-600/80 uppercase text-[10px] font-black block">Asset Type</span><span class="font-bold text-red-950">0-DTE Options (Hyper-Scalping)</span></div>
-                            <div><span class="text-red-600/80 uppercase text-[10px] font-black block">Entry Logic</span><span class="font-bold text-red-950">BotBulls 3 (Institutional Block)</span></div>
-                            <div><span class="text-red-600/80 uppercase text-[10px] font-black block">Exits (ATR)</span><span class="font-bold text-red-950">TP: 1.0 | SL: 0.5</span></div>
-                            <div><span class="text-red-600/80 uppercase text-[10px] font-black block">Trade Cap</span><span class="font-bold text-red-950">$100 per trade</span></div>
-                        </div>
-                        <div class="bg-red-50 border-l-4 border-red-600 p-3 rounded-r-xl text-xs text-red-900 font-medium shadow-inner">
-                            <strong class="text-red-700 block mb-1">DANGER - EXPERT ONLY:</strong> 
-                            This strategy generates astronomical returns (turning $10k into $450k in 30 days with just a $100 trade cap) by riding 0-DTE gamma ramps. However, the portfolio swings are violently aggressive. A 0.08% move in QQQ creates a 460% options swing. Do not trade this without strict BotBulls 3 Stop-Loss execution.
-                        </div>
-                    </div>
-                </details>
-
-                <!-- Strategy 4: Golden Trend -->
-                <details class="strategy-details group bg-white/60 border border-emerald-200/60 rounded-2xl overflow-hidden hover:bg-white/80 transition-colors">
-                    <summary class="strategy-summary p-5 cursor-pointer flex justify-between items-center outline-none">
-                        <div class="flex items-center gap-4">
-                            <div class="w-10 h-10 bg-emerald-100 rounded-xl flex items-center justify-center border border-emerald-400/30">
-                                <span class="text-xl">📈</span>
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-black text-indigo-950 font-outfit tracking-wide">Golden Trend</h3>
-                                <div class="flex gap-2 mt-1">
-                                    <span class="px-2 py-0.5 bg-emerald-100 text-emerald-600 text-[10px] font-black uppercase rounded-md">1-Hour Chart</span>
-                                    <span class="px-2 py-0.5 bg-indigo-100 text-indigo-600 text-[10px] font-black uppercase rounded-md">+19.12% Return</span>
-                                </div>
-                            </div>
-                        </div>
-                        <svg class="w-5 h-5 text-emerald-300 transition-transform duration-300 arrow-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
-                        </svg>
-                    </summary>
-                    <div class="p-5 pt-0 border-t border-slate-200/50 mt-2">
-                        <div class="grid grid-cols-2 gap-4 text-sm mb-4 bg-white/60 p-4 rounded-xl">
-                            <div><span class="text-emerald-600/80 uppercase text-[10px] font-black block">Asset Type</span><span class="font-bold">Underlying Shares (QQQ)</span></div>
-                            <div><span class="text-emerald-600/80 uppercase text-[10px] font-black block">Entry Logic</span><span class="font-bold">SMA (21/200) + Supertrend (20/4.0)</span></div>
-                            <div><span class="text-emerald-600/80 uppercase text-[10px] font-black block">Exits (ATR)</span><span class="font-bold">TP: 10.0 | SL: 1.5</span></div>
-                            <div><span class="text-emerald-600/80 uppercase text-[10px] font-black block">Win Rate</span><span class="font-bold text-red-400">19.0%</span></div>
-                        </div>
-                        <div class="bg-emerald-50 border-l-4 border-emerald-500 p-3 rounded-r-xl text-xs text-emerald-900 font-medium">
-                            <strong class="text-emerald-300">AI Analysis:</strong> Because shares do not decay, you can hold for massive home runs. A low win rate is irrelevant when a single 10.0 ATR take-profit pays for six tiny 1.5 ATR stop-loss paper cuts.
-                        </div>
-                    </div>
-                </details>
-
-                <!-- Strategy 5: Macro Investor -->
-                <details class="strategy-details group bg-white/60 border border-blue-200/60 rounded-2xl overflow-hidden hover:bg-white/80 transition-colors">
-                    <summary class="strategy-summary p-5 cursor-pointer flex justify-between items-center outline-none">
-                        <div class="flex items-center gap-4">
-                            <div class="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center border border-blue-400/30">
-                                <span class="text-xl">🐢</span>
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-black text-indigo-950 font-outfit tracking-wide">Macro Investor</h3>
-                                <div class="flex gap-2 mt-1">
-                                    <span class="px-2 py-0.5 bg-blue-100 text-blue-600 text-[10px] font-black uppercase rounded-md">4-Hour Chart</span>
-                                    <span class="px-2 py-0.5 bg-blue-100 text-blue-600 text-[10px] font-black uppercase rounded-md">Hold: Months</span>
-                                </div>
-                            </div>
-                        </div>
-                        <svg class="w-5 h-5 text-blue-300 transition-transform duration-300 arrow-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
-                        </svg>
-                    </summary>
-                    <div class="p-5 pt-0 border-t border-slate-200/50 mt-2">
-                        <div class="grid grid-cols-2 gap-4 text-sm mb-4 bg-white/60 p-4 rounded-xl">
-                            <div><span class="text-blue-500/80 uppercase text-[10px] font-black block">Asset Type</span><span class="font-bold">Shares or LEAPS</span></div>
-                            <div><span class="text-blue-500/80 uppercase text-[10px] font-black block">Entry Logic</span><span class="font-bold">SMA (50/200) + Supertrend (10/3.0)</span></div>
-                            <div><span class="text-blue-500/80 uppercase text-[10px] font-black block">Exits (ATR)</span><span class="font-bold">TP: 10.0 | SL: 1.5</span></div>
-                            <div><span class="text-blue-500/80 uppercase text-[10px] font-black block">Frequency</span><span class="font-bold">1-2 per Quarter</span></div>
-                        </div>
-                        <div class="bg-blue-50 border-l-4 border-blue-500 p-3 rounded-r-xl text-xs text-blue-900 font-medium">
-                            <strong class="text-blue-300">AI Analysis:</strong> For the patient swing trader. Slowing down the SMA to the classic Golden Cross filters out 4-hour market noise, riding macroeconomic waves with incredible reliability.
-                        </div>
-                    </div>
-                </details>
-
-            </div>
+            <p class="text-[0.6rem] text-rose-400/80 max-w-md normal-case tracking-normal">⚠️ Educational quantitative analysis built on historical Alpaca SIP data. Past results do not guarantee future returns.</p>
         </div>
-    </div>
+    </footer>
 
-    
-<!-- ═══════════════ IWM STRATEGY MODAL ═══════════════ -->
-    <div id="iwmModal" class="fixed inset-0 z-[100] hidden flex items-center justify-center p-4 sm:p-6 strategy-modal-overlay animate-in fade-in duration-200">
-        <!-- Close overlay -->
-        <div class="absolute inset-0 cursor-pointer" onclick="closeIwmModal()"></div>
-        
-        <div class="relative w-full max-w-3xl strategy-modal rounded-3xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-300">
-            <!-- Modal Header -->
-            <div class="bg-gradient-to-r from-fuchsia-100/90 to-purple-100/90 p-6 flex justify-between items-center border-b border-purple-200/50 relative z-10 backdrop-blur-xl">
-                <div>
-                    <h2 class="text-2xl font-black text-indigo-950 uppercase tracking-wider font-outfit">IWM Trading Journal</h2>
-                    <p class="text-xs font-bold text-purple-600 uppercase tracking-widest mt-1 font-sans">Backtested Strategy Setups</p>
-                </div>
-                <button onclick="closeIwmModal()" class="text-purple-600 hover:text-white transition-colors bg-white/80 hover:bg-white/80 p-2 rounded-xl">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>
-                </button>
-            </div>
-
-            <!-- Modal Body (Scrollable) -->
-            <div class="p-6 overflow-y-auto custom-scrollbar space-y-4 text-slate-700 font-sans relative z-10">
-
-                <!-- Strategy 1: Options Sniper -->
-                <details class="strategy-details group bg-white/60 border border-purple-200/60 rounded-2xl overflow-hidden hover:bg-white/80 transition-colors">
-                    <summary class="strategy-summary p-5 cursor-pointer flex justify-between items-center outline-none">
-                        <div class="flex items-center gap-4">
-                            <div class="w-10 h-10 bg-purple-100 rounded-xl flex items-center justify-center border border-purple-400/30">
-                                <span class="text-xl">🚀</span>
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-black text-indigo-950 font-outfit tracking-wide">Options Sniper</h3>
-                                <div class="flex gap-2 mt-1">
-                                    <span class="px-2 py-0.5 bg-purple-100 text-purple-600 text-[10px] font-black uppercase rounded-md">1-Hour Chart</span>
-                                    <span class="px-2 py-0.5 bg-indigo-100 text-indigo-600 text-[10px] font-black uppercase rounded-md">+197.46% Return</span>
-                                </div>
-                            </div>
-                        </div>
-                        <svg class="w-5 h-5 text-purple-600 transition-transform duration-300 arrow-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
-                        </svg>
-                    </summary>
-                    <div class="p-5 pt-0 border-t border-slate-200/50 mt-2">
-                        <div class="grid grid-cols-2 gap-4 text-sm mb-4 bg-white/60 p-4 rounded-xl">
-                            <div><span class="text-purple-500/80 uppercase text-[10px] font-black block">Asset Type</span><span class="font-bold">60-DTE ATM Options</span></div>
-                            <div><span class="text-purple-500/80 uppercase text-[10px] font-black block">Entry Logic</span><span class="font-bold">SMA (21/200) + Supertrend (20/4.0)</span></div>
-                            <div><span class="text-purple-500/80 uppercase text-[10px] font-black block">Exits (ATR)</span><span class="font-bold">TP: 2.5 | SL: 1.5</span></div>
-                            <div><span class="text-purple-500/80 uppercase text-[10px] font-black block">Win Rate</span><span class="font-bold">51.1%</span></div>
-                        </div>
-                        <div class="bg-purple-50 border-l-4 border-purple-500 p-3 rounded-r-xl text-xs text-purple-900 font-medium">
-                            <strong class="text-purple-600">AI Analysis:</strong> Options traders fail because they hold too long. By using a tight 2.5 ATR take profit, this strategy captures explosive 20-25% option returns in under 48 hours, eliminating Theta decay entirely.
-                        </div>
-                    </div>
-                </details>
-
-                <!-- Strategy 2: Safe Bounce -->
-                <details class="strategy-details group bg-white/60 border border-amber-200/60 rounded-2xl overflow-hidden hover:bg-white/80 transition-colors">
-                    <summary class="strategy-summary p-5 cursor-pointer flex justify-between items-center outline-none">
-                        <div class="flex items-center gap-4">
-                            <div class="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center border border-amber-400/30">
-                                <span class="text-xl">🎯</span>
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-black text-indigo-950 font-outfit tracking-wide">Safe Bounce</h3>
-                                <div class="flex gap-2 mt-1">
-                                    <span class="px-2 py-0.5 bg-amber-100 text-amber-600 text-[10px] font-black uppercase rounded-md">15-Min Chart</span>
-                                    <span class="px-2 py-0.5 bg-emerald-100 text-emerald-600 text-[10px] font-black uppercase rounded-md">+829.43% Return</span>
-                                </div>
-                            </div>
-                        </div>
-                        <svg class="w-5 h-5 text-amber-300 transition-transform duration-300 arrow-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
-                        </svg>
-                    </summary>
-                    <div class="p-5 pt-0 border-t border-slate-200/50 mt-2">
-                        <div class="grid grid-cols-2 gap-4 text-sm mb-4 bg-white/60 p-4 rounded-xl">
-                            <div><span class="text-amber-600/80 uppercase text-[10px] font-black block">Asset Type</span><span class="font-bold">1-DTE Options (Scalping)</span></div>
-                            <div><span class="text-amber-600/80 uppercase text-[10px] font-black block">Entry Logic</span><span class="font-bold">Bollinger Bands (20/2) + RSI (<30)</span></div>
-                            <div><span class="text-amber-600/80 uppercase text-[10px] font-black block">Exits (ATR)</span><span class="font-bold">TP: 1.0 | SL: 0.5</span></div>
-                            <div><span class="text-amber-600/80 uppercase text-[10px] font-black block">Win Rate</span><span class="font-bold text-emerald-400">77.8%</span></div>
-                        </div>
-                        <div class="bg-amber-50 border-l-4 border-amber-500 p-3 rounded-r-xl text-xs text-amber-900 font-medium">
-                            <strong class="text-amber-300">AI Analysis:</strong> Trend-following fails intraday due to chop. Buying the bottom Bollinger Band when RSI is oversold and taking a microscopic 1.0 ATR profit wins nearly 80% of trades, holding for an average of just 24 minutes.
-                        </div>
-                    </div>
-                </details>
-
-                <!-- Strategy 3: 0-DTE Momentum -->
-                <details class="strategy-details group bg-white/60 border border-red-500/60 rounded-2xl overflow-hidden hover:bg-white/80 transition-colors shadow-[0_0_15px_rgba(239,68,68,0.2)]">
-                    <summary class="strategy-summary p-5 cursor-pointer flex justify-between items-center outline-none">
-                        <div class="flex items-center gap-4">
-                            <div class="w-10 h-10 bg-red-100 rounded-xl flex items-center justify-center border border-red-500">
-                                <span class="text-xl">⚠️</span>
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-black text-red-700 font-outfit tracking-wide flex items-center gap-2">0-DTE Momentum <span class="px-2 py-0.5 bg-red-600 text-white text-[9px] font-black uppercase rounded-sm animate-pulse">Extreme Volatility</span></h3>
-                                <div class="flex gap-2 mt-1">
-                                    <span class="px-2 py-0.5 bg-red-100 text-red-600 text-[10px] font-black uppercase rounded-md">5-Min Chart</span>
-                                    <span class="px-2 py-0.5 bg-red-600 text-white text-[10px] font-black uppercase rounded-md">+4,406.50% Return</span>
-                                </div>
-                            </div>
-                        </div>
-                        <svg class="w-5 h-5 text-red-500 transition-transform duration-300 arrow-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
-                        </svg>
-                    </summary>
-                    <div class="p-5 pt-0 border-t border-red-200/50 mt-2">
-                        <div class="grid grid-cols-2 gap-4 text-sm mb-4 bg-red-50/50 p-4 rounded-xl border border-red-100">
-                            <div><span class="text-red-600/80 uppercase text-[10px] font-black block">Asset Type</span><span class="font-bold text-red-950">0-DTE Options (Hyper-Scalping)</span></div>
-                            <div><span class="text-red-600/80 uppercase text-[10px] font-black block">Entry Logic</span><span class="font-bold text-red-950">BotBulls 3 (Institutional Block)</span></div>
-                            <div><span class="text-red-600/80 uppercase text-[10px] font-black block">Exits (ATR)</span><span class="font-bold text-red-950">TP: 1.0 | SL: 0.5</span></div>
-                            <div><span class="text-red-600/80 uppercase text-[10px] font-black block">Trade Cap</span><span class="font-bold text-red-950">$100 per trade</span></div>
-                        </div>
-                        <div class="bg-red-50 border-l-4 border-red-600 p-3 rounded-r-xl text-xs text-red-900 font-medium shadow-inner">
-                            <strong class="text-red-700 block mb-1">DANGER - EXPERT ONLY:</strong> 
-                            This strategy generates astronomical returns (turning $10k into $450k in 30 days with just a $100 trade cap) by riding 0-DTE gamma ramps. However, the portfolio swings are violently aggressive. A 0.08% move in IWM creates a 460% options swing. Do not trade this without strict BotBulls 3 Stop-Loss execution.
-                        </div>
-                    </div>
-                </details>
-
-                <!-- Strategy 4: Golden Trend -->
-                <details class="strategy-details group bg-white/60 border border-emerald-200/60 rounded-2xl overflow-hidden hover:bg-white/80 transition-colors">
-                    <summary class="strategy-summary p-5 cursor-pointer flex justify-between items-center outline-none">
-                        <div class="flex items-center gap-4">
-                            <div class="w-10 h-10 bg-emerald-100 rounded-xl flex items-center justify-center border border-emerald-400/30">
-                                <span class="text-xl">📈</span>
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-black text-indigo-950 font-outfit tracking-wide">Golden Trend</h3>
-                                <div class="flex gap-2 mt-1">
-                                    <span class="px-2 py-0.5 bg-emerald-100 text-emerald-600 text-[10px] font-black uppercase rounded-md">1-Hour Chart</span>
-                                    <span class="px-2 py-0.5 bg-indigo-100 text-indigo-600 text-[10px] font-black uppercase rounded-md">+19.12% Return</span>
-                                </div>
-                            </div>
-                        </div>
-                        <svg class="w-5 h-5 text-emerald-300 transition-transform duration-300 arrow-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
-                        </svg>
-                    </summary>
-                    <div class="p-5 pt-0 border-t border-slate-200/50 mt-2">
-                        <div class="grid grid-cols-2 gap-4 text-sm mb-4 bg-white/60 p-4 rounded-xl">
-                            <div><span class="text-emerald-600/80 uppercase text-[10px] font-black block">Asset Type</span><span class="font-bold">Underlying Shares (IWM)</span></div>
-                            <div><span class="text-emerald-600/80 uppercase text-[10px] font-black block">Entry Logic</span><span class="font-bold">SMA (21/200) + Supertrend (20/4.0)</span></div>
-                            <div><span class="text-emerald-600/80 uppercase text-[10px] font-black block">Exits (ATR)</span><span class="font-bold">TP: 10.0 | SL: 1.5</span></div>
-                            <div><span class="text-emerald-600/80 uppercase text-[10px] font-black block">Win Rate</span><span class="font-bold text-red-400">19.0%</span></div>
-                        </div>
-                        <div class="bg-emerald-50 border-l-4 border-emerald-500 p-3 rounded-r-xl text-xs text-emerald-900 font-medium">
-                            <strong class="text-emerald-300">AI Analysis:</strong> Because shares do not decay, you can hold for massive home runs. A low win rate is irrelevant when a single 10.0 ATR take-profit pays for six tiny 1.5 ATR stop-loss paper cuts.
-                        </div>
-                    </div>
-                </details>
-
-                <!-- Strategy 5: Macro Investor -->
-                <details class="strategy-details group bg-white/60 border border-blue-200/60 rounded-2xl overflow-hidden hover:bg-white/80 transition-colors">
-                    <summary class="strategy-summary p-5 cursor-pointer flex justify-between items-center outline-none">
-                        <div class="flex items-center gap-4">
-                            <div class="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center border border-blue-400/30">
-                                <span class="text-xl">🐢</span>
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-black text-indigo-950 font-outfit tracking-wide">Macro Investor</h3>
-                                <div class="flex gap-2 mt-1">
-                                    <span class="px-2 py-0.5 bg-blue-100 text-blue-600 text-[10px] font-black uppercase rounded-md">4-Hour Chart</span>
-                                    <span class="px-2 py-0.5 bg-blue-100 text-blue-600 text-[10px] font-black uppercase rounded-md">Hold: Months</span>
-                                </div>
-                            </div>
-                        </div>
-                        <svg class="w-5 h-5 text-blue-300 transition-transform duration-300 arrow-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
-                        </svg>
-                    </summary>
-                    <div class="p-5 pt-0 border-t border-slate-200/50 mt-2">
-                        <div class="grid grid-cols-2 gap-4 text-sm mb-4 bg-white/60 p-4 rounded-xl">
-                            <div><span class="text-blue-500/80 uppercase text-[10px] font-black block">Asset Type</span><span class="font-bold">Shares or LEAPS</span></div>
-                            <div><span class="text-blue-500/80 uppercase text-[10px] font-black block">Entry Logic</span><span class="font-bold">SMA (50/200) + Supertrend (10/3.0)</span></div>
-                            <div><span class="text-blue-500/80 uppercase text-[10px] font-black block">Exits (ATR)</span><span class="font-bold">TP: 10.0 | SL: 1.5</span></div>
-                            <div><span class="text-blue-500/80 uppercase text-[10px] font-black block">Frequency</span><span class="font-bold">1-2 per Quarter</span></div>
-                        </div>
-                        <div class="bg-blue-50 border-l-4 border-blue-500 p-3 rounded-r-xl text-xs text-blue-900 font-medium">
-                            <strong class="text-blue-300">AI Analysis:</strong> For the patient swing trader. Slowing down the SMA to the classic Golden Cross filters out 4-hour market noise, riding macroeconomic waves with incredible reliability.
-                        </div>
-                    </div>
-                </details>
-
-            </div>
-        </div>
-    </div>
-
+    <!-- ═══════════════ SCRIPT LOGIC ═══════════════ -->
     <script>
-        function openSpyModal() {
-            const modal = document.getElementById('spyModal');
+        const TICKER_DATA = {
+            SOXL: {
+                ticker: "SOXL",
+                name: "Direxion Daily Semiconductor Bull 3X Shares",
+                index: "3x ICE Semiconductor Index (SOX)",
+                assetClass: "3X Leveraged ETF",
+                optimalBuy: "15:56 ET",
+                optimalSell: "09:36 ET",
+                strategyReturn: "+881.12%",
+                bhReturn: "+234.69%",
+                alpha: "+646.43%",
+                strategyDD: "-33.92%",
+                bhDD: "-69.02%",
+                sharpe: "2.81",
+                winRate: "59.8%",
+                recommendation: "Top Overall Choice for high-risk, exponential upside accounts. Captures after-hours semiconductor earnings drift (NVDA, TSM, AVGO) and skips brutal daytime chip volatility.",
+                badge: "👑 #1 Best Performer (+881%)"
+            },
+            TNA: {
+                ticker: "TNA",
+                name: "Direxion Daily Small Cap Bull 3X Shares",
+                index: "3x Russell 2000 Small-Cap Index",
+                assetClass: "3X Leveraged ETF",
+                optimalBuy: "15:52 ET",
+                optimalSell: "09:38 ET",
+                strategyReturn: "+81.56%",
+                bhReturn: "+21.89%",
+                alpha: "+59.67%",
+                strategyDD: "-31.56%",
+                bhDD: "-33.54%",
+                sharpe: "1.72",
+                winRate: "53.8%",
+                recommendation: "Best Small-Cap Strategy. Russell 2000 has severe daytime chop. Holding purely overnight extracts momentum while dodging daytime bleed.",
+                badge: "🚀 Small-Cap Winner (+81%)"
+            },
+            TQQQ: {
+                ticker: "TQQQ",
+                name: "ProShares UltraPro QQQ 3X Shares",
+                index: "3x Nasdaq-100 Index",
+                assetClass: "3X Leveraged ETF",
+                optimalBuy: "15:56 ET",
+                optimalSell: "09:38 ET",
+                strategyReturn: "+79.62%",
+                bhReturn: "+47.55%",
+                alpha: "+32.08%",
+                strategyDD: "-17.92%",
+                bhDD: "-37.61%",
+                sharpe: "1.66",
+                winRate: "55.8%",
+                recommendation: "Best Balanced 3X Tech Asset. Cuts the tech drawdown from -37.6% down to just -17.9% while doubling benchmark returns. Captures Big Tech after-hours earnings.",
+                badge: "💎 Balanced Tech (+80%)"
+            },
+            UPRO: {
+                ticker: "UPRO",
+                name: "ProShares UltraPro S&P 500 3X Shares",
+                index: "3x S&P 500 Index",
+                assetClass: "3X Leveraged ETF",
+                optimalBuy: "15:59 ET",
+                optimalSell: "09:38 ET",
+                strategyReturn: "+60.79%",
+                bhReturn: "+34.55%",
+                alpha: "+26.24%",
+                strategyDD: "-19.14%",
+                bhDD: "-27.56%",
+                sharpe: "1.91",
+                winRate: "57.0%",
+                recommendation: "Institutional Large-Cap Alpha. S&P 500 exposure with a 1.91 Sharpe ratio. Eliminates daytime noise while outperforming Buy & Hold by +26% Alpha.",
+                badge: "🏛️ Core Index Alpha (+61%)"
+            },
+            UDOW: {
+                ticker: "UDOW",
+                name: "ProShares UltraPro Dow 30 3X Shares",
+                index: "3x Dow Jones Industrial Average",
+                assetClass: "3X Leveraged ETF",
+                optimalBuy: "15:59 ET",
+                optimalSell: "09:32 ET",
+                strategyReturn: "+57.42%",
+                bhReturn: "+19.61%",
+                alpha: "+37.81%",
+                strategyDD: "-22.18%",
+                bhDD: "-29.04%",
+                sharpe: "1.82",
+                winRate: "56.6%",
+                recommendation: "Blue-Chip Defensive Leveraged. Almost 3x higher return than Buy & Hold (+57% vs +19%) with quick early morning exits at 09:32 ET.",
+                badge: "🛡️ Blue-Chip Alpha (+57%)"
+            },
+            SOXX: {
+                ticker: "SOXX",
+                name: "iShares Semiconductor ETF (1X Unleveraged)",
+                index: "ICE Semiconductor Index (SOX)",
+                assetClass: "1X Core Index ETF",
+                optimalBuy: "15:56 ET",
+                optimalSell: "09:36 ET",
+                strategyReturn: "+150.32%",
+                bhReturn: "+93.65%",
+                alpha: "+56.67%",
+                strategyDD: "-10.13%",
+                bhDD: "-28.54%",
+                sharpe: "2.91",
+                winRate: "61.4%",
+                recommendation: "Best Unleveraged Sector Pick. Outperformed Buy & Hold by +56.67% while slashing drawdown to only -10.13% (vs -28.54% B&H). Boasts a phenomenal 2.91 Sharpe Ratio.",
+                badge: "⚡ Top 1X Sector (+150%)"
+            },
+            SPY: {
+                ticker: "SPY",
+                name: "SPDR S&P 500 ETF Trust (1X Unleveraged)",
+                index: "S&P 500 Index",
+                assetClass: "1X Core Index ETF",
+                optimalBuy: "15:46 ET",
+                optimalSell: "09:40 ET",
+                strategyReturn: "+31.31%",
+                bhReturn: "+19.88%",
+                alpha: "+11.43%",
+                strategyDD: "-14.69%",
+                bhDD: "-19.88%",
+                sharpe: "1.32",
+                winRate: "56.2%",
+                recommendation: "Standard S&P 500 Benchmark Outperformance. 100% of SPY's 1-year gains occurred overnight. Strategy generated +31.31% vs B&H +19.88% with lower drawdown.",
+                badge: "🇺🇸 S&P 500 Workhorse (+31%)"
+            },
+            QQQ: {
+                ticker: "QQQ",
+                name: "Invesco QQQ Trust (1X Unleveraged)",
+                index: "Nasdaq-100 Index",
+                assetClass: "1X Core Index ETF",
+                optimalBuy: "15:56 ET",
+                optimalSell: "09:38 ET",
+                strategyReturn: "+27.11%",
+                bhReturn: "+22.29%",
+                alpha: "+4.82%",
+                strategyDD: "-5.95%",
+                bhDD: "-12.40%",
+                sharpe: "1.85",
+                winRate: "55.0%",
+                recommendation: "Ultra-Low Drawdown Tech Exposure. Cuts maximum drawdown down to an incredible -5.95% (less than half of B&H) while still delivering superior returns (+27.11%).",
+                badge: "🔒 Ultra-Low DD (-5.9%)"
+            },
+            IWM: {
+                ticker: "IWM",
+                name: "iShares Russell 2000 ETF (1X Unleveraged)",
+                index: "Russell 2000 Small-Cap Index",
+                assetClass: "1X Core Index ETF",
+                optimalBuy: "15:55 ET",
+                optimalSell: "09:38 ET",
+                strategyReturn: "+26.17%",
+                bhReturn: "+13.12%",
+                alpha: "+13.05%",
+                strategyDD: "-11.60%",
+                bhDD: "-11.66%",
+                sharpe: "1.87",
+                winRate: "54.2%",
+                recommendation: "Doubles Small-Cap Returns (+26.17% vs +13.12%). 10-year data shows overnight IWM is +294% while daytime lost -36%. An essential edge for small-cap traders.",
+                badge: "📈 2x Benchmark (+26%)"
+            },
+            DIA: {
+                ticker: "DIA",
+                name: "SPDR Dow Jones Industrial Average ETF (1X)",
+                index: "Dow Jones Industrial Average",
+                assetClass: "1X Core Index ETF",
+                optimalBuy: "15:59 ET",
+                optimalSell: "09:32 ET",
+                strategyReturn: "+19.00%",
+                bhReturn: "+10.24%",
+                alpha: "+8.76%",
+                strategyDD: "-7.85%",
+                bhDD: "-10.39%",
+                sharpe: "1.97",
+                winRate: "57.4%",
+                recommendation: "Conservative Blue-Chip Compounder. Delivers +19.00% ROI vs B&H +10.24% with a minimal -7.85% maximum drawdown and 1.97 Sharpe ratio.",
+                badge: "🏛️ Steady Compounder (+19%)"
+            }
+        };
+
+        function formatLocalTime(etTimeString) {
+            try {
+                const parts = etTimeString.replace(' ET', '').split(':');
+                const hours = parseInt(parts[0], 10);
+                const minutes = parseInt(parts[1], 10);
+                
+                const now = new Date();
+                const etNow = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
+                const diffMinutes = Math.round((now.getTime() - etNow.getTime()) / (60 * 1000));
+                
+                let localH = hours;
+                let localM = minutes + diffMinutes;
+                while (localM >= 60) { localH = (localH + 1) % 24; localM -= 60; }
+                while (localM < 0) { localH = (localH + 23) % 24; localM += 60; }
+                
+                const ampm = localH >= 12 ? 'PM' : 'AM';
+                const displayH = localH % 12 === 0 ? 12 : localH % 12;
+                const displayM = localM < 10 ? '0' + localM : localM;
+                const userTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+                const tzShort = userTz.split('/').pop().replace('_', ' ');
+                return `${displayH}:${displayM} ${ampm} (${tzShort})`;
+            } catch (e) {
+                return etTimeString;
+            }
+        }
+
+        function selectTicker(tickerKey) {
+            const data = TICKER_DATA[tickerKey];
+            if (!data) return;
+
+            document.querySelectorAll('.ticker-pill').forEach(btn => btn.classList.remove('active'));
+            const activePill = document.getElementById(`pill-${tickerKey}`);
+            if (activePill) activePill.classList.add('active');
+
+            const card = document.getElementById('dynamicTickerCard');
+            const localBuyTime = formatLocalTime(data.optimalBuy);
+            const localSellTime = formatLocalTime(data.optimalSell);
+
+            card.innerHTML = `
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 border-b border-purple-100 pb-1.5">
+                    <div>
+                        <div class="flex flex-wrap items-center gap-1 mb-0.5">
+                            <span class="px-1.5 py-0.2 rounded text-[8.5px] font-black uppercase tracking-wider bg-indigo-600 text-white font-outfit">
+                                ${data.ticker}
+                            </span>
+                            <span class="px-1.5 py-0.2 rounded text-[8px] font-bold uppercase bg-purple-100 text-purple-700">
+                                ${data.assetClass}
+                            </span>
+                            <span class="px-1.5 py-0.2 rounded text-[8px] font-black uppercase bg-emerald-100 text-emerald-800">
+                                ${data.badge}
+                            </span>
+                        </div>
+                        <h4 class="text-xs sm:text-[13px] font-black text-indigo-950 font-outfit">${data.name}</h4>
+                        <p class="text-[8.5px] sm:text-[9px] font-semibold text-slate-500">${data.index}</p>
+                    </div>
+
+                    <div class="flex items-center gap-1">
+                        <a href="bots.html?symbol=${data.ticker}&strategy=session_rider" class="px-2 py-0.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider shadow-xs transition-all whitespace-nowrap">
+                            ⚡ Deploy Bot
+                        </a>
+                        <a href="backtest.html?symbol=${data.ticker}&preset=session_rider" class="px-2 py-0.5 bg-white hover:bg-purple-50 text-purple-700 border border-purple-200 rounded text-[8.5px] sm:text-[9px] font-bold uppercase tracking-wider transition-all whitespace-nowrap">
+                            🔍 Backtest
+                        </a>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-1.5 my-1.5">
+                    <!-- Timing -->
+                    <div class="bg-white p-1.5 rounded-lg border border-indigo-100 space-y-0.5 shadow-xs">
+                        <span class="text-[7.5px] sm:text-[8px] font-black text-indigo-600 uppercase tracking-wider block">Optimal Timing</span>
+                        <div class="flex items-center justify-between text-[9px] sm:text-[9.5px]">
+                            <span class="text-slate-500 font-semibold">Buy Entry:</span>
+                            <div class="text-right">
+                                <span class="font-black text-indigo-950 block">${data.optimalBuy}</span>
+                                <span class="text-[7px] sm:text-[7.5px] text-slate-400 font-semibold">${localBuyTime}</span>
+                            </div>
+                        </div>
+                        <div class="flex items-center justify-between text-[9px] sm:text-[9.5px] pt-0.5 border-t border-indigo-50">
+                            <span class="text-slate-500 font-semibold">Sell Exit:</span>
+                            <div class="text-right">
+                                <span class="font-black text-indigo-950 block">${data.optimalSell}</span>
+                                <span class="text-[7px] sm:text-[7.5px] text-slate-400 font-semibold">${localSellTime}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Return -->
+                    <div class="bg-white p-1.5 rounded-lg border border-emerald-100 space-y-0.5 shadow-xs">
+                        <span class="text-[7.5px] sm:text-[8px] font-black text-emerald-600 uppercase tracking-wider block">1Y Return & Alpha</span>
+                        <div class="flex items-center justify-between text-[9px] sm:text-[9.5px]">
+                            <span class="text-slate-500 font-semibold">Strategy 1Y:</span>
+                            <span class="text-[11px] sm:text-xs font-black text-emerald-600 font-outfit">${data.strategyReturn}</span>
+                        </div>
+                        <div class="flex items-center justify-between text-[9px] sm:text-[9.5px]">
+                            <span class="text-slate-500 font-semibold">Buy & Hold:</span>
+                            <span class="text-slate-600 font-bold">${data.bhReturn}</span>
+                        </div>
+                        <div class="flex items-center justify-between text-[9px] sm:text-[9.5px] pt-0.5 border-t border-emerald-50">
+                            <span class="text-emerald-800 font-bold text-[8px]">Alpha Outperformance:</span>
+                            <span class="text-[8px] font-black text-emerald-700 bg-emerald-100 px-1 py-0.2 rounded">${data.alpha}</span>
+                        </div>
+                    </div>
+
+                    <!-- Risk -->
+                    <div class="bg-white p-1.5 rounded-lg border border-purple-100 space-y-0.5 shadow-xs">
+                        <span class="text-[7.5px] sm:text-[8px] font-black text-purple-600 uppercase tracking-wider block">Risk & Drawdown</span>
+                        <div class="flex items-center justify-between text-[9px] sm:text-[9.5px]">
+                            <span class="text-slate-500 font-semibold">Strategy Max DD:</span>
+                            <span class="font-black text-rose-600">${data.strategyDD}</span>
+                        </div>
+                        <div class="flex items-center justify-between text-[9px] sm:text-[9.5px]">
+                            <span class="text-slate-500 font-semibold">B&H Max DD:</span>
+                            <span class="text-slate-400 font-bold line-through">${data.bhDD}</span>
+                        </div>
+                        <div class="flex items-center justify-between text-[9px] sm:text-[9.5px] pt-0.5 border-t border-purple-50 text-[8px]">
+                            <span class="text-slate-600">Sharpe: <strong class="text-indigo-900">${data.sharpe}</strong></span>
+                            <span class="text-slate-600">Win Rate: <strong class="text-emerald-700">${data.winRate}</strong></span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-indigo-50/80 border-l-2 border-indigo-600 p-1.5 rounded-r-lg text-[8.5px] sm:text-[9px] text-indigo-950 font-medium leading-snug">
+                    <strong class="text-indigo-700 font-bold block mb-0.2">Quant Insight:</strong>
+                    ${data.recommendation}
+                </div>
+            `;
+        }
+
+        function switchTab(tabId) {
+            document.querySelectorAll('.session-tab-btn').forEach(btn => btn.classList.remove('active'));
+            const activeBtn = document.getElementById(`btn-${tabId}`);
+            if (activeBtn) activeBtn.classList.add('active');
+
+            ['tab3x', 'tab1x', 'tabCycles', 'tabConsensus'].forEach(id => {
+                const el = document.getElementById(`tabContent-${id}`);
+                if (el) {
+                    if (id === tabId) el.classList.remove('hidden');
+                    else el.classList.add('hidden');
+                }
+            });
+        }
+
+        function openSessionRiderModal() {
+            const modal = document.getElementById('sessionRiderModal');
+            if (!modal) return;
             modal.classList.remove('hidden');
             document.body.style.overflow = 'hidden';
+            selectTicker('SOXL');
         }
 
-        
-        function openQqqModal() {
-            const modal = document.getElementById('qqqModal');
-            if(modal) {
-                modal.classList.remove('hidden');
-                setTimeout(() => modal.classList.add('opacity-100'), 10);
-                document.body.style.overflow = 'hidden';
-            }
-        }
-        function closeQqqModal() {
-            const modal = document.getElementById('qqqModal');
-            if(modal) {
-                modal.classList.remove('opacity-100');
-                setTimeout(() => { modal.classList.add('hidden'); document.body.style.overflow = 'auto'; }, 200);
-            }
-        }
-        function openIwmModal() {
-            const modal = document.getElementById('iwmModal');
-            if(modal) {
-                modal.classList.remove('hidden');
-                setTimeout(() => modal.classList.add('opacity-100'), 10);
-                document.body.style.overflow = 'hidden';
-            }
-        }
-        function closeIwmModal() {
-            const modal = document.getElementById('iwmModal');
-            if(modal) {
-                modal.classList.remove('opacity-100');
-                setTimeout(() => { modal.classList.add('hidden'); document.body.style.overflow = 'auto'; }, 200);
-            }
-        }
-
-        function closeSpyModal() {
-            const modal = document.getElementById('spyModal');
+        function closeSessionRiderModal() {
+            const modal = document.getElementById('sessionRiderModal');
+            if (!modal) return;
             modal.classList.add('hidden');
             document.body.style.overflow = '';
         }
 
         // Close on Escape key
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && !document.getElementById('spyModal').classList.contains('hidden')) {
-                closeSpyModal();
+            if (e.key === 'Escape') {
+                closeSessionRiderModal();
             }
-            if (e.key === 'Escape' && !document.getElementById('qqqModal').classList.contains('hidden')) {
-                closeQqqModal();
-            }
-            if (e.key === 'Escape' && !document.getElementById('iwmModal').classList.contains('hidden')) {
-                closeIwmModal();
+        });
+
+        // Auto open if url param has ?open=session_rider
+        document.addEventListener('DOMContentLoaded', () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get('open') === 'session_rider') {
+                openSessionRiderModal();
             }
         });
     </script>
-    <script src="modal-scroll-lock.js?v=1"></script>
+
+    <script src="modal-scroll-lock.js?v=2"></script>
+    <script src="page-loader.js?v=2"></script>
 </body>
 </html>

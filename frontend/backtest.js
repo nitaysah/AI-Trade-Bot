@@ -40,98 +40,6 @@ function getBtCachedAIAnalysisForTicker(ticker, timeframe) {
     return typeof window.getCachedAIAnalysisForTicker === 'function' ? window.getCachedAIAnalysisForTicker(ticker, timeframe) : null;
 }
 
-function getBtCachedNewsAISentiment(mode = 'regular') {
-    const ticker = document.getElementById('btTicker')?.value || '';
-    const timeframe = document.getElementById(`strategyTimeframe_${mode}`)?.value
-        || document.getElementById('strategyTimeframe_regular')?.value
-        || '5Min';
-    const cached = getBtCachedAIAnalysisForTicker(ticker, timeframe);
-    const data = cached?.data;
-    if (!data) return null;
-    const score = normalizeBtCachedAISentimentScore(data.sentiment_score);
-    if (score === null) return null;
-    return {
-        score,
-        pct: Math.round(((score + 1.0) / 2.0) * 100),
-        reason: data.sentiment_key_factor || data.key_catalyst || 'Cached news sentiment',
-    };
-}
-
-function updateBacktestBotBulls4CachedBadge(mode = 'regular') {
-    const containerId = mode === 'options' ? 'indicatorChecksContainer_bt_options' : 'indicatorChecksContainer_bt_regular';
-    const container = document.getElementById(containerId);
-    if (!container) return;
-    const checkbox = container.querySelector('input[value="Botbulls4 News AI"]');
-    if (!checkbox) return;
-    const card = checkbox.closest('.indicator-card');
-    const textColumn = card?.querySelector('.flex.flex-col');
-    if (!card || !textColumn) return;
-
-    let badge = card.querySelector('.bt-news-ai-cache-badge');
-    if (checkbox.disabled) {
-        if (!badge) {
-            badge = document.createElement('span');
-            textColumn.appendChild(badge);
-        }
-        badge.className = 'bt-news-ai-cache-badge mt-1 text-[0.58rem] font-black uppercase tracking-widest rounded-full px-2 py-0.5 inline-flex w-fit border border-slate-200 bg-slate-50 text-slate-500';
-        badge.textContent = 'Live news only - disabled for backtest';
-        badge.title = 'BotBulls4 uses current live news sentiment, so it is not replayed in historical backtests.';
-        return;
-    }
-
-    if (!checkbox.checked) {
-        if (badge) badge.remove();
-        return;
-    }
-
-    const sentiment = getBtCachedNewsAISentiment(mode);
-    if (!badge) {
-        badge = document.createElement('span');
-        badge.className = 'bt-news-ai-cache-badge mt-1 text-[0.58rem] font-black uppercase tracking-widest rounded-full px-2 py-0.5 inline-flex w-fit border';
-        textColumn.appendChild(badge);
-    }
-
-    if (!sentiment) {
-        badge.className = 'bt-news-ai-cache-badge mt-1 text-[0.58rem] font-black uppercase tracking-widest rounded-full px-2 py-0.5 inline-flex w-fit border border-slate-200 bg-slate-50 text-slate-500';
-        badge.textContent = 'News AI: waiting for cache';
-        return;
-    }
-
-    const overrides = getIndicatorOverrides();
-    const bullishThresh = overrides.SENTIMENT_BULLISH_PERCENTAGE ?? window.BT_INDICATOR_DEFAULTS?.SENTIMENT_BULLISH_PERCENTAGE ?? 70;
-    const bearishThresh = overrides.SENTIMENT_BEARISH_PERCENTAGE ?? window.BT_INDICATOR_DEFAULTS?.SENTIMENT_BEARISH_PERCENTAGE ?? 30;
-    const tone = sentiment.pct >= bullishThresh
-        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-        : sentiment.pct <= bearishThresh
-            ? 'border-rose-200 bg-rose-50 text-rose-700'
-            : 'border-amber-200 bg-amber-50 text-amber-700';
-    badge.className = `bt-news-ai-cache-badge mt-1 text-[0.58rem] font-black uppercase tracking-widest rounded-full px-2 py-0.5 inline-flex w-fit border ${tone}`;
-    badge.textContent = `News AI cached: ${sentiment.pct}%`;
-    badge.title = sentiment.reason || '';
-}
-
-function updateBacktestBotBulls4CachedBadges(mode) {
-    if (mode) {
-        updateBacktestBotBulls4CachedBadge(mode);
-        return;
-    }
-    updateBacktestBotBulls4CachedBadge('regular');
-    updateBacktestBotBulls4CachedBadge('options');
-}
-
-function disableBacktestBotBulls4Indicator() {
-    ['regular', 'options'].forEach(mode => {
-        const containerId = mode === 'options' ? 'indicatorChecksContainer_bt_options' : 'indicatorChecksContainer_bt_regular';
-        const container = document.getElementById(containerId);
-        if (!container) return;
-        const checkbox = container.querySelector('input[value="Botbulls4 News AI"]');
-        if (!checkbox) return;
-        const card = checkbox.closest('.indicator-card');
-        card?.remove();
-    });
-}
-
-
 function isCrypto(ticker) {
     if (!ticker) return false;
     const t = ticker.toUpperCase();
@@ -465,6 +373,7 @@ function getBtRegularStrategyPayload() {
         trade_amount: parseFloat(document.getElementById('strategyTradeAmount_regular')?.value || '1000'),
         market_session: market.market_session,
         ext_hours: market.ext_hours,
+        ...(window.StrategyPreset ? window.StrategyPreset.collect() : {}),
         entry_atr_multiplier: parseFloat(document.getElementById('strategyEntryAtrMult_regular')?.value || '1.5'),
         entry_atr_style: document.getElementById('strategyEntryAtrStyle_regular')?.value || 'pullback_reclaim',
         entry_pct_move: parseFloat(document.getElementById('strategyEntryPctMove_regular')?.value || '2'),
@@ -511,7 +420,8 @@ function getBtRegularStrategyPayload() {
         custom_take_profit_price: parseFloat(document.getElementById('strategyCustomTakeProfitPrice_regular')?.value || '0'),
         enable_signal_reset: document.getElementById('strategyRegularSignalReset')?.checked || false,
         post_stop_stabilization_bars: Math.max(0, parseInt(document.getElementById('strategyPostStopBars_regular')?.value || '3', 10)),
-        max_consecutive_losses: Math.max(0, parseInt(document.getElementById('strategyMaxConsecutiveLosses_regular')?.value || '2', 10)),
+        // No loss-streak pause in backtests: every trade the strategy's own conditions allow is tested.
+        max_consecutive_losses: 0,
         enable_liquidity_filter: true,
         min_relative_volume: 0.10,
         enable_smart_reentry: document.getElementById('strategyRegularSmartReentry')?.checked || false,
@@ -550,7 +460,7 @@ function getBacktestWorkspaceShownSet(mode = 'regular', ticker = '') {
         || (typeof manualBtTicker !== 'undefined' ? manualBtTicker : '')
         || document.getElementById('btTicker')?.value
         || '';
-    const fallback = (window.STANDARD_INDICATOR_NAMES || []).slice(0, 12);
+    const fallback = (window.STANDARD_INDICATOR_NAMES || []).slice(0, 15);
     const shown = window.IndicatorWorkspace?.getShownForScope?.(contextLabel, activeTicker)
         || window.IndicatorWorkspace?.getShown?.(contextLabel)
         || fallback;
@@ -701,12 +611,7 @@ const MANUAL_BT_CHART_PREVIEW_INDICATORS = [
         'VWAP', 'Volume Profile', 'SMA', 'Prior Day High/Low',
         'Pivot Points (S/R)', 'Swing Points', 'Mystic Pulse', 'Candle Patterns',
     ]),
-    'BotBulls1',
-    'BotBulls2',
-    'BotBulls3',
-    'BotBulls5',
 ];
-const MANUAL_BT_PREMIUM_INDICATORS = new Set(['BotBulls1', 'BotBulls2', 'BotBulls3', 'BotBulls5']);
 const MANUAL_BT_INDICATOR_PREF_KEY = 'manualBacktestChartIndicatorsV1';
 const MANUAL_BT_DEFAULT_INDICATORS = new Set();
 const MANUAL_BT_REPLAY_CACHE_LIMIT = 8;
@@ -762,36 +667,6 @@ async function getAuthHeaders() {
     };
 }
 
-async function loadBacktestOllamaModels() {
-    const select = document.getElementById('btAiModel');
-    if (!select) return;
-    try {
-        const headers = await getAuthHeaders();
-        const res = await fetch(`${window.BACKTEST_API_BASE}/api/ollama/models`, { headers });
-        if (res.ok) {
-            const data = await res.json();
-            if (data.status === 'online' && data.models && data.models.length > 0) {
-                // Create an optgroup for Ollama models
-                const optGroup = document.createElement('optgroup');
-                optGroup.label = "Ollama (Local)";
-                
-                data.models.forEach(m => {
-                    const opt = document.createElement('option');
-                    opt.value = `ollama/${m}`;
-                    opt.textContent = m;
-                    optGroup.appendChild(opt);
-                });
-                select.appendChild(optGroup);
-                console.log(`[backtest] Loaded ${data.models.length} local Ollama models.`);
-            } else {
-                console.log('[backtest] Ollama offline or has no local models pulled.');
-            }
-        }
-    } catch (e) {
-        console.warn('[backtest] Failed to fetch Ollama models for backtester:', e);
-    }
-}
-
 // 1. Initialization
 function ensureDailyHighLowBacktestIndicatorCards() {
     const cards = [
@@ -799,7 +674,6 @@ function ensureDailyHighLowBacktestIndicatorCards() {
         { name: 'Prior Day High/Low', subtitle: 'Prior Session', settings: true },
         { name: 'Pivot Points (S/R)', subtitle: 'Pivot S/R', settings: true },
         { name: 'Swing Points', subtitle: 'Swing S/R', settings: true },
-        { name: 'BotBulls5', subtitle: 'Premium Pattern Predictor', settings: true, premium: true },
     ];
     [
         { mode: 'regular', containerId: 'indicatorChecksContainer_bt_regular', checkClass: 'bt-indicator-check-regular' },
@@ -879,7 +753,6 @@ function placeDailyHighLowBacktestIndicatorCards(container) {
 document.addEventListener('DOMContentLoaded', () => {
     window.AlpacaStatusCache?.render();
     ensureDailyHighLowBacktestIndicatorCards();
-    disableBacktestBotBulls4Indicator();
 
 window.syncBtDaysPreset = function(presetVal) {
     const input = document.getElementById('btDays');
@@ -951,7 +824,6 @@ window.syncBtDaysInput = function(rawVal) {
         window.updateBtOptionsExitFields?.();
         window.updateBtOptionsDirectionHint?.();
         window.updateBtDefaultCooldownLabel?.();
-        disableBacktestBotBulls4Indicator();
     }, 50);
 
     // Setup Ticker Search Dropdown
@@ -1104,9 +976,7 @@ window.syncBtDaysInput = function(rawVal) {
         if (window.auth && (window.auth.currentUser || localStorage.getItem('dev_mode') === 'true')) {
             clearInterval(checkAuth);
             await window.loadBacktestIndicatorSettings?.();
-            disableBacktestBotBulls4Indicator();
             pollAlpacaStatus();
-            loadBacktestOllamaModels();
             if (!alpacaStatusPollTimer) {
                 alpacaStatusPollTimer = setInterval(pollAlpacaStatus, 30000); // Check every 30s
             }
@@ -1120,7 +990,8 @@ async function pollAlpacaStatus() {
     const statusDot = document.getElementById('alpacaStatusDot');
     const statusText = document.getElementById('alpacaStatusText');
     const btnUnlink = document.getElementById('btnUnlinkAlpaca');
-    if (!statusPill) return;
+    // The header pill is gone (Alpaca status lives on the Bots page), but this call also keeps
+    // window.lastBacktestData (indicator parameters) current, so it still runs without the pill.
     if (window.AlpacaStatusCache?.isFresh()) {
         window.AlpacaStatusCache.render();
         return;
@@ -1138,17 +1009,21 @@ async function pollAlpacaStatus() {
             indicator_parameters: window.lastBacktestData?.indicator_parameters || {},
         };
         window.AlpacaStatusCache?.writeFromData(data);
+        if (!statusPill) return;
         if (window.AlpacaStatusCache?.render()) return;
 
+        // No Simulation pill in the header: when not linked, show Connect Alpaca instead
+        const redirectBtn = document.getElementById('alpacaLinkRedirectBtn');
         if (data.simulation) {
             if (data.has_keys) {
                 statusPill.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-amber-50 text-amber-600 border-2 border-amber-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
                 statusDot.className = "h-2 w-2 rounded-full mr-2 bg-amber-500 animate-pulse";
                 statusText.textContent = "RETRYING...";
+                if (redirectBtn) redirectBtn.classList.add('hidden');
             } else {
-                statusPill.className = "flex items-center justify-center h-9 text-xs font-black px-5 rounded-full bg-rose-50 text-rose-600 border-2 border-rose-100 shadow-sm whitespace-nowrap transition-all duration-500 uppercase tracking-wider";
-                statusDot.className = "h-2 w-2 rounded-full mr-2 bg-rose-500 animate-pulse";
-                statusText.textContent = "SIMULATION";
+                if (redirectBtn) redirectBtn.classList.remove('hidden');
+                statusPill.classList.add('hidden');
+                statusPill.style.display = '';
             }
             if (btnUnlink) btnUnlink.classList.add('hidden');
         } else {
@@ -1156,6 +1031,7 @@ async function pollAlpacaStatus() {
             statusDot.className = "h-2 w-2 rounded-full mr-2 bg-emerald-500 animate-pulse";
             statusText.textContent = "Alpaca";
             if (btnUnlink) btnUnlink.classList.remove('hidden');
+            if (redirectBtn) redirectBtn.classList.add('hidden');
         }
     } catch (e) {
         console.error('[backtest] Alpaca status check failed:', e);
@@ -1674,7 +1550,7 @@ function manualBtFormatVolume(value) {
 function manualBtSeededIndicatorPrefs() {
     const prefs = {};
     MANUAL_BT_CHART_PREVIEW_INDICATORS.forEach(name => {
-        if (name !== 'Botbulls4 News AI') prefs[name] = false;
+        prefs[name] = false;
     });
     MANUAL_BT_DEFAULT_INDICATORS.forEach(name => {
         if (Object.prototype.hasOwnProperty.call(prefs, name)) prefs[name] = true;
@@ -1689,7 +1565,6 @@ function manualBtIndicatorPrefs() {
             const parsed = JSON.parse(raw);
             const seeded = manualBtSeededIndicatorPrefs();
             MANUAL_BT_CHART_PREVIEW_INDICATORS.forEach(name => {
-                if (name === 'Botbulls4 News AI') return;
                 if (Object.prototype.hasOwnProperty.call(parsed || {}, name)) {
                     seeded[name] = parsed[name] === true;
                 }
@@ -1758,8 +1633,7 @@ function manualBtSelectedIndicators() {
     const mode = typeof currentBtMode !== 'undefined' && currentBtMode === 'options' ? 'options' : 'regular';
     return MANUAL_BT_CHART_PREVIEW_INDICATORS
         .filter(name => (
-            name !== 'Botbulls4 News AI'
-            && prefs[name] === true
+            prefs[name] === true
             && isBacktestIndicatorAllowed(name, mode, manualBtTicker)
         ));
 }
@@ -2384,36 +2258,12 @@ function manualBtRenderOverlays(history) {
             manualBtAddLabeledLine(`swing_resistance_${level}`, manualBtSegmentedLineData(history, `swing_resistance_${level}`), { color: level === 1 ? '#dc2626' : 'rgba(220,38,38,0.72)', lineWidth: level === 1 ? 3 : 2, lineStyle: level === 1 ? 1 : 2 }, `SW R${level}`);
         });
     }
-    if (enabled.has('BotBulls2')) {
-        manualBtAddLine('lx_smart_trail', (history || [])
-            .filter(bar => bar && Number.isFinite(Number(bar.lx_smart_trail)))
-            .map(bar => ({
-                time: Number(bar.time),
-                value: Number(bar.lx_smart_trail),
-                color: bar.lx_smart_trend ? '#10b981' : '#ef4444'
-            })), { lineWidth: 2.5, lineType: 0 });
-        manualBtAddLine('lx_trend_tracer', manualBtLineData(history, 'lx_trend_tracer'), { color: '#8b5cf6', lineWidth: 1.5 });
-        manualBtAddLine('lx_rz_upper', manualBtLineData(history, 'lx_rz_upper'), { color: '#f59e0b', lineWidth: 1, lineStyle: 1 });
-        manualBtAddLine('lx_rz_lower', manualBtLineData(history, 'lx_rz_lower'), { color: '#ec4899', lineWidth: 1, lineStyle: 1 });
-    }
-    if (enabled.has('BotBulls3')) {
-        manualBtAddLine('ut_trail', (history || [])
-            .filter(bar => bar && Number.isFinite(Number(bar.ut_trail)))
-            .map(bar => ({
-                time: Number(bar.time),
-                value: Number(bar.ut_trail),
-                color: bar.ut_above ? '#0ea5e9' : '#f43f5e'
-            })), { lineWidth: 2.5, lineType: 0 });
-    }
     (window.STANDARD_EXTENSION_OVERLAYS || []).forEach(definition => {
         if (!enabled.has(definition.name)) return;
         definition.series.forEach(spec => {
             const overlayParameters = spec.shiftPeriodsKey ? {
                 [spec.shiftPeriodsKey]: manualBtIndicatorParamValue(spec.shiftPeriodsKey, spec.shiftPeriodsFallback || 0),
             } : {};
-            if (definition.name === 'BotBulls5') {
-                overlayParameters.rolling24Hours = isCrypto(manualBtTicker || '');
-            }
             const overlayData = window.StandardIndicatorSubcharts?.buildOverlayData
                 ? window.StandardIndicatorSubcharts.buildOverlayData(history, spec, overlayParameters)
                 : manualBtLineData(history, spec.field);
@@ -2427,18 +2277,6 @@ function manualBtRenderOverlays(history) {
             });
         });
     });
-    if (enabled.has('BotBulls5')) {
-        const drawingLayers = window.StandardIndicatorSubcharts?.buildBotBulls5PatternDrawing?.(history, {
-            rolling24Hours: isCrypto(manualBtTicker || ''),
-        }) || [];
-        drawingLayers.forEach(layer => {
-            manualBtAddLine(`bb5_drawing_${layer.key}`, layer.data, {
-                color: layer.color,
-                lineWidth: layer.lineWidth || 2,
-                lineStyle: layer.lineStyle || 0,
-            });
-        });
-    }
     manualBtVolumeProfileOverlay?.setCandles(history);
     manualBtVolumeProfileOverlay?.setProfile(
         manualBtVolumeProfile,
@@ -2449,57 +2287,12 @@ function manualBtRenderOverlays(history) {
 function manualBtMarkers(history) {
     const enabled = new Set(manualBtSelectedIndicators());
     const markers = [];
-    const botBulls5VisibleTimes = enabled.has('BotBulls5')
-        ? (window.StandardIndicatorSubcharts?.botBulls5RecentEventTimes
-            ? window.StandardIndicatorSubcharts.botBulls5RecentEventTimes(history, {
-                rolling24Hours: isCrypto(manualBtTicker || ''),
-            })
-            : new Set(history.map(bar => Number(bar?.time)).filter(Number.isFinite)))
-        : new Set();
     for (let i = 1; i < history.length; i += 1) {
         const prev = history[i - 1], curr = history[i];
         if (enabled.has('Supertrend') && curr.supertrend != null && prev.supertrend != null) {
             const c = btIsSupertrendBullish(curr), p = btIsSupertrendBullish(prev);
             if (c && !p) markers.push({ time: Number(curr.time), position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: 'ST Buy', size: 1 });
             else if (!c && p) markers.push({ time: Number(curr.time), position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: 'ST Sell', size: 1 });
-        }
-        if (enabled.has('BotBulls1')) {
-            if (curr.ba1_buy) markers.push({ time: Number(curr.time), position: 'belowBar', color: '#06b6d4', shape: 'arrowUp', text: 'BB1 BUY', size: 1 });
-            if (curr.ba1_sell) markers.push({ time: Number(curr.time), position: 'aboveBar', color: '#f43f5e', shape: 'arrowDown', text: 'BB1 SELL', size: 1 });
-        }
-        if (enabled.has('BotBulls2')) {
-            if (curr.lx_smart_trail != null && prev.lx_smart_trail != null && curr.lx_smart_trend && !prev.lx_smart_trend) {
-                markers.push({ time: Number(curr.time), position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: 'BB2 BUY', size: 1 });
-            } else if (curr.lx_smart_trail != null && prev.lx_smart_trail != null && !curr.lx_smart_trend && prev.lx_smart_trend) {
-                markers.push({ time: Number(curr.time), position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: 'BB2 SELL', size: 1 });
-            }
-        }
-        if (enabled.has('BotBulls3')) {
-            if (curr.ut_trail != null && prev.ut_trail != null && curr.ut_above && !prev.ut_above) {
-                markers.push({ time: Number(curr.time), position: 'belowBar', color: '#0ea5e9', shape: 'arrowUp', text: 'BB3 BUY', size: 1.2 });
-            } else if (curr.ut_trail != null && prev.ut_trail != null && !curr.ut_above && prev.ut_above) {
-                markers.push({ time: Number(curr.time), position: 'aboveBar', color: '#f43f5e', shape: 'arrowDown', text: 'BB3 SELL', size: 1.2 });
-            }
-        }
-        if (enabled.has('BotBulls5') && botBulls5VisibleTimes.has(Number(curr.time))) {
-            if (curr.bb5_breakout_bull) {
-                markers.push({ time: Number(curr.time), position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: `BB5 ${String(curr.bb5_pattern || 'Bull').replaceAll('_', ' ')}`, size: 1.2 });
-            } else if (curr.bb5_breakout_bear) {
-                markers.push({ time: Number(curr.time), position: 'aboveBar', color: '#f43f5e', shape: 'arrowDown', text: `BB5 ${String(curr.bb5_pattern || 'Bear').replaceAll('_', ' ')}`, size: 1.2 });
-            }
-        }
-    }
-    if (enabled.has('BotBulls5')) {
-        const latestPattern = history.at(-1);
-        if (latestPattern?.bb5_state === 'FORMING') {
-            markers.push({
-                time: Number(latestPattern.time),
-                position: Number(latestPattern.bb5_direction) < 0 ? 'aboveBar' : 'belowBar',
-                color: '#f59e0b',
-                shape: 'circle',
-                text: `BB5 ${String(latestPattern.bb5_pattern).replaceAll('_', ' ')} FORMING`,
-                size: 1,
-            });
         }
     }
     if (enabled.has('Candle Patterns')) {
@@ -2508,6 +2301,12 @@ function manualBtMarkers(history) {
         }) || [];
         markers.push(...candlePatternMarkers);
     }
+    if (enabled.has('Chart Patterns')) {
+        markers.push(...(window.StandardIndicatorSubcharts?.buildChartPatternMarkers?.(history, {
+            rolling24Hours: isCrypto(manualBtTicker || ''),
+        }) || []));
+    }
+    markers.push(...(window.StandardIndicatorSubcharts?.buildFlipMarkers?.(history, enabled) || []));
     if (manualBtTrade.entry) {
         markers.push({ time: Number(manualBtTrade.entry.time), position: 'belowBar', color: '#111827', shape: 'arrowUp', text: `Entry $${manualBtFormatPrice(manualBtTrade.entry.price)}`, size: 2 });
     }
@@ -2612,18 +2411,20 @@ function manualBtStatusFor(indicator, bar) {
             : bear >= threshold ? { signal: 'BEARISH', reason: `Strength ${Math.round(bear)}/${threshold}` }
             : { signal: 'NEUTRAL', reason: `Strength ${Math.round(Math.max(bull, bear))}/${threshold}` };
     }
-    if (indicator === 'BotBulls1') return bar.ba1_bullish || bar.ba1_buy ? { signal: 'BULLISH', reason: 'BB1 bullish' } : bar.ba1_bearish || bar.ba1_sell ? { signal: 'BEARISH', reason: 'BB1 bearish' } : { signal: 'NEUTRAL', reason: 'No BB1 trigger' };
-    if (indicator === 'BotBulls2') return bar.ba2_buy ? { signal: 'BULLISH', reason: 'BB2 buy marker' } : bar.ba2_sell ? { signal: 'BEARISH', reason: 'BB2 sell marker' } : { signal: 'NEUTRAL', reason: 'No BB2 trigger' };
-    if (indicator === 'BotBulls5') {
-        return bar.bb5_breakout_bull || String(bar.bb5_state || '').includes('BULLISH')
-            ? { signal: 'BULLISH', reason: `${String(bar.bb5_pattern || 'Bull pattern').replaceAll('_', ' ')} · ${Number(bar.bb5_confidence || 0).toFixed(0)}%` }
-            : bar.bb5_breakout_bear || String(bar.bb5_state || '').includes('BEARISH')
-                ? { signal: 'BEARISH', reason: `${String(bar.bb5_pattern || 'Bear pattern').replaceAll('_', ' ')} · ${Number(bar.bb5_confidence || 0).toFixed(0)}%` }
-                : { signal: 'NEUTRAL', reason: String(bar.bb5_state || 'No qualified pattern').replaceAll('_', ' ') };
+    if (indicator === 'Trend Rider') {
+        return bar.tr_trail == null ? { signal: 'NEUTRAL', reason: 'Awaiting history' }
+            : { signal: bar.tr_trend ? 'BULLISH' : 'BEARISH', reason: `Trail ${bar.tr_trend ? 'up' : 'down'} ${Number(bar.tr_trail).toFixed(2)} · score ${bar.tr_score ?? 0}/4` };
     }
-    if (indicator === 'BotBulls3') return bar.ba3_buy ? { signal: 'BULLISH', reason: 'BB3 buy marker' } : bar.ba3_sell ? { signal: 'BEARISH', reason: 'BB3 sell marker' } : { signal: 'NEUTRAL', reason: 'No BB3 trigger' };
+    if (indicator === 'HA+UT') {
+        return bar.haut_trail == null ? { signal: 'NEUTRAL', reason: 'Awaiting history' }
+            : { signal: bar.haut_above ? 'BULLISH' : 'BEARISH', reason: `Heikin-Ashi ${bar.haut_above ? 'above' : 'below'} trail ${Number(bar.haut_trail).toFixed(2)}` };
+    }
+    if (indicator === 'Chart Patterns') {
+        return bar.cp_bullish ? { signal: 'BULLISH', reason: `${bar.cp_name || 'Bull pattern'} · ${Number(bar.cp_quality || 0).toFixed(0)}%` }
+            : bar.cp_bearish ? { signal: 'BEARISH', reason: `${bar.cp_name || 'Bear pattern'} · ${Number(bar.cp_quality || 0).toFixed(0)}%` }
+                : { signal: 'NEUTRAL', reason: 'No confirmed pattern' };
+    }
     if (indicator === 'Candle Patterns') return bar.cdl_bullish ? { signal: 'BULLISH', reason: bar.cdl_name || 'Bullish candle' } : bar.cdl_bearish ? { signal: 'BEARISH', reason: bar.cdl_name || 'Bearish candle' } : { signal: 'NEUTRAL', reason: bar.cdl_name || 'Neutral candle' };
-    if (indicator === 'Botbulls4 News AI') return { signal: 'NEUTRAL', reason: 'Live-news only; disabled in backtest replay' };
     return { signal: 'NEUTRAL', reason: 'Selected' };
 }
 
@@ -2649,22 +2450,18 @@ function manualBtSignalFor(name, bar) {
         ...serverSignal,
         signal: serverSignal?.signal || fallback.signal,
         reason: serverSignal?.reason || fallback.reason,
-        premium: Boolean(serverSignal?.premium) || MANUAL_BT_PREMIUM_INDICATORS.has(name),
     };
 }
 
 function manualBtRenderConfluence(history) {
     const grid = document.getElementById('manualBtChartPreviewSignalGrid');
-    const premiumGrid = document.getElementById('manualBtChartPreviewPremiumSignalGrid');
     const loading = document.getElementById('manualBtChartPreviewGridLoading');
     if (!grid) return;
     if (loading) loading.classList.add('hidden');
-    if (premiumGrid) premiumGrid.innerHTML = '';
     const activeSet = new Set(manualBtSelectedIndicators());
     const mode = typeof currentBtMode !== 'undefined' && currentBtMode === 'options' ? 'options' : 'regular';
     const shown = getBacktestWorkspaceShownSet(mode, manualBtTicker);
     const signalEntries = Object.entries(manualBtSignals || {})
-        .filter(([name]) => name !== 'Botbulls4 News AI')
         .sort(([a], [b]) => {
             const ai = MANUAL_BT_CHART_PREVIEW_INDICATORS.indexOf(a);
             const bi = MANUAL_BT_CHART_PREVIEW_INDICATORS.indexOf(b);
@@ -2674,46 +2471,36 @@ function manualBtRenderConfluence(history) {
         });
     if (!signalEntries.length) {
         MANUAL_BT_CHART_PREVIEW_INDICATORS.forEach(name => {
-            if (name !== 'Botbulls4 News AI') {
-                signalEntries.push([name, {
-                    enabled: activeSet.has(name),
-                    premium: MANUAL_BT_PREMIUM_INDICATORS.has(name),
-                }]);
-            }
+            signalEntries.push([name, { enabled: activeSet.has(name) }]);
         });
     }
     const last = history[history.length - 1];
     let bull = 0, bear = 0;
     const standardCards = [];
-    const premiumCards = [];
     signalEntries.forEach(([name]) => {
         const s = manualBtSignalFor(name, last);
         const enabled = activeSet.has(name);
         
-        // Only show regular indicators if they are part of the active workspace.
-        // Premium indicators are managed separately and bypass the workspace limit.
-        if (!MANUAL_BT_PREMIUM_INDICATORS.has(name) && !shown.has(name)) return;
+        // Only show indicators that are part of the active workspace.
+        if (!shown.has(name)) return;
         
         if (enabled && s.signal === 'BULLISH') bull += 1;
         if (enabled && s.signal === 'BEARISH') bear += 1;
-        const isPremium = Boolean(s.premium);
         const cardClass = !enabled
-            ? (isPremium ? 'premium-neutral' : 'neutral')
-            : isPremium
-            ? (s.signal === 'BULLISH' ? 'premium-bullish' : s.signal === 'BEARISH' ? 'premium-bearish' : 'premium-neutral')
+            ? 'neutral'
             : (s.signal === 'BULLISH' ? 'bullish' : s.signal === 'BEARISH' ? 'bearish' : 'neutral');
         const icon = !enabled ? '●' : s.signal === 'BULLISH' ? '▲' : s.signal === 'BEARISH' ? '▼' : '●';
         const iconColor = !enabled ? 'text-slate-400' : s.signal === 'BULLISH' ? 'text-emerald-600' : s.signal === 'BEARISH' ? 'text-red-500' : 'text-purple-400';
         const display = name === 'VWAP' ? 'Session VWAP' : name;
         const escapedName = manualBtEscapeJs(name);
         const safeReason = manualBtEscapeAttr(enabled ? (s.reason || 'No reason available.') : 'Disabled — click to enable');
-        const displayLabelClass = name === 'VWAP' ? 'vwap-indicator-label' : (isPremium ? 'text-amber-800' : 'text-indigo-900');
-        const infoColor = isPremium ? 'text-amber-400 hover:text-amber-600' : 'text-indigo-300 hover:text-indigo-600';
-        const tooltipBg = isPremium ? 'bg-amber-900' : 'bg-indigo-900';
-        const tooltipBorder = isPremium ? 'border-t-amber-900' : 'border-t-indigo-900';
-        const settingsHover = isPremium ? 'hover:bg-amber-100/50' : 'hover:bg-indigo-50';
-        const settingsColor = isPremium ? 'text-amber-600' : 'text-indigo-500';
-        const reasonColor = isPremium ? 'text-amber-700' : 'text-purple-600';
+        const displayLabelClass = name === 'VWAP' ? 'vwap-indicator-label' : 'text-indigo-900';
+        const infoColor = 'text-indigo-300 hover:text-indigo-600';
+        const tooltipBg = 'bg-indigo-900';
+        const tooltipBorder = 'border-t-indigo-900';
+        const settingsHover = 'hover:bg-indigo-50';
+        const settingsColor = 'text-indigo-500';
+        const reasonColor = 'text-purple-600';
         const disabledClass = enabled ? '' : 'disabled-signal';
         const card = `
             <div class="signal-card group ${cardClass} ${disabledClass} cursor-pointer transition-all duration-300"
@@ -2744,8 +2531,7 @@ function manualBtRenderConfluence(history) {
                 <p class="text-[0.6rem] ${reasonColor} leading-tight line-clamp-1 transition-opacity duration-300">${safeReason}</p>
             </div>
         `;
-        if (isPremium) premiumCards.push(card);
-        else standardCards.push(card);
+        standardCards.push(card);
     });
     const isMobileView = typeof window !== 'undefined' && window.innerWidth <= 768;
     if (standardCards.length > 0) {
@@ -2756,17 +2542,6 @@ function manualBtRenderConfluence(history) {
     } else {
         grid.style.gridTemplateColumns = '';
         grid.innerHTML = `<div class="col-span-full signal-card neutral px-4 py-6 text-center text-sm text-slate-500">No standard indicator selected for this manual replay.</div>`;
-    }
-    if (premiumGrid) {
-        if (premiumCards.length > 0) {
-            premiumGrid.style.gridTemplateColumns = isMobileView
-                ? 'repeat(3, minmax(0, 1fr))'
-                : 'repeat(4, minmax(0, 1fr))';
-            premiumGrid.innerHTML = premiumCards.join('');
-        } else {
-            premiumGrid.style.gridTemplateColumns = '';
-            premiumGrid.innerHTML = `<div class="col-span-full signal-card neutral px-4 py-4 text-center text-sm text-slate-500">No premium indicator selected.</div>`;
-        }
     }
     manualBtSetText('manualBtChartPreviewBullCount', `${bull} Bullish`);
     manualBtSetText('manualBtChartPreviewBearCount', `${bear} Bearish`);
@@ -2805,7 +2580,7 @@ function manualBtRenderOscillators(history) {
         if (label) label.style.display = show ? 'block' : 'none';
     };
 
-    const keyMap = { rsi: 'RSI', macd: 'MACD', mystic: 'Mystic Pulse', adx: 'ADX Trend', botbulls1: 'BotBulls1' };
+    const keyMap = { rsi: 'RSI', macd: 'MACD', mystic: 'Mystic Pulse', adx: 'ADX Trend' };
     Object.keys(keyMap).forEach(key => {
         if (!enabled.has(keyMap[key]) && manualBtOscCharts[key]) {
             try { manualBtOscCharts[key].remove(); } catch(e){}
@@ -2820,7 +2595,6 @@ function manualBtRenderOscillators(history) {
     toggle('manualBtChartPreviewOsc_macd', 'manualBtChartPreviewMacdLabel', enabled.has('MACD'));
     toggle('manualBtChartPreviewOsc_mystic', 'manualBtChartPreviewMysticLabel', enabled.has('Mystic Pulse'));
     toggle('manualBtChartPreviewOsc_adx', 'manualBtChartPreviewAdxLabel', enabled.has('ADX Trend'));
-    toggle('manualBtChartPreviewOsc_botbulls1', 'manualBtChartPreviewBotbulls1Label', enabled.has('BotBulls1'));
 
     if (enabled.has('RSI')) {
         if (!manualBtOscCharts.rsi) {
@@ -2907,42 +2681,6 @@ function manualBtRenderOscillators(history) {
         manualBtOscSeries.adx_minus?.setData(manualBtCleanLineData(manualBtLineData(history, 'di_minus')));
         manualBtOscSeries.adx_threshold?.setData(manualBtCleanLineData(history.map(bar => ({ time: bar.time, value: threshold }))));
     }
-    if (enabled.has('BotBulls1')) {
-        if (!manualBtOscCharts.botbulls1) {
-            manualBtOscCharts.botbulls1 = manualBtCreateOsc('manualBtChartPreviewOsc_botbulls1');
-        }
-        if (!manualBtOscSeries.botbulls1_1) manualBtOscSeries.botbulls1_1 = manualBtOscCharts.botbulls1?.addLineSeries({ color: '#0ea5e9', lineWidth: 1.5 });
-        if (!manualBtOscSeries.botbulls1_2) manualBtOscSeries.botbulls1_2 = manualBtOscCharts.botbulls1?.addLineSeries({ color: '#f43f5e', lineWidth: 1, lineStyle: 2 });
-        if (!manualBtOscSeries.botbulls1_mfi) manualBtOscSeries.botbulls1_mfi = manualBtOscCharts.botbulls1?.addHistogramSeries({ base: 50 });
-        if (!manualBtOscSeries.botbulls1_ob) manualBtOscSeries.botbulls1_ob = manualBtOscCharts.botbulls1?.addLineSeries({ color: 'rgba(239,68,68,0.35)', lineWidth: 1, lineStyle: 2 });
-        if (!manualBtOscSeries.botbulls1_os) manualBtOscSeries.botbulls1_os = manualBtOscCharts.botbulls1?.addLineSeries({ color: 'rgba(16,185,129,0.35)', lineWidth: 1, lineStyle: 2 });
-        if (!manualBtOscSeries.botbulls1_zero) manualBtOscSeries.botbulls1_zero = manualBtOscCharts.botbulls1?.addLineSeries({ color: 'rgba(148,163,184,0.15)', lineWidth: 1 });
-        const wtChannel = manualBtIndicatorParamValue('BOTBULLS1_WT_CHANNEL', 10);
-        const wtAverage = manualBtIndicatorParamValue('BOTBULLS1_WT_AVERAGE', 21);
-        const mfiBuy = manualBtIndicatorParamValue('BOTBULLS1_MFI_BUY_RECLAIM', 35);
-        const mfiSell = manualBtIndicatorParamValue('BOTBULLS1_MFI_SELL_REJECT', 65);
-        manualBtSetText('manualBtChartPreviewBotbulls1Label', `BotBulls1 (WT: ${wtChannel}, ${wtAverage} | MFI: ${mfiBuy}/${mfiSell})`);
-        manualBtOscSeries.botbulls1_1?.setData(manualBtCleanLineData(manualBtLineData(history, 'wt1')));
-        manualBtOscSeries.botbulls1_2?.setData(manualBtCleanLineData(manualBtLineData(history, 'wt2')));
-        manualBtOscSeries.botbulls1_mfi?.setData(manualBtCleanLineData(history
-            .filter(bar => bar?.mfi != null)
-            .map(bar => ({
-                time: bar.time,
-                value: Number(bar.mfi),
-                color: Number(bar.mfi) >= 50 ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)',
-            }))));
-        const firstTime = history[0]?.time;
-        const lastTime = history[history.length - 1]?.time;
-        manualBtOscSeries.botbulls1_ob?.setData(history.length > 1 ? manualBtCleanLineData([{ time: firstTime, value: 53 }, { time: lastTime, value: 53 }]) : []);
-        manualBtOscSeries.botbulls1_os?.setData(history.length > 1 ? manualBtCleanLineData([{ time: firstTime, value: -53 }, { time: lastTime, value: -53 }]) : []);
-        manualBtOscSeries.botbulls1_zero?.setData(history.length > 1 ? manualBtCleanLineData([{ time: firstTime, value: 0 }, { time: lastTime, value: 0 }]) : []);
-        manualBtOscSeries.botbulls1_1?.setMarkers((history || []).flatMap(bar => {
-            if (bar?.ba1_buy) return [{ time: Number(bar.time), position: 'inLine', color: '#10b981', shape: 'circle', size: 2 }];
-            if (bar?.ba1_sell) return [{ time: Number(bar.time), position: 'inLine', color: '#ef4444', shape: 'circle', size: 2 }];
-            return [];
-        }));
-    }
-
     const backtestSubchartParameters = {
         ...(window.STANDARD_INDICATOR_DEFAULTS || {}),
         ...(window.lastBacktestData?.indicator_parameters || {}),
@@ -3607,7 +3345,7 @@ window.openManualBtChartEmpty = function() {
     // Turn all indicators off by default and show only default lists
     const prefs = {};
     MANUAL_BT_CHART_PREVIEW_INDICATORS.forEach(name => {
-        if (name !== 'Botbulls4 News AI') prefs[name] = false;
+        prefs[name] = false;
     });
     manualBtSaveIndicatorPrefs(prefs);
 
@@ -3645,7 +3383,7 @@ window.loadManualBtChartTicker = function(rawTicker) {
     // As requested: all indicators turned off by default for new indicator search
     const prefs = {};
     MANUAL_BT_CHART_PREVIEW_INDICATORS.forEach(name => {
-        if (name !== 'Botbulls4 News AI') prefs[name] = false;
+        prefs[name] = false;
     });
     manualBtSaveIndicatorPrefs(prefs);
     
@@ -3677,7 +3415,7 @@ function openManualBtChartPreviewFromResults(res) {
     const s = res?.summary || {};
     btChartTimeframeRef = s.timeframe || res?.timeframe || manualBtTimeframe || '1Hour';
     manualBtTimeframe = btChartTimeframeRef || manualBtTimeframe;
-    manualBtDataSource = s.data_source || res?.data_source || 'yahoo';
+    manualBtDataSource = s.data_source || res?.data_source || 'alpaca';
     const sourceSelect = document.getElementById('manualBtDataSourceSelect');
     if (sourceSelect) {
         sourceSelect.value = manualBtSourcePreference === 'yahoo' ? 'yahoo' : 'alpaca';
@@ -3766,7 +3504,8 @@ async function runBacktest(options = {}) {
 
     const sharedBacktestGuardSettings = chartOnly ? {} : {
         post_stop_stabilization_bars: Math.max(0, parseInt(document.getElementById(`strategyPostStopBars_${optionsEnabled ? 'options' : 'regular'}`)?.value || '3', 10)),
-        max_consecutive_losses: Math.max(0, parseInt(document.getElementById(`strategyMaxConsecutiveLosses_${optionsEnabled ? 'options' : 'regular'}`)?.value || '2', 10)),
+        // No loss-streak pause in backtests: every trade the strategy's own conditions allow is tested.
+        max_consecutive_losses: 0,
         enable_liquidity_filter: true,
         min_relative_volume: 0.10,
     };
@@ -3791,11 +3530,13 @@ async function runBacktest(options = {}) {
         : getBtCheckedIndicatorValues(optionsEnabled ? 'options' : 'regular');
 
     const indicatorModes = ['indicator', 'hybrid', 'hybrid_atr', 'hybrid_pct', 'hybrid_pivot', 'hybrid_high_low', 'hybrid_swing'];
+    // A strategy preset owns entries, exits and indicator values; manual indicator checks do not apply.
+    const presetOwnsSignals = !optionsEnabled && !!(window.StrategyPreset && window.StrategyPreset.isEnabled());
     const modeVal = optionsEnabled ? 'options' : 'regular';
     const buyModeVal = chartOnly ? '' : (document.getElementById(`strategyBuyMode_${modeVal}`)?.value || 'indicator');
     const sellModeVal = chartOnly ? '' : (document.getElementById(`strategySellMode_${modeVal}`)?.value || (optionsEnabled ? 'hybrid' : 'indicator'));
 
-    if (!chartOnly && indicatorModes.includes(buyModeVal)) {
+    if (!chartOnly && !presetOwnsSignals && indicatorModes.includes(buyModeVal)) {
         if (indicators.length === 0) {
             const modeName = buyModeVal.replace(/_/g, ' ').toUpperCase();
             alert(`You selected [${modeName}] as your Entry Strategy, which requires technical indicators to generate buy signals.\n\nPlease check at least 1 indicator from the Indicator Pool below, or switch your Entry Strategy dropdown to a standalone mode.`);
@@ -3807,7 +3548,7 @@ async function runBacktest(options = {}) {
             return;
         }
     }
-    if (!chartOnly && indicatorModes.includes(sellModeVal)) {
+    if (!chartOnly && !presetOwnsSignals && indicatorModes.includes(sellModeVal)) {
         if (indicators.length === 0) {
             const modeName = sellModeVal.replace(/_/g, ' ').toUpperCase();
             alert(`You selected [${modeName}] as your Exit Strategy, which requires technical indicators to generate sell signals.\n\nPlease check at least 1 indicator from the Indicator Pool below, or switch your Exit Strategy dropdown to a standalone mode.`);
@@ -4099,9 +3840,11 @@ async function runBacktest(options = {}) {
         } else if (!response) {
             // Gather exit strategy and risk controls for stock
             const sellMode = document.getElementById('strategySellMode_regular')?.value || 'indicator';
-            const enableRisk = document.getElementById('btEnableRisk_regular')?.checked ?? true;
-            const riskPerTrade = enableRisk ? (Math.min(50.0, parseFloat(document.getElementById('btRiskPerTrade')?.value || '50.0')) / 100.0) : 1.0;
-            const maxPositionPct = enableRisk ? (parseFloat(document.getElementById('btMaxPositionPct')?.value || '100.0') / 100.0) : 1.0;
+            // Stock backtests use the full Amount per trade: no Risk Per Trade / Max Position Size caps
+            // and no volatility size reduction (enable_risk false). The Amount and Sizing Method decide the size.
+            const enableRisk = false;
+            const riskPerTrade = 1.0;
+            const maxPositionPct = 1.0;
             const atrStopMult = parseFloat(document.getElementById('strategyAtrStopMult')?.value || '2');
             const enableAtrTrail = document.getElementById('strategyEnableAtrTrail')?.checked ?? false;
             const atrTrailMult = enableAtrTrail
@@ -4121,6 +3864,8 @@ async function runBacktest(options = {}) {
             window.lastBacktestRun = {
                 is_options: false,
                 ticker, timeframe, days: parseInt(days), capital: parseFloat(capital),
+                allocation_mode: document.getElementById('strategyAllocationMode_regular')?.value || 'fixed',
+                trade_amount: parseFloat(document.getElementById('strategyTradeAmount_regular')?.value || '1000'),
                 indicators, ext_hours: regularExtra.ext_hours,
                 buy_mode: buyMode, custom_buy_price: customBuyPrice,
                 sell_mode: sellMode, risk_per_trade: riskPerTrade,
@@ -4201,6 +3946,7 @@ async function runBacktest(options = {}) {
                 displayManualBacktestChart(resToDisplay);
             } else {
                 displayResults(resToDisplay);
+                window.BtCache?.refresh();
             }
             if (window.lastBacktestRun && resToDisplay && resToDisplay.summary) {
             }
@@ -4266,107 +4012,50 @@ function displayResults(res) {
         resetBacktestUI();
         return;
     }
-    // ── Header Metadata
-
+    // ── Header: title-bar chips + notes line ─────────────────────────────
+    const chipsEl = document.getElementById('resRunChips');
     const metaEl = document.getElementById('resRunMeta');
+    const chipBase = 'inline-flex items-center px-2 py-0.5 rounded-md border text-[0.6rem] font-bold whitespace-nowrap';
+    const chipTone = {
+        ticker: 'bg-white text-indigo-700 border-white',
+        neutral: 'bg-white/15 text-white border-white/30',
+        data: 'bg-emerald-400/25 text-emerald-50 border-emerald-300/50',
+        risk_on: 'bg-indigo-400/30 text-indigo-50 border-indigo-300/50',
+        risk_off: 'bg-rose-400/30 text-rose-50 border-rose-300/50',
+        warn: 'bg-amber-400/25 text-amber-50 border-amber-300/50',
+        option: 'bg-fuchsia-400/30 text-fuchsia-50 border-fuchsia-300/50',
+    };
+    const chip = (text, tone = 'neutral', title = '') => `<span class="${chipBase} ${chipTone[tone]}"${title ? ` title="${manualBtEscapeAttr(title)}"` : ''}>${manualBtEscapeHtml(text)}</span>`;
+    const chipsHtml = [];
+    const notesHtml = [];
     if (res.optimizer_meta) {
         const safeOverfitScore = manualBtEscapeHtml(res.optimizer_meta.overfit_score);
-        let overfitHtml = '';
-        if (res.optimizer_meta.overfit_score >= 0.8) {
-            overfitHtml = `<span class="bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded ml-2">🟢 ROBUST (Score: ${safeOverfitScore})</span>`;
-        } else if (res.optimizer_meta.overfit_score >= 0.5) {
-            overfitHtml = `<span class="bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded ml-2">🟡 DEGRADED (Score: ${safeOverfitScore})</span>`;
-        } else {
-            overfitHtml = `<span class="bg-rose-500/20 text-rose-300 px-2 py-0.5 rounded ml-2">🔴 OVERFITTED (Score: ${safeOverfitScore})</span>`;
-        }
-        if (metaEl) {
-            const bestParams = res.optimizer_meta.best_params || {};
-            metaEl.innerHTML = `Out-of-Sample Validation Result ${overfitHtml} <br> Best Params: Thresh ${manualBtEscapeHtml(bestParams.threshold)}, Sell ${manualBtEscapeHtml(bestParams.sell_threshold)}, ATR Stop ${manualBtEscapeHtml(bestParams.atr_stop_multiplier)}`;
-        }
-    } else {
-        if (metaEl && s.ticker) {
-            const cstOpts = { timeZone: 'America/Chicago', month: 'short', day: 'numeric', year: 'numeric' };
-            let startCST = '';
-            let endCST = '';
-            try {
-                startCST = new Date(s.start_date_utc).toLocaleString('en-US', cstOpts);
-                endCST = new Date(s.end_date_utc).toLocaleString('en-US', cstOpts);
-            } catch (e) {
-                startCST = s.start_date_utc || '';
-                endCST = s.end_date_utc || '';
-            }
-            let optionBadge = '';
-            if (s.options_type) {
-                const optLabel = s.options_type === 'calls_only' ? 'CALL' : (s.options_type === 'puts_only' ? 'PUT' : 'CALL + PUT');
-                const g = s.avg_greeks || {};
-                const avgIvPct = Number.isFinite(Number(g.iv)) ? (Number(g.iv) * 100).toFixed(1) : '—';
-                const greeksBadge = g.delta !== undefined ? ` <span class="ml-1 px-2 py-0.5 rounded bg-purple-500/30 text-purple-200 border border-purple-400/40 font-mono" title="Average Black-Scholes-Merton Greeks across executions">Avg Greeks: Δ ${manualBtEscapeHtml(g.delta)} · Γ ${manualBtEscapeHtml(g.gamma)} · Θ ${manualBtEscapeHtml(g.theta)} · ν ${manualBtEscapeHtml(g.vega)} · IV ${manualBtEscapeHtml(avgIvPct)}%</span>` : '';
-                optionBadge = ` <span class="ml-2 px-2 py-0.5 rounded bg-fuchsia-500/30 text-fuchsia-200 border border-fuchsia-400/40">${manualBtEscapeHtml(optLabel)} · ${manualBtEscapeHtml(s.expiry_days)} DTE · ${manualBtEscapeHtml(s.strike_type)}</span>${greeksBadge}`;
-            }
-            const riskBadge = s.enable_risk !== undefined ? ` <span class="ml-1 px-2 py-0.5 rounded ${s.enable_risk ? 'bg-indigo-500/30 text-indigo-200' : 'bg-rose-500/30 text-rose-200'}">Risk: ${s.enable_risk ? 'ON' : 'OFF'}</span>` : '';
-            const sourceBadge = s.data_source ? ` <span class="ml-1 px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-200 border border-emerald-400/30">Data: ${manualBtEscapeHtml(String(s.data_source).toUpperCase())}</span>` : '';
-            const executionBadge = s.execution_model ? ` <span class="ml-1 px-2 py-0.5 rounded bg-sky-500/20 text-sky-100 border border-sky-400/30" title="${manualBtEscapeAttr(s.execution_model)}">Fills: Next Open</span>` : '';
-            const quoteCapability = s.historical_quote_capabilities || {};
-            const quoteBadge = quoteCapability.two_sided_rows > 0
-                ? ` <span class="ml-1 px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-100 border border-emerald-400/30">Historical NBBO</span>`
-                : (quoteCapability.historical_rows > 0 ? ` <span class="ml-1 px-2 py-0.5 rounded bg-amber-500/20 text-amber-100 border border-amber-400/30" title="Historical option prices are marks; bid/ask was not supplied.">Historical marks</span>` : '');
-            metaEl.innerHTML = `<div>${manualBtEscapeHtml(s.ticker)}  ·  ${manualBtEscapeHtml(s.timeframe)}  ·  ${manualBtEscapeHtml(s.period_days)} Days  ·  ${manualBtEscapeHtml(startCST)} – ${manualBtEscapeHtml(endCST)} CST</div><div class="mt-1 flex flex-wrap items-center gap-1.5 text-[0.6rem]">${optionBadge}${executionBadge}${quoteBadge}${riskBadge}${sourceBadge}</div>`;
-        }
-        if (metaEl && s.no_trade_reason) {
-            metaEl.innerHTML = `${metaEl.innerHTML || ''}<div class="mt-2 rounded-xl border border-amber-300/40 bg-amber-500/10 px-3 py-2 text-amber-100 font-bold">No trades executed: ${manualBtEscapeHtml(s.no_trade_reason)}</div>`;
-        }
+        let overfitLabel = `🔴 OVERFITTED (Score: ${safeOverfitScore})`;
+        if (res.optimizer_meta.overfit_score >= 0.8) overfitLabel = `🟢 ROBUST (Score: ${safeOverfitScore})`;
+        else if (res.optimizer_meta.overfit_score >= 0.5) overfitLabel = `🟡 DEGRADED (Score: ${safeOverfitScore})`;
+        const bestParams = res.optimizer_meta.best_params || {};
+        chipsHtml.push(chip('Out-of-Sample Validation', 'neutral'));
+        chipsHtml.push(chip(overfitLabel, 'warn'));
+        notesHtml.push(`Best Params: Thresh ${manualBtEscapeHtml(bestParams.threshold)}, Sell ${manualBtEscapeHtml(bestParams.sell_threshold)}, ATR Stop ${manualBtEscapeHtml(bestParams.atr_stop_multiplier)}`);
+    } else if (s.ticker) {
+        // Header shows only the title and the ticker. Sizing, strategy,
+        // data-source, fills, and risk details live in the result meta
+        // strip below (Backtest Period / Timeframe / Trade Sizing / Data
+        // Source), not in the modal header.
+        chipsHtml.push(chip(s.ticker, 'ticker'));
+    }
+    if (s.no_trade_reason) {
+        notesHtml.push(`<span class="text-amber-200">No trades executed: ${manualBtEscapeHtml(s.no_trade_reason)}</span>`);
+    }
+    if (chipsEl) chipsEl.innerHTML = chipsHtml.join('');
+    if (metaEl) {
+        metaEl.innerHTML = notesHtml.join('<br>');
+        metaEl.classList.toggle('hidden', notesHtml.length === 0);
     }
 
-    // Stats
-    document.getElementById('resRoi').textContent = s.roi_pct.toFixed(2) + '%';
-    document.getElementById('resWinRate').textContent = s.win_rate_pct.toFixed(1) + '%';
-    document.getElementById('resTrades').textContent = s.total_trades;
-    document.getElementById('resEquity').textContent = '$' + s.final_equity.toLocaleString(undefined, { minimumFractionDigits: 2 });
-    document.getElementById('resHoldEquity').textContent = '$' + s.buy_hold_equity.toLocaleString(undefined, { minimumFractionDigits: 2 });
-    document.getElementById('resHoldRoi').textContent = s.buy_hold_roi_pct.toFixed(2) + '% Return';
-
-    // Max Drawdown
-    const ddEl = document.getElementById('resMaxDrawdown');
-    if (ddEl) ddEl.textContent = (s.max_drawdown_pct || 0).toFixed(2) + '%';
-
-    // Professional Metrics
-    document.getElementById('resSharpe').textContent = formatMetric(s.sharpe_ratio);
-    document.getElementById('resProfitFactor').textContent = formatMetric(s.profit_factor, 2, 'x');
-    
-    // Win / Loss Ratio text formatting
-    const wlEl = document.getElementById('resWinLossRatio');
-    if (s.win_loss_ratio !== undefined && s.win_loss_ratio !== null && isFinite(s.win_loss_ratio)) {
-        wlEl.textContent = s.win_loss_ratio.toFixed(2) + 'x';
-    } else {
-        wlEl.textContent = '—';
-    }
-
-    // Advanced Metrics Row
-    document.getElementById('resSortino').textContent = formatMetric(s.sortino_ratio);
-    document.getElementById('resCalmar').textContent = formatMetric(s.calmar_ratio);
-    document.getElementById('resHoldTime').textContent = (s.avg_hold_hours !== undefined && s.avg_hold_hours !== null) ? formatMetric(s.avg_hold_hours, 1, 'h') : '—';
-    document.getElementById('resExpectancy').textContent = (s.expectancy !== undefined && s.expectancy !== null) ? '$' + formatMetric(s.expectancy) : '—';
-    document.getElementById('resWinStreak').textContent = (s.max_win_streak !== undefined) ? s.max_win_streak : '—';
-    document.getElementById('resLossStreak').textContent = (s.max_loss_streak !== undefined) ? s.max_loss_streak : '—';
-
-    // Color logic for ROI
-    const roiEl = document.getElementById('resRoi');
-    roiEl.className = `text-xl font-black tracking-tight ${s.roi_pct >= 0 ? 'text-emerald-500' : 'text-rose-500'}`;
-
-    // Color logic for new cards
-    const sharpeEl = document.getElementById('resSharpe');
-    if (s.sharpe_ratio >= 1.2) sharpeEl.className = 'text-xl font-black tracking-tight text-emerald-600';
-    else if (s.sharpe_ratio >= 0.5) sharpeEl.className = 'text-xl font-black tracking-tight text-amber-600';
-    else sharpeEl.className = 'text-xl font-black tracking-tight text-rose-600';
-
-    const pfEl = document.getElementById('resProfitFactor');
-    if (s.profit_factor === null || s.profit_factor >= 1.5) pfEl.className = 'text-xl font-black tracking-tight text-emerald-600';
-    else if (s.profit_factor >= 1.0) pfEl.className = 'text-xl font-black tracking-tight text-amber-600';
-    else pfEl.className = 'text-xl font-black tracking-tight text-rose-600';
-
-    const holdRoiEl = document.getElementById('resHoldRoi');
-    const holdColor = s.buy_hold_roi_pct >= 0 ? 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20' : 'text-rose-400 bg-rose-400/10 border-rose-400/20';
-    holdRoiEl.className = `text-[0.65rem] font-black uppercase tracking-widest px-3 py-1 rounded-full inline-block mt-2 border transition-all ${holdColor}`;
+    // Performance metrics table
+    btRenderPerformanceMetrics(s, formatMetric);
+    btRenderStrategyPanel(s);
 
     // Reset Monte Carlo panel state
     document.getElementById('mcResults').classList.add('hidden');
@@ -4383,6 +4072,576 @@ function displayResults(res) {
     btPrepareChartDataFromResults(res);
     btRenderPreparedChart('result');
     // ─────────────────────────────────────────────────────────────────────
+
+    // Separate equity / drawdown / P&L distribution panels
+    btRenderReportCharts(res);
+    // Edge vs buy & hold, consistency, monthly grid, trade breakdown, recent runs, run record
+    window.BtReport?.render(res);
+}
+
+// ─── Performance metrics table + separate report charts ──────────────────
+const _btReportCharts = { equity: null, drawdown: null, observers: [] };
+
+function btDestroyReportCharts() {
+    _btReportCharts.observers.forEach(o => { try { o.disconnect(); } catch (e) {} });
+    _btReportCharts.observers = [];
+    ['equity', 'drawdown'].forEach(k => {
+        if (_btReportCharts[k]) { try { _btReportCharts[k].remove(); } catch (e) {} }
+        _btReportCharts[k] = null;
+    });
+}
+
+function btRenderPerformanceMetrics(s, formatMetric) {
+    const set = (id, text, cls) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = text;
+        el.className = `font-mono font-bold text-[0.62rem] tabular-nums ${cls || 'text-indigo-950'}`;
+    };
+    const num = v => (v === undefined || v === null || !Number.isFinite(Number(v))) ? null : Number(v);
+    const money = (v, signed) => {
+        const n = num(v);
+        if (n === null) return '—';
+        const abs = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        return (n < 0 ? '-' : (signed && n > 0 ? '+' : '')) + '$' + abs;
+    };
+    const pct = (v, digits = 2) => num(v) === null ? '—' : Number(v).toFixed(digits) + '%';
+    const tone = (v, good = 0) => num(v) === null ? '' : (Number(v) >= good ? 'text-emerald-600' : 'text-rose-600');
+
+    set('resInitialCapital', money(s.initial_capital));
+    set('resRoi', pct(s.roi_pct), tone(s.roi_pct));
+    set('resTotalProfit', money(s.total_pl, true), tone(s.total_pl));
+    set('resEquity', money(s.final_equity));
+    set('resAnnualized', pct(s.annualised_roi_pct), tone(s.annualised_roi_pct));
+    const annLabel = document.getElementById('resAnnualizedLabel');
+    if (annLabel) {
+        const method = s.annualised_roi_method === 'compounded' ? 'compounded' : (s.annualised_roi_method === 'simple' ? 'simple' : '');
+        annLabel.textContent = method ? `Annualized (${method})${s.annualised_is_projection ? '*' : ''}` : 'Annualized Return';
+    }
+    set('resExposure', num(s.exposure_pct) === null ? '\u2014' : Number(s.exposure_pct).toFixed(1) + '%');
+    set('resMaxDrawdown', num(s.max_drawdown_pct) === null ? '—' : '-' + Math.abs(Number(s.max_drawdown_pct)).toFixed(2) + '%', 'text-rose-600');
+    set('resCalmar', formatMetric(s.calmar_ratio));
+    set('resSharpe', formatMetric(s.sharpe_ratio), num(s.sharpe_ratio) === null ? '' : (s.sharpe_ratio >= 1.2 ? 'text-emerald-600' : (s.sharpe_ratio >= 0.5 ? 'text-amber-600' : 'text-rose-600')));
+    set('resSortino', formatMetric(s.sortino_ratio));
+
+    set('resTrades', s.total_trades ?? '—');
+    const tradeShare = (n) => (num(n) === null || !num(s.total_trades)) ? '' : ` (${(Number(n) / Number(s.total_trades) * 100).toFixed(0)}%)`;
+    set('resWinningTrades', s.profitable_trades === undefined ? '—' : `${s.profitable_trades}${tradeShare(s.profitable_trades)}`, 'text-emerald-600');
+    set('resLosingTrades', s.losing_trades === undefined ? '—' : `${s.losing_trades}${tradeShare(s.losing_trades)}`, 'text-rose-600');
+    set('resWinRate', num(s.win_rate_pct) === null ? '—' : Number(s.win_rate_pct).toFixed(1) + '%', tone(s.win_rate_pct, 50));
+    const pfCls = s.profit_factor === null || s.profit_factor >= 1.5 ? 'text-emerald-600' : (s.profit_factor >= 1 ? 'text-amber-600' : 'text-rose-600');
+    set('resProfitFactor', formatMetric(s.profit_factor, 2, 'x'), pfCls);
+    set('resExpectancy', money(s.expectancy), tone(s.expectancy));
+    set('resAvgWin', num(s.avg_win) === null ? '—' : `${money(s.avg_win)} (${pct(s.avg_win_pct)})`, 'text-emerald-600');
+    // backend reports avg_loss as a magnitude; show it as a loss
+    const lossAmt = num(s.avg_loss) === null ? null : -Math.abs(Number(s.avg_loss));
+    set('resAvgLoss', lossAmt === null ? '—' : `${money(lossAmt)} (${pct(s.avg_loss_pct)})`, 'text-rose-600');
+    set('resWinLossRatio', num(s.win_loss_ratio) === null ? '—' : Number(s.win_loss_ratio).toFixed(2) + 'x', 'text-violet-700');
+    set('resHoldTime', num(s.avg_hold_hours) === null ? '—' : formatMetric(s.avg_hold_hours, 1, 'h'));
+    set('resWinStreak', s.max_win_streak ?? '—', 'text-emerald-600');
+    set('resLossStreak', s.max_loss_streak ?? '—', 'text-rose-600');
+
+    // Footer strip
+    const fmtDay = iso => {
+        try { return new Date(iso).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' }); }
+        catch (e) { return iso || '—'; }
+    };
+    const txt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    txt('resMetaPeriod', s.start_date_utc && s.end_date_utc ? `${fmtDay(s.start_date_utc)} — ${fmtDay(s.end_date_utc)} (${s.period_days}d)` : '—');
+    const tf = String(s.timeframe || '');
+    const tradingStyle = /^(1Day|1Week|1Month|D|W)$/i.test(tf) ? 'Swing / Position' : 'Intraday';
+    txt('resMetaTimeframe', s.timeframe ? `${s.timeframe} (${tradingStyle})` : '—');
+
+    // Trade Sizing: Fixed $amount per trade, or Compound off the starting capital.
+    const lastRun = window.lastBacktestRun || {};
+    if (lastRun.allocation_mode) {
+        const isCompound = lastRun.allocation_mode === 'compound';
+        const sizingAmount = isCompound ? s.initial_capital : lastRun.trade_amount;
+        const sizingAmtText = num(sizingAmount) === null
+            ? ''
+            : ` ($${Number(sizingAmount).toLocaleString('en-US', { maximumFractionDigits: 0 })})`;
+        txt('resMetaSizing', `${isCompound ? 'Compound' : 'Fixed'}${sizingAmtText}`);
+    } else {
+        txt('resMetaSizing', '—');
+    }
+
+    // Data Source: full provenance — source · feed (if distinct) · SPLIT-ADJ (only when actually split-adjusted).
+    if (s.data_source) {
+        const feedText = s.data_feed && s.data_feed !== s.data_source ? ` · ${String(s.data_feed).toUpperCase()}` : '';
+        const adjText = s.price_adjustment === 'split' ? ' · SPLIT-ADJ' : '';
+        txt('resMetaSource', `${String(s.data_source).toUpperCase()}${feedText}${adjText}`);
+    } else {
+        txt('resMetaSource', '—');
+    }
+
+    // Execution, sizing and data notes: how this backtest differs from a live bot.
+    const notesEl = document.getElementById('resMetaNotes');
+    if (notesEl) {
+        const notes = [
+            'Entries fill at the next candle\u2019s open after a completed signal candle. No fees or slippage are modelled.',
+            'Live bots may buy less than this amount if Risk Per Trade or Max Position Size caps the size.',
+        ];
+        if (!/^(1Day|1Week|1Month|D|W)$/i.test(tf)) {
+            notes.push('Live bots read Webull candles; intraday candles can differ slightly from this backtest data.');
+        }
+        if (s.annualised_is_projection && num(s.annualised_basis_days) !== null) {
+            notes.push(`*Annualized figures are projected from ${Math.round(Number(s.annualised_basis_days))} days of data (${s.annualised_roi_method === 'compounded' ? 'compounded, because Compound sizing reinvests profit' : 'simple, because Fixed sizing does not reinvest profit'}). Treat them as a projection, not a result.`);
+        }
+        const riskBasis = s.risk_ratio_basis || {};
+        if (riskBasis.method === 'daily_equity_returns') {
+            notes.push(riskBasis.note
+                ? `Sharpe and Sortino not shown: ${riskBasis.note}`
+                : `Sharpe and Sortino use ${riskBasis.daily_returns} daily account returns, annualized over ${riskBasis.periods_per_year} days, risk-free rate 0.`);
+        }
+        notesEl.innerHTML = notes.map(n => `<li>\u2022 ${manualBtEscapeHtml(n)}</li>`).join('');
+        notesEl.classList.remove('hidden');
+    }
+
+    // Benchmark card
+    const holdEq = document.getElementById('resHoldEquity');
+    if (holdEq) holdEq.textContent = money(s.buy_hold_equity);
+    const holdRoi = document.getElementById('resHoldRoi');
+    if (holdRoi) {
+        holdRoi.textContent = pct(s.buy_hold_roi_pct) + ' Return';
+        const holdColor = s.buy_hold_roi_pct >= 0 ? 'text-emerald-500 bg-emerald-400/10 border-emerald-400/20' : 'text-rose-500 bg-rose-400/10 border-rose-400/20';
+        holdRoi.className = `text-[0.65rem] font-black uppercase tracking-widest px-3 py-1 rounded-full inline-block mt-2 border transition-all ${holdColor}`;
+    }
+}
+
+function btRenderStrategyPanel(summary) {
+    const panel = document.getElementById('btStrategyPanel');
+    if (!panel) return;
+    const info = summary && summary.strategy_preset;
+    panel.classList.toggle('hidden', !info);
+    if (!info) return;
+    const titleEl = document.getElementById('btStrategyTitle');
+    if (titleEl) titleEl.textContent = `${info.label} \u00b7 ${info.variant_label}`;
+    const caption = document.getElementById('btStrategyTableCaption');
+    const footnote = document.getElementById('btStrategyTableFootnote');
+    if (info.kind === 'allocation') {
+        btRenderAllocationPanel(info, caption, footnote);
+        return;
+    }
+    if (info.kind === 'schedule') {
+        if (titleEl) titleEl.textContent = `${info.label} \u00b7 ${info.mode === 'overnight' ? 'Overnight' : 'Intraday'}`;
+        btRenderSchedulePanel(info, summary, caption, footnote);
+        return;
+    }
+    if (caption) caption.textContent = 'Every variant, same fixed rules (no parameter search)';
+    if (footnote) footnote.textContent = 'MAR = annualised return \u00f7 max drawdown. Compare with buy & hold above. Fills are at the next open with no fees or slippage.';
+    const notes = [];
+    notes.push(manualBtEscapeHtml(info.execution_note || ''));
+    notes.push(`Exposure ${manualBtEscapeHtml(Number(info.exposure_pct || 0).toFixed(1))}% of bars \u00b7 protective stop ${manualBtEscapeHtml(info.protective_stop_atr_mult)}\u00d7 ATR \u00b7 long only.`);
+    if (info.untested_note) notes.push(`<span class="text-amber-600">${manualBtEscapeHtml(info.untested_note)}</span>`);
+    if (info.low_sample_warning) notes.push('<span class="text-amber-600">Fewer than 30 trades: treat these results as anecdotal, not evidence of an edge.</span>');
+    if (info.warning) notes.push(`<span class="text-amber-600">${manualBtEscapeHtml(info.warning)}</span>`);
+    if (info.pending_signal) notes.push(`<span class="text-purple-700">A ${manualBtEscapeHtml(info.pending_signal.action)} signal on the final bar is pending and was not filled.</span>`);
+    if (Array.isArray(info.blocked_entries) && info.blocked_entries.length) notes.push(`${info.blocked_entries.length} entry signal(s) were blocked by a safety guard.`);
+    const notesEl = document.getElementById('btStrategyNotes');
+    if (notesEl) notesEl.innerHTML = notes.map((text) => `<p>${text}</p>`).join('');
+    const fmt = (v, d = 2, suffix = '') => (v === null || v === undefined || !Number.isFinite(Number(v))) ? '\u2014' : Number(v).toFixed(d) + suffix;
+    const body = document.getElementById('btStrategyVariantsBody');
+    if (!body) return;
+    body.innerHTML = (info.variants || []).map((v) => {
+        const dd = Math.abs(Number(v.max_drawdown_pct));
+        const mar = Number.isFinite(dd) && dd > 0 && Number.isFinite(Number(v.annualised_roi_pct)) ? fmt(Number(v.annualised_roi_pct) / dd, 2) : '\u2014';
+        const roiCls = Number(v.roi_pct) >= 0 ? 'text-emerald-600' : 'text-rose-600';
+        return `<tr class="${v.selected ? 'bg-purple-50/60' : ''}">`
+            + `<td class="py-1.5 px-2 font-sans whitespace-nowrap">${manualBtEscapeHtml(v.label)}${v.selected ? ' <span class="text-purple-600">\u25cf</span>' : ''}</td>`
+            + `<td class="py-1.5 px-2 text-right ${roiCls}">${fmt(v.roi_pct, 1, '%')}</td>`
+            + `<td class="py-1.5 px-2 text-right text-rose-600">${Number.isFinite(dd) ? (dd > 0 ? '-' + dd.toFixed(1) + '%' : '0.0%') : '\u2014'}</td>`
+            + `<td class="py-1.5 px-2 text-right">${mar}</td>`
+            + `<td class="py-1.5 px-2 text-right">${manualBtEscapeHtml(v.total_trades ?? '\u2014')}</td>`
+            + `<td class="py-1.5 px-2 text-right">${fmt(v.win_rate_pct, 0, '%')}</td>`
+            + `<td class="py-1.5 px-2 text-right">${v.profit_factor === null ? '\u221e' : fmt(v.profit_factor, 2)}</td>`
+            + '</tr>';
+    }).join('');
+}
+
+function btRenderAllocationPanel(info, caption, footnote) {
+    // Malik allocation strategy: legs, regime mix, research warning, both directions and the benchmarks.
+    const esc = manualBtEscapeHtml;
+    const fmt = (v, d = 2, suffix = '') => (v === null || v === undefined || !Number.isFinite(Number(v))) ? '\u2014' : Number(v).toFixed(d) + suffix;
+    const legs = info.legs || {};
+    const notes = [];
+    notes.push(esc(info.execution_note || ''));
+    notes.push(`Reads ${esc(info.signal)} \u00b7 trades ${esc(legs.bull)}${legs.bear ? ` / ${esc(legs.bear)}` : ''} \u00b7 invested ${esc(fmt(info.exposure_pct, 1, '%'))} of the time on average \u00b7 ${esc(info.rebalances)} rebalance day(s), ${esc(info.fills)} order(s).`);
+    const share = Object.entries(info.regime_share || {}).map(([k, v]) => `${esc(k)} ${esc(fmt(v, 0, '%'))}`).join(' \u00b7 ');
+    if (share) notes.push(`Time in each regime: ${share}.`);
+    if (info.skipped_days || info.no_decision_days) notes.push(`<span class="text-amber-600">${esc(info.no_decision_days || 0)} day(s) without a decision (missing data or warm-up), ${esc(info.skipped_days || 0)} day(s) with a missing fill price.</span>`);
+    if (info.early_close_adjusted_days) notes.push(`${esc(info.early_close_adjusted_days)} early-close day(s) ran 15 minutes before the early close.`);
+    if (info.research_note) notes.push(`<span class="text-amber-600">${esc(info.research_note)}${info.research_report_url ? ` <a href="${esc(info.research_report_url)}" target="_blank" rel="noopener" class="underline">Research report</a>` : ''}</span>`);
+    if (info.warning) notes.push(`<span class="text-amber-600">${esc(info.warning)}</span>`);
+    const recent = (info.rebalance_log || []).slice(0, 6).map((f) => `${esc(f.day)} ${esc(f.side)} ${esc(f.symbol)} $${esc(fmt(f.notional, 0))} (${esc(f.regime)}${f.limit && f.limit !== 'target' ? `, capped by ${esc(f.limit)}` : ''})`);
+    if (recent.length) notes.push(`Latest orders: ${recent.join(' \u00b7 ')}`);
+    const notesEl = document.getElementById('btStrategyNotes');
+    if (notesEl) notesEl.innerHTML = notes.map((text) => `<p>${text}</p>`).join('');
+    if (caption) caption.textContent = 'Both directions and the benchmarks, same window and sizing';
+    if (footnote) footnote.textContent = 'MAR = annualised return \u00f7 max drawdown. The 250-day rule holds 100% of the bull ETF above the 250-day average and cash below it. No fees, slippage or dividends.';
+    const body = document.getElementById('btStrategyVariantsBody');
+    if (!body) return;
+    const row = (label, v, selected, benchmark) => {
+        const dd = Math.abs(Number(v.max_drawdown_pct));
+        const annual = Number(v.annualised_roi_pct);
+        const mar = v.mar !== undefined && v.mar !== null ? fmt(v.mar, 2) : (Number.isFinite(dd) && dd > 0 && Number.isFinite(annual) ? fmt(annual / dd, 2) : '\u2014');
+        const roiCls = Number(v.roi_pct) >= 0 ? 'text-emerald-600' : 'text-rose-600';
+        return `<tr class="${selected ? 'bg-purple-50/60' : ''}">`
+            + `<td class="py-1.5 px-2 font-sans ${benchmark ? 'text-slate-500' : ''}">${esc(label)}${selected ? ' <span class="text-purple-600">\u25cf</span>' : ''}</td>`
+            + `<td class="py-1.5 px-2 text-right ${roiCls}">${fmt(v.roi_pct, 1, '%')}</td>`
+            + `<td class="py-1.5 px-2 text-right text-rose-600">${Number.isFinite(dd) ? (dd > 0 ? '-' + dd.toFixed(1) + '%' : '0.0%') : '\u2014'}</td>`
+            + `<td class="py-1.5 px-2 text-right">${mar}</td>`
+            + `<td class="py-1.5 px-2 text-right">${benchmark ? '\u2014' : esc(v.total_trades ?? '\u2014')}</td>`
+            + '<td class="py-1.5 px-2 text-right">\u2014</td><td class="py-1.5 px-2 text-right">\u2014</td></tr>';
+    };
+    body.innerHTML = (info.variants || []).map((v) => row(v.label, v, v.selected, false)).join('')
+        + (info.benchmarks || []).map((b) => row(b.label, b, false, true)).join('');
+}
+
+function btRenderSchedulePanel(info, summary, caption, footnote) {
+    // Session Rider: the schedule vs buy-and-hold and its overnight/intraday parts, costs, years and notes.
+    const esc = manualBtEscapeHtml;
+    const fmt = (v, d = 2, suffix = '') => (v === null || v === undefined || !Number.isFinite(Number(v))) ? '\u2014' : Number(v).toFixed(d) + suffix;
+    const notes = [];
+    notes.push(`<b>Buy</b> ${esc(info.buy_label)} \u00b7 <b>Sell</b> ${esc(info.sell_label)} \u00b7 ${info.mode === 'overnight' ? 'holds overnight' : 'flat overnight'}.`);
+    notes.push(esc(info.execution_note || ''));
+    const skipped = info.skipped_days || {};
+    const skippedText = Object.entries(skipped).filter(([, n]) => n).map(([k, n]) => `${esc(n)} ${esc(k)}`).join(', ');
+    notes.push(`${esc(info.round_trips)} round trip(s) on ${esc(info.bar_timeframe)} bars${skippedText ? ` \u00b7 skipped days: ${skippedText}` : ''}${info.late_exits ? ` \u00b7 ${esc(info.late_exits)} late exit(s)` : ''}${info.early_close_adjusted_trades ? ` \u00b7 ${esc(info.early_close_adjusted_trades)} early-close adjustment(s)` : ''}.`);
+    if (info.would_pause_count) {
+        notes.push(`<span class="text-amber-600">The live bot would have paused ${esc(info.would_pause_count)} time(s) after ${esc(info.loss_pause_after)} losses in a row, waiting for your review.</span>`);
+    }
+    (info.notes || []).forEach((n) => notes.push(`<span class="text-slate-600">${esc(n)}</span>`));
+    if (info.low_sample_warning) notes.push('<span class="text-amber-600">Fewer than 100 round trips: treat these results as anecdotal, not evidence of an edge.</span>');
+    const years = (info.by_year || []).map((y) => `<tr><td class="py-1 px-2">${esc(y.year)}</td>`
+        + `<td class="py-1 px-2 text-right ${Number(y.strategy_pct) >= 0 ? 'text-emerald-600' : 'text-rose-600'}">${fmt(y.strategy_pct, 1, '%')}</td>`
+        + `<td class="py-1 px-2 text-right ${Number(y.buy_hold_pct) >= 0 ? 'text-emerald-600' : 'text-rose-600'}">${fmt(y.buy_hold_pct, 1, '%')}</td>`
+        + `<td class="py-1 px-2 text-right">${esc(y.trades)}</td></tr>`).join('');
+    if (years) {
+        notes.push(`<div class="overflow-x-auto"><table class="w-full text-[0.58rem] font-mono font-bold border-collapse">`
+            + '<thead class="text-slate-500 uppercase"><tr><th class="py-1 px-2 text-left">Year</th><th class="py-1 px-2 text-right">Schedule</th><th class="py-1 px-2 text-right">Buy &amp; hold</th><th class="py-1 px-2 text-right">Trades</th></tr></thead>'
+            + `<tbody class="divide-y divide-indigo-50/60 text-indigo-950">${years}</tbody></table></div>`);
+    }
+    const notesEl = document.getElementById('btStrategyNotes');
+    if (notesEl) notesEl.innerHTML = notes.map((text) => (text.startsWith('<div') ? text : `<p>${text}</p>`)).join('');
+    if (caption) caption.textContent = 'This schedule vs buy-and-hold, and the effect of trading costs';
+    if (footnote) footnote.textContent = 'The overnight and intraday parts split buy-and-hold into close\u2192next open and open\u2192close. Cost rows charge each buy and sell the given basis points. Headline results have no fees, slippage or dividends.';
+    const body = document.getElementById('btStrategyVariantsBody');
+    if (!body) return;
+    const s = summary || {};
+    const roiCell = (v) => `<td class="py-1.5 px-2 text-right ${Number(v) >= 0 ? 'text-emerald-600' : 'text-rose-600'}">${fmt(v, 1, '%')}</td>`;
+    const dash = '<td class="py-1.5 px-2 text-right">\u2014</td>';
+    const dd = Math.abs(Number(s.max_drawdown_pct));
+    let html = `<tr class="bg-purple-50/60"><td class="py-1.5 px-2 font-sans">This schedule <span class="text-purple-600">\u25cf</span></td>${roiCell(s.roi_pct)}`
+        + `<td class="py-1.5 px-2 text-right text-rose-600">${Number.isFinite(dd) ? (dd > 0 ? '-' + dd.toFixed(1) + '%' : '0.0%') : '\u2014'}</td>`
+        + `<td class="py-1.5 px-2 text-right">${fmt(s.calmar_ratio, 2)}</td><td class="py-1.5 px-2 text-right">${esc(info.round_trips)}</td>`
+        + `<td class="py-1.5 px-2 text-right">${fmt(s.win_rate_pct, 0, '%')}</td><td class="py-1.5 px-2 text-right">${fmt(s.profit_factor, 2)}</td></tr>`;
+    html += (info.cost_table || []).map((c) => `<tr><td class="py-1.5 px-2 font-sans">With ${esc(c.bps_per_side)} bps per side</td>${roiCell(c.roi_pct)}${dash}${dash}${dash}${dash}${dash}</tr>`).join('');
+    html += (info.buy_hold_split || []).map((b) => `<tr><td class="py-1.5 px-2 font-sans text-slate-500">${esc(b.label)}</td>${roiCell(b.roi_pct)}${dash}${dash}${dash}${dash}${dash}</tr>`).join('');
+    body.innerHTML = html;
+}
+
+function btReportChips(id, chips) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.innerHTML = chips.map(([text, kind]) => {
+        const cls = {
+            neutral: 'bg-indigo-50 text-indigo-700 border-indigo-100',
+            good: 'bg-emerald-50 text-emerald-700 border-emerald-100',
+            bad: 'bg-rose-50 text-rose-600 border-rose-100'
+        }[kind || 'neutral'];
+        return `<span class="px-2 py-0.5 rounded-lg border ${cls}">${manualBtEscapeHtml(text)}</span>`;
+    }).join('');
+}
+
+function btReportChartOptions(container, height) {
+    const width = container.clientWidth || 600;
+    const narrow = width < 480;
+    const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    // Phones: short tick labels (month, "Mon D", year) with fewer ticks so dates don't collide or clip
+    const compactTick = (time, tickMarkType) => {
+        const d = new Date(Number(time) * 1000);
+        if (isNaN(d)) return null;
+        if (tickMarkType === 0) return String(d.getUTCFullYear());
+        if (tickMarkType === 1) return MONTHS[d.getUTCMonth()];
+        return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
+    };
+    return {
+        width,
+        height,
+        layout: { background: { color: '#ffffff' }, textColor: '#4f46e5', fontFamily: 'ui-monospace, monospace', fontSize: narrow ? 9 : 10 },
+        grid: { vertLines: { color: 'rgba(99,102,241,0.06)' }, horzLines: { color: 'rgba(99,102,241,0.06)' } },
+        rightPriceScale: { borderVisible: false, autoScale: true, entireTextOnly: true, scaleMargins: { top: 0.08, bottom: 0.08 } },
+        timeScale: {
+            borderVisible: false,
+            timeVisible: false,
+            rightOffset: narrow ? 16 : 4,
+            ...(narrow ? { tickMarkFormatter: compactTick, minimumHeight: 22 } : {}),
+        },
+        crosshair: { mode: 1 },
+        handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+        handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+    };
+}
+
+function btRenderReportCharts(res) {
+    btDestroyReportCharts();
+    const s = res?.summary || {};
+    const initial = Number(s.initial_capital) || 0;
+
+    // Equity points: unique, ascending UTC seconds
+    const seen = new Set();
+    const eq = (res?.equity_curve || []).map(p => {
+        const dt = _btParseDate(p.time);
+        const value = Number(p.equity);
+        return dt && Number.isFinite(value) ? { time: Math.floor(dt.getTime() / 1000), value } : null;
+    }).filter(p => p && !seen.has(p.time) && seen.add(p.time)).sort((a, b) => a.time - b.time);
+
+    const eqPanel = document.getElementById('btEquityPanel');
+    const ddPanel = document.getElementById('btDrawdownPanel');
+    const hasEq = eq.length > 1 && typeof LightweightCharts !== 'undefined';
+    if (eqPanel) eqPanel.classList.toggle('hidden', !hasEq);
+    if (ddPanel) ddPanel.classList.toggle('hidden', !hasEq);
+
+    if (hasEq) {
+        const last = eq[eq.length - 1].value;
+        const peak = Math.max(...eq.map(p => p.value));
+        const retPct = initial > 0 ? (last / initial - 1) * 100 : null;
+        btReportChips('btEquityChips', [
+            [`Start: $${initial.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
+            [`End: $${last.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
+            retPct === null ? null : [`Return: ${retPct >= 0 ? '+' : ''}${retPct.toFixed(2)}%`, retPct >= 0 ? 'good' : 'bad'],
+            [`Peak: $${peak.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
+            num0(s.buy_hold_equity) === null ? null : [`Buy & Hold: $${Number(s.buy_hold_equity).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, Number(s.buy_hold_equity) >= initial ? 'good' : 'bad'],
+            [`Trades: ${s.total_trades ?? 0}`]
+        ].filter(Boolean));
+
+        const eqEl = document.getElementById('btEquityChart');
+        const eqChart = LightweightCharts.createChart(eqEl, btReportChartOptions(eqEl, eqEl.clientHeight || 340));
+        // Baseline series: green above initial capital, red below
+        const eqVals = eq.map(p => p.value);
+        const eqDataMin = Math.min(...eqVals);
+        const eqDataMax = Math.max(...eqVals);
+        const eqPad = (eqDataMax - eqDataMin) * 0.08 || 1;
+        const area = eqChart.addBaselineSeries({
+            baseValue: { type: 'price', price: initial },
+            topLineColor: '#10b981',
+            topFillColor1: 'rgba(16,185,129,0.28)',
+            topFillColor2: 'rgba(16,185,129,0.02)',
+            bottomLineColor: '#f43f5e',
+            bottomFillColor1: 'rgba(244,63,94,0.02)',
+            bottomFillColor2: 'rgba(244,63,94,0.28)',
+            lineWidth: 2, priceLineVisible: false,
+            lastValueVisible: true,
+            autoscaleInfoProvider: (original) => {
+                const res = original();
+                if (res && res.priceRange) {
+                    res.priceRange.minValue = Math.min(res.priceRange.minValue, eqDataMin) - eqPad;
+                    res.priceRange.maxValue = Math.max(res.priceRange.maxValue, eqDataMax) + eqPad;
+                }
+                return res;
+            },
+        });
+        area.setData(eq);
+        const bhSeen = new Set();
+        const bh = (res?.buy_hold_curve || []).map(p => {
+            const dt = _btParseDate(p.time);
+            const value = Number(p.equity);
+            return dt && Number.isFinite(value) ? { time: Math.floor(dt.getTime() / 1000), value } : null;
+        }).filter(p => p && !bhSeen.has(p.time) && bhSeen.add(p.time)).sort((a, b) => a.time - b.time);
+        if (bh.length > 1) {
+            const bhSeries = eqChart.addLineSeries({
+                color: 'rgba(100,116,139,0.85)', lineWidth: 1.5, lineStyle: 2,
+                priceLineVisible: false, lastValueVisible: true,
+                title: (eqEl.clientWidth || 600) < 480 ? 'B&H' : 'Buy & Hold',
+                crosshairMarkerVisible: false,
+            });
+            bhSeries.setData(bh);
+        }
+        if (initial > 0) {
+            area.createPriceLine({ price: initial, color: '#6366f1', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'Start' });
+        }
+        // Trade markers: entries (up) and exits (down) snapped to nearest equity point
+        const times = eq.map(p => p.time);
+        const snap = t => {
+            let lo = 0, hi = times.length - 1;
+            while (lo < hi) { const mid = (lo + hi) >> 1; if (times[mid] < t) lo = mid + 1; else hi = mid; }
+            return times[lo];
+        };
+        const markers = [];
+        (res.trades || []).forEach(t => {
+            const ex = _btParseDate(t.exit_time);
+            if (ex) markers.push({ time: snap(Math.floor(ex.getTime() / 1000)), position: 'aboveBar', shape: 'arrowDown', color: Number(t.pl) >= 0 ? '#10b981' : '#f43f5e' });
+        });
+        // Mark equity high and low with their absolute equity values
+        // Narrow (phone) charts get compact labels so marker text isn't clipped at the edges
+        const compactLabels = (eqEl.clientWidth || 600) < 480;
+        const eqUsd = v => compactLabels
+            ? '$' + (Math.abs(v) >= 1000 ? (v / 1000).toFixed(1) + 'k' : v.toFixed(0))
+            : '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const eqHighIdx = eqVals.indexOf(eqDataMax);
+        const eqLowIdx = eqVals.indexOf(eqDataMin);
+        if (eqHighIdx >= 0) {
+            markers.push({ time: eq[eqHighIdx].time, position: 'aboveBar', shape: 'circle', color: '#047857', text: compactLabels ? eqUsd(eqDataMax) : `High ${eqUsd(eqDataMax)}` });
+        }
+        if (eqLowIdx >= 0 && eqLowIdx !== eqHighIdx) {
+            markers.push({ time: eq[eqLowIdx].time, position: 'belowBar', shape: 'circle', color: '#9f1239', text: compactLabels ? eqUsd(eqDataMin) : `Low ${eqUsd(eqDataMin)}` });
+        }
+        markers.sort((a, b) => a.time - b.time);
+        try { area.setMarkers(markers); } catch (e) {}
+        eqChart.timeScale().fitContent();
+        _btReportCharts.equity = eqChart;
+
+        // Drawdown from running peak of the plotted equity curve
+        let runPeak = -Infinity, trough = { v: 0, t: eq[0].time };
+        const dd = eq.map(p => {
+            runPeak = Math.max(runPeak, p.value);
+            const v = runPeak > 0 ? (p.value / runPeak - 1) * 100 : 0;
+            if (v < trough.v) trough = { v, t: p.time };
+            return { time: p.time, value: v };
+        });
+        const cur = dd[dd.length - 1].value;
+        const fmtT = t => new Date(t * 1000).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: '2-digit' });
+        btReportChips('btDrawdownChips', [
+            [`Max DD: ${trough.v.toFixed(2)}%`, 'bad'],
+            [`Trough: ${fmtT(trough.t)}`],
+            [`Current: ${cur.toFixed(2)}%`, cur < -0.005 ? 'bad' : 'good'],
+            num0(s.max_drawdown_pct) === null ? null : [`Reported: ${Math.abs(Number(s.max_drawdown_pct)).toFixed(2)}%`],
+            s.worst_drawdown ? (s.worst_drawdown.recovered
+                ? [`Recovered in ${Math.round(Number(s.worst_drawdown.days_to_recover) || 0)}d`, 'good']
+                : ['Not recovered', 'bad']) : null,
+            s.longest_underwater ? [`Longest underwater: ${Math.round(Number(s.longest_underwater.days) || 0)}d${s.longest_underwater.ongoing ? ' (ongoing)' : ''}`] : null
+        ].filter(Boolean));
+
+        const ddEl = document.getElementById('btDrawdownChart');
+        const ddChart = LightweightCharts.createChart(ddEl, btReportChartOptions(ddEl, ddEl.clientHeight || 300));
+        const ddMin = Math.min(...dd.map(p => p.value));
+        // Baseline at 0%: area between line and 0% is shaded pink (underwater)
+        const ddSeries = ddChart.addBaselineSeries({
+            baseValue: { type: 'price', price: 0 },
+            topLineColor: '#e11d48',
+            topFillColor1: 'rgba(244,63,94,0.01)',
+            topFillColor2: 'rgba(244,63,94,0.01)',
+            bottomLineColor: '#e11d48',
+            bottomFillColor1: 'rgba(244,63,94,0.08)',
+            bottomFillColor2: 'rgba(244,63,94,0.30)',
+            lineWidth: 2, priceLineVisible: false,
+            lastValueVisible: true,
+            priceFormat: { type: 'custom', formatter: v => v.toFixed(1) + '%' },
+            autoscaleInfoProvider: (original) => {
+                const res = original();
+                const ddPad = Math.abs(ddMin) * 0.1 || 1;
+                if (res && res.priceRange) {
+                    res.priceRange.minValue = Math.min(res.priceRange.minValue, ddMin) - ddPad;
+                    res.priceRange.maxValue = Math.max(res.priceRange.maxValue, 0) + ddPad;
+                }
+                return res;
+            },
+        });
+        ddSeries.setData(dd);
+        try { ddSeries.setMarkers([{ time: trough.t, position: 'belowBar', shape: 'circle', color: '#9f1239', text: compactLabels ? `DD ${trough.v.toFixed(1)}%` : `Max DD ${trough.v.toFixed(2)}%` }]); } catch (e) {}
+        // Reference lines at 10% intervals
+        const refLineStyle = { lineWidth: 1, lineStyle: 2, color: 'rgba(99,102,241,0.15)', axisLabelVisible: true };
+        const ddStep = ddMin < -50 ? 20 : 10;
+        for (let pct = 0; pct >= ddMin - ddStep; pct -= ddStep) {
+            ddSeries.createPriceLine({ ...refLineStyle, price: pct, color: pct === 0 ? 'rgba(99,102,241,0.3)' : refLineStyle.color, title: '' });
+        }
+        ddChart.timeScale().fitContent();
+        _btReportCharts.drawdown = ddChart;
+
+        // Keep both charts aligned in time, crosshair, and responsive
+        const syncing = { on: false };
+        const link = (from, to) => from.timeScale().subscribeVisibleLogicalRangeChange(r => {
+            if (!r || syncing.on) return;
+            syncing.on = true;
+            try { to.timeScale().setVisibleLogicalRange(r); } finally { syncing.on = false; }
+        });
+        link(eqChart, ddChart); link(ddChart, eqChart);
+
+        // Crosshair sync: hovering one chart shows the crosshair on the other
+        const crossSync = (from, to) => from.subscribeCrosshairMove(param => {
+            if (!param || !param.time) { to.clearCrosshairPosition(); return; }
+            try { to.setCrosshairPosition(undefined, param.time, to === ddChart ? ddSeries : area); } catch (e) {}
+        });
+        crossSync(eqChart, ddChart); crossSync(ddChart, eqChart);
+        if (typeof ResizeObserver !== 'undefined') {
+            [[eqEl, eqChart], [ddEl, ddChart]].forEach(([el, ch]) => {
+                const ro = new ResizeObserver(() => { const w = el.clientWidth, h = el.clientHeight; if (w > 0 && h > 0) ch.applyOptions({ width: w, height: h }); });
+                ro.observe(el);
+                _btReportCharts.observers.push(ro);
+            });
+        }
+    }
+
+    btRenderPlDistribution(res.trades || []);
+}
+
+function num0(v) { return (v === undefined || v === null || !Number.isFinite(Number(v))) ? null : Number(v); }
+
+function btRenderPlDistribution(trades) {
+    const panel = document.getElementById('btPlDistPanel');
+    const host = document.getElementById('btPlDistChart');
+    const pls = (trades || []).map(t => Number(t.pl)).filter(Number.isFinite);
+    if (!panel || !host) return;
+    panel.classList.toggle('hidden', pls.length === 0);
+    if (!pls.length) { host.innerHTML = ''; return; }
+
+    const usd = v => (v < 0 ? '-' : '') + '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const sorted = [...pls].sort((a, b) => a - b);
+    const mean = pls.reduce((a, b) => a + b, 0) / pls.length;
+    const median = sorted.length % 2 ? sorted[(sorted.length - 1) / 2] : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
+    const wins = pls.filter(v => v > 0).length;
+    const net = pls.reduce((a, b) => a + b, 0);
+    btReportChips('btPlDistChips', [
+        [`Trades: ${pls.length}`],
+        [`Wins: ${wins}`, 'good'],
+        [`Losses: ${pls.length - wins}`, 'bad'],
+        [`Mean: ${usd(mean)}`, mean >= 0 ? 'good' : 'bad'],
+        [`Median: ${usd(median)}`],
+        [`Best: ${usd(sorted[sorted.length - 1])}`, 'good'],
+        [`Worst: ${usd(sorted[0])}`, 'bad'],
+        [`Net: ${usd(net)}`, net >= 0 ? 'good' : 'bad']
+    ]);
+
+    // Bin edges on a "nice" step, aligned so 0 is always an edge (losses and wins never share a bin)
+    const lo = sorted[0], hi = sorted[sorted.length - 1];
+    const span = Math.max(hi - Math.min(lo, 0), 1e-9);
+    const rough = span / 8;
+    const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+    const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(v => v >= rough) || 10 * mag;
+    const first = Math.floor(Math.min(lo, 0) / step);
+    const last = Math.max(Math.ceil(hi / step), first + 1);
+    const bins = [];
+    for (let i = first; i < last; i++) bins.push({ from: i * step, to: (i + 1) * step, n: 0 });
+    pls.forEach(v => {
+        let idx = Math.floor(v / step) - first;
+        if (v === 0) idx = Math.floor(0 / step) - first; // zero lands in the first win-side bin
+        idx = Math.max(0, Math.min(bins.length - 1, idx));
+        bins[idx].n++;
+    });
+    const maxN = Math.max(...bins.map(b => b.n), 1);
+    const short = v => {
+        const a = Math.abs(v);
+        const t = a >= 1000 ? (a / 1000).toFixed(a % 1000 === 0 ? 1 : 2).replace(/0$/, '') + 'k' : a.toFixed(a < 10 && a % 1 ? 2 : 0);
+        return (v < 0 ? '-' : '') + t;
+    };
+    host.innerHTML = `
+        <div class="flex gap-2">
+            <div class="flex flex-col justify-between text-[0.55rem] font-mono text-indigo-400 text-right pb-5" style="height:200px;">
+                <span>${maxN}</span><span>${Math.round(maxN / 2)}</span><span>0</span>
+            </div>
+            <div class="flex-1 min-w-0">
+                <div class="flex items-end gap-1.5 border-b border-indigo-100" style="height:180px;">
+                    ${bins.map(b => `
+                        <div class="flex-1 flex flex-col justify-end h-full" title="${manualBtEscapeAttr(`${usd(b.from)} to ${usd(b.to)}: ${b.n} trade${b.n === 1 ? '' : 's'}`)}">
+                            <div class="rounded-t-md ${b.to <= 0 ? 'bg-rose-400/80' : 'bg-emerald-400/80'}" style="height:${(b.n / maxN) * 100}%;min-height:${b.n ? 2 : 0}px;"></div>
+                        </div>`).join('')}
+                </div>
+                <div class="flex gap-1.5 mt-1">
+                    ${bins.map(b => `<div class="flex-1 text-center text-[0.5rem] font-mono text-indigo-400 truncate">${short(b.from)} to ${short(b.to)}</div>`).join('')}
+                </div>
+                <div class="text-center text-[0.55rem] font-black uppercase tracking-widest text-indigo-400 mt-1">Trade P/L ($)</div>
+            </div>
+        </div>`;
 }
 
 function renderBtTradesPage() {
@@ -4415,6 +4674,10 @@ function renderBtTradesPage() {
             <div class="text-xs font-semibold text-indigo-950">${manualBtEscapeHtml(formatDate(t.exit_time))}</div>
             <div class="text-[0.6rem] text-purple-400 font-medium mt-0.5">Exit @ $${manualBtEscapeHtml(formatAssetPrice(t.exit_price, isCrypto(t.symbol || window.activeTicker)))}</div>
         `;
+        if (t.exit_category && window.BtReport) {
+            const hold = window.BtReport.holdText(t.hold_hours);
+            exitHtml += `<div class="mt-1 flex items-center gap-1" title="${manualBtEscapeAttr(t.reason || '')}">${window.BtReport.exitBadge(t.exit_category)}${hold ? `<span class="text-[0.55rem] font-bold text-slate-400">${manualBtEscapeHtml(hold)} held</span>` : ''}</div>`;
+        }
         let qtyHtml = manualBtEscapeHtml(Number.isFinite(Number(t.qty)) ? Number(t.qty).toFixed(4) : '—');
 
         if (isOption) {
@@ -4489,6 +4752,7 @@ function jumpBtPage(pageStr) {
 
 // 4. Helper Functions
 function resetBacktestUI() {
+    btDestroyReportCharts();
     btPlaceChartInResultSlot();
     // ── NEW: Destroy chart to prevent stale renders on next run ──────────
     if (btChart && btManualChartClickHandler) {
@@ -4653,29 +4917,26 @@ window.resetAllBacktestSettingsToDefaults = async function() {
     setVal('strategyGridBuyAllocation_options', '1000');
     setVal('strategyGridSellPct_options', '50');
     setVal('strategyGridMaxLevels_options', '5');
-    setVal('strategySwingLookbackDays_entry_regular', '20');
+    setVal('strategySwingEntryLookback_regular', '20');
     setVal('strategyBuyThreshold_regular', '1');
     setVal('strategySellMode_regular', 'indicator');
     setVal('strategyCustomStopLossPrice_regular', '');
     setVal('strategyCustomTakeProfitPrice_regular', '');
     setVal('strategyCustomUnderlyingStopLossPrice_regular', '');
     setVal('strategyCustomUnderlyingTakeProfitPrice_regular', '');
-    setVal('strategyStopLossPct_regular', '5');
-    setVal('strategyTakeProfitPct_regular', '10');
-    setVal('strategyRegularTrailPct_regular', '3');
-    setCheck('strategyEnablePctTrail_regular', true);
-    setVal('strategyAtrStopMult_regular', '2');
-    setVal('strategyAtrTpMult_regular', '4');
-    setVal('strategyAtrTrailMult_regular', '3');
-    setVal('strategySwingLookbackDays_exit_regular', '20');
+    setVal('strategyRegularSlPct', '5');
+    setVal('strategyRegularTpPct', '10');
+    setVal('strategyRegularTrailPct', '3');
+    setCheck('strategyEnablePctTrail', true);
+    setVal('strategyAtrStopMult', '2');
+    setVal('strategyAtrTpMult', '4');
+    setVal('strategyAtrTrailMult', '3');
+    setCheck('strategyEnableAtrTrail', true);
+    setVal('strategySwingExitLookback_regular', '20');
     setVal('strategySellThreshold_regular', '1');
-    setCheck('btEnableRisk_regular', false);
-    const riskContentReg = document.getElementById('btRiskControlsContent_regular');
-    if (riskContentReg) riskContentReg.classList.add('hidden');
-    setVal('btRiskPerTrade', '50.0');
-    setVal('btMaxPositionPct_regular', '100.0');
     setCheck('strategyEnableCooldown_regular', true);
-    setCheck('strategyOptionsSmartReentry_regular', false);
+    setCheck('strategyRegularSmartReentry', false);
+    setCheck('strategyRegularSignalReset', false);
 
     // Options Strategy Defaults
     setVal('strategyOptionsOptionType', 'calls_only');
@@ -4683,14 +4944,14 @@ window.resetAllBacktestSettingsToDefaults = async function() {
     setVal('strategyOptionsStrikeType', 'ATM');
     setVal('strategyOptionsDividendYield', '0');
     setVal('strategyOptionsContractFee', '0.65');
-    setVal('strategyOptionsAllocationMode', 'fixed');
-    setVal('strategyOptionsTradeAmount', '1000');
+    setVal('strategyAllocationMode_options', 'fixed');
+    setVal('strategyCapital_options', '1000');
     setVal('strategyOptionsCompoundPct', '10');
     setVal('strategyBuyMode_options', 'indicator');
     setVal('strategyCustomBuyPrice_options', '');
     setVal('strategyEntryAtrMult_options', '2');
     setVal('strategyEntryPctMove_options', '5');
-    setVal('strategySwingLookbackDays_entry_options', '20');
+    setVal('strategySwingEntryLookback_options', '20D');
     setVal('strategyBuyThreshold_options', '1');
     setVal('strategySellMode_options', 'indicator');
     setVal('strategyCustomStopLossPrice_options', '');
@@ -4704,7 +4965,7 @@ window.resetAllBacktestSettingsToDefaults = async function() {
     setVal('strategyAtrStopMult_options', '2');
     setVal('strategyAtrTpMult_options', '4');
     setVal('strategyAtrTrailMult_options', '3');
-    setVal('strategySwingLookbackDays_exit_options', '20');
+    setVal('strategySwingExitLookback_options', '20D');
     setVal('strategySellThreshold_options', '1');
     setCheck('btEnableRisk_options', false);
     const riskContentOpt = document.getElementById('btRiskControlsContent_options');
@@ -4838,24 +5099,8 @@ function btReplayDrawRiskLines() {
     btReplayClearRiskLines();
 }
 
-function btReplaySetEquity(visibleDisplayTime) {
-    if (!btChart || !Array.isArray(btChartEquityCurveRef) || btChartEquityCurveRef.length < 1) return;
-    const chartTimeframe = getBtChartTimeframe();
-    const seen = new Set();
-    const data = btChartEquityCurveRef.map(point => {
-        const dt = _btParseDate(point.time);
-        if (!dt) return null;
-        return { time: btDisplayTime(Math.floor(dt.getTime() / 1000), chartTimeframe), value: Number(point.equity) };
-    }).filter(point => point && Number.isFinite(point.value) && point.time <= visibleDisplayTime)
-        .filter(point => { if (seen.has(point.time)) return false; seen.add(point.time); return true; })
-        .sort((a, b) => a.time - b.time);
-    if (data.length < 2) return;
-    btEqSeries = btAddTrackedLineSeries({
-        priceScaleId: 'equity', color: 'rgba(139, 92, 246, 0.7)', lineWidth: 2,
-        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-    }, 'equity');
-    btChart.priceScale('equity').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
-    btEqSeries.setData(data);
+function btReplaySetEquity() {
+    // Equity now lives in its own Equity Curve panel, not on the trade chart.
 }
 
 function btTradeDisplayTimes(trade) {
@@ -5410,44 +5655,15 @@ function btDrawPriceIndicatorOverlays(chartCandles) {
         btAddIndicatorLine(chartCandles, 'boll_middle', { color: '#64748b', lineWidth: 1, lineStyle: 2 });
         btAddIndicatorLine(chartCandles, 'boll_lower', { color: '#8b5cf6', lineWidth: 1.5 });
     }
-    if (enabled.has('BotBulls2')) {
-        btAddIndicatorLine(chartCandles, 'lx_smart_trail', { color: '#10b981', lineWidth: 2.5 });
-        btAddIndicatorLine(chartCandles, 'lx_trend_tracer', { color: '#0ea5e9', lineWidth: 2 });
-        btAddIndicatorLine(chartCandles, 'lx_rz_upper', { color: '#f59e0b', lineWidth: 1.5, lineStyle: 2 });
-        btAddIndicatorLine(chartCandles, 'lx_rz_lower', { color: '#ec4899', lineWidth: 1.5, lineStyle: 2 });
-    }
-    if (enabled.has('BotBulls3')) {
-        btAddIndicatorLine(chartCandles, 'ut_trail', { color: '#3b82f6', lineWidth: 2.5 });
-    }
-    if (enabled.has('BotBulls5')) {
-        const ticker = window.lastBacktestRun?.ticker || document.getElementById('btTicker')?.value || '';
-        const patternOptions = { rolling24Hours: isCrypto(ticker) };
-        const definition = (window.STANDARD_EXTENSION_OVERLAYS || [])
-            .find(item => item.name === 'BotBulls5');
-        (definition?.series || []).forEach(spec => {
-            const data = window.StandardIndicatorSubcharts?.buildOverlayData?.(
-                chartCandles,
-                spec,
-                patternOptions,
-            ) || [];
-            btAddIndicatorDataLine(data, {
-                color: spec.color,
-                lineWidth: spec.lineWidth || 1,
-                lineStyle: spec.lineStyle || 0,
-            });
+    // Regular trend indicators (Trend Rider, HA+UT): trend-coloured lines drawn from the shared definitions.
+    (window.STANDARD_EXTENSION_OVERLAYS || []).forEach(definition => {
+        if (!definition.flipMarkers || !enabled.has(definition.name)) return;
+        definition.series.forEach(spec => {
+            const data = window.StandardIndicatorSubcharts?.buildOverlayData?.(chartCandles, spec, {}) || [];
+            if (data.length < 2) return;
+            btAddIndicatorDataLine(data, { color: spec.color, lineWidth: spec.lineWidth || 1, lineStyle: spec.lineStyle || 0 });
         });
-        const drawingLayers = window.StandardIndicatorSubcharts?.buildBotBulls5PatternDrawing?.(
-            chartCandles,
-            patternOptions,
-        ) || [];
-        drawingLayers.forEach(layer => {
-            btAddIndicatorDataLine(layer.data, {
-                color: layer.color,
-                lineWidth: layer.lineWidth || 2,
-                lineStyle: layer.lineStyle || 0,
-            });
-        });
-    }
+    });
 }
 
 function btRightVisiblePointForData(data) {
@@ -5928,37 +6144,6 @@ function _btInitChart(candles, trades, equityCurve) {
         }
     }
 
-    // ── Equity Curve overlay (purple line, bottom 20% of chart) ──────────
-    if (equityCurve && equityCurve.length > 0) {
-        const equityData = equityCurve.map(e => {
-            const dt = _btParseDate(e.time);
-            return dt ? { time: btDisplayTime(Math.floor(dt.getTime() / 1000), chartTimeframe), value: e.equity } : null;
-        }).filter(Boolean).sort((a, b) => a.time - b.time);
-
-        // Deduplicate (same timestamp can appear multiple times)
-        const seen = new Set();
-        const uniqueEquity = equityData.filter(e => {
-            if (seen.has(e.time)) return false;
-            seen.add(e.time);
-            return true;
-        });
-
-        if (uniqueEquity.length > 1) {
-            btEqSeries = btAddTrackedLineSeries({
-                priceScaleId: 'equity',
-                color: 'rgba(139, 92, 246, 0.7)',
-                lineWidth: 2,
-                priceLineVisible: false,
-                lastValueVisible: false,
-                crosshairMarkerVisible: false,
-            }, 'equity');
-            btChart.priceScale('equity').applyOptions({
-                scaleMargins: { top: 0.8, bottom: 0 },
-            });
-            btEqSeries.setData(uniqueEquity);
-        }
-    }
-
     // ── Build buy/sell markers (clean P/L % style) ───────────────────────
     const tradeMarkers = [];
     const indicatorMarkers = [];
@@ -5995,13 +6180,6 @@ function _btInitChart(candles, trades, equityCurve) {
         });
     });
 
-    const botBulls5VisibleTimes = enabledChartIndicators.has('BotBulls5')
-        ? (window.StandardIndicatorSubcharts?.botBulls5RecentEventTimes
-            ? window.StandardIndicatorSubcharts.botBulls5RecentEventTimes(chartCandles, {
-                rolling24Hours: isCrypto(backtestTicker),
-            })
-            : new Set(chartCandles.map(bar => Number(bar?.time)).filter(Number.isFinite)))
-        : new Set();
     for (let i = 1; i < chartCandles.length; i += 1) {
         const prev = chartCandles[i - 1];
         const curr = chartCandles[i];
@@ -6014,25 +6192,6 @@ function _btInitChart(candles, trades, equityCurve) {
                 indicatorMarkers.push({ time: Number(curr.time), position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: 'ST Sell', size: 1 });
             }
         }
-        if (enabledChartIndicators.has('BotBulls1')) {
-            if (curr.ba1_buy) indicatorMarkers.push({ time: Number(curr.time), position: 'belowBar', color: '#06b6d4', shape: 'arrowUp', text: 'BB1 BUY', size: 1 });
-            if (curr.ba1_sell) indicatorMarkers.push({ time: Number(curr.time), position: 'aboveBar', color: '#f43f5e', shape: 'arrowDown', text: 'BB1 SELL', size: 1 });
-        }
-        if (enabledChartIndicators.has('BotBulls2')) {
-            if (curr.ba2_buy) indicatorMarkers.push({ time: Number(curr.time), position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: 'BB2 BUY', size: 1 });
-            if (curr.ba2_sell) indicatorMarkers.push({ time: Number(curr.time), position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: 'BB2 SELL', size: 1 });
-        }
-        if (enabledChartIndicators.has('BotBulls3')) {
-            if (curr.ba3_buy) indicatorMarkers.push({ time: Number(curr.time), position: 'belowBar', color: '#0ea5e9', shape: 'arrowUp', text: 'BB3 BUY', size: 1.2 });
-            if (curr.ba3_sell) indicatorMarkers.push({ time: Number(curr.time), position: 'aboveBar', color: '#f43f5e', shape: 'arrowDown', text: 'BB3 SELL', size: 1.2 });
-        }
-        if (enabledChartIndicators.has('BotBulls5') && botBulls5VisibleTimes.has(Number(curr.time))) {
-            if (curr.bb5_breakout_bull) {
-                indicatorMarkers.push({ time: Number(curr.time), position: 'belowBar', color: '#10b981', shape: 'arrowUp', text: `BB5 ${String(curr.bb5_pattern || 'Bull').replaceAll('_', ' ')}`, size: 1.2 });
-            } else if (curr.bb5_breakout_bear) {
-                indicatorMarkers.push({ time: Number(curr.time), position: 'aboveBar', color: '#f43f5e', shape: 'arrowDown', text: `BB5 ${String(curr.bb5_pattern || 'Bear').replaceAll('_', ' ')}`, size: 1.2 });
-            }
-        }
     }
 
     if (enabledChartIndicators.has('Candle Patterns')) {
@@ -6041,6 +6200,13 @@ function _btInitChart(candles, trades, equityCurve) {
         }) || [];
         indicatorMarkers.push(...candlePatternMarkers);
     }
+
+    if (enabledChartIndicators.has('Chart Patterns')) {
+        indicatorMarkers.push(...(window.StandardIndicatorSubcharts?.buildChartPatternMarkers?.(chartCandles, {
+            rolling24Hours: isCrypto(backtestTicker),
+        }) || []));
+    }
+    indicatorMarkers.push(...(window.StandardIndicatorSubcharts?.buildFlipMarkers?.(chartCandles, enabledChartIndicators) || []));
 
     btTradeMarkersRef = [...tradeMarkers].sort((a, b) => Number(a.time) - Number(b.time));
     btStrategyTradeMarkersRef = [...btTradeMarkersRef];
@@ -6091,16 +6257,7 @@ function _btInitChart(candles, trades, equityCurve) {
                    </div>`)
             : '';
 
-        let eqLine = '';
-        if (btEqSeries) {
-            const eqData = param.seriesData.get(btEqSeries);
-            if (eqData && eqData.value !== undefined) {
-                eqLine = `<div class="mt-1 pt-1 border-t border-indigo-50 text-[0.55rem] flex justify-between">
-                            <span class="text-violet-500 font-black">EQUITY</span>
-                            <span class="font-bold text-violet-600">$${eqData.value.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
-                          </div>`;
-            }
-        }
+        const eqLine = '';
 
         tooltip.innerHTML = `
             <div class="text-[0.55rem] text-slate-400 mb-1">${new Date(param.time * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}</div>
@@ -6167,19 +6324,14 @@ window.btToggleChartLayers = function() {
     if (!btChart) return;
     
     const volBox = document.getElementById('btToggleVolume');
-    const eqBox = document.getElementById('btToggleEquity');
     const indBox = document.getElementById('btToggleIndicators');
     const markBox = document.getElementById('btToggleMarkers');
 
     const showVol = volBox ? volBox.checked : true;
-    const showEq = eqBox ? eqBox.checked : true;
     const showIndicators = indBox ? indBox.checked : true;
 
     if (btVolumeSeries) {
         btVolumeSeries.applyOptions({ visible: showVol });
-    }
-    if (btEqSeries) {
-        btEqSeries.applyOptions({ visible: showEq });
     }
     (btIndicatorOverlaySeries || []).forEach(series => {
         try { series.applyOptions({ visible: showIndicators }); } catch (e) {}
@@ -6375,7 +6527,6 @@ function updateSignalLabels(mode) {
         sellLabel.className = `text-[0.6rem] font-black px-4 py-1.5 rounded-full ${sellColor} shadow-sm uppercase tracking-wider transition-all duration-300`;
     }
     if (mode === 'options') syncBtOptionsPutEntryThresholdLabel();
-    updateBacktestBotBulls4CachedBadges(mode);
 }
 
 function adjustSignalThreshold(mode, type, delta) {
@@ -6461,10 +6612,6 @@ window.BT_INDICATOR_TOOLTIPS = window.BT_INDICATOR_TOOLTIPS || {
     "VWAP": "Session VWAP is the cumulative typical-price and volume average for the exchange-local trading day, matching the standard Webull-style VWAP calculation.",
     "Auto-AVWAP": "Auto-AVWAP anchors the volume-weighted average at the latest volume spike. It is intentionally separate from Session VWAP and may not match Webull VWAP.",
     "Strategy Confidence": "Strategy Confidence combines multiple indicator signals into a single probability score. Purpose: Measures the overall conviction of a bullish or bearish trend.",
-    "BotBulls1": "Confirmed WaveTrend reversal with MFI reclaim/rejection, then price confirmation within the BB1 window. Confluence stays bullish after the last BB1 BUY marker and bearish after the last BB1 SELL marker.",
-    "BotBulls2": "Adaptive ATR trailing stop with trend-smoothed EMA and reversal zone detection. Fires on trend flips confirmed by multi-condition confluence scoring (1-4 strength rating).",
-    "BotBulls3": "Heikin-Ashi noise filter + ATR-based trailing stop. Generates buy/sell alerts only on confirmed momentum flips — removing false signals from choppy markets.",
-    "BotBulls5": "Premium causal chart-pattern engine for continuation, reversal, compression, channel, and rounded structures. Draws qualified geometry and votes only after a completed-candle breakout.",
     "Prior Day High/Low": "Uses the previous completed trading session's high and low as breakout/breakdown levels. Buffer is entered as %, with dotted trigger lines when non-zero.",
     "Pivot Points (S/R)": "Classic prior-session floor pivot levels. Draws up to 5 support/resistance ladders; bullish on support/pivot reclaim, bearish on resistance rejection or pivot breakdown.",
     "Volume Profile": "Prior-session volume-at-price profile using POC, VAH, and VAL. Purpose: Identifies institutional acceptance/rejection zones where the most volume traded.",
@@ -6488,38 +6635,11 @@ window.BT_INDICATOR_CONFIG_MAP = window.BT_INDICATOR_CONFIG_MAP || {
     'Swing Points': ['SWING_POINTS_LOOKBACK_DAYS', 'SWING_POINTS_ENTRY_MODE', 'SWING_POINTS_LEVEL_COUNT'],
     'ATR Volatility': ['ATR_PERIOD', 'ATR_STOP_MULTIPLIER', 'ATR_TRAIL_MULTIPLIER', 'ATR_TAKE_PROFIT_MULTIPLIER'],
     'Strategy Confidence': ['MIN_BULLISH_SIGNALS', 'MIN_BEARISH_SIGNALS'],
-    'BotBulls1': ['BOTBULLS1_WT_CHANNEL', 'BOTBULLS1_WT_AVERAGE', 'BOTBULLS1_WT_OVERSOLD', 'BOTBULLS1_WT_OVERBOUGHT', 'BOTBULLS1_MFI_BUY_RECLAIM', 'BOTBULLS1_MFI_SELL_REJECT', 'BOTBULLS1_CONFIRM_LOOKBACK', 'BOTBULLS1_REQUIRE_MFI_CONFIRM', 'BOTBULLS1_REQUIRE_CANDLE_CONFIRM', 'BOTBULLS1_REQUIRE_PRICE_CONFIRM', 'BOTBULLS1_PRICE_CONFIRM_EMA', 'BOTBULLS1_PRICE_CONFIRM_LOOKBACK'],
-    'BotBulls2': ['BOTBULLS2_ATR_MULT', 'BOTBULLS2_TREND_TRACER_PERIOD', 'BOTBULLS2_REVERSAL_ZONE_PERIOD'],
-    'BotBulls3': ['BOTBULLS3_ATR_PERIOD', 'BOTBULLS3_ATR_MULT'],
-    'BotBulls5': ['BOTBULLS5_MIN_CONFIDENCE', 'BOTBULLS5_BREAKOUT_BUFFER_ATR', 'BOTBULLS5_STRUCTURE_LOOKBACK', 'BOTBULLS5_SIGNAL_HOLD_BARS', 'BOTBULLS5_REQUIRE_VOLUME']
 };
 Object.assign(window.BT_INDICATOR_CONFIG_MAP, window.STANDARD_INDICATOR_CONFIG_MAP || {});
 
 // Industry Defaults for indicators based on config.py
 window.BT_INDICATOR_DEFAULTS = window.BT_INDICATOR_DEFAULTS || {
-    'BOTBULLS1_WT_CHANNEL': 10,
-    'BOTBULLS1_WT_AVERAGE': 21,
-    'BOTBULLS1_MFI_CONFIRM': 30,
-    'BOTBULLS1_WT_OVERSOLD': -55,
-    'BOTBULLS1_WT_OVERBOUGHT': 55,
-    'BOTBULLS1_MFI_BUY_RECLAIM': 35,
-    'BOTBULLS1_MFI_SELL_REJECT': 65,
-    'BOTBULLS1_CONFIRM_LOOKBACK': 3,
-    'BOTBULLS1_REQUIRE_MFI_CONFIRM': 1,
-    'BOTBULLS1_REQUIRE_CANDLE_CONFIRM': 1,
-    'BOTBULLS1_REQUIRE_PRICE_CONFIRM': 1,
-    'BOTBULLS1_PRICE_CONFIRM_EMA': 9,
-    'BOTBULLS1_PRICE_CONFIRM_LOOKBACK': 4,
-    'BOTBULLS2_ATR_MULT': 2.0,
-    'BOTBULLS2_TREND_TRACER_PERIOD': 50,
-    'BOTBULLS2_REVERSAL_ZONE_PERIOD': 50,
-    'BOTBULLS3_ATR_PERIOD': 10,
-    'BOTBULLS3_ATR_MULT': 1.0,
-    'BOTBULLS5_BREAKOUT_BUFFER_ATR': 0.10,
-    'BOTBULLS5_MIN_CONFIDENCE': 70.0,
-    'BOTBULLS5_SIGNAL_HOLD_BARS': 3,
-    'BOTBULLS5_REQUIRE_VOLUME': 0,
-    'BOTBULLS5_STRUCTURE_LOOKBACK': 48,
     'RSI_PERIOD': 14,
     'RSI_OVERBOUGHT': 70,
     'RSI_OVERSOLD': 30,
@@ -6585,13 +6705,6 @@ function openIndicatorSettings(indicatorName) {
     if (configKeys.length === 0) {
         container.innerHTML = '<p class="text-xs text-slate-500 italic">No adjustable parameters for this indicator.</p>';
     }
-    if (indicatorName === 'BotBulls5' && typeof window.renderBotBulls5PatternSummary === 'function') {
-        window.renderBotBulls5PatternSummary(
-            container,
-            manualBtVisibleHistory?.length ? manualBtVisibleHistory : manualBtHistory,
-            { rolling24Hours: isCrypto(manualBtTicker || '') },
-        );
-    }
 
     const currentParams = window.lastBacktestData?.indicator_parameters || {};
     const overrides = window.lastBacktestData?.indicator_overrides || {};
@@ -6613,30 +6726,6 @@ function openIndicatorSettings(indicatorName) {
         SWING_POINTS_LOOKBACK_DAYS: 'Swing Lookback Days',
         SWING_POINTS_ENTRY_MODE: 'Swing Entry Mode',
         SWING_POINTS_LEVEL_COUNT: 'S/R Levels To Draw (1-5)',
-        BOTBULLS1_WT_CHANNEL: 'WaveTrend Channel Period',
-        BOTBULLS1_WT_AVERAGE: 'WaveTrend Average Period',
-        BOTBULLS1_WT_OVERSOLD: 'WT Oversold Level',
-        BOTBULLS1_WT_OVERBOUGHT: 'WT Overbought Level',
-        BOTBULLS1_MFI_BUY_RECLAIM: 'MFI Buy Reclaim Level (0-100)',
-        BOTBULLS1_MFI_SELL_REJECT: 'MFI Sell Reject Level (0-100)',
-        BOTBULLS1_CONFIRM_LOOKBACK: 'WT Extreme Lookback Candles',
-        BOTBULLS1_REQUIRE_MFI_CONFIRM: 'Require MFI Confirmation (1=On, 0=Off)',
-        BOTBULLS1_REQUIRE_CANDLE_CONFIRM: 'Require Candle Confirmation (1=On, 0=Off)',
-        BOTBULLS1_REQUIRE_PRICE_CONFIRM: 'Require Price EMA Confirmation (1=On, 0=Off)',
-        BOTBULLS1_PRICE_CONFIRM_EMA: 'Price Confirmation EMA Period',
-        BOTBULLS1_PRICE_CONFIRM_LOOKBACK: 'Price Confirmation Window Candles',
-        BOTBULLS5_BREAKOUT_BUFFER_ATR: 'Breakout Close Buffer (ATR)',
-        BOTBULLS5_MIN_CONFIDENCE: 'Minimum Setup Quality (%)',
-        BOTBULLS5_SIGNAL_HOLD_BARS: 'Confluence Vote Duration (Bars)',
-        BOTBULLS5_REQUIRE_VOLUME: 'Require Breakout Volume (1=On, 0=Off)',
-        BOTBULLS5_STRUCTURE_LOOKBACK: 'Structural Pattern Lookback Bars',
-    };
-    const botbulls5InputAttrs = {
-        BOTBULLS5_BREAKOUT_BUFFER_ATR: 'min="0" max="1" step="0.05"',
-        BOTBULLS5_MIN_CONFIDENCE: 'min="40" max="95" step="1"',
-        BOTBULLS5_SIGNAL_HOLD_BARS: 'min="1" max="20" step="1"',
-        BOTBULLS5_REQUIRE_VOLUME: 'min="0" max="1" step="1"',
-        BOTBULLS5_STRUCTURE_LOOKBACK: 'min="20" max="120" step="1"',
     };
 
     configKeys.forEach(key => {
@@ -6646,22 +6735,12 @@ function openIndicatorSettings(indicatorName) {
         const toggleChecked = val === true || val === 1 || String(val).toLowerCase() === 'true' || String(val) === '1';
         const label = paramLabels[key] || key.replace(/_/g, ' ').toLowerCase();
         const isPercent = key.endsWith('_PCT') || key.endsWith('_PERCENTAGE');
-        const inputAttrs = botbulls5InputAttrs[key] || (key === 'PIVOT_LEVEL_COUNT'
+        const inputAttrs = (key === 'PIVOT_LEVEL_COUNT'
             ? 'min="1" max="5" step="1"'
             : key === 'SWING_POINTS_LEVEL_COUNT'
                 ? 'min="1" max="5" step="1"'
                 : key === 'SWING_POINTS_LOOKBACK_DAYS'
                     ? 'min="1" max="365" step="1"'
-                    : key === 'BOTBULLS1_CONFIRM_LOOKBACK'
-                        ? 'min="1" max="10" step="1"'
-                        : key === 'BOTBULLS1_REQUIRE_MFI_CONFIRM' || key === 'BOTBULLS1_REQUIRE_CANDLE_CONFIRM' || key === 'BOTBULLS1_REQUIRE_PRICE_CONFIRM'
-                            ? 'min="0" max="1" step="1"'
-                            : key === 'BOTBULLS1_PRICE_CONFIRM_EMA'
-                                ? 'min="5" max="50" step="1"'
-                            : key === 'BOTBULLS1_PRICE_CONFIRM_LOOKBACK'
-                                ? 'min="0" max="10" step="1"'
-                            : key === 'BOTBULLS1_MFI_BUY_RECLAIM' || key === 'BOTBULLS1_MFI_SELL_REJECT'
-                                ? 'min="0" max="100" step="1"'
             : key === 'VOLUME_PROFILE_ROWS'
                 ? 'min="12" max="120" step="1"'
                 : key === 'VOLUME_PROFILE_CONFIRMATION_CANDLES'
@@ -7112,10 +7191,10 @@ window.updateBtAllocationModeUI = function() {
         label.textContent = mode === 'compound' ? 'Starting Amount ($)' : 'Amount Per Trade ($)';
     }
     if (hint) {
-        hint.classList.toggle('hidden', mode !== 'compound');
+        hint.classList.remove('hidden');
         hint.textContent = mode === 'compound'
-            ? 'Backtest compounds realized P/L into the next trade amount.'
-            : '';
+            ? 'Compound: each buy = starting amount + realized P/L.'
+            : 'Fixed: every buy uses this exact amount. Max Position Size and Risk Per Trade can still cap it lower.';
     }
 };
 
@@ -7203,7 +7282,7 @@ window.updateBtDefaultCooldownLabel = function() {
     modes.forEach(mode => {
         const defaultOption = document.querySelector(`#strategyCooldownMinutes_${mode} option[value="default"]`);
         if (defaultOption) {
-            defaultOption.textContent = `Default (${formatBtMinutes(minutes)})`;
+            defaultOption.textContent = `Auto · 4 candles (${formatBtMinutes(minutes)})`;
         }
     });
 };

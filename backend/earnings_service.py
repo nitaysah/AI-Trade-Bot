@@ -7,6 +7,7 @@ the technical scanner and from the news/LLM pipeline.
 
 from __future__ import annotations
 
+import bisect
 import copy
 import math
 import time
@@ -24,6 +25,7 @@ from cache_manager import TTLCacheStore
 CENTRAL_TZ = ZoneInfo("America/Chicago")
 _RAW_CACHE = TTLCacheStore(maxsize=512)
 _RAW_CACHE_TTL_SECONDS = 300
+DATA_VERSION = 3  # 3: beat/miss record, typical post-earnings move, announcement timing, what-to-watch
 
 
 def _safe_number(value: Any) -> float | None:
@@ -150,6 +152,121 @@ def _history_records(table: Any) -> list[dict[str, Any]]:
     return list(reversed(records))
 
 
+def _timing_from_time(timestamp: Any) -> str:
+    """'BMO' / 'AMC' / 'DURING' from an announcement time of day (New York time), else 'UNKNOWN'."""
+    try:
+        hour = timestamp.hour + timestamp.minute / 60.0
+    except AttributeError:
+        return "UNKNOWN"
+    if hour == 0:
+        return "UNKNOWN"  # a midnight stamp means "date only"
+    if hour < 9.5:
+        return "BMO"
+    if hour >= 16:
+        return "AMC"
+    return "DURING"
+
+
+TIMING_TEXT = {"BMO": "Before market open", "AMC": "After market close", "DURING": "During market hours"}
+
+
+def _announcement_dates(yf_ticker: Any) -> list[dict[str, Any]]:
+    """Past and upcoming announcement dates with their time of day. Needs Yahoo's earnings-dates page, which yfinance
+    can only parse when ``lxml`` is installed; without it this returns [] and the rest of the report still works."""
+    try:
+        table = yf_ticker.get_earnings_dates(limit=16)
+    except Exception:
+        return []
+    if table is None or not hasattr(table, "iterrows"):
+        return []
+    rows: list[dict[str, Any]] = []
+    for index, row in table.iterrows():
+        event_date = _as_date(index)
+        if not event_date:
+            continue
+        try:
+            local = index.tz_convert("America/New_York") if getattr(index, "tzinfo", None) else index
+        except Exception:
+            local = index
+        values = row.to_dict() if hasattr(row, "to_dict") else {}
+        rows.append({
+            "date": event_date,
+            "timing": _timing_from_time(local),
+            "reported": _first_number(values, "Reported EPS", "epsActual"),
+        })
+    return rows
+
+
+def post_earnings_moves(closes: Any, events: list[dict[str, Any]], limit: int = 8) -> list[dict[str, Any]]:
+    """Price reaction to each past announcement from daily closes (a pandas Series indexed by date).
+
+    After the close (AMC) the reaction is the next session's close versus the announcement day's close; before the open
+    (BMO) or during the day it is the announcement day's close versus the previous close. When the time of day is
+    unknown the two-day move around the date is used and flagged ``approx``."""
+    if closes is None or not hasattr(closes, "index") or len(closes) < 5:
+        return []
+    try:
+        dates = [d.date() if hasattr(d, "date") else d for d in closes.index]
+        values = [float(v) for v in closes.values]
+    except (TypeError, ValueError, AttributeError):
+        return []
+    position = {d: i for i, d in enumerate(dates)}
+    today = datetime.now(CENTRAL_TZ).date()
+    moves: list[dict[str, Any]] = []
+    for event in sorted(events, key=lambda e: e["date"], reverse=True):
+        if event["date"] >= today:
+            continue
+        # The announcement day, or the next trading day if it fell on a non-trading day.
+        index = bisect.bisect_left(dates, event["date"])
+        index = index if index < len(dates) else None
+        if index is None or index < 1:
+            continue
+        timing = event.get("timing", "UNKNOWN")
+        try:
+            if timing == "AMC":
+                if index + 1 >= len(values):
+                    continue
+                move = values[index + 1] / values[index] - 1.0
+                approx = False
+            elif timing in ("BMO", "DURING"):
+                move = values[index] / values[index - 1] - 1.0
+                approx = False
+            else:
+                if index + 1 >= len(values):
+                    continue
+                move = values[index + 1] / values[index - 1] - 1.0
+                approx = True
+        except ZeroDivisionError:
+            continue
+        moves.append({"date": event["date"].isoformat(), "move_pct": round(move * 100.0, 2), "timing": timing, "approx": approx})
+        if len(moves) >= limit:
+            break
+    return moves
+
+
+def typical_move(moves: list[dict[str, Any]]) -> float | None:
+    values = [abs(m["move_pct"]) for m in moves if m.get("move_pct") is not None]
+    return round(sum(values) / len(values), 2) if len(values) >= 3 else None
+
+
+def beat_record(history: list[dict[str, Any]]) -> dict[str, Any]:
+    """Beats / misses / in-line over the reported quarters we have (``history`` is newest first) and the current streak."""
+    kinds: list[str] = []
+    for row in history:
+        actual, estimate = _safe_number(row.get("eps_actual")), _safe_number(row.get("eps_estimate"))
+        if actual is None or estimate is None:
+            continue
+        tolerance = max(0.005, abs(estimate) * 0.005)
+        kinds.append("beat" if actual > estimate + tolerance else "miss" if actual < estimate - tolerance else "in line")
+    streak = 0
+    for kind in kinds:
+        if kind != kinds[0]:
+            break
+        streak += 1
+    return {"quarters": len(kinds), "beats": kinds.count("beat"), "misses": kinds.count("miss"), "in_line": kinds.count("in line"),
+            "streak": streak, "streak_kind": kinds[0] if kinds else ""}
+
+
 def _fetch_raw(ticker: str) -> dict[str, Any]:
     symbol = str(ticker or "").upper().strip()
     if not symbol:
@@ -216,6 +333,19 @@ def _fetch_raw(ticker: str) -> dict[str, Any]:
         }
     except Exception:
         pass
+    # Announcement timing and the price reaction history (best effort: needs lxml for the dates, and price history).
+    try:
+        dates = _announcement_dates(yf_ticker)
+        raw["announcements"] = [{"date": _date_text(d["date"]), "timing": d["timing"]} for d in dates][:16]
+        upcoming = next((d for d in sorted(dates, key=lambda d: d["date"]) if d["date"] >= today and d["timing"] != "UNKNOWN"), None)
+        if upcoming and event_date and upcoming["date"] == event_date:
+            raw["timing"] = upcoming["timing"]
+            raw["timing_source"] = "yahoo_earnings_dates"
+        if dates:
+            closes = yf_ticker.history(period="3y", interval="1d", auto_adjust=False)["Close"].dropna()
+            raw["reactions"] = post_earnings_moves(closes, dates)
+    except Exception:
+        raw.setdefault("reactions", [])
     return raw
 
 
@@ -279,6 +409,21 @@ def _build_analysis(raw: dict[str, Any], days_to_event: int | None, options_prof
         spread_pct = abs(estimate_high - estimate_low) / abs(estimate_avg) * 100
         if spread_pct >= 10:
             uncertain.append(f"The EPS estimate range spans {spread_pct:.1f}% of the consensus estimate.")
+    record = beat_record(raw.get("history") or [])
+    if record["quarters"] >= 3:
+        if record["beats"] == record["quarters"]:
+            bullish.append(f"The company beat EPS estimates in all of the last {record['quarters']} quarters.")
+        elif record["beats"] >= record["quarters"] * 0.75:
+            bullish.append(f"EPS beat estimates in {record['beats']} of the last {record['quarters']} quarters.")
+        elif record["misses"] >= 2:
+            bearish.append(f"EPS missed estimates in {record['misses']} of the last {record['quarters']} quarters.")
+    revenue_growth = _safe_number((raw.get("revenue_estimate") or {}).get("growth"))
+    if revenue_growth is not None:
+        revenue_growth_pct = revenue_growth * 100 if abs(revenue_growth) <= 2 else revenue_growth
+        (bullish if revenue_growth_pct >= 5 else bearish if revenue_growth_pct <= -2 else uncertain).append(
+            f"Revenue is expected to change {revenue_growth_pct:+.1f}% versus the same quarter last year.")
+    moves = raw.get("reactions") or []
+    move = typical_move(moves)
     if not (bullish or bearish):
         outlook = "INSUFFICIENT"
     elif len(bullish) >= len(bearish) + 2:
@@ -305,12 +450,24 @@ def _build_analysis(raw: dict[str, Any], days_to_event: int | None, options_prof
     else:
         risk_level = "LOW"
         risk_text = f"Earnings are {days_to_event} days away; event risk is not yet near-term."
+    if move is not None and days_to_event is not None and days_to_event <= 14:
+        risk_text += f" Over its last {len([m for m in moves if m.get('move_pct') is not None])} reports the stock typically moved about {move:.1f}% the next session, so a stop closer than that can be gapped through."
     if options_profile:
         uncertain.append("Options can experience implied-volatility repricing around earnings.")
     evidence_items = (bullish + bearish + uncertain)[:3]
     evidence = " ".join(item.rstrip(".") + "." for item in evidence_items)
     summary = f"Pre-earnings outlook is {outlook.lower()}. {evidence or 'There is not enough structured evidence for a directional outlook.'} {risk_text}"
+    watch = ["Reported EPS versus the consensus estimate, and whether the beat or miss comes from revenue or from costs.",
+             "Revenue versus the estimate and the growth rate it implies.",
+             "Guidance for the next quarter and the full year: the stock often reacts more to guidance than to the quarter itself.",
+             "Margins and cash flow: are profits growing faster or slower than sales?"]
+    if move is not None:
+        watch.append(f"The typical post-earnings move is about {move:.1f}%: a smaller reaction is unremarkable, a larger one is a signal.")
     return {
+        "beat_record": record,
+        "typical_move_pct": move,
+        "reactions": moves,
+        "what_to_watch": watch,
         "outlook": outlook,
         "bullish_factors": bullish,
         "bearish_factors": bearish,
@@ -342,7 +499,7 @@ def build_earnings_watch(ticker: str, previous: dict | None = None, options_prof
         days_to_event = (event_date - today).days if event_date else None
         analysis = _build_analysis(raw, days_to_event, options_profile=options_profile)
         payload = {
-            "data_version": 2,
+            "data_version": DATA_VERSION,
             "enabled": True,
             "initialized": True,
             "status": raw.get("status", "unavailable"),
@@ -350,7 +507,7 @@ def build_earnings_watch(ticker: str, previous: dict | None = None, options_prof
             "event_date": raw.get("event_date", ""),
             "event_dates": raw.get("event_dates", []),
             "event_status": "estimated" if event_date else "not_published",
-            "timing": raw.get("timing", "UNKNOWN"),
+            "timing": TIMING_TEXT.get(raw.get("timing", "UNKNOWN"), raw.get("timing", "UNKNOWN")),
             "timing_source": raw.get("timing_source", "not_provided"),
             "exchange_timezone": raw.get("exchange_timezone", "America/New_York"),
             "days_to_event": days_to_event,
