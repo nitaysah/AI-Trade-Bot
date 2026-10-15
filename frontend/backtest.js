@@ -754,10 +754,16 @@ document.addEventListener('DOMContentLoaded', () => {
     window.AlpacaStatusCache?.render();
     ensureDailyHighLowBacktestIndicatorCards();
 
+// True while the code (not the user) is writing the Simulation Days value. A user edit marks the days as
+// chosen so later timeframe/strategy changes keep it instead of snapping back to the default.
+window._btDaysProgrammatic = false;
+window._btDaysUserChosen = false;
+
 window.syncBtDaysPreset = function(presetVal) {
     const input = document.getElementById('btDays');
     const customWrap = document.getElementById('btDaysCustomWrap');
     if (!input) return;
+    if (!window._btDaysProgrammatic) window._btDaysUserChosen = true;
     if (presetVal === 'custom') {
         customWrap?.classList.remove('hidden');
         input.value = '';
@@ -772,6 +778,7 @@ window.syncBtDaysInput = function(rawVal) {
     const select = document.getElementById('btDaysPreset');
     const customWrap = document.getElementById('btDaysCustomWrap');
     if (!select) return;
+    if (!window._btDaysProgrammatic) window._btDaysUserChosen = true;
     const val = String(rawVal).trim();
     const matchingOption = Array.from(select.options).find(opt => opt.value === val && opt.value !== 'custom');
     if (matchingOption) {
@@ -795,6 +802,8 @@ window.syncBtDaysInput = function(rawVal) {
         const updateDaysVal = (e) => {
             const tf = e ? e.target.value : btTfRegular?.value;
             if (!tf) return;
+            // The user picked their own history length: a timeframe or strategy change must not reset it.
+            if (window._btDaysUserChosen) return;
             const sessionRider = document.getElementById('strategyPresetSelect_regular')?.value === 'session_rider';
             let targetDays = sessionRider ? 365 : 90;
             if (!sessionRider && tf === '1Min') targetDays = 7;
@@ -802,11 +811,21 @@ window.syncBtDaysInput = function(rawVal) {
             else if (!sessionRider && tf === '1Hour') targetDays = 365;
             else if (!sessionRider && tf === '4Hour') targetDays = 730;
             else if (!sessionRider && tf === '1Day') targetDays = 1825;
-            btDaysInput.value = targetDays;
-            window.syncBtDaysInput(targetDays);
+            window._btDaysProgrammatic = true;
+            try {
+                btDaysInput.value = targetDays;
+                window.syncBtDaysInput(targetDays);
+            } finally {
+                window._btDaysProgrammatic = false;
+            }
         };
         btTfRegular?.addEventListener('change', updateDaysVal);
         btTfRegular?.addEventListener('change', () => window.updateBtDefaultCooldownLabel?.());
+        // Choosing a different strategy goes back to that strategy's default history length.
+        document.getElementById('strategyPresetSelect_regular')?.addEventListener('change', () => {
+            window._btDaysUserChosen = false;
+            updateDaysVal();
+        });
         updateDaysVal();
     }
 
@@ -3479,8 +3498,14 @@ async function runBacktest(options = {}) {
         // Session Rider fetches intraday bars year-by-year from Alpaca. Do not
         // apply the generic Yahoo chart caps before the request is sent; the
         // backend returns a source-specific error if Alpaca is unavailable.
-        maxDays = 366;
-        limitDesc = "366 days (Alpaca intraday history)";
+        // 1-minute bars are ~390/day, so that timeframe is capped lower to keep the request bounded.
+        if (timeframe === '1Min') {
+            maxDays = 730;
+            limitDesc = "2 years (730 days) of 1-minute bars";
+        } else {
+            maxDays = 1825;
+            limitDesc = "5 years (1825 days)";
+        }
     } else if (timeframe === '1Min') {
         maxDays = 7;
         limitDesc = "7 days";

@@ -2138,16 +2138,26 @@ function renderFastChartPayload(data, requestedTicker) {
     // Always resolve the loading state after a successful chart response.
     // An empty signal map is degraded data, not a reason to leave an
     // indefinite spinner over the panel.
-    renderSignals(
-        signals,
-        scan.action || payload.action || 'HOLD',
-        hasSignals
-            ? (scan.reason || payload.reason || '')
-            : `No indicator signal values were returned for ${ticker}. Refresh to retry.`,
-        scan.bullish_count ?? payload.bullish_count ?? 0,
-        scan.bearish_count ?? payload.bearish_count ?? 0,
-        { allowEmpty: true }
-    );
+    // renderSignals() drops renders while an indicator-save lock is held (up to 15s). On a slower
+    // backend the chart response lands inside that window, was dropped, and left the spinner on
+    // until the next candle. Local indicator prefs already override backend flags, so a fresh
+    // chart payload is safe to render regardless of the lock.
+    const previousRenderAllowed = window._indicatorRefreshRenderAllowed;
+    window._indicatorRefreshRenderAllowed = true;
+    try {
+        renderSignals(
+            signals,
+            scan.action || payload.action || 'HOLD',
+            hasSignals
+                ? (scan.reason || payload.reason || '')
+                : `No indicator signal values were returned for ${ticker}. Refresh to retry.`,
+            scan.bullish_count ?? payload.bullish_count ?? 0,
+            scan.bearish_count ?? payload.bearish_count ?? 0,
+            { allowEmpty: true }
+        );
+    } finally {
+        window._indicatorRefreshRenderAllowed = previousRenderAllowed;
+    }
     updateSizingPanel(scan);
     if (hasSignals) stampSignalUpdatedTime(scan);
 
@@ -2282,6 +2292,7 @@ async function _loadTickerChartFastImpl(ticker, options = {}) {
         const response = await fetchWithTimeout(url, { headers }, CHART_FETCH_TIMEOUT_MS);
         if (!response.ok) {
             console.error(`[chart] HTTP Error: ${response.status} - ${await response.text()}`);
+            if (requestId === chartRequestSerial) showSignalConfluenceFetchError(`Server returned ${response.status}`);
             return;
         }
         const data = await response.json();
@@ -2302,6 +2313,9 @@ async function _loadTickerChartFastImpl(ticker, options = {}) {
         return data;
     } catch (e) {
         setChartLoadingState(false);
+        if (requestId === chartRequestSerial && !isRequestAbort(e)) {
+            showSignalConfluenceFetchError(isRequestTimeout(e) ? 'Request timed out' : 'Network error');
+        }
         if (isRequestTimeout(e) || isRequestAbort(e)) {
             console.warn(`[chart] Refresh skipped: ${e.message || e.name}`);
         } else {
@@ -3492,6 +3506,24 @@ function unlockSignalConfluencePanelHeight() {
 if (typeof window !== 'undefined') {
     window.addEventListener('resize', unlockSignalConfluencePanelHeight);
     window.addEventListener('orientationchange', unlockSignalConfluencePanelHeight);
+}
+
+/* If the chart request fails and no signals are on screen, drop the spinner and offer a retry
+ * instead of leaving 'Fetching Signals' up forever. Existing signals stay visible. */
+function showSignalConfluenceFetchError(reason) {
+    setSignalConfluenceLoadingState(false);
+    const grid = document.getElementById('signalGrid');
+    if (!grid || grid.children.length > 0) return;
+    const box = document.createElement('div');
+    box.className = 'col-span-full text-center text-xs text-slate-500 py-6';
+    box.textContent = `Signals unavailable (${reason}). `;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'font-bold text-indigo-600 underline min-h-[44px] px-2';
+    btn.textContent = 'Retry';
+    btn.addEventListener('click', () => loadSelectedTickerChart({ force: true, renderCached: false, fetchFresh: true }));
+    box.appendChild(btn);
+    grid.appendChild(box);
 }
 
 function setSignalConfluenceLoadingState(isLoading) {

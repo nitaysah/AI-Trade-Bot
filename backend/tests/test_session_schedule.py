@@ -139,7 +139,10 @@ class CatalogIntegration(unittest.TestCase):
         self.assertEqual(option["schedule"]["default_buy"], "close-5")
         applied = sp.apply_strategy_preset({"strategy_preset_enabled": True, "strategy_preset": "session_rider",
                                             "timeframe": "5Min", S.BUY_KEY: "Close - 2"})
-        self.assertEqual(applied["timeframe"], "1Day")
+        # Timeframe is the user's own field: a supported choice is kept, and 1Day is only the default.
+        self.assertEqual(applied["timeframe"], "5Min")
+        default_applied = sp.apply_strategy_preset({"strategy_preset_enabled": True, "strategy_preset": "session_rider"})
+        self.assertEqual(default_applied["timeframe"], "1Day")
         self.assertEqual(applied[S.BUY_KEY], "close-2")
         self.assertEqual(applied[S.SELL_KEY], "open+5")
         self.assertTrue(sp.is_schedule_active(applied))

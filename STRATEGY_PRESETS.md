@@ -176,7 +176,7 @@ One preset (`session_rider`, kind `schedule`; rules in `backend/session_schedule
 
 **Screener:** shows where the schedule is ("flat · buy 3:55 PM ET" or "overnight window · sell 9:35 AM ET"). This is the schedule, not your positions. It alerts once at each Buy and Sell time, including before the open; an event more than 10 minutes old is not alerted. Alerts ignore the bullish/bearish filters and obey their own on/off switch (`session_alerts_enabled`). No candles are fetched, no broker is called, and nothing depends on the Bots engine.
 
-**Backtest:** fills at the open of the 5-minute bar that starts at each time (1-minute bars for times off the 5-minute grid). If that bar is missing, it uses the next bar within 5 minutes; otherwise the day is skipped and counted. It needs Alpaca intraday data (from 2016) and refuses a Yahoo fallback, which has only 7–60 days of intraday bars.
+**Backtest:** fills at the open of the 5-minute bar that starts at each time (1-minute bars for times off the 5-minute grid). If that bar is missing, it uses the next bar within 5 minutes; otherwise the day is skipped and counted. It prefers Alpaca intraday data (from 2016; the user's keys, else the server's). If no Alpaca credentials exist at all, it uses Yahoo, which has only about 7 days of 1-minute and 60 days of 5-minute bars: the test window is trimmed to the days Yahoo covers and the report says so. If Alpaca is configured but returns Yahoo data (an Alpaca failure), it refuses rather than silently testing a few days.
 
 The report shows:
 - the schedule against buy-and-hold and buy-and-hold's overnight and intraday parts;

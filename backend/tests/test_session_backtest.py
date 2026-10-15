@@ -43,8 +43,10 @@ def make_data(step_minutes, overrides, source="alpaca", days=None):
     return fake
 
 
-def run(fake, settings=None, start=datetime(2026, 9, 14), end=datetime(2026, 9, 21), timeframe="1Day", **kw):
-    with patch.object(B, "get_historical_data", side_effect=fake):
+def run(fake, settings=None, start=datetime(2026, 9, 14), end=datetime(2026, 9, 21), timeframe="1Day", alpaca_linked=True, **kw):
+    creds = ("test-key", "test-secret") if alpaca_linked else (None, None)
+    with patch.object(B, "get_historical_data", side_effect=fake), \
+            patch("broker_factory.get_alpaca_data_credentials", return_value=creds):
         bt = B.Backtester("SPY", timeframe, start, end, initial_capital=10000.0,
                           trade_amount=1000.0, strategy_preset="session_rider", session_settings=settings or {},
                           max_pos_pct=1.0, **kw)
@@ -121,6 +123,24 @@ class SessionBacktestTests(unittest.TestCase):
         res = run(make_data(5, {}, source="yahoo"))
         self.assertIn("error", res)
         self.assertIn("Alpaca", res["error"])
+
+    def test_without_alpaca_keys_it_uses_yahoo_and_says_so(self):
+        res = run(make_data(5, self.overrides("15:55", "09:35"), source="yahoo"), alpaca_linked=False)
+        self.assertNotIn("error", res)
+        notes = res["summary"]["strategy_preset"]["notes"]
+        self.assertTrue(any("Yahoo" in n for n in notes))
+
+    def test_yahoo_window_is_trimmed_to_the_days_it_covers(self):
+        days = ["2026-09-17", "2026-09-18", "2026-09-21"]  # Yahoo has no bars before the 17th
+        full = make_data(5, {}, source="yahoo")
+        short = make_data(5, {}, days=days, source="yahoo")
+
+        def fake(ticker, timeframe, start, end, force_yahoo=False):
+            return (full if timeframe == "1Day" else short)(ticker, timeframe, start, end, force_yahoo)
+        res = run(fake, alpaca_linked=False)
+        self.assertNotIn("error", res)
+        notes = res["summary"]["strategy_preset"]["notes"]
+        self.assertTrue(any("requested trading days" in n for n in notes))
 
     def test_loss_streak_pause_count(self):
         losing = {d: 99.0 for d in SELLS}

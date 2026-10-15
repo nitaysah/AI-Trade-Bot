@@ -1689,8 +1689,27 @@ class Backtester:
         fallback is refused rather than silently testing a few days."""
         from datetime import timedelta
         frames = []
+        # Without any Alpaca credentials (the user's own or the server's) the data layer can only use Yahoo.
+        # Yahoo's intraday history is short, so the caller trims the window to what exists and says so.
+        self._session_yahoo_used = False
+        try:
+            from broker_factory import get_alpaca_data_credentials
+            no_alpaca = not get_alpaca_data_credentials()[0]
+        except Exception:
+            no_alpaca = False
+        if no_alpaca:
+            frame = get_historical_data(self.ticker, timeframe, first_day.to_pydatetime(),
+                                        (last_day + timedelta(days=1)).to_pydatetime(), force_yahoo=True)
+            if frame is None or frame.empty:
+                return None, (f"No {timeframe} bars for {self.ticker} from Yahoo. Yahoo keeps only 7 days of 1-minute and "
+                              f"60 days of 5-minute bars; link your Alpaca keys for longer history.")
+            if str((frame.attrs or {}).get("data_quality", "OK")).upper() == "DEGRADED":
+                return None, f"{self.ticker} {timeframe} bars failed the split-adjustment check, so the strategy was not run."
+            self.data_feed = (frame.attrs or {}).get("feed") or self.data_feed
+            frames.append(frame)
+            self._session_yahoo_used = True
         year_start = first_day
-        while year_start <= last_day:
+        while not no_alpaca and year_start <= last_day:
             year_end = min(last_day, pd.Timestamp(year_start.year, 12, 31))
             frame = get_historical_data(self.ticker, timeframe, year_start.to_pydatetime(),
                                         (year_end + timedelta(days=1)).to_pydatetime(), force_yahoo=False)
@@ -1713,10 +1732,12 @@ class Backtester:
             bars.index = bars.index.tz_convert("America/New_York").tz_localize(None)
         bars = bars[~bars.index.duplicated(keep="last")].sort_index()
         bars = self._title_ohlc(self._regular_hours_only(bars))
-        first_bar_day = bars.index[0].normalize() if not bars.empty else None
-        if first_bar_day is None or first_bar_day > first_day + pd.Timedelta(days=5):
+        if bars.empty:
+            return None, f"No regular-hours {timeframe} bars for {self.ticker} in the selected range."
+        first_bar_day = bars.index[0].normalize()
+        if not self._session_yahoo_used and first_bar_day > first_day + pd.Timedelta(days=5):
             return None, (f"{timeframe} bars for {self.ticker} only start on "
-                          f"{first_bar_day.date() if first_bar_day is not None else 'n/a'}; choose a start date after that.")
+                          f"{first_bar_day.date()}; choose a start date after that.")
         return bars, None
 
     def _session_price(self, opens, at, *, exit_side=False):
@@ -1776,6 +1797,21 @@ class Backtester:
         bars, err = self._session_intraday_bars(bar_tf, days[0], days[-1] + pd.Timedelta(days=7), window_last=days[-1])
         if err:
             return {"error": err}
+        yahoo_note = None
+        if getattr(self, "_session_yahoo_used", False):
+            # Yahoo only holds recent intraday bars: test the days it covers rather than counting the rest as misses.
+            first_covered = bars.index[0].normalize()
+            covered = window.loc[first_covered:]
+            if covered.empty:
+                return {"error": f"Yahoo has no {bar_tf} bars inside the selected range. Link your Alpaca keys for longer intraday history."}
+            if len(covered) < len(window):
+                yahoo_note = (f"Alpaca is not linked, so intraday bars came from Yahoo, which keeps only about 7 days of 1-minute and "
+                              f"60 days of 5-minute bars. This test covers {covered.index[0].date()} to {covered.index[-1].date()} "
+                              f"({len(covered)} of the {len(window)} requested trading days). Link Alpaca for the full history.")
+            else:
+                yahoo_note = "Alpaca is not linked, so intraday bars came from Yahoo (short history; fills are less reliable)."
+            window = covered
+            days = window.index
         opens = bars["Open"].astype(float).dropna()
         closes = window["Close"].astype(float)
 
@@ -1911,6 +1947,8 @@ class Backtester:
             "The first and last minutes of the session have wider spreads and more noise; live fills can differ from these bar prices.",
             f"The live bot pauses after {pause_after} losses in a row and waits for your review; the backtest keeps trading.",
         ]
+        if yahoo_note:
+            notes.insert(0, yahoo_note)
         info = {
             "id": preset.id, "variant_id": self.strategy_preset_variant, "label": preset.label,
             "variant_label": "Scheduled buy and sell", "kind": S.KIND, "catalog_version": sp.CATALOG_VERSION,
