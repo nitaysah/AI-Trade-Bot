@@ -2120,24 +2120,36 @@ function renderFastChartPayload(data, requestedTicker) {
     const volumeProfile = payload?.volumeProfile ?? payload?.volume_profile;
     if (volumeProfile !== undefined) dashboardVolumeProfilePayload = volumeProfile;
     if (history.length > 0) {
-        updateChart(history, ticker, volumeProfile);
+        // A chart-overlay failure must not prevent the confluence grid from
+        // receiving the same payload. The grid is the primary signal surface
+        // and should be able to report degraded chart data independently.
+        try {
+            updateChart(history, ticker, volumeProfile);
+        } catch (error) {
+            console.error('[chart] Overlay render failed; continuing with signal confluence:', error);
+        }
     }
 
     const scan = payload?.primaryScan || payload;
     const signals = scan?.signals || payload?.signals || {};
-    if (signals && Object.keys(signals).length > 0) {
-        window._lastSignals = signals;
-        window._lastSignalsTicker = ticker;
-        renderSignals(
-            signals,
-            scan.action || payload.action || 'HOLD',
-            scan.reason || payload.reason || '',
-            scan.bullish_count ?? payload.bullish_count ?? 0,
-            scan.bearish_count ?? payload.bearish_count ?? 0
-        );
-        updateSizingPanel(scan);
-        stampSignalUpdatedTime(scan);
-    }
+    const hasSignals = signals && Object.keys(signals).length > 0;
+    window._lastSignals = signals || {};
+    window._lastSignalsTicker = ticker;
+    // Always resolve the loading state after a successful chart response.
+    // An empty signal map is degraded data, not a reason to leave an
+    // indefinite spinner over the panel.
+    renderSignals(
+        signals,
+        scan.action || payload.action || 'HOLD',
+        hasSignals
+            ? (scan.reason || payload.reason || '')
+            : `No indicator signal values were returned for ${ticker}. Refresh to retry.`,
+        scan.bullish_count ?? payload.bullish_count ?? 0,
+        scan.bearish_count ?? payload.bearish_count ?? 0,
+        { allowEmpty: true }
+    );
+    updateSizingPanel(scan);
+    if (hasSignals) stampSignalUpdatedTime(scan);
 
     if (window.lastDashboardData) {
         window.lastDashboardData.primaryTicker = ticker;

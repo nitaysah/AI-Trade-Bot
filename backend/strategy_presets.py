@@ -248,9 +248,12 @@ PRESETS[session_schedule.PRESET_ID] = StrategyPreset(
                "possible. No stop-loss, take-profit or trailing exits."),
     variants=(PresetVariant("scheduled", "Scheduled buy and sell", "Your Buy time and Sell time decide everything.", {}),),
     default_variant="scheduled",
-    supported_timeframes=("1Day",),
+    # Scheduled entries need an intraday bar to honor the configured clock time.
+    # 1Day remains available as the compatibility mode that automatically chooses
+    # 1Min or 5Min bars from the schedule precision.
+    supported_timeframes=("1Min", "5Min", "10Min", "15Min", "30Min", "1Day"),
     default_timeframe="1Day",
-    allowed_timeframes=("1Day",),
+    allowed_timeframes=("1Min", "5Min", "10Min", "15Min", "30Min", "1Day"),
     supported_sessions=("Regular",),
     allowed_sessions=("Regular",),
     overrides={},

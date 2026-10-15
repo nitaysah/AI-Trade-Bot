@@ -1747,8 +1747,10 @@ class Backtester:
             return {"error": errors[0]}
         cfg = S.normalized_settings(self.session_settings)
         buy, sell, mode = cfg[S.BUY_KEY], cfg[S.SELL_KEY], cfg["mode"]
-        if self.timeframe != "1Day":
-            return {"error": f"{preset.label} uses its own clock times; set the timeframe to 1Day."}
+        allowed_timeframes = {"1Min", "5Min", "10Min", "15Min", "30Min", "1Day"}
+        if self.timeframe not in allowed_timeframes:
+            ordered = ("1Min", "5Min", "10Min", "15Min", "30Min", "1Day")
+            return {"error": f"{preset.label} supports {', '.join(ordered)} for scheduled fills."}
         if self.is_crypto:
             return {"error": f"{preset.label} supports US stocks and ETFs only."}
 
@@ -1766,7 +1768,11 @@ class Backtester:
             return {"error": "No data available in the requested range after filtering."}
         days = window.index
 
-        bar_tf = "1Min" if S.needs_minute_bars(buy, sell) else "5Min"
+        # 1Day is the legacy compatibility mode: choose the smallest bar
+        # needed by the clock settings. An intraday selection is explicit and
+        # controls the bar source, while the existing five-minute entry window
+        # still rejects fills that arrive too late for that schedule.
+        bar_tf = ("1Min" if S.needs_minute_bars(buy, sell) else "5Min") if self.timeframe == "1Day" else self.timeframe
         bars, err = self._session_intraday_bars(bar_tf, days[0], days[-1] + pd.Timedelta(days=7), window_last=days[-1])
         if err:
             return {"error": err}

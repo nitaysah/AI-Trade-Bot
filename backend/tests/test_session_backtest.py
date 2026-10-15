@@ -43,9 +43,9 @@ def make_data(step_minutes, overrides, source="alpaca", days=None):
     return fake
 
 
-def run(fake, settings=None, start=datetime(2026, 9, 14), end=datetime(2026, 9, 21), **kw):
+def run(fake, settings=None, start=datetime(2026, 9, 14), end=datetime(2026, 9, 21), timeframe="1Day", **kw):
     with patch.object(B, "get_historical_data", side_effect=fake):
-        bt = B.Backtester("SPY", "1Day", start, end, initial_capital=10000.0,
+        bt = B.Backtester("SPY", timeframe, start, end, initial_capital=10000.0,
                           trade_amount=1000.0, strategy_preset="session_rider", session_settings=settings or {},
                           max_pos_pct=1.0, **kw)
         return bt.run()
@@ -96,6 +96,16 @@ class SessionBacktestTests(unittest.TestCase):
         self.assertEqual(info["bar_timeframe"], "1Min")
         expected = sum(1000.0 / b * (s - b) for b, s in zip(BUYS.values(), SELLS.values()))
         self.assertAlmostEqual(res["summary"]["roi_pct"], round(expected / 10000 * 100, 2), places=2)
+
+    def test_selected_five_minute_timeframe_controls_intraday_bars(self):
+        res = run(make_data(5, self.overrides("15:55", "09:35")), timeframe="5Min")
+        self.assertNotIn("error", res)
+        self.assertEqual(res["summary"]["strategy_preset"]["bar_timeframe"], "5Min")
+
+    def test_selected_one_day_timeframe_keeps_schedule_compatibility(self):
+        res = run(make_data(5, self.overrides("15:55", "09:35")), timeframe="1Day")
+        self.assertNotIn("error", res)
+        self.assertEqual(res["summary"]["strategy_preset"]["bar_timeframe"], "5Min")
 
     def test_intraday_mode(self):
         o = {f"{d} 09:35": 100.0 for d in DAYS}

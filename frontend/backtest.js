@@ -795,12 +795,13 @@ window.syncBtDaysInput = function(rawVal) {
         const updateDaysVal = (e) => {
             const tf = e ? e.target.value : btTfRegular?.value;
             if (!tf) return;
-            let targetDays = 90;
-            if (tf === '1Min') targetDays = 7;
-            else if (['5Min', '10Min', '15Min', '30Min'].includes(tf)) targetDays = 60;
-            else if (tf === '1Hour') targetDays = 365;
-            else if (tf === '4Hour') targetDays = 730;
-            else if (tf === '1Day') targetDays = 1825;
+            const sessionRider = document.getElementById('strategyPresetSelect_regular')?.value === 'session_rider';
+            let targetDays = sessionRider ? 365 : 90;
+            if (!sessionRider && tf === '1Min') targetDays = 7;
+            else if (!sessionRider && ['5Min', '10Min', '15Min', '30Min'].includes(tf)) targetDays = 60;
+            else if (!sessionRider && tf === '1Hour') targetDays = 365;
+            else if (!sessionRider && tf === '4Hour') targetDays = 730;
+            else if (!sessionRider && tf === '1Day') targetDays = 1825;
             btDaysInput.value = targetDays;
             window.syncBtDaysInput(targetDays);
         };
@@ -3474,6 +3475,12 @@ async function runBacktest(options = {}) {
     if (chartOnly) {
         maxDays = manualBtMaxDaysForTimeframe(timeframe, manualBtSourcePref());
         limitDesc = `${maxDays} day${maxDays === 1 ? '' : 's'}`;
+    } else if (document.getElementById('strategyPresetSelect_regular')?.value === 'session_rider') {
+        // Session Rider fetches intraday bars year-by-year from Alpaca. Do not
+        // apply the generic Yahoo chart caps before the request is sent; the
+        // backend returns a source-specific error if Alpaca is unavailable.
+        maxDays = 366;
+        limitDesc = "366 days (Alpaca intraday history)";
     } else if (timeframe === '1Min') {
         maxDays = 7;
         limitDesc = "7 days";
