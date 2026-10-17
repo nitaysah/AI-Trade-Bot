@@ -657,6 +657,11 @@
                             <span class="text-[0.65rem] font-bold text-indigo-600 uppercase tracking-widest">Fetching
                                 Signals</span>
                         </div>
+                        <div id="signalEmptyNotice" role="status"
+                            class="hidden mb-2 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-[0.7rem] sm:text-xs font-semibold text-indigo-800">
+                            No indicators are turned on, so there are no signals to show. Click an indicator card below to
+                            turn it on. Signals appear after the next refresh.
+                        </div>
                         <div id="signalGrid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
                             <!-- Signals injected by JS -->
                         </div>
@@ -728,7 +733,7 @@
     <script src="indicator-catalog.js?v=23"></script>
     <script src="indicator-subcharts.js?v=19"></script>
     <script src="volume-profile-overlay.js?v=4"></script>
-    <script src="app.js?v=179"></script>
+    <script src="app.js?v=181"></script>
     <script src="indicator-workspace.js?v=14"></script>
 
     <!-- Fear & Greed Sub-Components Modal -->

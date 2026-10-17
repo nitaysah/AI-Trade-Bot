@@ -1,5 +1,6 @@
 import time
 import unittest
+from email.utils import formatdate
 from unittest.mock import patch
 
 import ai_indicator
@@ -11,12 +12,14 @@ class CnbcNewsProviderTests(unittest.TestCase):
         ai_indicator._CNBC_RSS_FAILURE_CACHE.clear()
 
     def test_cnbc_rss_parser_keeps_recent_timestamped_items(self):
-        rss = b"""
+        # Dated relative to now: a fixed date ages out of the provider's "recent" window and fails the test later.
+        recent = formatdate(time.time() - 3600, usegmt=True)
+        rss = f"""
         <rss version="2.0"><channel>
           <item>
             <title>Tesla Roadster event postponed to October 15</title>
             <link>https://www.cnbc.com/2026/09/28/tesla-roadster-delay.html</link>
-            <pubDate>Mon, 28 Sep 2026 19:27:00 GMT</pubDate>
+            <pubDate>{recent}</pubDate>
             <description>Tesla rescheduled the outdoor Roadster event.</description>
           </item>
           <item>
@@ -25,7 +28,7 @@ class CnbcNewsProviderTests(unittest.TestCase):
             <pubDate>Mon, 01 Jan 2024 00:00:00 GMT</pubDate>
           </item>
         </channel></rss>
-        """
+        """.encode()
         with patch.object(ai_indicator, "_fetch_public_url", return_value=rss):
             items = ai_indicator._fetch_cnbc_rss_feed(
                 "autos",

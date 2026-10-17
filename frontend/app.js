@@ -2135,6 +2135,8 @@ function renderFastChartPayload(data, requestedTicker) {
     const hasSignals = signals && Object.keys(signals).length > 0;
     window._lastSignals = signals || {};
     window._lastSignalsTicker = ticker;
+    window._signalsResolvedTicker = ticker;
+    if (!hasSignals && !noDashboardIndicatorsEnabled()) console.warn(`[chart] ${ticker}: the chart response contained no indicator signals (payload keys: ${Object.keys(payload || {}).slice(0, 12).join(', ')}).`);
     // Always resolve the loading state after a successful chart response.
     // An empty signal map is degraded data, not a reason to leave an
     // indefinite spinner over the panel.
@@ -2150,7 +2152,9 @@ function renderFastChartPayload(data, requestedTicker) {
             scan.action || payload.action || 'HOLD',
             hasSignals
                 ? (scan.reason || payload.reason || '')
-                : `No indicator signal values were returned for ${ticker}. Refresh to retry.`,
+                : (noDashboardIndicatorsEnabled()
+                    ? 'No indicators are turned on.'
+                    : `No indicator signal values were returned for ${ticker}. Refresh to retry.`),
             scan.bullish_count ?? payload.bullish_count ?? 0,
             scan.bearish_count ?? payload.bearish_count ?? 0,
             { allowEmpty: true }
@@ -2564,6 +2568,7 @@ function showTickerChangeLoadingState(ticker, options = {}) {
     updateActiveTickerDisplay(normalized);
     window._lastSignals = null;
     window._lastSignalsTicker = normalized;
+    window._signalsResolvedTicker = null;
     livePriceRequestSerial++;
     chartRequestSerial++;
     _aiIndicatorFetchId++;
@@ -3549,6 +3554,17 @@ function buildMissingSignalPlaceholder(name, prefs) {
     };
 }
 
+// True when the user has no dashboard indicator switched on. The backend then correctly returns no signals, which must read
+// as "nothing enabled" and not as an endless "Fetching Signals".
+function noDashboardIndicatorsEnabled(prefs = getGlobalIndicatorPrefs()) {
+    return !ALL_SIGNAL_NAMES.some(name => isDashboardIndicatorAllowed(name) && prefs[name] === true);
+}
+
+function updateSignalEmptyNotice() {
+    const notice = document.getElementById('signalEmptyNotice');
+    if (notice) notice.classList.toggle('hidden', !noDashboardIndicatorsEnabled());
+}
+
 function renderSignals(signals, action, reason, bullishCount, bearishCount, options = {}) {
     // If the user is currently rapid-fire toggling indicators, ignore incoming dashboard data
     // to prevent reverting their optimistic UI changes. The final debounce will fetch the real state.
@@ -3558,12 +3574,17 @@ function renderSignals(signals, action, reason, bullishCount, bearishCount, opti
     const loading = document.getElementById('gridLoading');
     signals = signals || {};
 
-    if (Object.keys(signals).length === 0 && !options.allowEmpty) {
+    // An empty signal map means "still loading" only until the chart for this ticker has answered. After that it is degraded
+    // data (the chart returned no values): later redraws (recomputeConfluence, the AI card callback) must not turn the
+    // spinner back on, because nothing would ever turn it off again.
+    const chartAnswered = window._signalsResolvedTicker && window._signalsResolvedTicker === normalizeTicker(selectedTicker);
+    if (Object.keys(signals).length === 0 && !options.allowEmpty && !chartAnswered) {
         setSignalConfluenceLoadingState(true);
         return;
     }
 
     setSignalConfluenceLoadingState(false);
+    updateSignalEmptyNotice();
 
     // Backend counts may include indicators the user has just disabled. The
     // enabled local preferences are authoritative for the visible confluence

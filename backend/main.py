@@ -6511,9 +6511,13 @@ def _screener_market_status(symbol: str, settings: dict, now=None) -> dict:
     }
 
 
-def _screener_profile_fingerprint(settings: dict) -> str:
+# Research watches refresh on their own schedules; flipping one must not force a technical rescan on save.
+_SCREENER_WATCH_TOGGLE_KEYS = frozenset({"news_watch_enabled", "earnings_watch_enabled", "fundamental_watch_enabled"})
+
+
+def _screener_profile_fingerprint(settings: dict, extra_ignored=frozenset()) -> str:
     """Hash persisted profile inputs while ignoring generated metadata."""
-    ignored = {"revision", "profile_revision", "started_at"}
+    ignored = {"revision", "profile_revision", "started_at"} | set(extra_ignored)
     clean = {
         key: value for key, value in (settings or {}).items()
         if key not in ignored
@@ -14138,7 +14142,12 @@ async def save_screener_profile(data: dict, state: ScreenerUserState = Depends(g
     if technical_scan_changed:
         state.latest_scans.pop(symbol, None)
     await state.save()
-    if settings_changed and now_enabled and derive_alert_source(state.profiles[symbol]) != "none":
+    scan_inputs_changed = (
+        not exists
+        or _screener_profile_fingerprint(previous_profile, _SCREENER_WATCH_TOGGLE_KEYS)
+        != _screener_profile_fingerprint(state.profiles[symbol], _SCREENER_WATCH_TOGGLE_KEYS)
+    )
+    if scan_inputs_changed and now_enabled and derive_alert_source(state.profiles[symbol]) != "none":
         # (Alerts paused: nothing to scan, so no forced scan is started.)
         # A settings save gets one immediate fresh result, even outside the
         # selected market window. Normal scheduler passes remain session- and
