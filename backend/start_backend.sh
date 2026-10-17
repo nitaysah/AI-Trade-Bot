@@ -158,18 +158,24 @@ cleanup_botbulls_port_pass() {
         fi
 
         echo "🧹 Stopping stale BotBulls process $pid on port $port..."
+        STOPPED_STALE_PROCESS="true"
         if [ -n "$stop_parent" ]; then
             echo "   (reload child; killing its reloader parent $stop_parent first so it cannot respawn)"
             kill -KILL "$stop_parent" 2>/dev/null || true
         fi
-        kill -TERM "$pid" 2>/dev/null || true
-        for _ in 1 2 3 4; do
-            kill -0 "$pid" 2>/dev/null || break
-            sleep 0.5
-        done
-        if kill -0 "$pid" 2>/dev/null; then
-            echo "⚠️  Process $pid did not stop after SIGTERM; sending SIGKILL."
+        if [ "${FORCE_KILL:-false}" = "true" ]; then
+            # Hard-kill retry: the process ignored the graceful stop, so do not ask nicely again.
             kill -KILL "$pid" 2>/dev/null || true
+        else
+            kill -TERM "$pid" 2>/dev/null || true
+            for _ in 1 2 3 4; do
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 0.5
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+                echo "⚠️  Process $pid did not stop after SIGTERM; sending SIGKILL."
+                kill -KILL "$pid" 2>/dev/null || true
+            fi
         fi
     done
 }
@@ -200,6 +206,27 @@ cleanup_botbulls_port() {
     fi
 }
 
+# After the restart wait, confirm the old process really released the port. If something is still listening, hard-kill it
+# (BotBulls processes only: the same ownership checks apply) and check again, up to 3 times, then fail the restart.
+verify_port_released() {
+    local port="$1"
+    local wait_seconds="$2"
+    local max_retries=3
+    local attempt=0
+    while [ -n "$(port_listener_pids "$port")" ]; do
+        attempt=$((attempt + 1))
+        if [ "$attempt" -gt "$max_retries" ]; then
+            echo "❌ Restart failed: port $port is still in use after $max_retries hard-kill retries."
+            return 1
+        fi
+        echo "⚠️  Port $port is still active after the wait; hard-kill retry $attempt/$max_retries..."
+        FORCE_KILL="true" cleanup_botbulls_port_pass "$port" || return 1
+        echo "⏳ Waiting ${wait_seconds}s, then checking port $port again..."
+        sleep "$wait_seconds"
+    done
+    return 0
+}
+
 FOREGROUND="${BOTBULLS_FOREGROUND:-false}"
 LOG_FILE="${BOTBULLS_LOG_FILE:-$DIR/stdout.log}"
 if [ "$FOREGROUND" = "true" ]; then
@@ -210,7 +237,20 @@ if [ "$FOREGROUND" = "true" ]; then
     chmod 600 "$LOG_FILE"
     exec > >(tee -a "$LOG_FILE") 2>&1
 fi
+STOPPED_STALE_PROCESS="false"
 cleanup_botbulls_port "$PORT"
+
+# After an old BotBulls process was stopped, give the OS, the broker/data connections and Firestore listeners time to
+# release before the new one starts. A clean first start (nothing to stop) is not delayed.
+RESTART_DELAY="${BOTBULLS_RESTART_DELAY:-10}"
+if [ "$STOPPED_STALE_PROCESS" = "true" ] && [ "$RESTART_DELAY" -gt 0 ] 2>/dev/null; then
+    echo "⏳ Waiting ${RESTART_DELAY}s after stopping the previous backend before relaunching..."
+    sleep "$RESTART_DELAY"
+    if ! verify_port_released "$PORT" "$RESTART_DELAY"; then
+        echo "❌ Backend NOT restarted: the previous process still holds port $PORT."
+        exit 1
+    fi
+fi
 
 # 3. Launch: Starts the server via uvicorn.  The default is loopback-only;
 # bearer-token traffic must not be exposed over plaintext HTTP by accident.
@@ -227,7 +267,14 @@ if [ "$HOST" != "127.0.0.1" ] && [ "$HOST" != "::1" ] && [ "$HOST" != "localhost
     fi
 fi
 UVICORN_ARGS=(main:app --host "$HOST" --port "$PORT")
-if [ "${BOTBULLS_RELOAD:-false}" = "true" ]; then
+# Auto-reload is on by default for development and off in production, where a file change (for example during a deploy's
+# git pull) must never restart a live server. Set BOTBULLS_RELOAD=true or false to override either default.
+if [ "${ENV}" = "production" ]; then
+    RELOAD_DEFAULT="false"
+else
+    RELOAD_DEFAULT="true"
+fi
+if [ "${BOTBULLS_RELOAD:-$RELOAD_DEFAULT}" = "true" ]; then
     UVICORN_ARGS+=(--reload)
 fi
 if [ -n "${TLS_CERTFILE:-}" ] && [ -n "${TLS_KEYFILE:-}" ]; then
