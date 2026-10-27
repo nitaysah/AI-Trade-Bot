@@ -5389,44 +5389,109 @@ async def _fetch_macro_events_uncached():
         global _macro_calendar_cache
         import time
         now = time.time()
-        # Cache the remote calendar separately because the provider changes slowly.
+        # Cache the remote calendars separately because the providers change slowly.
         if now - _macro_calendar_cache["timestamp"] < 3600 and _macro_calendar_cache["data"]:
             return _macro_calendar_cache["data"]
 
         import requests
-        try:
-            url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-            r = requests.get(url, headers=headers, timeout=5)
+        import macro_schedule
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+
+        # Expand to High/Medium USD and High major global economies
+        def is_relevant(e):
+            if e.get('country') == 'USD' and e.get('impact') in ['High', 'Medium']:
+                return True
+            if e.get('country') in ['EUR', 'GBP', 'CNY', 'JPY'] and e.get('impact') == 'High':
+                return True
+            return False
+
+        def fetch_feed_week(name):
+            r = requests.get(f"https://nfs.faireconomy.media/ff_calendar_{name}.json", headers=headers, timeout=5)
             r.raise_for_status()
-            data = r.json()
+            return [e for e in r.json() if is_relevant(e)]
 
-            # Expand to High/Medium USD and High major global economies
-            def is_relevant(e):
-                if e.get('country') == 'USD' and e.get('impact') in ['High', 'Medium']:
-                    return True
-                if e.get('country') in ['EUR', 'GBP', 'CNY', 'JPY'] and e.get('impact') == 'High':
-                    return True
-                return False
+        # All downloads run in parallel, so a slow source costs one timeout rather than the sum of all of them.
+        # shutdown(wait=False): on an early return the official fetch finishes in the background and warms its cache.
+        today_et = datetime.now(macro_schedule.EASTERN).date()
+        pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="macro-calendar")
+        try:
+            week_futures = {name: pool.submit(fetch_feed_week, name) for name in ("thisweek", "nextweek")}
+            official_future = pool.submit(macro_schedule.fetch_official_events, today_et)
+            feed_events = []
+            feed_ok = False
+            for name, future in week_futures.items():
+                try:
+                    feed_events += future.result()
+                    feed_ok = feed_ok or name == "thisweek"
+                except Exception as e:
+                    # The next-week file is only published late in the week, so a 404 there is normal.
+                    if name == "thisweek":
+                        print(f"Error fetching forex calendar: {_safe_exception_type(e)}")
 
-            result = [e for e in data if is_relevant(e)]
+            # The forecast feed is the primary source. When it fails, keep serving the last good calendar rather than
+            # rebuilding from official schedules alone (the weekly claims rule always yields an event, so "nothing
+            # new" can never be detected from the official side).
+            if not feed_ok and _macro_calendar_cache["data"]:
+                return _macro_calendar_cache["data"]
 
-            # Sort events chronologically by date string
+            try:
+                official_events, official_status = official_future.result()
+            except Exception as e:
+                official_events, official_status = [], {"all": f"unavailable ({_safe_exception_type(e)})"}
+        finally:
+            pool.shutdown(wait=False)
+        for source_name, state in official_status.items():
+            if state != "ok":
+                print(f"Official macro schedule {source_name}: {state}")
+        # Same impact policy as the feed: official releases outside High/Medium are not shown.
+        official_events = [e for e in official_events if is_relevant(e)]
+        # Date ranges each source just returned in full; stored future entries missing there were moved or cancelled.
+        coverage = macro_schedule.fetch_coverage(today_et, feed_events if feed_ok else None, official_status)
+
+        history_path = os.path.join(GENERIC_DASHBOARD_CARD_CACHE_DIR, "macro_calendar_history.json")
+        stored = [
+            e for e in macro_schedule.load_history(history_path)
+            if isinstance(e, dict) and (not e.get("scheduled_only") or is_relevant(e))
+        ]
+        if not feed_ok and not stored:
+            return _macro_calendar_cache["data"]
+
+        try:
             def get_timestamp(ev):
                 try:
                     return datetime.fromisoformat(ev.get('date', '')).timestamp()
                 except Exception:
                     return 0
+            merged = macro_schedule.merge_official_into_calendar(feed_events, official_events)
+            # Official-schedule entries have no forecast; the calendar-source enrichment would
+            # mislabel them (e.g. one CPI row standing in for both m/m and y/y), so keep them apart.
+            enrichable = [e for e in merged if not e.get("scheduled_only")]
+            scheduled = [e for e in merged if e.get("scheduled_only")]
+            fresh = enrich_macro_calendar_events(enrichable) + scheduled
+            combined = macro_schedule.merge_history(stored, fresh, coverage=coverage)
+            result = macro_schedule.prune_stored_for_display(combined)
             result.sort(key=get_timestamp)
-            result = enrich_macro_calendar_events(result)
             for event in result:
                 event["why"] = why_it_matters(event.get("title", ""))
+                if event.get("scheduled_only") and not event.get("actual") and event.get("actual_status") is None:
+                    event["actual_status"] = "not_available"
+                    event["actual_unavailable_reason"] = "Date from the official release schedule; no forecast or actual in this feed."
+            if not feed_ok:
+                # Cold start during a feed outage: serve stored history plus official dates, but do not persist
+                # this partial view and retry the feed in 5 minutes instead of the usual hour.
+                _macro_calendar_cache["data"] = result
+                _macro_calendar_cache["timestamp"] = now - 3600 + 300
+                return result
+            try:
+                macro_schedule.save_history(history_path, combined)
+            except Exception as e:
+                print(f"Error saving macro calendar history: {_safe_exception_type(e)}")
 
             _macro_calendar_cache["data"] = result
             _macro_calendar_cache["timestamp"] = now
             return result
         except Exception as e:
-            print(f"Error fetching forex calendar: {_safe_exception_type(e)}")
+            print(f"Error building macro calendar: {_safe_exception_type(e)}")
             return _macro_calendar_cache["data"]
 
     indicators_task = asyncio.to_thread(get_macro_data, False)
@@ -13691,10 +13756,7 @@ def _screener_summary(state: ScreenerUserState, symbols: list[str], scans: Optio
     today = datetime.now(tz).date()
     alerts_today = 0
     alerts_today_by_direction = {"bullish": 0, "bearish": 0}
-    visible_notifications = [
-        item for item in state.notifications
-        if item.get("browser_status", "delivered") != "disabled"
-    ]
+    visible_notifications = _screener_visible_notifications(state)
     for item in visible_notifications:
         try:
             created = item.get("created_at")
@@ -14386,28 +14448,24 @@ def _repair_historical_alert_snapshot(state: ScreenerUserState, item: dict) -> d
     return repaired
 
 
-@app.get("/api/screener/notifications")
-async def list_screener_notifications(
-    limit: int = 50,
-    cursor: str = None,
-    unread_only: bool = False,
-    period: str = "all",
-    read_state: str = "all",
-    state: ScreenerUserState = Depends(get_screener_state),
-):
-    limit_value = max(1, min(int(limit or 50), 50))
-    period_value = str(period or "all").lower()
-    period_windows = {
-        "1d": 86400,
-        "1w": 7 * 86400,
-        "1m": 30 * 86400,
-        "1y": 365 * 86400,
-    }
-    items = [
+_SCREENER_NOTIFICATION_PERIOD_WINDOWS = {"1d": 86400, "1w": 7 * 86400, "1m": 30 * 86400, "1y": 365 * 86400}
+
+
+def _screener_visible_notifications(state: ScreenerUserState) -> list:
+    """Alerts the user can see: delivered in-app and not dismissed.
+
+    Dismissed alerts stay in storage on purpose: the duplicate checks and the email/SMS senders look alerts up by id, so
+    deleting one could let the same candle raise the same alert again or strand a queued message."""
+    return [
         item for item in state.notifications
-        if item.get("browser_status", "delivered") != "disabled"
+        if item.get("browser_status", "delivered") != "disabled" and not item.get("dismissed")
     ]
-    items = [_repair_historical_alert_snapshot(state, item) for item in items]
+
+
+def _screener_notification_view(state: ScreenerUserState, period: str = "all", read_state: str = "all", unread_only: bool = False):
+    """The filtered alert list used by both the list endpoint and "clear all", so they always agree on what is shown."""
+    period_value = str(period or "all").lower()
+    items = [_repair_historical_alert_snapshot(state, item) for item in _screener_visible_notifications(state)]
     if period_value == "today":
         tz = pytz.timezone(getattr(state.config, "TIMEZONE", "America/Chicago"))
         today = datetime.now(tz).date()
@@ -14422,8 +14480,8 @@ async def list_screener_notifications(
                 return False
 
         items = [item for item in items if _is_today(item)]
-    elif period_value in period_windows:
-        cutoff = time.time() - period_windows[period_value]
+    elif period_value in _SCREENER_NOTIFICATION_PERIOD_WINDOWS:
+        cutoff = time.time() - _SCREENER_NOTIFICATION_PERIOD_WINDOWS[period_value]
 
         def _is_within_period(item: dict) -> bool:
             try:
@@ -14448,6 +14506,22 @@ async def list_screener_notifications(
         items = [item for item in items if bool(item.get("read"))]
     else:
         read_state_value = "all"
+    return items, unread_count, read_count, period_value, read_state_value
+
+
+@app.get("/api/screener/notifications")
+async def list_screener_notifications(
+    limit: int = 50,
+    cursor: str = None,
+    unread_only: bool = False,
+    period: str = "all",
+    read_state: str = "all",
+    state: ScreenerUserState = Depends(get_screener_state),
+):
+    limit_value = max(1, min(int(limit or 50), 50))
+    items, unread_count, read_count, period_value, read_state_value = _screener_notification_view(
+        state, period, read_state, unread_only
+    )
     start = 0
     if cursor:
         for index, item in enumerate(items):
@@ -14462,10 +14536,61 @@ async def list_screener_notifications(
         "unread_count": unread_count,
         "read_count": read_count,
         "total_count": unread_count + read_count,
+        "matching_count": len(items),
         "count": len(page),
         "period": period_value,
         "read_state": read_state_value,
+        # "Clear all" sends this back so alerts that arrive after the user saw the list are not cleared unseen.
+        "as_of": time.time(),
     }
+
+
+def _screener_notification_created_epoch(item: dict) -> float:
+    """created_at as epoch seconds; 0 when missing or unparseable (treated as an old alert)."""
+    created_at = item.get("created_at")
+    try:
+        if isinstance(created_at, str):
+            return datetime.fromisoformat(created_at.replace("Z", "+00:00")).timestamp()
+        return float(created_at or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+@app.post("/api/screener/notifications/dismiss")
+async def dismiss_screener_notifications(data: dict = None, state: ScreenerUserState = Depends(get_screener_state)):
+    """Hide alerts from the list. Either {"ids": [...]} or an explicit {"all": true, "period": ..., "read_state": ...}
+    that clears exactly what the list shows under those filters. An empty or unknown body clears nothing.
+    With "as_of" (the list response's value), alerts created after that moment are left alone."""
+    payload = data if isinstance(data, dict) else {}
+    ids = payload.get("ids")
+    if payload.get("all") is True:
+        items, *_ = _screener_notification_view(state, payload.get("period", "all"), payload.get("read_state", "all"))
+        as_of = payload.get("as_of")
+        if as_of is not None:
+            if isinstance(as_of, bool) or not isinstance(as_of, (int, float)):
+                raise HTTPException(status_code=400, detail="as_of must be a number")
+            items = [item for item in items if _screener_notification_created_epoch(item) <= float(as_of)]
+        target_ids = {item.get("id") for item in items if item.get("id")}
+    elif isinstance(ids, list) and ids:
+        if len(ids) > 1000:
+            raise HTTPException(status_code=400, detail="Too many alert ids")
+        target_ids = {str(value) for value in ids if value}
+    else:
+        raise HTTPException(status_code=400, detail="Provide alert ids or all=true")
+    now = time.time()
+    dismissed = 0
+    for item in state.notifications:
+        if item.get("id") in target_ids and not item.get("dismissed"):
+            item["dismissed"] = True
+            item["dismissed_at"] = now
+            if not item.get("read"):
+                item["read"] = True
+                item["read_at"] = now
+            dismissed += 1
+    if dismissed:
+        await state.save()
+    unread = sum(not bool(item.get("read")) for item in _screener_visible_notifications(state))
+    return {"status": "success", "dismissed": dismissed, "unread_count": unread}
 
 
 @app.post("/api/screener/notifications/read")
@@ -14489,7 +14614,7 @@ async def mark_screener_notifications_read(data: dict = None, state: ScreenerUse
             item["read"] = True
             item["read_at"] = time.time()
     await state.save()
-    return {"status": "success", "unread_count": sum(not bool(item.get("read")) for item in state.notifications)}
+    return {"status": "success", "unread_count": sum(not bool(item.get("read")) for item in _screener_visible_notifications(state))}
 
 
 @app.post("/api/screener/email/test")
@@ -14678,8 +14803,13 @@ def get_screener_session_eligibility(ticker: str, market_session: str = "24h", s
 
 
 @app.get("/api/screener/history")
-def get_screener_history(period: str = "ALL", timeframe: str = "1D", state: ScreenerUserState = Depends(get_screener_state)):
-    """Return time-bucketed bullish/bearish alert events for the Screener chart."""
+def get_screener_history(period: str = "ALL", timeframe: str = "1D", include_dismissed: bool = True,
+                         state: ScreenerUserState = Depends(get_screener_state)):
+    """Return time-bucketed bullish/bearish alert events for the Screener chart.
+
+    The chart is a history record, so alerts the user dismissed from the list are included by default; the page can
+    ask for ``include_dismissed=false`` to make the chart match the visible list. ``cleared_in_range`` reports how many
+    dismissed alerts fall in the window either way, so the page can say what the switch would add."""
     central_tz = pytz.timezone("America/Chicago")
     now_dt = datetime.now(central_tz)
     now = now_dt.timestamp()
@@ -14691,9 +14821,11 @@ def get_screener_history(period: str = "ALL", timeframe: str = "1D", state: Scre
     start_dt = (now_dt - timedelta(days=window_days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
     start = int(start_dt.timestamp())
     buckets = {}
+    cleared_in_range = 0
     for item in state.notifications:
         if item.get("browser_status", "delivered") == "disabled":
             continue
+        dismissed = bool(item.get("dismissed"))
         item = _repair_historical_alert_snapshot(state, item)
         try:
             created = item.get("created_at", 0)
@@ -14704,6 +14836,11 @@ def get_screener_history(period: str = "ALL", timeframe: str = "1D", state: Scre
             continue
         if created < start:
             continue
+        if dismissed:
+            if str(item.get("direction", "")).lower() in {"bullish", "bearish"}:
+                cleared_in_range += 1
+            if not include_dismissed:
+                continue
         # Signal Activity is an alert timeline: place the dot when the alert
         # was created, while retaining the candle close as audit metadata.
         event_time = created
@@ -14753,6 +14890,7 @@ def get_screener_history(period: str = "ALL", timeframe: str = "1D", state: Scre
         "history": [], "data": [], "activity": state.activity[:100],
         "timestamp": timestamps, "bullish": bullish, "bearish": bearish,
         "alert_groups": alert_groups, "bucket_seconds": bucket_seconds, "timezone": "America/Chicago",
+        "include_dismissed": bool(include_dismissed), "cleared_in_range": cleared_in_range,
     }
 
 

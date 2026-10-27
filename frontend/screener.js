@@ -64,6 +64,11 @@ let currentLogTab = "all";
 let currentScreenerFilter = "all";
 let currentChartPeriod = "1W";
 let currentSignalActivityFilter = "all";
+// The chart is a history record, so alerts cleared from the list are included by default. The switch is remembered per browser.
+const SIGNAL_ACTIVITY_INCLUDE_CLEARED_KEY = 'screenerSignalActivityIncludeCleared';
+let signalActivityIncludeCleared = (() => {
+    try { return localStorage.getItem(SIGNAL_ACTIVITY_INCLUDE_CLEARED_KEY) !== 'false'; } catch (error) { return true; }
+})();
 let portfolioChartInstance = null;
 let botArrangeMode = false;
 let portfolioHistoryFetchInFlight = false;
@@ -557,6 +562,12 @@ function renderScreenerNotifications(
         const statusLabel = readState === 'unread' ? 'Unread' : readState === 'read' ? 'Read' : 'All';
         summary.textContent = `${totalCount} alerts · ${unreadCount} unread · ${alertPeriodLabel(period)} · ${statusLabel}`;
     }
+    const clearBtn = document.getElementById("screenerClearAlertsBtn");
+    if (clearBtn) {
+        const matching = Number(window.screenerNotificationMatching ?? items.length);
+        clearBtn.disabled = matching <= 0;
+        clearBtn.textContent = matching > 0 ? `Clear all (${matching})` : 'Clear all';
+    }
     if (!list) return;
     if (!items.length) {
         const statusLabel = readState === 'all' ? '' : `${readState} `;
@@ -578,11 +589,15 @@ function renderScreenerNotifications(
         ).trim();
         const createdValue = typeof item.created_at === 'string' ? Date.parse(item.created_at) : Number(item.created_at) * 1000;
         const created = item.created_at ? new Date(createdValue).toLocaleString() : "";
-        return `<button type="button" onclick="openScreenerNotification('${String(item.id || '').replace(/'/g, "\\'")}')" class="w-full text-left rounded-2xl border border-${color}-200 bg-${color}-50/50 p-3 ${item.read ? 'opacity-70' : 'shadow-sm'} focus:outline-none focus:ring-2 focus:ring-indigo-400">
-            <div class="flex items-center justify-between gap-2"><span class="text-xs font-black text-${color}-700">${escapeScreenerNewsText(item.symbol || '')} · ${escapeScreenerNewsText(eventLabel)}</span><span class="text-[10px] text-slate-400">${escapeScreenerNewsText(created)}</span></div>
+        const safeId = String(item.id || '').replace(/'/g, "\\'");
+        return `<div class="relative" data-screener-alert-id="${escapeScreenerNewsText(String(item.id || ''))}">
+        <button type="button" onclick="openScreenerNotification('${safeId}')" class="w-full text-left rounded-2xl border border-${color}-200 bg-${color}-50/50 p-3 ${item.read ? 'opacity-70' : 'shadow-sm'} focus:outline-none focus:ring-2 focus:ring-indigo-400">
+            <div class="flex items-center justify-between gap-2 pr-9"><span class="text-xs font-black text-${color}-700">${escapeScreenerNewsText(item.symbol || '')} · ${escapeScreenerNewsText(eventLabel)}</span><span class="text-[10px] text-slate-400">${escapeScreenerNewsText(created)}</span></div>
             <p class="mt-1 text-xs font-semibold text-slate-700">${notificationPolicy ? `${escapeScreenerNewsText(notificationPolicy)} · ` : ''}${escapeScreenerNewsText(item.reason || 'Signal transition detected')}</p>
             <p class="mt-1 text-[10px] text-slate-500">Price ${escapeScreenerNewsText(item.price ?? 'Unavailable')} · ${escapeScreenerNewsText(item.email_status || 'in-app')}</p>
-        </button>`;
+        </button>
+        <button type="button" onclick="dismissScreenerNotification('${safeId}', event)" class="absolute right-1 top-1 flex h-9 w-9 items-center justify-center rounded-full text-xl leading-none font-black text-slate-400 hover:bg-white/80 hover:text-rose-600 focus:outline-none focus:ring-2 focus:ring-rose-400" aria-label="Dismiss alert for ${escapeScreenerNewsText(item.symbol || 'symbol')}" title="Dismiss">×</button>
+        </div>`;
     }).join('');
 }
 
@@ -607,6 +622,8 @@ async function performScreenerNotificationsFetch() {
         const payload = await response.json();
         if (fetchId !== screenerNotificationFetchId) return;
         window.screenerNotifications = payload.notifications || [];
+        window.screenerNotificationMatching = Number(payload.matching_count ?? window.screenerNotifications.length);
+        window.screenerNotificationAsOf = Number.isFinite(Number(payload.as_of)) ? Number(payload.as_of) : null;
         screenerNotificationPeriod = SCREENER_ALERT_PERIODS.has(payload.period) ? payload.period : 'all';
         screenerNotificationReadState = SCREENER_ALERT_READ_STATES.has(payload.read_state) ? payload.read_state : 'all';
         updateScreenerAlertFilterButtons();
@@ -637,6 +654,60 @@ window.openScreenerNotification = async function (notificationId) {
         console.warn('[screener] notification read failed:', error);
     }
     void fetchScreenerNotifications();
+};
+
+// The Alerts status card (today / unread / bullish / bearish) comes from the snapshot summary, not from the alert list, so
+// it must be refreshed after alerts are dismissed. Debounced so dismissing several alerts quickly costs one refresh.
+let screenerSummaryRefreshTimer = null;
+function scheduleScreenerSummaryRefresh() {
+    clearTimeout(screenerSummaryRefreshTimer);
+    screenerSummaryRefreshTimer = setTimeout(() => {
+        void fetchBotsData({ force: true });
+        void fetchPortfolioHistory({ force: true });
+    }, 400);
+}
+
+// Dismiss hides an alert from this list. The record is kept on the server so the same candle cannot raise it again.
+window.dismissScreenerNotification = async function (notificationId, event) {
+    if (event) { event.stopPropagation(); event.preventDefault(); }
+    if (!notificationId) return;
+    const row = document.querySelector(`[data-screener-alert-id="${CSS.escape(String(notificationId))}"]`);
+    if (row) row.remove();          // optimistic; a refetch below restores it if the request failed
+    window.screenerNotifications = (window.screenerNotifications || []).filter(item => item.id !== notificationId);
+    try {
+        const headers = await getAuthHeaders();
+        const response = await fetch(`${API_BASE}/api/screener/notifications/dismiss`, { method: 'POST', headers, body: JSON.stringify({ ids: [notificationId] }) });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch (error) {
+        console.warn('[screener] alert dismiss failed:', error);
+    }
+    void fetchScreenerNotifications();
+    scheduleScreenerSummaryRefresh();
+};
+
+window.clearScreenerNotifications = async function () {
+    const count = Number(window.screenerNotificationMatching ?? (window.screenerNotifications || []).length);
+    if (!count) return;
+    const scope = `${alertPeriodLabel(screenerNotificationPeriod)}, ${screenerNotificationReadState === 'all' ? 'read and unread' : screenerNotificationReadState}`;
+    if (!window.confirm(`Clear ${count} alert${count === 1 ? '' : 's'} (${scope})? They are removed from this list. Emails and texts already sent are not affected.`)) return;
+    const btn = document.getElementById('screenerClearAlertsBtn');
+    if (btn) btn.disabled = true;
+    try {
+        const headers = await getAuthHeaders();
+        const response = await fetch(`${API_BASE}/api/screener/notifications/dismiss`, {
+            method: 'POST', headers,
+            // as_of limits the clear to alerts the user could see; one arriving while the confirm dialog is open stays.
+            body: JSON.stringify({
+                all: true, period: screenerNotificationPeriod, read_state: screenerNotificationReadState,
+                ...(window.screenerNotificationAsOf != null ? { as_of: window.screenerNotificationAsOf } : {}),
+            }),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch (error) {
+        console.warn('[screener] clear alerts failed:', error);
+    }
+    await fetchScreenerNotifications();
+    scheduleScreenerSummaryRefresh();
 };
 
 window.markAllScreenerNotificationsRead = async function () {
@@ -9966,7 +10037,7 @@ function renderSignalActivityChart(data, canvas) {
     const summary = document.getElementById('signalActivitySummary');
     if (summary) summary.textContent = `Bullish ${bullishTotal} · Bearish ${bearishTotal}`;
     const sub = document.getElementById('equityPerformanceSub');
-    if (sub) sub.textContent = 'Bullish and Bearish Alerts Activity · Click on a dot to view alert details';
+    if (sub) sub.textContent = signalActivitySubtitle();
     if (portfolioChartInstance) portfolioChartInstance.destroy();
 
     const activityPanel = document.getElementById('signalActivityPanel');
@@ -10059,6 +10130,32 @@ window.setSignalActivityFilter = function (filter) {
     if (window.lastSignalActivityData) renderSignalActivityChart(window.lastSignalActivityData, document.getElementById('portfolioHistoryChart'));
 };
 
+// One subtitle for every render path, so the "click a dot" hint (the main hint on touch screens) is never dropped.
+function signalActivitySubtitle() {
+    const base = 'Bullish and Bearish Alerts Activity · Click on a dot to view alert details';
+    return signalActivityIncludeCleared ? base : `${base} · Cleared alerts hidden`;
+}
+
+function updateSignalActivityClearedLabel(clearedInRange) {
+    const count = document.getElementById('signalActivityClearedCount');
+    if (count) count.textContent = clearedInRange > 0 ? `(${clearedInRange})` : '';
+    const sub = document.getElementById('equityPerformanceSub');
+    if (sub) sub.textContent = signalActivitySubtitle();
+}
+
+window.setSignalActivityIncludeCleared = function (checked) {
+    signalActivityIncludeCleared = Boolean(checked);
+    try { localStorage.setItem(SIGNAL_ACTIVITY_INCLUDE_CLEARED_KEY, signalActivityIncludeCleared ? 'true' : 'false'); } catch (error) { /* per-browser convenience only */ }
+    updateSignalActivityClearedLabel(0);
+    void fetchPortfolioHistory({ force: true });
+};
+
+function syncSignalActivityIncludeClearedControl() {
+    const box = document.getElementById('signalActivityIncludeCleared');
+    if (box) box.checked = signalActivityIncludeCleared;
+}
+syncSignalActivityIncludeClearedControl();
+
 async function fetchPortfolioHistory(options = {}) {
     const { force = false } = options;
     const canvas = document.getElementById('portfolioHistoryChart');
@@ -10066,7 +10163,8 @@ async function fetchPortfolioHistory(options = {}) {
     if (!force && !shouldRunBotsVisualRefresh()) return;
     const now = Date.now();
     const tf = getChartTimeframe(currentChartPeriod);
-    const rangeKey = `${currentChartPeriod}:${tf}`;
+    const includeCleared = signalActivityIncludeCleared;
+    const rangeKey = `${currentChartPeriod}:${tf}:${includeCleared ? 'all' : 'visible'}`;
     const refreshInterval = ['1D', '1W'].includes(currentChartPeriod.toUpperCase())
         ? PORTFOLIO_SHORT_REFRESH_INTERVAL
         : PORTFOLIO_LONG_REFRESH_INTERVAL;
@@ -10085,7 +10183,7 @@ async function fetchPortfolioHistory(options = {}) {
     portfolioHistoryAbortController = new AbortController();
     try {
         const headers = await getAuthHeaders();
-        const url = `${API_BASE}/api/screener/history?period=${currentChartPeriod}&timeframe=${tf}`;
+        const url = `${API_BASE}/api/screener/history?period=${currentChartPeriod}&timeframe=${tf}&include_dismissed=${includeCleared}`;
 
         const response = await fetchWithTimeout(
             url,
@@ -10099,9 +10197,11 @@ async function fetchPortfolioHistory(options = {}) {
             console.warn("[chart] No portfolio history data returned.");
             return;
         }
+        if (includeCleared !== signalActivityIncludeCleared) return;     // the switch changed while this request was in flight
         portfolioRefreshAtByRange.set(rangeKey, Date.now());
         window.lastSignalActivityData = data;
         renderSignalActivityChart(data, canvas);
+        updateSignalActivityClearedLabel(Number(data.cleared_in_range || 0));
         return;
 
         // Format timestamps for the labels based on period

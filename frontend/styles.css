@@ -4546,6 +4546,14 @@ html body.backtest-page #btSettingsContainer .settings-sub-title.settings-sub-ti
     .macro-mini-key { font-size: 6.5px; margin: 0 0.08rem 0 0.2rem; }
 }
 
+/* Macro Events card, no-upcoming state: one line per latest release (dot, title, when) so nothing spills past the card. */
+.macro-mini-done { align-items: center; gap: 0.35rem; opacity: 0.85; }
+.macro-mini-dot { width: 0.4rem; height: 0.4rem; border-radius: 9999px; flex: 0 0 auto; }
+.macro-mini-when { font-size: 9px; line-height: 1.25; font-weight: 700; color: #94a3b8; white-space: nowrap; flex: 0 0 auto; }
+@media (max-width: 767px) {
+    .macro-mini-when { font-size: 8px; }
+}
+
 /* Context cards trimmed to their content (the tallest one, Sector Heatmap with 5 rows, sets the height). */
 .dashboard-context-grid { grid-auto-rows: 184px; }
 .dashboard-context-card { height: 184px; min-height: 184px; }

@@ -5436,6 +5436,9 @@ function readCachedGenericDashboardCards() {
     try {
         const cached = JSON.parse(sessionStorage.getItem(GENERIC_DASHBOARD_CARDS_CACHE_KEY) || 'null');
         if (!cached || !cached.payload || !cached.fetchedAt) return null;
+        // A payload saved while the server was still warming a card holds null for it; reusing that for the
+        // whole client TTL would leave the card on "Loading" without ever requesting it again.
+        if (!cached.payload.fear_greed || !cached.payload.market_data || !cached.payload.macro_events) return null;
         if (cached.payload.market_data && cached.payload.market_data.sector_summary) {
             const techAnalyzed = (cached.payload.market_data.sector_summary.tech || {}).analyzed_count || 0;
             if (techAnalyzed < 24) return null;
@@ -5448,6 +5451,7 @@ function readCachedGenericDashboardCards() {
 }
 
 function writeCachedGenericDashboardCards(payload) {
+    if (!payload || !payload.fear_greed || !payload.market_data || !payload.macro_events) return;
     try {
         sessionStorage.setItem(GENERIC_DASHBOARD_CARDS_CACHE_KEY, JSON.stringify({
             payload,
@@ -5656,10 +5660,32 @@ function openMacroModal() {
     if (modal) {
         switchMacroTab('calendar');
         modal.classList.remove('hidden');
+        window._macroScrollPending = true;
         if (!window._macroDataLoaded) {
             fetchMacroEvents();
+        } else {
+            scrollMacroToNow();
         }
     }
+}
+
+// Scroll the calendar so today's events are at the top; earlier days stay reachable by scrolling up.
+function scrollMacroToNow() {
+    const container = document.getElementById('macro-events-container');
+    const anchor = document.getElementById('macro-now-anchor');
+    window._macroScrollPending = false;
+    if (!container || !anchor) return;
+    requestAnimationFrame(() => {
+        // When today is the last day with events there is not enough content below it to bring it to the top, so pad the end.
+        const spacer = document.getElementById('macro-scroll-spacer');
+        if (spacer) {
+            spacer.style.height = '0px';
+            const below = container.scrollHeight - (container.scrollTop + anchor.getBoundingClientRect().top - container.getBoundingClientRect().top);
+            spacer.style.height = `${Math.max(0, Math.ceil(container.clientHeight - below))}px`;
+        }
+        const delta = anchor.getBoundingClientRect().top - container.getBoundingClientRect().top;
+        container.scrollTop += delta - 8;
+    });
 }
 
 function closeMacroModal() {
@@ -5885,7 +5911,7 @@ async function fetchMarketData(cachedData = null) {
                         changeFontClass = 'text-[8.5px] sm:text-[10px] font-bold leading-none';
                     }
 
-                    const tileClass = `flex flex-col items-center justify-center rounded-xl border backdrop-blur-sm transition-all duration-300 hover:scale-[1.03] hover:shadow-md cursor-pointer text-center relative ${spanClass} ${bgClass}`;
+                    const tileClass = `flex flex-col items-center justify-center rounded-xl border backdrop-blur-sm transition-[transform,box-shadow] duration-200 hover:scale-[1.03] hover:shadow-md cursor-pointer text-center relative ${spanClass} ${bgClass}`;
 
                     // Convert to alpaca/standard ticker representation for selectTicker (remove hyphens)
                     const selectSymbol = cleanSymbol.replace('-', '');
@@ -5897,7 +5923,12 @@ async function fetchMarketData(cachedData = null) {
                     </div>
                     `;
                 });
-                gridContainer.innerHTML = html;
+                // Skip identical repaints (cached-first paint followed by the same fresh payload)
+                // so tiles do not flash while the user switches tabs.
+                if (gridContainer._sectorHtml !== html) {
+                    gridContainer.innerHTML = html;
+                    gridContainer._sectorHtml = html;
+                }
             }
         }
 
@@ -6198,6 +6229,8 @@ async function fetchMacroEvents(cachedData = null) {
                 });
 
                 let currentGroupDay = '';
+                let nowAnchorPlaced = false;
+                const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
                 groups.forEach(group => {
                     const dateObj = new Date(group.date);
                     const dayGroupStr = dateObj.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
@@ -6206,8 +6239,11 @@ async function fetchMacroEvents(cachedData = null) {
                     if (dayGroupStr !== currentGroupDay) {
                         currentGroupDay = dayGroupStr;
                         const isTodayGroup = dateObj.toDateString() === now.toDateString();
-                        const headerBg = isTodayGroup ? 'bg-indigo-600 text-white ring-2 ring-indigo-200' : 'bg-slate-200/80 text-slate-700';
-                        html += `<div class="sticky top-0 z-10 py-1 px-2.5 rounded-md text-[11px] sm:text-xs font-black uppercase tracking-wider mb-2 ${headerBg} shadow-sm inline-block">${dayGroupStr} ${isTodayGroup ? '• Today' : ''}</div>`;
+                        const headerBg = isTodayGroup ? 'bg-indigo-600 text-white ring-2 ring-indigo-200' : 'bg-slate-200 text-slate-700';
+                        // The modal opens scrolled to today (or the next day with events), history sits above.
+                        const anchorAttr = !nowAnchorPlaced && dateObj >= startOfToday ? ' id="macro-now-anchor"' : '';
+                        if (anchorAttr) nowAnchorPlaced = true;
+                        html += `<div${anchorAttr} class="sticky top-0 z-10 py-1 px-2.5 rounded-md text-[11px] sm:text-xs font-black uppercase tracking-wider mb-2 ${headerBg} shadow-sm inline-block">${dayGroupStr} ${isTodayGroup ? '• Today' : ''}</div>`;
                     }
 
                     const rank = { High: 3, Medium: 2, 'Medium/Low': 2, Low: 1 };
@@ -6218,6 +6254,8 @@ async function fetchMacroEvents(cachedData = null) {
                     const status = isPast ? 'Done' : 'Upcoming';
                     const statusCls = isPast ? 'bg-slate-200 text-slate-500' : 'bg-indigo-100 text-indigo-700';
                     const why = (group.events.find(e => e.why) || {}).why || '';
+                    const scheduledOnly = group.events.every(e => e.scheduled_only);
+                    const scheduledNote = scheduledOnly ? `<div class="mt-1 text-[9px] font-bold text-slate-400 uppercase tracking-wide">Official schedule${group.events[0].source ? ` · ${escapeDashboardHtml(group.events[0].source)}` : ''} · forecast not available</div>` : '';
 
                     const rows = group.events.map(e => {
                         const actualDisplay = macroEventActualDisplay(e, isPast);
@@ -6244,13 +6282,19 @@ async function fetchMacroEvents(cachedData = null) {
                             ${group.events.length === 1 ? `<span class="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-black ${impactColor} uppercase">${escapeDashboardHtml(topImpact || 'High')}</span>` : `<span class="shrink-0 text-[9px] font-black text-slate-400 uppercase">${group.events.length} releases</span>`}
                         </div>
                         ${rows}
+                        ${scheduledNote}
                         ${why ? `<details class="mt-1.5"><summary class="cursor-pointer text-[10px] font-black text-indigo-600">Why it matters</summary><p class="mt-1 text-[11px] text-slate-600 leading-snug">${escapeDashboardHtml(why)}</p></details>` : ''}
                     </div>`;
                 });
             } else {
-                html = `<p class="text-center text-slate-500 font-bold mt-10">No high impact events scheduled for this week.</p>`;
+                html = `<p class="text-center text-slate-500 font-bold mt-10">No high impact events in the last two weeks or the next 7 days.</p>`;
+            }
+            if (sortedCalendar.length > 0) {
+                html += `<div class="text-center text-[10px] sm:text-xs font-bold text-slate-400 uppercase tracking-wider py-3">${sortedCalendar.some(e => new Date(e.date) >= new Date()) ? 'End of scheduled releases' : 'No more releases scheduled in the next 7 days'}</div><div id="macro-scroll-spacer" aria-hidden="true"></div>`;
             }
             calList.innerHTML = html;
+            const macroModalEl = document.getElementById('macroModal');
+            if (window._macroScrollPending && macroModalEl && !macroModalEl.classList.contains('hidden')) scrollMacroToNow();
         }
 
         // Render mini dashboard card with upcoming calendar events
@@ -6296,9 +6340,9 @@ async function fetchMacroEvents(cachedData = null) {
                     miniHtml += `
                         <div class="flex flex-col gap-0.5 w-full py-0.5 border-b border-slate-100/60 last:border-0">
                             <div class="flex items-center justify-between text-[8.5px] text-slate-500 font-bold uppercase tracking-wider">
-                                <span class="flex items-center gap-1.5 truncate">
+                                <span class="flex items-center gap-1.5 min-w-0">
                                     <span class="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse shrink-0"></span>
-                                    <span>${escapeDashboardHtml(dayStr)} • ${escapeDashboardHtml(timeStr)}${group.country && group.country !== 'USD' ? ` • ${escapeDashboardHtml(group.country)}` : ''}</span>
+                                    <span class="truncate">${escapeDashboardHtml(dayStr)} • ${escapeDashboardHtml(timeStr)}${group.country && group.country !== 'USD' ? ` • ${escapeDashboardHtml(group.country)}` : ''}</span>
                                 </span>
                                 <span class="px-1.5 py-0.1 rounded-[2.5px] text-[7px] font-black ${badgeColor} uppercase shrink-0">${escapeDashboardHtml(impact || 'High')}</span>
                             </div>
@@ -6315,23 +6359,16 @@ async function fetchMacroEvents(cachedData = null) {
                     `;
                 }
             } else if (sortedCalendar.length > 0) {
-                // All weekly events have passed, display the 3 most recent completed events
-                const pastEvents = sortedCalendar.slice(-3);
-                miniHtml = `<div class="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1 text-center">All weekly events completed</div>`;
+                // Nothing scheduled in the calendar window: show the latest releases, one line each, so the list fits the card.
+                const rank = { High: 3, Medium: 2, 'Medium/Low': 2, Low: 1 };
+                const notable = sortedCalendar.filter(e => (rank[e.impact] || 0) >= 2);
+                const pastEvents = (notable.length >= 3 ? notable : sortedCalendar).slice(-3).reverse();
+                miniHtml = `<div class="text-[8.5px] font-black text-slate-400 uppercase tracking-wider truncate" title="No events scheduled in the next 7 days">Latest releases</div>`;
                 pastEvents.forEach(e => {
-                    let badgeColor = e.impact === 'High' ? 'bg-red-100 text-red-600' : (e.impact === 'Medium' ? 'bg-orange-100 text-orange-600' : 'bg-yellow-100 text-yellow-600');
+                    const dotColor = e.impact === 'High' ? 'bg-red-400' : (e.impact === 'Medium' ? 'bg-orange-400' : 'bg-yellow-400');
                     const dateObj = new Date(e.date);
-                    const dayStr = dateObj.toLocaleDateString(undefined, { weekday: 'short' });
-                    const timeStr = dateObj.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-                    miniHtml += `
-                        <div class="flex flex-col gap-0.5 w-full py-0.5 border-b border-slate-100/60 last:border-0 opacity-75">
-                            <div class="flex items-center justify-between text-[8px] text-slate-400 font-bold uppercase tracking-wider">
-                                <span class="truncate">[Done] ${escapeDashboardHtml(dayStr)} • ${escapeDashboardHtml(timeStr)}</span>
-                                <span class="px-1.5 py-0.1 rounded-[2.5px] text-[7px] font-black ${badgeColor} uppercase shrink-0">${escapeDashboardHtml(e.impact || 'High')}</span>
-                            </div>
-                            <span class="font-bold text-slate-600 text-[10.5px] truncate w-full" title="${escapeDashboardHtml(e.title)}">${escapeDashboardHtml(e.title)}</span>
-                        </div>
-                    `;
+                    const whenStr = `${dateObj.toLocaleDateString(undefined, { weekday: 'short' })} ${dateObj.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
+                    miniHtml += `<div class="macro-mini-row macro-mini-done" title="${escapeDashboardHtml(e.title)}"><span class="macro-mini-dot ${dotColor}"></span><span class="macro-mini-title font-bold text-slate-600">${escapeDashboardHtml(e.title)}</span><span class="macro-mini-when">${escapeDashboardHtml(whenStr)}</span></div>`;
                 });
             } else {
                 miniHtml = `

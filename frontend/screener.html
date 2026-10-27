@@ -218,9 +218,12 @@
                     <button type="button" data-screener-alert-read="read" onclick="setScreenerAlertReadFilter('read')" class="rounded-lg border border-indigo-200 bg-white px-2 py-1 text-[10px] font-black text-indigo-600">Read</button>
                 </div>
             </div>
-            <div class="flex items-center justify-between gap-2 mb-4">
+            <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 mb-4">
                 <span id="screenerNotificationSummary" class="text-xs font-bold text-slate-500">Loading…</span>
-                <button type="button" onclick="markAllScreenerNotificationsRead()" class="text-[10px] font-black uppercase text-indigo-600">Mark shown read</button>
+                <div class="flex items-center gap-1">
+                    <button type="button" onclick="markAllScreenerNotificationsRead()" class="rounded-lg px-2 py-2 text-[10px] font-black uppercase text-indigo-600 hover:bg-indigo-50">Mark shown read</button>
+                    <button type="button" id="screenerClearAlertsBtn" onclick="clearScreenerNotifications()" disabled class="rounded-lg px-2 py-2 text-[10px] font-black uppercase text-rose-600 hover:bg-rose-50 disabled:opacity-40 disabled:hover:bg-transparent" aria-label="Clear all alerts shown">Clear all</button>
+                </div>
             </div>
             <div id="screenerNotificationList" class="space-y-2"></div>
         </aside>
@@ -350,6 +353,10 @@
                     <button type="button" onclick="setSignalActivityFilter('all')" id="signal-filter-all" class="px-2.5 py-1 text-[0.55rem] font-black uppercase rounded-lg bg-indigo-600 text-white">All</button>
                     <button type="button" onclick="setSignalActivityFilter('bullish')" id="signal-filter-bullish" class="px-2.5 py-1 text-[0.55rem] font-black uppercase rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200">Bullish</button>
                     <button type="button" onclick="setSignalActivityFilter('bearish')" id="signal-filter-bearish" class="px-2.5 py-1 text-[0.55rem] font-black uppercase rounded-lg bg-rose-50 text-rose-700 border border-rose-200">Bearish</button>
+                    <label class="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-lg px-1.5 py-1.5 text-[0.55rem] font-black uppercase tracking-widest text-slate-500" title="Include alerts you cleared from the alert list in this chart">
+                        <input type="checkbox" id="signalActivityIncludeCleared" checked onchange="setSignalActivityIncludeCleared(this.checked)" class="h-4 w-4 accent-indigo-600">
+                        <span>Include cleared<span id="signalActivityClearedCount" class="ml-1 normal-case text-slate-400"></span></span>
+                    </label>
                     <span id="signalActivitySummary" class="text-[0.6rem] font-bold text-slate-500 sm:ml-auto">Bullish 0 · Bearish 0</span>
                 </div>
                 <!-- Canvas Container -->
@@ -3706,7 +3713,7 @@
     <script src="mini-chart.js?v=1"></script>
     <script src="screener-evidence.js?v=12"></script>
     <script src="card-reorder.js?v=3"></script>
-    <script src="screener.js?v=144"></script>
+    <script src="screener.js?v=148"></script>
     <script src="screener-live-price.js?v=3"></script>
     <script src="strategy-preset.js?v=27"></script>
     <script src="screener-alert-source.js?v=1"></script>
