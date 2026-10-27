@@ -1499,9 +1499,9 @@ function scanLogStatusClass(status) {
 function formatScanIndicatorGroup(label, indicators, icon = '') {
     if (!indicators || indicators.length === 0) return '';
     return `<strong class="font-bold text-slate-500">${label}:</strong> ${indicators.map(item => {
-        const reason = item.reason ? ` (${item.reason})` : '';
+        const reason = item.reason ? ` (${escapeScreenerNewsText(item.reason)})` : '';
         const itemIcon = (icon && !String(item.name || '').startsWith(icon)) ? `${icon} ` : '';
-        return `${itemIcon}${item.name} ${item.signal}${reason}`;
+        return `${itemIcon}${escapeScreenerNewsText(item.name)} ${escapeScreenerNewsText(item.signal)}${reason}`;
     }).join(', ')}`;
 }
 
@@ -8838,7 +8838,7 @@ async function refreshOpenBotChartPreview(force = false, options = {}) {
         if (!hasExistingPreview && signalsEl) {
             signalsEl.innerHTML = `
                 <div class="col-span-full rounded-2xl border border-rose-200 bg-rose-50 px-4 py-6 text-center text-sm text-rose-600">
-                    ${err.message || 'Could not load chart preview.'}
+                    ${escapeScreenerNewsText(err.message || 'Could not load chart preview.')}
                 </div>
             `;
         }
