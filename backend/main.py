@@ -4493,7 +4493,11 @@ app = FastAPI(
     title="Bot Bulls",
     description="Automated AI-driven quantitative trading platform",
     version="2.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    # Interactive API docs and the full schema are for local development only (fail-closed: any other ENV hides them).
+    docs_url="/docs" if os.getenv("ENV", "").strip().lower() == "development" else None,
+    redoc_url="/redoc" if os.getenv("ENV", "").strip().lower() == "development" else None,
+    openapi_url="/openapi.json" if os.getenv("ENV", "").strip().lower() == "development" else None,
 )
 
 
@@ -4667,6 +4671,10 @@ async def security_headers_and_request_limits(request: Request, call_next):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if os.getenv("ENV", "").strip().lower() != "development" and (
+        request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "").lower() == "https"
+    ):
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
     if request.url.path.startswith("/api/"):
         response.headers.setdefault("Cache-Control", "no-store")
     return response
