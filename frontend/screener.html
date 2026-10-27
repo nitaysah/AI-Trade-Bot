@@ -545,14 +545,14 @@
                     <div class="mt-4 flex flex-col items-center gap-3">
                         <p
                             class="text-[0.6rem] text-indigo-300 font-bold uppercase tracking-tighter italic text-center">
-                            Fully Encrypted. Your API keys are stored locally and remain private.</p>
+                            Encrypted. Your keys are encrypted before they are saved to your account and are never shown again.</p>
                     </div>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Integration & Paper Trading Guide Modal -->
+    <!-- Screener Quick-Start Guide Modal -->
     <div id="guideModal"
         class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden z-[200] flex items-center justify-center p-4">
         <div
@@ -567,9 +567,9 @@
                         </svg>
                     </div>
                     <div>
-                        <h3 class="font-black text-lg uppercase tracking-tight">Onboarding Guide</h3>
-                        <p class="text-[0.6rem] font-bold text-emerald-400 uppercase tracking-widest">Master the AI
-                            Trader Setup</p>
+                        <h3 class="font-black text-lg uppercase tracking-tight">Screener Guide</h3>
+                        <p class="text-[0.6rem] font-bold text-emerald-400 uppercase tracking-widest">Alerts in four
+                            steps</p>
                     </div>
                 </div>
                 <button onclick="closeGuideModal()"
@@ -585,11 +585,11 @@
                 <div class="space-y-6">
                     <div class="bg-emerald-50 border border-emerald-100 p-5 rounded-2xl">
                         <span
-                            class="px-3 py-1 bg-emerald-500 text-white text-[0.6rem] font-black rounded-full uppercase tracking-widest">Recommendation</span>
-                        <h4 class="text-emerald-900 font-black mt-3 uppercase text-xs">Start with Paper Trading</h4>
-                        <p class="text-xs text-emerald-700 font-medium mt-2 leading-relaxed">We strongly recommend
-                            all beginners start with a **Paper Account**. This uses $100,000 of "fake money" to
-                            simulate real market conditions without risking your capital.</p>
+                            class="px-3 py-1 bg-emerald-500 text-white text-[0.6rem] font-black rounded-full uppercase tracking-widest">Good news</span>
+                        <h4 class="text-emerald-900 font-black mt-3 uppercase text-xs">No broker needed</h4>
+                        <p class="text-xs text-emerald-700 font-medium mt-2 leading-relaxed">The Screener only
+                            watches the market and sends you alerts. It never places orders or touches your
+                            money, so you can use it without linking a broker.</p>
                     </div>
 
                     <div class="space-y-4">
@@ -598,10 +598,10 @@
                                 class="flex-shrink-0 w-8 h-8 bg-indigo-100 text-indigo-600 font-black rounded-full flex items-center justify-center text-xs">
                                 1</div>
                             <div>
-                                <h5 class="text-indigo-900 font-black text-xs uppercase">Create Alpaca Account</h5>
-                                <p class="text-[0.7rem] text-indigo-400 font-bold mt-1">Sign up at <a
-                                        href="https://alpaca.markets" target="_blank"
-                                        class="text-indigo-600 underline">Alpaca.markets</a> and verify your email.
+                                <h5 class="text-indigo-900 font-black text-xs uppercase">Add a Profile</h5>
+                                <p class="text-[0.7rem] text-indigo-400 font-bold mt-1">Search a stock, ETF or crypto
+                                        symbol and open its profile. Each symbol has one profile with its own
+                                        timeframe and settings.
                                 </p>
                             </div>
                         </div>
@@ -610,9 +610,10 @@
                                 class="flex-shrink-0 w-8 h-8 bg-indigo-100 text-indigo-600 font-black rounded-full flex items-center justify-center text-xs">
                                 2</div>
                             <div>
-                                <h5 class="text-indigo-900 font-black text-xs uppercase">Choose Environment</h5>
-                                <p class="text-[0.7rem] text-indigo-400 font-bold mt-1">In your Alpaca dashboard,
-                                    toggle to **"Paper Trading"** in the sidebar.</p>
+                                <h5 class="text-indigo-900 font-black text-xs uppercase">Pick an Alert Source</h5>
+                                <p class="text-[0.7rem] text-indigo-400 font-bold mt-1">Choose <b>Indicators</b>,
+                                    a <b>Strategy</b> preset, or <b>Event</b> (news catalysts). One source is
+                                    active at a time.</p>
                             </div>
                         </div>
                     </div>
@@ -626,10 +627,10 @@
                                 class="flex-shrink-0 w-8 h-8 bg-indigo-100 text-indigo-600 font-black rounded-full flex items-center justify-center text-xs">
                                 3</div>
                             <div>
-                                <h5 class="text-indigo-900 font-black text-xs uppercase">Generate API Keys</h5>
-                                <p class="text-[0.7rem] text-indigo-400 font-bold mt-1">Look for the **"API Keys"**
-                                    section and click "Generate New Key". You will get an **API Key ID** and a
-                                    **Secret Key**.</p>
+                                <h5 class="text-indigo-900 font-black text-xs uppercase">Choose Delivery</h5>
+                                <p class="text-[0.7rem] text-indigo-400 font-bold mt-1">In-app alerts are on by
+                                    default. Turn on <b>email</b> or <b>phone/SMS</b> under <b>Alert Delivery</b>
+                                    and send a test email to check it.</p>
                             </div>
                         </div>
                         <div class="flex gap-4">
@@ -637,34 +638,34 @@
                                 class="flex-shrink-0 w-8 h-8 bg-indigo-100 text-indigo-600 font-black rounded-full flex items-center justify-center text-xs">
                                 4</div>
                             <div>
-                                <h5 class="text-indigo-900 font-black text-xs uppercase">Connect to Bot</h5>
-                                <p class="text-[0.7rem] text-indigo-400 font-bold mt-1">Paste those keys into the
-                                    "Link Account" window here. Make sure the "Paper Trading" toggle matches your
-                                    Alpaca dashboard setting.</p>
+                                <h5 class="text-indigo-900 font-black text-xs uppercase">Review Alerts</h5>
+                                <p class="text-[0.7rem] text-indigo-400 font-bold mt-1">Open an alert for its
+                                    details, dismiss it with <b>×</b>, or use <b>Clear all</b>. Cleared alerts
+                                    stay in the <b>Signal Activity</b> chart.</p>
                             </div>
                         </div>
                     </div>
 
                     <div class="p-5 bg-indigo-50 rounded-2xl border border-indigo-100">
-                        <h4 class="text-indigo-900 font-black uppercase text-xs">Why Paper First?</h4>
+                        <h4 class="text-indigo-900 font-black uppercase text-xs">Good to Know</h4>
                         <ul class="mt-3 space-y-2">
                             <li class="flex items-start gap-2 text-[0.65rem] text-indigo-500 font-bold">
-                                <span class="text-emerald-500">✔</span> master indicator confluence
+                                <span class="text-emerald-500">✔</span> signals use completed candles only
                             </li>
                             <li class="flex items-start gap-2 text-[0.65rem] text-indigo-500 font-bold">
-                                <span class="text-emerald-500">✔</span> test different timeframes
+                                <span class="text-emerald-500">✔</span> stale or missing data blocks an alert
                             </li>
                             <li class="flex items-start gap-2 text-[0.65rem] text-indigo-500 font-bold">
-                                <span class="text-emerald-500">✔</span> build confidence in AI signals
+                                <span class="text-emerald-500">✔</span> an alert is a signal, not a guarantee
                             </li>
                         </ul>
                     </div>
                 </div>
             </div>
             <div class="p-8 bg-slate-50 flex justify-center border-t border-slate-100">
-                <button onclick="closeGuideModal(); openAlpacaModal();"
+                <button onclick="closeGuideModal()"
                     class="w-full sm:w-auto px-6 sm:px-12 py-4 sm:py-5 bg-gradient-to-r from-fuchsia-600 via-purple-600 to-indigo-600 text-white font-black rounded-full hover:shadow-purple-500/40 hover:shadow-2xl transition-all shadow-xl uppercase tracking-[0.2em] text-xs sm:text-sm active:scale-95 text-center">
-                    I'm Ready to Link Account
+                    Start Screening
                 </button>
             </div>
         </div>
@@ -3626,8 +3627,7 @@
                     </p>
                 </div>
                 <p class="text-[10px] text-slate-400 italic">
-                    Note: AI Indicator suggestions are advisory only and do not constitute financial advice. Always
-                    verify stop loss levels and size sizes against your private broker configuration.
+                    Note: AI Indicator suggestions are advisory only and do not constitute financial advice. Always check stop-loss levels and position sizes against your own broker settings.
                 </p>
             </div>
         </div>
@@ -3770,62 +3770,70 @@
     <div class="p-4 sm:p-5 bg-gradient-to-br from-purple-200/60 via-purple-100/50 to-indigo-100/50 backdrop-blur-md rounded-2xl border border-purple-300/70 shadow-lg shadow-purple-500/10 relative overflow-hidden">
         <div class="absolute -top-10 -right-10 w-32 h-32 bg-purple-400/20 rounded-full blur-2xl pointer-events-none"></div>
         <div class="flex flex-wrap items-center gap-2 mb-1.5 relative z-10">
-            <span class="text-xl">🔍</span>
+            <span class="text-xl">📡</span>
             <h4 class="text-base sm:text-lg font-black tracking-tight text-indigo-950">Screener Profile Guide</h4>
-            <span class="px-2 py-0.5 text-[0.6rem] font-black uppercase tracking-widest bg-purple-600 text-white border border-purple-500 rounded-full shadow-2xs">Market Intelligence</span>
+            <span class="px-2 py-0.5 text-[0.6rem] font-black uppercase tracking-widest bg-purple-600 text-white border border-purple-500 rounded-full shadow-2xs">Alerts only</span>
         </div>
-        <p class="text-xs sm:text-[0.8rem] text-indigo-950/80 font-medium leading-relaxed relative z-10">Completed-candle market scanning with selectable indicator and event-driven qualification. Monitor stocks, crypto, and options under independent signal-only profiles and receive auditable BUY/SELL alerts without placing broker orders.</p>
+        <p class="text-xs sm:text-[0.8rem] text-indigo-950/80 font-medium leading-relaxed relative z-10">The Screener watches the symbols you choose and alerts you to BUY and SELL setups. It never places orders or touches your money, and its settings are separate from your Bots.</p>
     </div>
 
-    <!-- Section 1: Architecture Overview -->
+    <!-- Section 1: How it works -->
     <div class="p-4 bg-indigo-50/60 border border-indigo-100 rounded-xl space-y-2.5">
-        <h5 class="font-black text-indigo-950 text-sm flex items-center gap-1.5"><span class="text-indigo-600">1.</span> Core Screener Architecture &amp; Signal Flow</h5>
+        <h5 class="font-black text-indigo-950 text-sm flex items-center gap-1.5"><span class="text-indigo-600">1.</span> How the Screener Works</h5>
         <ul class="space-y-2 list-disc list-inside text-slate-700 text-xs">
-            <li><b class="text-slate-900">One Profile Per Ticker:</b> Each symbol operates with its own independent Screener profile configuring timeframe, indicator settings, and signal thresholds.</li>
-            <li><b class="text-slate-900">Candle-Closed Evaluation:</b> Signals evaluate strictly on closed candles to eliminate repaint risk and avoid false intra-bar noise.</li>
-            <li><b class="text-slate-900">Per-Profile Parameter Overrides:</b> Clicking the gear icon (<code>⚙</code>) next to any indicator lets you customize calculation parameters (e.g., RSI period, EMA lengths) specifically for that profile.</li>
-            <li><b class="text-slate-900">Indicator Leg:</b> Active indicators contribute to the completed-candle indicator score. In the default Combined policy, this is only one required leg; an indicator score alone does not qualify a new setup.</li>
-            <li><b class="text-slate-900">Data Quality:</b> Missing, stale, degraded, or insufficient candle/news evidence blocks a new qualification instead of being treated as a neutral pass.</li>
+            <li><b class="text-slate-900">One profile per symbol:</b> Search a stock, ETF or crypto symbol (e.g. <code>SPY</code>, <code>AAPL</code>, <code>BTCUSD</code>), choose its settings and save. Each symbol keeps its own timeframe and rules.</li>
+            <li><b class="text-slate-900">Completed candles only:</b> Alerts are decided on finished candles, so a signal is not shown and then taken back while a candle is still forming.</li>
+            <li><b class="text-slate-900">Runs in the background:</b> Saved profiles keep scanning on their scan interval, even when this page is closed.</li>
+            <li><b class="text-slate-900">Data quality first:</b> If candles or news are missing, stale or incomplete, no new alert is sent. Missing data never counts as a pass.</li>
         </ul>
     </div>
 
-    <!-- Section 2: Stocks & Crypto -->
-    <div class="p-4 bg-emerald-50/40 border border-emerald-200/80 rounded-xl space-y-2.5">
-        <h5 class="font-black text-emerald-950 text-sm flex items-center gap-1.5"><span class="text-emerald-600">2.</span> Stocks &amp; Crypto Scanning</h5>
-        <ol class="space-y-2 list-decimal list-inside text-slate-700 text-xs">
-            <li><b class="text-slate-900">Search &amp; Add Symbol:</b> Search any stock or crypto symbol (e.g., <code>SPY</code>, <code>AAPL</code>, <code>BTCUSD</code>) in the search bar.</li>
-            <li><b class="text-slate-900">Select Timeframe:</b> Stocks default to <code>1Day</code> and crypto defaults to <code>4Hour</code> for swing-oriented screening; other completed-candle timeframes remain available. Crypto scans 24/7 continuously.</li>
-            <li><b class="text-slate-900">Configure Indicators:</b> The new-profile starting pool is EMA Cross, SMA, RSI, and ADX Trend with a threshold of 3. You may change this pool, but these are starting settings—not optimized performance claims.</li>
-            <li><b class="text-slate-900">Set Refresh:</b> Stock/crypto swing profiles default to a 30-minute scan interval. A new headline can request an immediate re-evaluation when the event leg is enabled.</li>
-            <li><b class="text-slate-900">Save Profile:</b> Click <code>Save Screener Profile</code> to begin independent background monitoring.</li>
-        </ol>
-    </div>
-
-    <!-- Section 3: Qualification Policy -->
-    <div class="p-4 bg-emerald-50/40 border border-emerald-200/80 rounded-xl space-y-2.5">
-        <h5 class="font-black text-emerald-950 text-sm flex items-center gap-1.5"><span class="text-emerald-600">3.</span> Indicator + Event Qualification</h5>
-        <ul class="space-y-2 list-disc list-inside text-slate-700 text-xs">
-            <li><b class="text-slate-900">Combined · Require Both:</b> The default mode requires indicator confirmation and a recent directly relevant catalyst in the same direction. News Watch is automatically <code>Enabled</code>.</li>
-            <li><b class="text-slate-900">Indicator Only:</b> Uses only completed-candle indicator evidence for qualification. News Summary remains <code>Enabled</code> for visibility, but it cannot qualify the indicator-only entry.</li>
-            <li><b class="text-slate-900">Event-Driven Only:</b> Uses the event leg without requiring indicator confirmation. News Watch is automatically <code>Enabled</code>.</li>
-            <li><b class="text-slate-900">Discovery · Either Qualifies:</b> Either leg may surface a candidate, but an explicit qualifying conflict between indicator and event directions is blocked.</li>
-            <li><b class="text-slate-900">Catalyst freshness:</b> The default catalyst window is 10 days. Event qualification also requires current news data, relevant headline evidence, acceptable impact, and sufficient sentiment confidence.</li>
+    <!-- Section 2: Alert source -->
+    <div class="p-4 bg-white border border-slate-200/80 rounded-xl shadow-sm space-y-2.5">
+        <h5 class="font-black text-slate-900 text-sm flex items-center gap-1.5"><span class="text-emerald-600">2.</span> Pick One Alert Source</h5>
+        <p class="text-xs text-slate-600">Each profile alerts from one source at a time. Turning one on switches the others off.</p>
+        <ul class="pl-1 space-y-1.5 list-none text-slate-700 text-xs">
+            <li>• <b>Indicators:</b> Alerts when at least your threshold of checked indicators agree on a direction. Use the gear (<code>⚙</code>) to change an indicator's settings for this profile, and choose entry and exit rules (indicator, ATR, percentage, pivots, prior-day high/low, swing points or hybrids), the same choices as Bots.</li>
+            <li>• <b>Strategy:</b> Uses a ready-made preset (Golden Cross, Supertrend + 200 EMA, Malik allocators, Session Rider) with the same rules as Bots and Backtest. The Malik allocators did not pass our research test and show a warning.</li>
+            <li>• <b>Event:</b> Alerts from news. It needs a recent, directly relevant headline pointing one way. Set how recent with the catalyst window (default 10 days).</li>
         </ul>
     </div>
 
-    <!-- Section 4: Options Analysis -->
-    <div class="p-4 bg-purple-50/40 border border-purple-200/80 rounded-xl space-y-2.5">
-        <h5 class="font-black text-purple-950 text-sm flex items-center gap-1.5"><span class="text-purple-600">4.</span> Options Strategy Scanning</h5>
+    <!-- Section 3: Profile settings -->
+    <div class="p-4 bg-white border border-slate-200/80 rounded-xl shadow-sm space-y-2.5">
+        <h5 class="font-black text-slate-900 text-sm flex items-center gap-1.5"><span class="text-emerald-600">3.</span> Profile Settings</h5>
         <ol class="space-y-2 list-decimal list-inside text-slate-700 text-xs">
-            <li><b class="text-slate-900">Directional Bias:</b> Configure CALL (bullish signals) or PUT (bearish signals) setups on underlying equities/ETFs.</li>
-            <li><b class="text-slate-900">Strike &amp; Expiration Preferences:</b> Filter ATM/ITM/OTM strikes and target days to expiration for alert notifications.</li>
-            <li><b class="text-slate-900">Fast Quant Loop:</b> Options profiles utilize a dedicated 10-second high-speed scanning loop during market hours.</li>
+            <li><b class="text-slate-900">Timeframe:</b> The candle size the profile reads. New profiles start at <code>30 Minutes</code> (options: <code>5 Minutes</code>); longer candles give fewer, steadier alerts.</li>
+            <li><b class="text-slate-900">Session:</b> <code>Regular Hours</code>, <code>Extended Hours</code>, or <code>Crypto · 24/7</code> for crypto.</li>
+            <li><b class="text-slate-900">Scan interval:</b> How often the profile checks. <code>Auto</code> follows the timeframe; you can also pick from 10 seconds to 4 hours.</li>
+            <li><b class="text-slate-900">Alert direction:</b> Both directions, bullish only or bearish only.</li>
+            <li><b class="text-slate-900">Cooldown:</b> The minimum gap between alerts for the same symbol (default 1 hour), so one move does not flood you.</li>
         </ol>
     </div>
 
-    <!-- Pro Tips -->
+    <!-- Section 4: Options -->
+    <div class="p-4 bg-white border border-slate-200/80 rounded-xl shadow-sm space-y-2.5">
+        <h5 class="font-black text-slate-900 text-sm flex items-center gap-1.5"><span class="text-fuchsia-600">4.</span> Options Profiles</h5>
+        <ul class="space-y-2 list-disc list-inside text-slate-700 text-xs">
+            <li><b class="text-slate-900">Direction:</b> Alert on calls (bullish), puts (bearish) or both, based on the stock or ETF chart.</li>
+            <li><b class="text-slate-900">Contract preferences:</b> Choose the strike (<code>ATM</code>, <code>ITM</code> or <code>OTM</code>) and days to expiration shown in the alert.</li>
+            <li><b class="text-slate-900">Speed:</b> Options profiles run in regular hours and can scan as often as every 10 seconds.</li>
+        </ul>
+    </div>
+
+    <!-- Section 5: Alerts -->
+    <div class="p-4 bg-white border border-slate-200/80 rounded-xl shadow-sm space-y-2.5">
+        <h5 class="font-black text-slate-900 text-sm flex items-center gap-1.5"><span class="text-emerald-600">5.</span> Getting &amp; Managing Alerts</h5>
+        <ul class="space-y-2 list-disc list-inside text-slate-700 text-xs">
+            <li><b class="text-slate-900">Delivery:</b> In-app alerts are on by default. Open <code>Alert Delivery</code> to add email or phone/SMS (enter the number with country code, e.g. <code>+15551234567</code>) and send a test email.</li>
+            <li><b class="text-slate-900">Alert list:</b> Filter by time (1D, 1W, 1M, 1Y, All) and by read or unread. Tap an alert for its details, <code>×</code> to dismiss it, or <code>Clear all</code> to clear what the list shows. Alerts that arrive while you clear are kept.</li>
+            <li><b class="text-slate-900">Signal Activity:</b> The chart keeps the full history of bullish and bearish alerts, including cleared ones. Untick <code>Include cleared</code> to match your alert list.</li>
+        </ul>
+    </div>
+
+    <!-- Boundary -->
     <div class="p-3.5 bg-slate-100 border border-slate-300/80 rounded-xl text-slate-800 text-xs font-medium">
-        <b>💡 Signal-Only Boundary:</b> Screener profiles are analysis and notification only. They do not execute broker orders, manage broker positions, or risk account capital. A qualification is not a forecast probability or a guarantee of profit.
+        <b>💡 Alerts are signals, not orders:</b> The Screener never buys, sells or manages positions. An alert means a setup met your rules on a completed candle; it is not a forecast or a guarantee of profit. To trade a setup automatically, test it in Backtest and run it as a bot on paper first.
     </div>
 </div>`.trim()
         };

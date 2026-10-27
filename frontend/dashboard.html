@@ -1229,101 +1229,90 @@
         <div class="flex flex-wrap items-center gap-2 mb-1.5 relative z-10">
             <span class="text-xl">🚀</span>
             <h4 class="text-base sm:text-lg font-black tracking-tight text-indigo-950">Bot deployment guide</h4>
-            <span class="px-2 py-0.5 text-[0.6rem] font-black uppercase tracking-widest bg-purple-600 text-white border border-purple-500 rounded-full shadow-2xs">Pro Trader Edition</span>
+            <span class="px-2 py-0.5 text-[0.6rem] font-black uppercase tracking-widest bg-purple-600 text-white border border-purple-500 rounded-full shadow-2xs">Step by step</span>
         </div>
-        <p class="text-xs sm:text-[0.8rem] text-indigo-950/80 font-medium leading-relaxed relative z-10">Designed for experienced traders transitioning to automated execution. Learn the exact pipeline, parameter overrides, confluence thresholds, and asset-specific guardrails across Regular Stocks, Crypto, and Options.</p>
+        <p class="text-xs sm:text-[0.8rem] text-indigo-950/80 font-medium leading-relaxed relative z-10">How to set up, run and safely manage an automated bot for stocks, crypto or options. New here? Do steps 1 to 3, deploy on a <b>paper account</b>, and come back to the rest when you need it.</p>
     </div>
 
-    <!-- Section 1: Architecture Overview -->
+    <!-- Section 1: How bots work -->
     <div class="p-4 bg-indigo-50/60 border border-indigo-100 rounded-xl space-y-2.5">
-        <h5 class="font-black text-indigo-950 text-sm flex items-center gap-1.5"><span class="text-indigo-600">1.</span> Core Platform Architecture &amp; Flow</h5>
+        <h5 class="font-black text-indigo-950 text-sm flex items-center gap-1.5"><span class="text-indigo-600">1.</span> How Bots Work</h5>
         <ul class="space-y-2 list-disc list-inside text-slate-700 text-xs">
-            <li><b class="text-slate-900">One Bot Per Ticker Rule:</b> To guarantee clean order routing and prevent contradictory signals, our engine enforces exactly one active bot instance per ticker symbol (<code>ticker_settings</code>). If an active bot is running on <code>AAPL</code>, you must remove it before deploying a new configuration for <code>AAPL</code>. Removing an active bot automatically closes open positions and cancels working orders for that asset.</li>
-            <li><b class="text-slate-900">Trading Regime Switch (Regular vs. Options):</b> When configuring your strategy, the top switch selects your execution engine:
-                <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
-                    <li>• <b>Regular (Stocks &amp; Crypto):</b> Spot execution of share/token quantities directly via connected brokerages (Alpaca, Webull, Coinbase).</li>
-                    <li>• <b>Options (Calls &amp; Puts Derivatives):</b> Evaluates the underlying equity/ETF chart (e.g., SPY, QQQ, TSLA) and dynamically selects right-priced option contracts based on Strike/Delta and Expiration rules.</li>
-                </ul>
-            </li>
-            <li><b class="text-slate-900">Per-Bot Parameter Overrides:</b> Clicking the gear icon (<code>⚙</code>) next to any checked indicator in the strategy modal lets you customize specific calculation parameters (e.g., changing RSI period from 14 to 9 or Supertrend multiplier from 3.0 to 2.0). These overrides are saved uniquely to that ticker's deployed bot without modifying your global default templates.</li>
-            <li><b class="text-slate-900">Dynamic Confluence Scoring:</b> Every checked indicator that confirms in your chosen direction contributes <code>+1</code> to the live score. An entry fires strictly when <code>Live Score &gt;= Buy Signal Threshold</code>.</li>
+            <li><b class="text-slate-900">One bot per symbol:</b> Search a symbol (e.g. <code>AAPL</code>, <code>SPY</code>, <code>BTCUSD</code>), set its rules and press <code>Deploy Strategy</code>. Each symbol runs one bot; edit it from its card instead of adding a second one.</li>
+            <li><b class="text-slate-900">Completed candles only:</b> A bot decides on finished candles, never a candle that is still forming. It checks the market on its scan interval: every 60 seconds by default, or <code>Auto</code> to follow your timeframe.</li>
+            <li><b class="text-slate-900">Paper or live:</b> Bots trade through your linked Alpaca account. Start on paper. Live accounts need an extra confirmation and stay locked until live trading is enabled for your account.</li>
+            <li><b class="text-slate-900">Account-wide limits:</b> <code>Global Risk</code> on the Bots page sets <code>Max Daily Drawdown</code> and <code>Max Loss to Equity</code> for all bots together. They are checked before every new entry, for every bot type.</li>
+            <li><b class="text-slate-900">Auto-pause after losses:</b> A bot pauses itself after 3 losing trades in a row, so a broken setup cannot keep losing.</li>
         </ul>
     </div>
 
-    <!-- Section 2: Regular Stocks -->
+    <!-- Section 2: Modes -->
     <div class="p-4 bg-white border border-slate-200/80 rounded-xl shadow-sm space-y-2.5">
-        <h5 class="font-black text-slate-900 text-sm flex items-center gap-1.5"><span class="text-emerald-600">2.</span> Regular Stock Trading Setup (Spot Equities)</h5>
+        <h5 class="font-black text-slate-900 text-sm flex items-center gap-1.5"><span class="text-emerald-600">2.</span> Choose a Mode</h5>
+        <p class="text-xs text-slate-600">The switch at the top of the bot window picks how the bot trades:</p>
+        <ul class="pl-1 space-y-1.5 list-none text-slate-700 text-xs">
+            <li>• <b>Regular:</b> Buys and sells shares of stocks and ETFs, or crypto. Sessions: <code>Regular Hours</code>, <code>Extended Hours</code>, or <code>24 hr</code> for crypto.</li>
+            <li>• <b>Options:</b> Reads the stock or ETF chart and buys a <b>CALL</b> (bullish) or a <b>PUT</b> (bearish) contract. Regular hours only.</li>
+            <li>• <b>AI Autopilot:</b> An AI model reads the market each scan and decides buy, hold or sell, with its own stop and target. Its confidence is not a probability or a promise of profit. Your account-wide limits still apply, so test it on paper first.</li>
+        </ul>
+    </div>
+
+    <!-- Section 3: Rules -->
+    <div class="p-4 bg-white border border-slate-200/80 rounded-xl shadow-sm space-y-2.5">
+        <h5 class="font-black text-slate-900 text-sm flex items-center gap-1.5"><span class="text-emerald-600">3.</span> Set the Entry &amp; Exit Rules</h5>
         <ol class="space-y-2 list-decimal list-inside text-slate-700 text-xs">
-            <li><b class="text-slate-900">Search &amp; Select Ticker:</b> Type a valid equity symbol (e.g., <code>AAPL</code>, <code>NVDA</code>, <code>SPY</code>) in the search box and click <code>+ Add</code>.</li>
-            <li><b class="text-slate-900">Select 'Regular' Mode:</b> Ensure the top mode toggle is set to <code>Regular (Stocks &amp; Crypto)</code>.</li>
-            <li><b class="text-slate-900">Configure Entry &amp; Exit Strategies:</b>
+            <li><b class="text-slate-900">Strategy preset (optional):</b> Pick a ready-made rule set instead of building your own. Your sizing and risk settings stay yours.
                 <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
-                    <li>• <b>Entry Strategy Mode:</b> Choose <code>Technical Indicators (Confluence)</code> to enter when multiple indicators agree, choose structural breakouts like <code>ATR Stop Breakout</code>, <code>Pivot Points (S/R) Breakout</code>, or choose <code>Hybrid Modes (Dual-Confirmation)</code> which require both indicator confluence AND structural reclaim before entering.</li>
-                    <li>• <b>Exit Strategy Mode:</b> Choose <code>Dynamic Sell</code> to exit when bearish indicators hit threshold, or set hard target limits via <code>Stop-Loss / Take-Profit (SL/TP)</code> or <code>Hybrid Exits</code>.</li>
+                    <li>• <b>Golden Cross:</b> Holds while the fast moving average is above the slow one (50/200 SMA by default).</li>
+                    <li>• <b>Supertrend + 200 EMA:</b> Buys when Supertrend turns bullish while price is above the 200 EMA.</li>
+                    <li>• <b>Malik QQQ / SOXX / IWM:</b> Uses the trend of QQQ, SOXX or IWM to hold a leveraged ETF you choose (e.g. TQQQ) or stay in cash. These did not pass our research test and show a warning.</li>
+                    <li>• <b>Session Rider:</b> Buys at one set time and sells at another. Default: buy 5 minutes before the close, sell 5 minutes after the next open.</li>
                 </ul>
             </li>
-            <li><b class="text-slate-900">Trade Capital &amp; Risk Guardrails:</b>
-                <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
-                    <li>• <b>Sizing Mode:</b> Choose <code>Fixed Per Trade</code> (fixed dollar allocation, e.g., $1,000) or <code>Compound This Amount</code> (automatically reinvesting gains into position size over time).</li>
-                    <li>• <b>Stop-Loss &amp; Take-Profit (%):</b> Enter hard capital protection boundaries below/above entry.</li>
-                    <li>• <b>Trailing Stop (%):</b> Enable a dynamic trailing stop percentage (e.g., 1.5% to 2.5%) that ratchets up with price action to lock in unrealized profits.</li>
-                </ul>
-            </li>
-            <li><b class="text-slate-900">Smart Re-Entry &amp; Cooldown Controls:</b>
-                <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
-                    <li>• <b>Re-Entry Cooldown:</b> Set a resting window (e.g., 2 to 4 hours) after a position closes before a new signal can open a trade. This prevents overtrading during intraday consolidation.</li>
-                    <li>• <b>Signal Reset Logic:</b> Enable required signal reset so the underlying indicator must drop below threshold before firing a new buy signal.</li>
-                </ul>
-            </li>
-            <li><b class="text-slate-900">Deploy:</b> Click <code>Confirm &amp; Deploy</code>. The bot registers under your Active Trading Bots panel and runs continuously during market hours.</li>
+            <li><b class="text-slate-900">Entry rule:</b> <code>Indicator (Signals)</code> enters when at least your <b>Buy Signal Threshold</b> of checked indicators turn bullish; each bullish indicator adds 1 to the score. Or enter on price structure: <code>Custom Price</code>, <code>ATR / Volatility</code>, <code>Percentage</code>, <code>Pivot Points</code>, <code>Prior Day High/Low</code> or <code>Swing Points</code>. Every structure rule also has a <code>Hybrid</code> version that needs the indicators <em>and</em> the structure to agree.</li>
+            <li><b class="text-slate-900">Exit rule:</b> Sell on bearish indicators, at fixed prices (<code>Custom SL/TP</code>), at ATR or percentage levels, or at pivot, prior-day or swing levels, with the same Hybrid choices.</li>
+            <li><b class="text-slate-900">Indicator settings:</b> The gear (<code>⚙</code>) next to a checked indicator changes its settings (e.g. RSI period 14 → 9) for this bot only.</li>
         </ol>
     </div>
 
-    <!-- Section 3: Crypto 24/7 -->
-    <div class="p-4 bg-amber-50/40 border border-amber-200/80 rounded-xl space-y-2.5">
-        <h5 class="font-black text-amber-950 text-sm flex items-center gap-1.5"><span class="text-amber-600">3.</span> Crypto Trading Setup (24/7 Continuous Execution)</h5>
-        <ol class="space-y-2 list-decimal list-inside text-slate-700 text-xs">
-            <li><b class="text-slate-900">Search Crypto Pair:</b> Search your coin pair (e.g., <code>BTC-USD</code>, <code>ETH-USD</code>, <code>SOL-USD</code>).</li>
-            <li><b class="text-slate-900">Verify Spot Regime:</b> Crypto operates under the <code>Regular</code> spot engine using fractional token quantities.</li>
-            <li><b class="text-slate-900">Timeframe Selection for 24/7 Markets:</b> Unlike stocks that close overnight, crypto trades 24/7/365. For intraday momentum, select <code>15Min</code> or <code>1H</code> timeframes to filter out overnight liquidity drops. If running on <code>5Min</code>, raise your Buy Signal Threshold (e.g., 4 or 5) to enforce high confluence.</li>
-            <li><b class="text-slate-900">Overnight Risk Management:</b> Since you cannot monitor the screen 24/7, configuring a <b>Trailing Stop (e.g., 2.0% to 3.5%)</b> is essential. It acts as your automated overnight risk manager, ratcheting up with highs and closing out positions automatically if momentum rolls over.</li>
-            <li><b class="text-slate-900">Deploy:</b> Click <code>Confirm &amp; Deploy</code>. Your bot appears under the <code>Crypto</code> tab in the Active Trading Bots panel and executes 24/7.</li>
-        </ol>
+    <!-- Section 4: Size & protect -->
+    <div class="p-4 bg-white border border-slate-200/80 rounded-xl shadow-sm space-y-2.5">
+        <h5 class="font-black text-slate-900 text-sm flex items-center gap-1.5"><span class="text-emerald-600">4.</span> Size &amp; Protect Each Trade</h5>
+        <ul class="space-y-2 list-disc list-inside text-slate-700 text-xs">
+            <li><b class="text-slate-900">Sizing:</b> <code>Fixed Per Trade</code> spends the same amount every time; <code>Compound This Amount</code> grows or shrinks it with the bot's results. <code>Max Trades</code> can cap how many entries the bot makes.</li>
+            <li><b class="text-slate-900">Trailing stop:</b> Follows price up and sells if it falls back by your percentage or ATR distance, locking in part of a gain.</li>
+            <li><b class="text-slate-900">Cooldown:</b> Waits after a trade closes before the next entry (<code>Auto</code> = 4 candles), which stops rapid re-buying in choppy markets.</li>
+            <li><b class="text-slate-900">Signal Reset &amp; Smart Re-entry:</b> Signal Reset makes the signal switch off before the bot can buy again. Smart Re-entry adds an RSI-pullback or Session-VWAP check before a new entry.</li>
+            <li><b class="text-slate-900">Pausing:</b> A paused bot keeps its settings and stops trading that symbol. Stop and target orders already placed at Alpaca stay active, but exits the bot watches itself (indicator exits, fractional shares, crypto) are not managed while it is paused. Watch or close an open position yourself.</li>
+            <li><b class="text-slate-900">Stops are not guaranteed:</b> Exits the bot watches itself need the server running and fresh market data, and a fast market can fill beyond your stop price.</li>
+        </ul>
     </div>
 
-    <!-- Section 4: Options Derivatives -->
-    <div class="p-4 bg-purple-50/40 border border-purple-200/80 rounded-xl space-y-2.5">
-        <h5 class="font-black text-purple-950 text-sm flex items-center gap-1.5"><span class="text-purple-600">4.</span> Options Trading Setup (Calls &amp; Puts Derivatives)</h5>
+    <!-- Section 5: Crypto -->
+    <div class="p-4 bg-white border border-slate-200/80 rounded-xl shadow-sm space-y-2.5">
+        <h5 class="font-black text-slate-900 text-sm flex items-center gap-1.5"><span class="text-emerald-600">5.</span> Crypto Tips (24/7)</h5>
+        <ul class="space-y-2 list-disc list-inside text-slate-700 text-xs">
+            <li><b class="text-slate-900">Always open:</b> Use <code>Regular</code> mode with the <code>24 hr</code> session. Crypto bots appear under the <b>Crypto</b> tab and trade around the clock.</li>
+            <li><b class="text-slate-900">Less noise:</b> Short timeframes such as <code>5 Minutes</code> give many weak signals. Use <code>15 Minutes</code> or longer, or raise the Buy Signal Threshold.</li>
+            <li><b class="text-slate-900">Overnight protection:</b> Set a trailing stop or a stop level, because nobody watches the screen at 3 a.m.</li>
+        </ul>
+    </div>
+
+    <!-- Section 6: Options -->
+    <div class="p-4 bg-white border border-slate-200/80 rounded-xl shadow-sm space-y-2.5">
+        <h5 class="font-black text-slate-900 text-sm flex items-center gap-1.5"><span class="text-fuchsia-600">6.</span> Options Setup (Calls &amp; Puts)</h5>
         <ol class="space-y-2 list-decimal list-inside text-slate-700 text-xs">
-            <li><b class="text-slate-900">Search Underlying Asset:</b> Search an options-eligible ticker (e.g., <code>SPY</code>, <code>QQQ</code>, <code>TSLA</code>, <code>NVDA</code>, <code>AAPL</code>) and click <code>+ Add</code>.</li>
-            <li><b class="text-slate-900">Toggle to 'Options' Mode:</b> Switch the top regime toggle from Regular to <code>Options (Calls &amp; Puts)</code>.</li>
-            <li><b class="text-slate-900">Select Directional Bias (Options Type):</b>
-                <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
-                    <li>• <b>Long Calls (Bullish):</b> Buys Call options when the underlying equity triggers a Buy signal.</li>
-                    <li>• <b>Long Puts (Bearish):</b> Buys Put options when the underlying triggers a Bearish breakdown (evaluates against Buy Signal Threshold for trade entry).</li>
-                    <li>• <b>Dynamic (Calls &amp; Puts):</b> Automatically buys Calls on bullish setups and Puts on bearish breakdown setups.</li>
-                </ul>
-            </li>
-            <li><b class="text-slate-900">Configure Expiration &amp; Strike Rules:</b>
-                <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
-                    <li>• <b>Target DTE (Days to Expiration):</b> Choose <code>0-1 DTE</code> for high-gamma scalping, <code>3-7 DTE</code> for weekly swing setups, or <code>14-30+ DTE</code> for macro directional moves.</li>
-                    <li>• <b>Strike Selection (Moneyness / Delta):</b> Choose <code>At-the-Money (ATM)</code> for highest liquidity (Delta ~0.50), <code>In-the-Money (ITM)</code> for high delta stock replacement (Delta 0.70+), or <code>Out-of-the-Money (OTM)</code> for high-gamma breakout payouts.</li>
-                </ul>
-            </li>
-            <li><b class="text-slate-900">Stop-Loss &amp; Take-Profit Pricing Basis:</b>
-                <ul class="pl-5 mt-1 space-y-1 list-none text-slate-600">
-                    <li>• <b>Option Contract Premium (Default):</b> Evaluates SL/TP against the percentage change of the option contract's premium (e.g., +30% target or -15% stop on the contract itself).</li>
-                    <li>• <b>Underlying Stock Price:</b> Evaluates SL/TP against the underlying spot price (e.g., closing the option when SPY spot moves +1% or -0.5%).</li>
-                </ul>
-            </li>
-            <li><b class="text-slate-900">Contract Sizing Budget:</b> Set your dollar allocation (<code>Trade Amount</code>, e.g., $1,000). The bot calculates the exact contract quantity based on live chain ask prices (<code>Contracts = Floor($1,000 / (Option Ask * 100))</code>).</li>
-            <li><b class="text-slate-900">Deploy &amp; Automated Handling:</b> Click <code>Confirm &amp; Deploy</code>. The options engine automatically fetches live chains, filters bid/ask spreads, enters the trade, and exits when targets or expiration boundaries are met.</li>
+            <li><b class="text-slate-900">Pick the stock:</b> Search an options-eligible stock or ETF (e.g. <code>SPY</code>, <code>QQQ</code>, <code>AAPL</code>) and switch to <code>Options</code>.</li>
+            <li><b class="text-slate-900">Direction:</b> <code>CALL</code> profits if the stock rises; <code>PUT</code> profits if it falls.</li>
+            <li><b class="text-slate-900">Contract:</b> Set the days to expiration (default 3) and the strike: <code>ATM</code> (at the money, most liquid), <code>ITM</code> (moves more like the stock) or <code>OTM</code> (cheaper, bigger swings, more likely to expire worthless).</li>
+            <li><b class="text-slate-900">Exits:</b> Set stops and targets on the <b>option premium</b> (<code>Custom SL/TP</code>) or on the <b>stock price</b> (<code>Custom Underlying SL/TP</code>), or use any other exit rule.</li>
+            <li><b class="text-slate-900">Size:</b> Contracts = whole number of <code>Trade Amount ÷ (option price × 100)</code>. Contracts with a bid/ask spread that is too wide are skipped.</li>
         </ol>
     </div>
 
     <!-- Pro Tips -->
     <div class="p-3.5 bg-slate-100 border border-slate-300/80 rounded-xl text-slate-800 text-xs font-medium">
-        <b>💡 Pro Advice for Live Deployment:</b> Always run your configuration through the <b>Backtest Tab</b> over 30 to 60 days before live deployment to verify threshold behavior across historical volatility cycles. Once running live, you can pause, inspect indicators, adjust thresholds, or close positions directly from the bot card in the Active Trading Bots panel below.
+        <b>💡 Before going live:</b> Backtest the exact same settings (timeframe, session, rules, exits) on dates you did not tune on, then run the bot on paper for several weeks. From each bot card you can pause, edit, check its signals, or remove it. Removing a bot cancels its pending orders and, after you confirm, closes its open position.
     </div>
 </div>`.trim()
         };
