@@ -589,7 +589,7 @@ function renderScreenerNotifications(
         ).trim();
         const createdValue = typeof item.created_at === 'string' ? Date.parse(item.created_at) : Number(item.created_at) * 1000;
         const created = item.created_at ? new Date(createdValue).toLocaleString() : "";
-        const safeId = String(item.id || '').replace(/'/g, "\\'");
+        const safeId = botbullsInlineJsArg(item.id || '');
         return `<div class="relative" data-screener-alert-id="${escapeScreenerNewsText(String(item.id || ''))}">
         <button type="button" onclick="openScreenerNotification('${safeId}')" class="w-full text-left rounded-2xl border border-${color}-200 bg-${color}-50/50 p-3 ${item.read ? 'opacity-70' : 'shadow-sm'} focus:outline-none focus:ring-2 focus:ring-indigo-400">
             <div class="flex items-center justify-between gap-2 pr-9"><span class="text-xs font-black text-${color}-700">${escapeScreenerNewsText(item.symbol || '')} · ${escapeScreenerNewsText(eventLabel)}</span><span class="text-[10px] text-slate-400">${escapeScreenerNewsText(created)}</span></div>
@@ -1336,8 +1336,10 @@ async function persistBotOrderFromVisible(newVisibleTickers) {
     }
 }
 
+// Plain text for HTML content or a quoted attribute: drop any markup (as before), then escape what is left, so a stray
+// "<" or a quote cannot open a tag or end an attribute. Text arriving here is plain (news entities are decoded server-side).
 function sanitizePlainText(text) {
-    return String(text || '').replace(/<[^>]*>?/gm, '');
+    return escapeScreenerNewsText(String(text || '').replace(/<[^>]*>?/gm, ''));
 }
 
 function normalizeScreenerEventAnalysis(value, direction) {
@@ -7281,7 +7283,7 @@ function ensureDailyHighLowBotIndicatorCards() {
             if (existingInput) {
                 return;
             }
-            const escapedName = name.replace(/'/g, "\\'");
+            const escapedName = botbullsInlineJsArg(name);
             const settingsButton = settings ? `
                 <button onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('${escapedName}')" class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" title="${name} Settings">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -8575,7 +8577,7 @@ function renderBotChartPreviewSignals(signals = {}, settings = {}) {
             : (signalType === 'BULLISH' ? 'bullish' : signalType === 'BEARISH' ? 'bearish' : 'neutral');
         const icon = signalType === 'BULLISH' ? '▲' : signalType === 'BEARISH' ? '▼' : '●';
         const iconColor = signalType === 'BULLISH' ? 'text-emerald-600' : signalType === 'BEARISH' ? 'text-red-500' : 'text-purple-400';
-        const escapedName = name.replace(/'/g, "\\'");
+        const escapedName = botbullsInlineJsArg(name);
         const displayName = name === 'VWAP' ? 'Session VWAP' : name;
         const displayLabelClass = name === 'VWAP' ? 'vwap-indicator-label' : 'text-indigo-900';
         const settingAction = `openBotChartPreviewIndicatorSettings('${escapedName}')`;
@@ -9415,7 +9417,7 @@ async function unlinkAlpaca() {
                         const elapsedSec = Math.floor((Date.now() - renderedAt) / 1000);
                         const currentRemaining = Math.max(0, initialRemaining - elapsedSec);
                         // Header chips carry a short phone label ("Next") so the Last scan result header fits one line.
-                        if (shortLabel) el.innerHTML = `◷ <span class="hidden sm:inline">${timerLabel}</span><span class="sm:hidden">${shortLabel}</span> ${formatScanCountdownJs(currentRemaining)}`;
+                        if (shortLabel) el.innerHTML = `◷ <span class="hidden sm:inline">${escapeScreenerNewsText(timerLabel)}</span><span class="sm:hidden">${escapeScreenerNewsText(shortLabel)}</span> ${formatScanCountdownJs(currentRemaining)}`;
                         else el.textContent = `◷ ${timerLabel} ${formatScanCountdownJs(currentRemaining)}`;
                     }
                 });
@@ -11249,7 +11251,7 @@ window.fetchLiveAtrForPreview = async function (ticker, overrideTf) {
         const exitBoxRegular = document.getElementById('livePreviewExitBox_regular');
         const entryBoxOptions = document.getElementById('livePreviewEntryBox_options');
         const exitBoxOptions = document.getElementById('livePreviewExitBox_options');
-        const loadingHtml = `&#8987; Fetching live market data for ${ticker} (${tf})...`;
+        const loadingHtml = `&#8987; Fetching live market data for ${escapeScreenerNewsText(ticker)} (${escapeScreenerNewsText(tf)})...`;
         if (entryBoxRegular && !entryBoxRegular.classList.contains('hidden')) entryBoxRegular.innerHTML = loadingHtml;
         if (exitBoxRegular && !exitBoxRegular.classList.contains('hidden')) exitBoxRegular.innerHTML = loadingHtml;
         if (entryBoxOptions && !entryBoxOptions.classList.contains('hidden')) entryBoxOptions.innerHTML = loadingHtml;
@@ -11466,7 +11468,7 @@ function buildEntryPreviewHtml(mode, isOptions, symbol, simPrice, simAtr, priorD
     const modeLabel = buyMode.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase());
     const isLive = !!window.currentAtrPreviewData?.isLive;
     const previewLabel = isLive ? 'Live Preview' : 'Example Preview';
-    const basePrefix = `🔮 ${previewLabel}: ${symbol} (Entry: ${modeLabel}) | Price: $${simPrice.toFixed(2)}`;
+    const basePrefix = `🔮 ${previewLabel}: ${escapeScreenerNewsText(symbol)} (Entry: ${escapeScreenerNewsText(modeLabel)}) | Price: $${simPrice.toFixed(2)}`;
     const entryForecast = window.currentAtrPreviewData?.entry_forecast || '';
     const swingEntryForecast = window.currentAtrPreviewData?.swing_entry_forecast || '';
 
@@ -11576,7 +11578,7 @@ function buildEntryPreviewHtml(mode, isOptions, symbol, simPrice, simAtr, priorD
     }
 
     const buyThreshold = document.getElementById(`strategyBuyThreshold_${mode}`)?.value || '0';
-    return `${basePrefix}<br/>Buy Threshold: ${buyThreshold}`;
+    return `${basePrefix}<br/>Buy Threshold: ${escapeScreenerNewsText(buyThreshold)}`;
 }
 
 window.updateLivePreview_bots = function (mode, scope = 'both') {
@@ -11782,9 +11784,9 @@ window.updateLivePreview_bots = function (mode, scope = 'both') {
         if (hasTrail) {
             if (showATR) {
                 const trailNote = isPutUnderlyingAtr ? 'PUT trail follows downward move from above' : 'Trail follows favorable move from below';
-                html += `<br/>Trail Distance: $${trailDist.toFixed(2)} (ATR * ${document.getElementById('strategyAtrTrailMult' + suffix)?.value || '0'}) | ${trailNote}`;
+                html += `<br/>Trail Distance: $${trailDist.toFixed(2)} (ATR * ${escapeScreenerNewsText(document.getElementById('strategyAtrTrailMult' + suffix)?.value || '0')}) | ${trailNote}`;
             } else {
-                html += `<br/>Trail Distance: $${trailDist.toFixed(2)} (${document.getElementById(isOptions ? 'strategyOptionsTrailPct' : 'strategyRegularTrailPct')?.value || '0'}%)`;
+                html += `<br/>Trail Distance: $${trailDist.toFixed(2)} (${escapeScreenerNewsText(document.getElementById(isOptions ? 'strategyOptionsTrailPct' : 'strategyRegularTrailPct')?.value || '0')}%)`;
             }
         }
     }

@@ -507,6 +507,19 @@
         })[char]);
     }
 
+    // Text for a single-quoted JS string inside a double-quoted HTML attribute, e.g.
+    //   onclick="fn('${botbullsInlineJsArg(value)}')"
+    // The browser decodes the attribute before running the handler, so escape for JavaScript first (backslash before
+    // quote), then for HTML. Shared by bots.js, screener.js and backtest.js; this file loads before them on every page.
+    function botbullsInlineJsArg(value) {
+        const jsEscaped = String(value ?? '')
+            .replace(/\\/g, '\\\\')
+            .replace(/'/g, "\\'")
+            .replace(/\r\n|[\r\n\u2028\u2029]/g, ' ');
+        return escapeHtml(jsEscaped);
+    }
+    window.botbullsInlineJsArg = botbullsInlineJsArg;
+
     function buildStrategyCard(item, mode, checkClass, changeHandler) {
         const hasSettings = (configMap[item.name] || []).length > 0;
         const safeName = escapeHtml(item.name);
@@ -524,14 +537,14 @@
         card.innerHTML = `
             <div class="flex flex-col min-w-0">
                 <span class="font-black text-indigo-900 uppercase text-[0.6rem] sm:text-xs tracking-tight leading-tight">${safeLabel}
-                    <button type="button" onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('${safeName.replace(/'/g, "\\'")}')" class="inline-flex ml-1 align-middle text-indigo-300 hover:text-indigo-600 transition-colors" title="${safeLabel} guide" aria-label="Open ${safeLabel} guide">
+                    <button type="button" onclick="event.stopPropagation(); event.preventDefault(); openInfoModal('${botbullsInlineJsArg(item.name)}')" class="inline-flex ml-1 align-middle text-indigo-300 hover:text-indigo-600 transition-colors" title="${safeLabel} guide" aria-label="Open ${safeLabel} guide">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                     </button>
                 </span>
                 <span class="text-[0.6rem] text-indigo-400 font-bold uppercase tracking-widest">${safeCategory}</span>
             </div>
             <div class="flex items-center gap-2">
-                ${hasSettings ? `<button type="button" onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('${safeName.replace(/'/g, "\\'")}')" class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50 text-indigo-500" title="${safeLabel} Settings" aria-label="Open ${safeLabel} settings"><svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg></button>` : ''}
+                ${hasSettings ? `<button type="button" onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('${botbullsInlineJsArg(item.name)}')" class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50 text-indigo-500" title="${safeLabel} Settings" aria-label="Open ${safeLabel} settings"><svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg></button>` : ''}
                 <input type="checkbox" class="strategy-indicator-check ${checkClass} w-5 h-5 accent-indigo-600 rounded" value="${safeName}" onclick="event.stopPropagation()" onchange="${changeHandler}('${mode}')">
             </div>`;
         return card;

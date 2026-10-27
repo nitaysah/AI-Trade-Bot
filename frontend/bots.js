@@ -5107,7 +5107,7 @@ function ensureDailyHighLowBotIndicatorCards() {
             if (existingInput) {
                 return;
             }
-            const escapedName = name.replace(/'/g, "\\'");
+            const escapedName = botbullsInlineJsArg(name);
             const settingsButton = settings ? `
                 <button onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('${escapedName}')" class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" title="${name} Settings">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -6399,7 +6399,7 @@ function renderBotChartPreviewSignals(signals = {}, settings = {}) {
             : (signalType === 'BULLISH' ? 'bullish' : signalType === 'BEARISH' ? 'bearish' : 'neutral');
         const icon = signalType === 'BULLISH' ? '▲' : signalType === 'BEARISH' ? '▼' : '●';
         const iconColor = signalType === 'BULLISH' ? 'text-emerald-600' : signalType === 'BEARISH' ? 'text-red-500' : 'text-purple-400';
-        const escapedName = name.replace(/'/g, "\\'");
+        const escapedName = botbullsInlineJsArg(name);
         const displayName = sanitizePlainText(name === 'VWAP' ? 'Session VWAP' : name);
         const displayLabelClass = name === 'VWAP' ? 'vwap-indicator-label' : 'text-indigo-900';
         const settingAction = `openBotChartPreviewIndicatorSettings('${escapedName}')`;
@@ -8746,7 +8746,7 @@ window.fetchLiveAtrForPreview = async function (ticker, overrideTf) {
         const exitBoxRegular = document.getElementById('livePreviewExitBox_regular');
         const entryBoxOptions = document.getElementById('livePreviewEntryBox_options');
         const exitBoxOptions = document.getElementById('livePreviewExitBox_options');
-        const loadingHtml = `&#8987; Fetching live market data for ${ticker} (${tf})...`;
+        const loadingHtml = `&#8987; Fetching live market data for ${escapeBotsText(ticker)} (${escapeBotsText(tf)})...`;
         if (entryBoxRegular && !entryBoxRegular.classList.contains('hidden')) entryBoxRegular.innerHTML = loadingHtml;
         if (exitBoxRegular && !exitBoxRegular.classList.contains('hidden')) exitBoxRegular.innerHTML = loadingHtml;
         if (entryBoxOptions && !entryBoxOptions.classList.contains('hidden')) entryBoxOptions.innerHTML = loadingHtml;
@@ -8961,7 +8961,7 @@ function buildEntryPreviewHtml(mode, isOptions, symbol, simPrice, simAtr, priorD
     const modeLabel = buyMode.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase());
     const isLive = !!window.currentAtrPreviewData?.isLive;
     const previewLabel = isLive ? 'Live Preview' : 'Example Preview';
-    const basePrefix = `🔮 ${previewLabel}: ${symbol} (Entry: ${modeLabel}) | Price: $${simPrice.toFixed(2)}`;
+    const basePrefix = `🔮 ${previewLabel}: ${escapeBotsText(symbol)} (Entry: ${escapeBotsText(modeLabel)}) | Price: $${simPrice.toFixed(2)}`;
     const entryForecast = window.currentAtrPreviewData?.entry_forecast || '';
     const swingEntryForecast = window.currentAtrPreviewData?.swing_entry_forecast || '';
 
@@ -9071,7 +9071,7 @@ function buildEntryPreviewHtml(mode, isOptions, symbol, simPrice, simAtr, priorD
     }
 
     const buyThreshold = document.getElementById(`strategyBuyThreshold_${mode}`)?.value || '0';
-    return `${basePrefix}<br/>Buy Threshold: ${buyThreshold}`;
+    return `${basePrefix}<br/>Buy Threshold: ${escapeBotsText(buyThreshold)}`;
 }
 
 window.updateLivePreview_bots = function (mode, scope = 'both') {
@@ -9277,9 +9277,9 @@ window.updateLivePreview_bots = function (mode, scope = 'both') {
         if (hasTrail) {
             if (showATR) {
                 const trailNote = isPutUnderlyingAtr ? 'PUT trail follows downward move from above' : 'Trail follows favorable move from below';
-                html += `<br/>Trail Distance: $${trailDist.toFixed(2)} (ATR * ${document.getElementById('strategyAtrTrailMult' + suffix)?.value || '0'}) | ${trailNote}`;
+                html += `<br/>Trail Distance: $${trailDist.toFixed(2)} (ATR * ${escapeBotsText(document.getElementById('strategyAtrTrailMult' + suffix)?.value || '0')}) | ${trailNote}`;
             } else {
-                html += `<br/>Trail Distance: $${trailDist.toFixed(2)} (${document.getElementById(isOptions ? 'strategyOptionsTrailPct' : 'strategyRegularTrailPct')?.value || '0'}%)`;
+                html += `<br/>Trail Distance: $${trailDist.toFixed(2)} (${escapeBotsText(document.getElementById(isOptions ? 'strategyOptionsTrailPct' : 'strategyRegularTrailPct')?.value || '0')}%)`;
             }
         }
     }

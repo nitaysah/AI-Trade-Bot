@@ -687,7 +687,7 @@ function ensureDailyHighLowBacktestIndicatorCards() {
             if (existingInput) {
                 return;
             }
-            const escapedName = name.replace(/'/g, "\\'");
+            const escapedName = botbullsInlineJsArg(name);
             const settingsButton = settings ? `
                 <button onclick="event.stopPropagation(); event.preventDefault(); openIndicatorSettings('${escapedName}')" class="opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50" title="${name} Settings">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">

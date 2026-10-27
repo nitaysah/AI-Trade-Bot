@@ -535,6 +535,7 @@ def _fetch_public_url(url: str, max_bytes: int = 350_000, max_redirects: int = 3
         try:
             if parsed.scheme == "https":
                 context = ssl.create_default_context()
+                context.minimum_version = ssl.TLSVersion.TLSv1_2
                 sock = context.wrap_socket(sock, server_hostname=parsed.hostname)
             sock.sendall(
                 (
