@@ -23,9 +23,11 @@ from cache_manager import TTLCacheStore
 
 
 CENTRAL_TZ = ZoneInfo("America/Chicago")
+# Earnings dates are exchange (New York) calendar dates, so "today" and the countdown use the exchange date.
+EXCHANGE_TZ = ZoneInfo("America/New_York")
 _RAW_CACHE = TTLCacheStore(maxsize=512)
 _RAW_CACHE_TTL_SECONDS = 300
-DATA_VERSION = 3  # 3: beat/miss record, typical post-earnings move, announcement timing, what-to-watch
+DATA_VERSION = 4  # 3: beat/miss record, typical post-earnings move, announcement timing, what-to-watch; 4: last_event_date
 
 
 def _safe_number(value: Any) -> float | None:
@@ -211,7 +213,7 @@ def post_earnings_moves(closes: Any, events: list[dict[str, Any]], limit: int = 
     except (TypeError, ValueError, AttributeError):
         return []
     position = {d: i for i, d in enumerate(dates)}
-    today = datetime.now(CENTRAL_TZ).date()
+    today = datetime.now(EXCHANGE_TZ).date()
     moves: list[dict[str, Any]] = []
     for event in sorted(events, key=lambda e: e["date"], reverse=True):
         if event["date"] >= today:
@@ -281,16 +283,19 @@ def _fetch_raw(ticker: str) -> dict[str, Any]:
     raw_dates = calendar.get("Earnings Date") or calendar.get("Earnings date") or []
     if not isinstance(raw_dates, (list, tuple, set)):
         raw_dates = [raw_dates]
-    today = datetime.now(CENTRAL_TZ).date()
+    today = datetime.now(EXCHANGE_TZ).date()
     event_dates = sorted({_as_date(value) for value in raw_dates if _as_date(value)})
     future_dates = [value for value in event_dates if value >= today]
     event_date = future_dates[0] if future_dates else None
+    # After a report Yahoo keeps the past date until the next one is published; keep it so the badge can say so.
+    past_dates = [value for value in event_dates if value < today]
 
     raw = {
         "symbol": symbol,
         "status": "current" if event_date else "unavailable",
         "event_date": _date_text(event_date),
         "event_dates": [_date_text(value) for value in event_dates],
+        "last_event_date": _date_text(past_dates[-1]) if past_dates else "",
         "timing": "UNKNOWN",
         "timing_source": "not_provided",
         "exchange_timezone": "America/New_York",
@@ -337,6 +342,9 @@ def _fetch_raw(ticker: str) -> dict[str, Any]:
     try:
         dates = _announcement_dates(yf_ticker)
         raw["announcements"] = [{"date": _date_text(d["date"]), "timing": d["timing"]} for d in dates][:16]
+        reported = [d["date"] for d in dates if d["date"] < today]
+        if reported and _date_text(max(reported)) > raw["last_event_date"]:
+            raw["last_event_date"] = _date_text(max(reported))
         upcoming = next((d for d in sorted(dates, key=lambda d: d["date"]) if d["date"] >= today and d["timing"] != "UNKNOWN"), None)
         if upcoming and event_date and upcoming["date"] == event_date:
             raw["timing"] = upcoming["timing"]
@@ -365,6 +373,56 @@ def _get_raw(ticker: str, force: bool = False) -> dict[str, Any]:
         value = _fetch_raw(symbol)
         _RAW_CACHE.set(key, copy.deepcopy(value))
         return value
+
+
+def _timing_risk(days_to_event: int | None, moves: list[dict[str, Any]]) -> tuple[str, str]:
+    """Event-timing risk level and sentence for a countdown in exchange days."""
+    move = typical_move(moves)
+    if days_to_event is None:
+        risk_level = "UNKNOWN"
+        risk_text = "The next earnings date is not available, so event timing risk cannot be measured."
+    elif days_to_event <= 0:
+        risk_level = "CRITICAL"
+        risk_text = "The scheduled earnings date is today or has passed; verify the release status before relying on the date."
+    elif days_to_event <= 2:
+        risk_level = "CRITICAL"
+        risk_text = f"Earnings are {days_to_event} day(s) away, creating a high overnight gap-risk window."
+    elif days_to_event <= 7:
+        risk_level = "ELEVATED"
+        risk_text = f"Earnings are {days_to_event} day(s) away, so overnight gap risk is elevated."
+    elif days_to_event <= 14:
+        risk_level = "MODERATE"
+        risk_text = f"Earnings are {days_to_event} days away; begin planning for event volatility."
+    else:
+        risk_level = "LOW"
+        risk_text = f"Earnings are {days_to_event} days away; event risk is not yet near-term."
+    if move is not None and days_to_event is not None and days_to_event <= 14:
+        risk_text += f" Over its last {len([m for m in moves if m.get('move_pct') is not None])} reports the stock typically moved about {move:.1f}% the next session, so a stop closer than that can be gapped through."
+    return risk_level, risk_text
+
+
+def with_current_countdown(payload: dict | None, now: datetime | None = None) -> dict:
+    """Return a copy whose countdown and timing risk match today's exchange date.
+
+    Payloads are cached for hours (and Screener profiles persist them), so a stored ``days_to_event`` drifts away
+    from ``event_date``. Every read path recomputes it here so the badge, the popup and the risk text always agree."""
+    result = copy.deepcopy(payload or {})
+    if not result.get("initialized"):
+        return result
+    event_date = _as_date(result.get("event_date"))
+    today = (now or datetime.now(timezone.utc)).astimezone(EXCHANGE_TZ).date()
+    days = (event_date - today).days if event_date else None
+    if days == result.get("days_to_event"):
+        return result
+    old_text = str(result.get("risk_text") or "")
+    level, text = _timing_risk(days, result.get("reactions") or [])
+    result["days_to_event"] = days
+    result["risk_level"] = level
+    result["risk_text"] = text
+    summary = str(result.get("analysis_summary") or "")
+    if old_text and old_text in summary:
+        result["analysis_summary"] = _clean_text(summary.replace(old_text, text), 600)
+    return result
 
 
 def _build_analysis(raw: dict[str, Any], days_to_event: int | None, options_profile: bool = False) -> dict[str, Any]:
@@ -432,26 +490,7 @@ def _build_analysis(raw: dict[str, Any], days_to_event: int | None, options_prof
         outlook = "BEARISH"
     else:
         outlook = "MIXED"
-    if days_to_event is None:
-        risk_level = "UNKNOWN"
-        risk_text = "The next earnings date is not available, so event timing risk cannot be measured."
-    elif days_to_event <= 0:
-        risk_level = "CRITICAL"
-        risk_text = "The scheduled earnings date is today or has passed; verify the release status before relying on the date."
-    elif days_to_event <= 2:
-        risk_level = "CRITICAL"
-        risk_text = f"Earnings are {days_to_event} day(s) away, creating a high overnight gap-risk window."
-    elif days_to_event <= 7:
-        risk_level = "ELEVATED"
-        risk_text = f"Earnings are {days_to_event} day(s) away, so overnight gap risk is elevated."
-    elif days_to_event <= 14:
-        risk_level = "MODERATE"
-        risk_text = f"Earnings are {days_to_event} days away; begin planning for event volatility."
-    else:
-        risk_level = "LOW"
-        risk_text = f"Earnings are {days_to_event} days away; event risk is not yet near-term."
-    if move is not None and days_to_event is not None and days_to_event <= 14:
-        risk_text += f" Over its last {len([m for m in moves if m.get('move_pct') is not None])} reports the stock typically moved about {move:.1f}% the next session, so a stop closer than that can be gapped through."
+    risk_level, risk_text = _timing_risk(days_to_event, moves)
     if options_profile:
         uncertain.append("Options can experience implied-volatility repricing around earnings.")
     evidence_items = (bullish + bearish + uncertain)[:3]
@@ -495,7 +534,7 @@ def build_earnings_watch(ticker: str, previous: dict | None = None, options_prof
                 "source": "Yahoo Finance",
             }
         event_date = _as_date(raw.get("event_date"))
-        today = checked.astimezone(CENTRAL_TZ).date()
+        today = checked.astimezone(EXCHANGE_TZ).date()
         days_to_event = (event_date - today).days if event_date else None
         analysis = _build_analysis(raw, days_to_event, options_profile=options_profile)
         payload = {
@@ -506,6 +545,7 @@ def build_earnings_watch(ticker: str, previous: dict | None = None, options_prof
             "ticker": str(ticker or "").upper(),
             "event_date": raw.get("event_date", ""),
             "event_dates": raw.get("event_dates", []),
+            "last_event_date": raw.get("last_event_date", ""),
             "event_status": "estimated" if event_date else "not_published",
             "timing": TIMING_TEXT.get(raw.get("timing", "UNKNOWN"), raw.get("timing", "UNKNOWN")),
             "timing_source": raw.get("timing_source", "not_provided"),

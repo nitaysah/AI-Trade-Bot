@@ -132,6 +132,7 @@ from earnings_service import (
     DATA_VERSION as EARNINGS_DATA_VERSION,
     build_earnings_watch,
     get_earnings_watch_detail,
+    with_current_countdown as earnings_with_current_countdown,
 )
 from fundamental_service import (
     REPORT_VERSION as FUNDAMENTAL_REPORT_VERSION,
@@ -13858,7 +13859,7 @@ async def get_screener_snapshot(
             "new_count": 0,
         })
         if state.profiles.get(symbol, {}).get("earnings_watch_enabled", True) and not _is_crypto_symbol(symbol):
-            scan["earnings_watch"] = copy.deepcopy(state.earnings_watch.get(symbol) or {
+            scan["earnings_watch"] = earnings_with_current_countdown(state.earnings_watch.get(symbol) or {
                 "enabled": True,
                 "status": "waiting",
                 "ticker": symbol,
@@ -13966,7 +13967,7 @@ async def get_screener_earnings(ticker: str, force: bool = False, state: Screene
         )
         state.earnings_watch[symbol] = cached
         await state.save()
-    return copy.deepcopy(cached)
+    return earnings_with_current_countdown(cached)
 
 
 @app.get("/api/screener/fundamentals/{ticker}")
@@ -14042,7 +14043,7 @@ async def _bot_earnings(eng: UserEngine, symbol: str, force: bool = False) -> di
             cache[symbol] = await asyncio.wait_for(
                 asyncio.to_thread(build_earnings_watch, symbol, None if force else cached, _bot_is_options(eng, symbol), bool(force)),
                 timeout=_BOT_RESEARCH_TIMEOUT)
-    return copy.deepcopy(cache[symbol])
+    return earnings_with_current_countdown(cache[symbol])
 
 
 @app.get("/api/bots/earnings/{ticker}")
@@ -14132,7 +14133,7 @@ async def get_bot_earnings_badges(eng: UserEngine = Depends(get_user_engine)):
             return symbol, _bot_research_cache(eng, "earnings").get(symbol) or {"status": "unavailable", "ticker": symbol}
 
     results = await asyncio.gather(*(one(s) for s in symbols))
-    keep = ("status", "event_date", "days_to_event", "risk_level", "initialized", "timing")
+    keep = ("status", "event_date", "last_event_date", "days_to_event", "risk_level", "initialized", "timing")
     fundamental_symbols = [
         sym for sym in dict.fromkeys(normalize_screener_symbol(t) for t in (eng.config.TRADELIST or []))
         if sym and not _is_crypto_symbol(sym) and _bot_research_enabled(eng, sym, "fundamental_watch_enabled")

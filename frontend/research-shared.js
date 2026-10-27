@@ -12,7 +12,7 @@
     'use strict';
 
     const FUNDAMENTAL_REPORT_VERSION = 2;
-    const EARNINGS_DATA_VERSION = 3;
+    const EARNINGS_DATA_VERSION = 4;
     const FUNDAMENTAL_CACHE_MS = 24 * 60 * 60 * 1000;
     const config = { earningsUrl: null, fundamentalsUrl: null, cachePrefix: 'research' };
 
@@ -38,6 +38,25 @@
         if (!value) return '';
         const date = new Date(`${String(value).slice(0, 10)}T12:00:00`);
         return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+
+    // Earnings dates are exchange (New York) calendar dates. Count days against today's New York date, so the countdown
+    // always matches the date shown even when the cached server value is hours or days old.
+    function exchangeToday() {
+        try {
+            return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+        } catch (error) {
+            return new Date().toISOString().slice(0, 10);
+        }
+    }
+
+    function daysUntil(value, fallback) {
+        const target = String(value || '').slice(0, 10);
+        const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(target);
+        const today = /^(\d{4})-(\d{2})-(\d{2})$/.exec(exchangeToday());
+        if (!match || !today) return fallback;
+        const utc = (m) => Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+        return Math.round((utc(match) - utc(today)) / 86400000);
     }
 
     function countdown(days) {
@@ -172,8 +191,8 @@
 
         modal.querySelector('[data-body]').innerHTML = `
             <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                ${tile('Event date', data.event_date ? formatDate(data.event_date) : 'Date not published')}
-                ${tile('Countdown', countdown(data.days_to_event))}
+                ${tile('Event date', data.event_date ? formatDate(data.event_date) : data.last_event_date ? `Next date not announced (last reported ${formatDate(data.last_event_date)})` : 'Date not published')}
+                ${tile('Countdown', data.event_date ? countdown(daysUntil(data.event_date, data.days_to_event)) : 'Date pending')}
                 ${tile('Release timing', data.timing && data.timing !== 'UNKNOWN' ? data.timing : 'Timing not published')}
                 ${tile('Date status', data.event_status === 'estimated' ? 'Estimated date' : data.event_status === 'not_published' ? 'Not published' : status)}
             </div>
@@ -389,15 +408,18 @@
             : risk === 'moderate' ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-violet-200 bg-violet-50 text-violet-700';
         const status = String(data?.status || 'waiting').toLowerCase();
         const date = data?.event_date ? shortDate(data.event_date) : '';
+        const lastReported = !date && data?.last_event_date ? shortDate(data.last_event_date) : '';
         const timing = TIMING_SHORT[data?.timing] ? ` ${TIMING_SHORT[data.timing]}` : '';
         // The label is HTML (escaped piece by piece): "Earnings · Oct 28 · in 15d" on every screen; desktop adds the timing (BMO/AMC).
-        const countdownText = date ? countdown(data.days_to_event) : '';
+        const countdownText = date ? countdown(daysUntil(data.event_date, data.days_to_event)) : '';
         const labelHtml = !data || (status === 'waiting' && !data.initialized)
             ? esc(retrying && !data ? 'Earnings · Retrying…' : 'Earnings · Checking…')
             : date ? `Earnings · ${esc(date)}<span class="hidden sm:inline">${esc(timing)}</span> · ${esc(countdownText)}`
-                : esc(`Earnings · ${status === 'stale' ? 'Stale date' : 'Date unavailable'}`);
+                : lastReported ? `Earnings · Reported ${esc(lastReported)}<span class="hidden sm:inline"> · next TBA</span>`
+                    : esc(`Earnings · ${status === 'stale' ? 'Stale date' : 'Date unavailable'}`);
         const baseTitle = 'Open earnings date, estimates, beat record, past reactions and risk analysis';
-        const title = date ? `Earnings ${date}${timing}${countdownText ? ` (${countdownText})` : ''}. ${baseTitle}` : baseTitle;
+        const title = date ? `Earnings ${date}${timing}${countdownText ? ` (${countdownText})` : ''}. ${baseTitle}`
+            : lastReported ? `Last reported ${lastReported}; the next date is not announced yet. ${baseTitle}` : baseTitle;
         return `<button type="button" class="${BUTTON} ${tone}" title="${esc(title)}" onclick="event.stopPropagation(); BotBullsResearch.openEarnings('${esc(ticker)}')">📅 ${labelHtml}</button>`;
     }
 

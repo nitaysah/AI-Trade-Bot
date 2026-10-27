@@ -27,8 +27,15 @@ def make_engine_with(settings_by_ticker):
     return eng
 
 
+def _event_in(days):
+    """An event date that really is ``days`` exchange days away, so the read-time countdown keeps the fixture's value."""
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    return (datetime.now(ZoneInfo("America/New_York")).date() + timedelta(days=days)).isoformat()
+
+
 def earnings(symbol, days=24, status="current", next_in=3600, risk="low"):
-    return {"data_version": 3, "initialized": True, "status": status, "ticker": symbol, "event_date": "2026-11-02",
+    return {"data_version": main.EARNINGS_DATA_VERSION, "initialized": True, "status": status, "ticker": symbol, "event_date": _event_in(days),
             "days_to_event": days, "risk_level": risk, "next_check_at": time.time() + next_in, "analysis_summary": "x"}
 
 
@@ -123,8 +130,9 @@ class BadgeEndpointTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "build_earnings_watch", side_effect=lambda t, prev, opt, force=False: earnings(t, days=3, risk="elevated")):
             out = await main.get_bot_earnings_badges(eng)
         self.assertEqual(set(out["badges"]), {"AAPL", "MSFT"})
-        self.assertEqual(out["badges"]["AAPL"], {"status": "current", "event_date": "2026-11-02", "days_to_event": 3,
-                                                 "risk_level": "elevated", "initialized": True, "timing": None})
+        self.assertEqual(out["badges"]["AAPL"], {"status": "current", "event_date": _event_in(3), "last_event_date": None,
+                                                 "days_to_event": 3, "risk_level": "elevated", "initialized": True,
+                                                 "timing": None})
 
     async def test_a_failing_symbol_keeps_its_last_value_and_does_not_break_the_rest(self):
         eng = make_engine(("AAPL", "MSFT"))

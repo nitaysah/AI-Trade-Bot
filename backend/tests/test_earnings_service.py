@@ -89,5 +89,51 @@ class EarningsServiceTests(unittest.TestCase):
         self.assertEqual(history[0]["surprise_pct"], 6.74)
 
 
+
+class EarningsCountdownTests(unittest.TestCase):
+    """The countdown must always match the date, however old the cached payload is."""
+
+    def setUp(self):
+        earnings_service.clear_earnings_cache()
+
+    def _payload(self, event):
+        fake = _CalendarTicker({"Earnings Date": [event]})
+        with patch.object(earnings_service.yf, "Ticker", return_value=fake):
+            return earnings_service.build_earnings_watch("AAPL", force=True)
+
+    def test_a_cached_payload_is_recounted_from_the_date_when_read(self):
+        from datetime import datetime, timezone
+        payload = self._payload(date(2099, 10, 28))
+        early = earnings_service.with_current_countdown(payload, now=datetime(2099, 10, 13, 15, tzinfo=timezone.utc))
+        self.assertEqual((early["days_to_event"], early["risk_level"]), (15, "LOW"))
+        later = earnings_service.with_current_countdown(early, now=datetime(2099, 10, 26, 15, tzinfo=timezone.utc))
+        self.assertEqual(later["days_to_event"], 2)                      # recounted, not the stale 15
+        self.assertEqual(later["risk_level"], "CRITICAL")
+        self.assertIn("2 day(s) away", later["risk_text"])
+        self.assertIn("2 day(s) away", later["analysis_summary"])
+        self.assertNotIn("15 days away", later["analysis_summary"])
+        self.assertEqual(early["days_to_event"], 15)                     # the cached copy itself is untouched
+
+    def test_the_count_uses_the_new_york_date(self):
+        from datetime import datetime, timezone
+        payload = self._payload(date(2099, 10, 28))
+        # 11:30 PM in Chicago (04:30 UTC) is already the next day in New York
+        late = earnings_service.with_current_countdown(payload, now=datetime(2099, 10, 27, 4, 30, tzinfo=timezone.utc))
+        self.assertEqual(late["days_to_event"], 1)
+
+    def test_after_a_report_the_last_date_is_kept_when_no_next_date_is_published(self):
+        fake = _CalendarTicker({"Earnings Date": [date(2020, 10, 21)]})
+        with patch.object(earnings_service.yf, "Ticker", return_value=fake):
+            payload = earnings_service.build_earnings_watch("TSLA", force=True)
+        self.assertEqual(payload["status"], "unavailable")
+        self.assertEqual(payload["event_date"], "")
+        self.assertEqual(payload["last_event_date"], "2020-10-21")
+        self.assertIsNone(earnings_service.with_current_countdown(payload)["days_to_event"])
+
+    def test_an_uninitialized_payload_is_returned_unchanged(self):
+        waiting = {"status": "waiting", "ticker": "AAPL"}
+        self.assertEqual(earnings_service.with_current_countdown(waiting), waiting)
+
+
 if __name__ == "__main__":
     unittest.main()
