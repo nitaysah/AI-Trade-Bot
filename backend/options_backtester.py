@@ -331,7 +331,12 @@ class OptionsBacktester:
         """
         import os
         ticker_file = f"{self.ticker.lower()}_options_chain_5m.csv"
-        for candidate in [f"data/{ticker_file}", f"backend/data/{ticker_file}"]:
+        for data_dir in ("data", os.path.join("backend", "data")):
+            # Resolve the path and keep it inside the data folder, whatever the ticker text contains.
+            base = os.path.abspath(data_dir)
+            candidate = os.path.normpath(os.path.join(base, ticker_file))
+            if not candidate.startswith(base + os.sep):
+                continue
             if os.path.exists(candidate):
                 try:
                     df_opt = pd.read_csv(candidate)

@@ -1934,8 +1934,9 @@ def get_full_analysis(ticker, timeframe="5Min", data_source="alpaca", settings=N
             end_date = datetime.now()
             usr_cfg = get_user_config()
             api_key = getattr(usr_cfg, 'ALPACA_API_KEY', '').strip()
-            secret_key = getattr(usr_cfg, 'ALPACA_SECRET_KEY', '').strip()
-            credential_scope = hashlib.sha256(f"{api_key}:{secret_key}".encode()).hexdigest()[:16]
+            # Scope the in-memory bar cache per account. The API key ID identifies the account (one secret per key ID),
+            # so the secret itself is never part of the key.
+            credential_scope = api_key
             cache_key = (credential_scope, ticker.upper(), timeframe.upper())
 
             # Timeframe -> Alpaca object + lookback

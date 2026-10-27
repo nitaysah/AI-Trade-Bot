@@ -241,11 +241,13 @@ class AlpacaBroker:
                     
             self.simulation_mode = False
             self.paper_mode = bool(paper)
-            account_identity = str(
-                getattr(account, "account_number", "")
-                or getattr(account, "id", "")
-                or self._api_key
-            )
+            # Bind to the broker account itself. Alpaca always returns an account number and id; without either the
+            # account cannot be told apart from others, so refuse rather than fall back to hashing the API key.
+            account_identity = str(getattr(account, "account_number", "") or getattr(account, "id", "") or "")
+            if not account_identity:
+                print("[broker] Alpaca connection rejected: the account returned no account number or id.")
+                self.clear_credentials()
+                return False
             account_fingerprint = hashlib.sha256(account_identity.encode("utf-8")).hexdigest()[:16]
             if not paper:
                 configured_fingerprint = str(

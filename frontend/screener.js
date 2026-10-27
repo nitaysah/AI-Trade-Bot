@@ -1339,7 +1339,13 @@ async function persistBotOrderFromVisible(newVisibleTickers) {
 // Plain text for HTML content or a quoted attribute: drop any markup (as before), then escape what is left, so a stray
 // "<" or a quote cannot open a tag or end an attribute. Text arriving here is plain (news entities are decoded server-side).
 function sanitizePlainText(text) {
-    return escapeScreenerNewsText(String(text || '').replace(/<[^>]*>?/gm, ''));
+    let stripped = String(text || '');
+    let previous;
+    do {  // repeat until stable, so removing one tag can never assemble another
+        previous = stripped;
+        stripped = stripped.replace(/<[^>]*>?/gm, '');
+    } while (stripped !== previous);
+    return escapeScreenerNewsText(stripped);
 }
 
 function normalizeScreenerEventAnalysis(value, direction) {

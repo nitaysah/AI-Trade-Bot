@@ -2,6 +2,7 @@ import os
 import tempfile
 import threading
 import unittest
+from urllib.parse import urlparse
 from datetime import date, datetime, timedelta, timezone
 
 import macro_schedule as ms
@@ -53,9 +54,10 @@ class ParserTests(unittest.TestCase):
 
     def test_fetch_reports_per_source_failure_and_keeps_the_rest(self):
         def fake(url):
-            if "bls.gov" in url:
+            host = urlparse(url).hostname or ""
+            if host == "www.bls.gov":
                 raise OSError("blocked")
-            if "bea.gov" in url:
+            if host == "www.bea.gov":
                 return BEA_ICS
             return '{"events": []}'
         events, status = ms.fetch_official_events(date(2026, 10, 27), 7, fetch_text=fake)
