@@ -16,7 +16,6 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="BotBulls">
     <meta name="application-name" content="BotBulls">
-    <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Outfit:wght@400;600;700;800;900&display=swap"
@@ -243,6 +242,9 @@
         @keyframes pageLoaderSpin { to { transform: rotate(360deg); } }
         @media (prefers-reduced-motion: reduce) { #pageLoader img { animation-duration: 3s; } }
     </style>
+    <!-- Prebuilt Tailwind (npm run build:css). Last in <head> on purpose: the old CDN script injected its
+         <style> here, so Tailwind wins ties against styles.css exactly as before. -->
+    <link rel="stylesheet" href="tailwind.css?v=1">
 </head>
 
 <body

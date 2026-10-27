@@ -20,14 +20,8 @@
     <meta name="apple-mobile-web-app-title" content="BotBulls">
     <meta name="application-name" content="BotBulls">
     <meta name="msapplication-TileImage" content="assets/bot_bulls_logo.png">
-    <link rel="preconnect" href="https://cdn.tailwindcss.com">
     <link rel="preconnect" href="https://unpkg.com">
     <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
-    <!-- Tailwind generates the utility CSS at runtime. Keep this script
-         parser-blocking so the raw HTML never paints as an unstyled logo and
-         a grid of plain boxes during refresh. -->
-    <link rel="preload" as="script" href="https://cdn.tailwindcss.com">
-    <script src="https://cdn.tailwindcss.com"></script>
     <script defer src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -112,6 +106,9 @@
         @keyframes pageLoaderSpin { to { transform: rotate(360deg); } }
         @media (prefers-reduced-motion: reduce) { #pageLoader img { animation-duration: 3s; } }
     </style>
+    <!-- Prebuilt Tailwind (npm run build:css). Last in <head> on purpose: the old CDN script injected its
+         <style> here, so Tailwind wins ties against styles.css exactly as before. -->
+    <link rel="stylesheet" href="tailwind.css?v=1">
 </head>
 
 <body

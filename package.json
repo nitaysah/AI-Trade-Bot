@@ -2,10 +2,20 @@
   "name": "ai-trade-bot-deployment-tools",
   "private": true,
   "version": "1.0.0",
+  "scripts": {
+    "build:css": "tailwindcss -c tailwind.config.js -i tailwind.input.css -o frontend/tailwind.css --postcss --minify"
+  },
   "devDependencies": {
-    "firebase-tools": "15.34.0"
+    "autoprefixer": "10.6.1",
+    "firebase-tools": "15.34.0",
+    "tailwindcss": "3.4.17"
   },
   "overrides": {
     "uuid": "11.1.1"
-  }
+  },
+  "browserslist": [
+    "defaults",
+    "iOS >= 15",
+    "Safari >= 15"
+  ]
 }

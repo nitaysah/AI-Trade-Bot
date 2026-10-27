@@ -32,6 +32,8 @@ jobs:
         shell: bash
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
+          # Rebuild the Tailwind CSS from the current HTML/JS so a forgotten local rebuild can never ship stale styles.
+          npm run build:css
           set +e
           ./node_modules/.bin/firebase deploy --only hosting --project bot-bulls --non-interactive > firebase-deploy.log 2>&1
           status=$?

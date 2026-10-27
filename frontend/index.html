@@ -21,7 +21,6 @@
     <meta name="theme-color" content="#312e81">
     <link rel="manifest" href="manifest.webmanifest">
     <meta name="msapplication-TileImage" content="assets/bot_bulls_logo.png">
-    <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -209,6 +208,9 @@
             body > footer { padding-top: 1rem !important; padding-bottom: 1rem !important; }
         }
     </style>
+    <!-- Prebuilt Tailwind (npm run build:css). Last in <head> on purpose: the old CDN script injected its
+         <style> here, so Tailwind wins ties against styles.css exactly as before. -->
+    <link rel="stylesheet" href="tailwind.css?v=1">
 </head>
 
 <body class="dashboard-like min-h-screen overflow-x-hidden">
