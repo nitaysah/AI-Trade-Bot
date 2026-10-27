@@ -36,6 +36,12 @@ jobs:
           host: ${{ secrets.ORACLE_HOST }}
           username: ${{ secrets.ORACLE_USER }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
+          # Verify the server's host key before sending any secret (prevents a man-in-the-middle from receiving them).
+          # The action's Go SSH client prefers the ECDSA host key, so this is the ECDSA fingerprint. Host fingerprints are
+          # public (anyone can read them with ssh-keyscan). If the VM is rebuilt or its host keys change, the deploy fails
+          # with "host key fingerprint mismatch"; update this value from:
+          #   ssh-keyscan -t ecdsa <host> | ssh-keygen -lf -
+          fingerprint: "SHA256:7VdDg3Sa8A2iHdrRpcVkOCtCgC34vlegm1EDZEn9hl0"
           envs: GROQ_API_KEY,FINNHUB_API_KEY,WEBULL_APP_KEY,WEBULL_APP_SECRET,VAULT_SECRET_KEY,VAULT_SECRET_KEY_PREVIOUS,VAULT_SECRET_KEY_PREVIOUS_VERSION,BROKER_LIVE_TENANT_UID,BROKER_LIVE_ACCOUNT_FINGERPRINT,GITHUB_SHA
           script: |
             # Do not restart the service or overwrite its environment file when
@@ -114,13 +120,18 @@ jobs:
               printf 'WEBULL_DATA_ONLY=true\n'
               printf 'WEBULL_LIVE_TRADING_ENABLED=false\n'
               printf 'WEBULL_SINGLE_TENANT_MODE=false\n'
-              printf 'BROKER_LIVE_TENANT_UID=%s\n' "$BROKER_LIVE_TENANT_UID"
-              printf 'BROKER_LIVE_ACCOUNT_FINGERPRINT=%s\n' "$BROKER_LIVE_ACCOUNT_FINGERPRINT"
               printf 'BROKER_TYPE=alpaca\n'
               printf 'VAULT_SECRET_KEY=%s\n' "$VAULT_SECRET_KEY"
               printf 'VAULT_SECRET_KEY_VERSION=2\n'
-              printf 'VAULT_SECRET_KEY_PREVIOUS=%s\n' "$VAULT_SECRET_KEY_PREVIOUS"
-              printf 'VAULT_SECRET_KEY_PREVIOUS_VERSION=%s\n' "$VAULT_SECRET_KEY_PREVIOUS_VERSION"
+              # Optional secrets, written only when set in GitHub (an empty line would just mean "unset"):
+              #   BROKER_LIVE_TENANT_UID / BROKER_LIVE_ACCOUNT_FINGERPRINT bind live trading to one account. Unset keeps
+              #   live trading disabled; setting them is a deliberate live-trading decision, not a deploy default.
+              #   VAULT_SECRET_KEY_PREVIOUS(_VERSION) is only needed during a vault key rotation window.
+              for OPTIONAL in BROKER_LIVE_TENANT_UID BROKER_LIVE_ACCOUNT_FINGERPRINT VAULT_SECRET_KEY_PREVIOUS VAULT_SECRET_KEY_PREVIOUS_VERSION; do
+                if [ -n "${!OPTIONAL:-}" ]; then
+                  printf '%s=%s\n' "$OPTIONAL" "${!OPTIONAL}"
+                fi
+              done
               printf 'ENV=production\n'
               printf 'BOTBULLS_LOCAL_DB_PATH=%s\n' "$LOCAL_DATA_DIR/botbulls_local.sqlite3"
               printf 'BOTBULLS_TOKEN_DIR=%s\n' "$LOCAL_DATA_DIR/secrets"
